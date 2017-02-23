@@ -1,16 +1,15 @@
-/*
- * undolog.h
+/*-------------------------------------------------------------------------
  *
- * PostgreSQL undo log manager.  This module is responsible for lifecycle
- * management of undo logs and backing files, associating undo logs with
- * backends, allocating and managing space within undo logs.
+ * undolog.h
+ *	  management of undo logs
  *
  * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/undolog.h
+ *
+ *-------------------------------------------------------------------------
  */
-
 #ifndef UNDOLOG_H
 #define UNDOLOG_H
 
@@ -73,7 +72,6 @@ typedef enum
 	(UndoRecPtrGetOffset(urp) % UndoLogUsableBytesPerPage +	\
 	 UndoLogBlockHeaderSize)
 
-
 /* Find out which tablespace the given undo log location is backed by. */
 extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
 
@@ -91,6 +89,7 @@ extern UndoRecPtr GetUndoLogInsertionPoint(UndoRecordSize size,
 extern void AdvanceUndoLogInsertionPoint(UndoRecPtr insertion_point,
 										 UndoRecordSize size);
 
+extern void BootStrapUndoLog(void);
 extern void UndoLogShmemInit(void);
 extern Size UndoLogShmemSize(void);
 
