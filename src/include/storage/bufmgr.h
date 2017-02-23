@@ -195,6 +195,12 @@ extern void DropRelFileNodeBuffers(RelFileNodeBackend rnode,
 					   ForkNumber forkNum, BlockNumber firstDelBlock);
 extern void DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes);
 extern void DropDatabaseBuffers(Oid dbid);
+/*
+ * This function will invalidate the buffer and return it to the free pool of
+ * buffers.  This API will invalidate the buffer if it exists in buf mapping
+ * table.
+ */
+extern void DropBuffer(BufferTag buf_tag);
 
 #define RelationGetNumberOfBlocks(reln) \
 	RelationGetNumberOfBlocksInFork(reln, MAIN_FORKNUM)
