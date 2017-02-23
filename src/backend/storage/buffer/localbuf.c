@@ -273,6 +273,49 @@ LocalBufferAlloc(SMgrRelation smgr, ForkNumber forkNum, BlockNumber blockNum,
 }
 
 /*
+ * ForgetLocalBuffer - drop a buffer from local buffers
+ *
+ * This is similar to bufmgr.c's ForgetBuffer, except that we do not need
+ * to do any locking since this is all local.  As with that function, this
+ * must be used very carefully, since we'll cheerfully throw away dirty
+ * buffers without any attempt to write them.
+ */
+void
+ForgetLocalBuffer(RelFileNode rnode, ForkNumber forkNum, BlockNumber blockNum)
+{
+	SMgrRelation smgr = smgropen(rnode, BackendIdForTempRelations());
+	BufferTag	tag;			/* identity of target block */
+	LocalBufferLookupEnt *hresult;
+	BufferDesc *bufHdr;
+	uint32		buf_state;
+
+	/*
+	 * If somehow this is the first request in the session, there's nothing to
+	 * do.  (This probably shouldn't happen, though.)
+	 */
+	if (LocalBufHash == NULL)
+		return;
+
+	/* create a tag so we can lookup the buffer */
+	INIT_BUFFERTAG(tag, smgr->smgr_rnode.node, forkNum, blockNum);
+
+	/* see if the block is in the local buffer pool */
+	hresult = (LocalBufferLookupEnt *)
+		hash_search(LocalBufHash, (void *) &tag, HASH_REMOVE, NULL);
+
+	/* didn't find it, so nothing to do */
+	if (!hresult)
+		return;
+
+	/* mark buffer invalid */
+	bufHdr = GetLocalBufferDescriptor(hresult->id);
+	CLEAR_BUFFERTAG(bufHdr->tag);
+	buf_state = pg_atomic_read_u32(&bufHdr->state);
+	buf_state &= ~(BM_VALID | BM_TAG_VALID);
+	pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
+}
+
+/*
  * MarkLocalBufferDirty -
  *	  mark a local buffer dirty
  */

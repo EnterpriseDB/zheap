@@ -176,6 +176,7 @@ static PrivateRefCountEntry *NewPrivateRefCountEntry(Buffer buffer);
 static PrivateRefCountEntry *GetPrivateRefCountEntry(Buffer buffer, bool do_move);
 static inline int32 GetPrivateRefCount(Buffer buffer);
 static void ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref);
+static void InvalidateBuffer(BufferDesc *buf);
 
 /*
  * Ensure that the PrivateRefCountArray has sufficient space to store one more
@@ -1329,6 +1330,61 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		*foundPtr = true;
 
 	return buf;
+}
+
+/*
+ * ForgetBuffer -- drop a buffer from shared buffers
+ *
+ * If the buffer isn't present in shared buffers, nothing happens.  If it is
+ * present, it is discarded without making any attempt to write it back out to
+ * the operating system.  The caller must therefore somehow be sure that the
+ * data won't be needed for anything now or in the future.  It assumes that
+ * there is no concurrent access to the block, except that it might be being
+ * concurrently written.
+ */
+void
+ForgetBuffer(RelFileNode rnode, ForkNumber forkNum, BlockNumber blockNum)
+{
+	SMgrRelation smgr = smgropen(rnode, InvalidBackendId);
+	BufferTag	tag;			/* identity of target block */
+	uint32		hash;			/* hash value for tag */
+	LWLock	   *partitionLock;	/* buffer partition lock for it */
+	int			buf_id;
+	BufferDesc *bufHdr;
+	uint32		buf_state;
+
+	/* create a tag so we can lookup the buffer */
+	INIT_BUFFERTAG(tag, smgr->smgr_rnode.node, forkNum, blockNum);
+
+	/* determine its hash code and partition lock ID */
+	hash = BufTableHashCode(&tag);
+	partitionLock = BufMappingPartitionLock(hash);
+
+	/* see if the block is in the buffer pool */
+	LWLockAcquire(partitionLock, LW_SHARED);
+	buf_id = BufTableLookup(&tag, hash);
+	LWLockRelease(partitionLock);
+
+	/* didn't find it, so nothing to do */
+	if (buf_id < 0)
+		LWLockRelease(partitionLock);
+
+	/* take the buffer header lock */
+	bufHdr = GetBufferDescriptor(buf_id);
+	buf_state = LockBufHdr(bufHdr);
+
+	/*
+	 * The buffer might been evicted after we released the partition lock and
+	 * before we acquired the buffer header lock.  If so, the buffer we've
+	 * locked might contain some other data which we shouldn't touch. If the
+	 * buffer hasn't been recycled, we proceed to invalidate it.
+	 */
+	if (RelFileNodeEquals(bufHdr->tag.rnode, rnode) &&
+		bufHdr->tag.blockNum == blockNum &&
+		bufHdr->tag.forkNum == forkNum)
+		InvalidateBuffer(bufHdr);		/* releases spinlock */
+	else
+		UnlockBufHdr(bufHdr, buf_state);
 }
 
 /*

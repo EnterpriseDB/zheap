@@ -172,6 +172,8 @@ extern Buffer ReadBufferExtended(Relation reln, ForkNumber forkNum,
 extern Buffer ReadBufferWithoutRelcache(RelFileNode rnode,
 						  ForkNumber forkNum, BlockNumber blockNum,
 						  ReadBufferMode mode, BufferAccessStrategy strategy);
+extern void ForgetBuffer(RelFileNode rnode, ForkNumber forkNum,
+			 BlockNumber blockNum);
 extern void ReleaseBuffer(Buffer buffer);
 extern void UnlockReleaseBuffer(Buffer buffer);
 extern void MarkBufferDirty(Buffer buffer);
@@ -195,12 +197,6 @@ extern void DropRelFileNodeBuffers(RelFileNodeBackend rnode,
 					   ForkNumber forkNum, BlockNumber firstDelBlock);
 extern void DropRelFileNodesAllBuffers(RelFileNodeBackend *rnodes, int nnodes);
 extern void DropDatabaseBuffers(Oid dbid);
-/*
- * This function will invalidate the buffer and return it to the free pool of
- * buffers.  This API will invalidate the buffer if it exists in buf mapping
- * table.
- */
-extern void DropBuffer(BufferTag buf_tag);
 
 #define RelationGetNumberOfBlocks(reln) \
 	RelationGetNumberOfBlocksInFork(reln, MAIN_FORKNUM)
@@ -233,6 +229,10 @@ extern bool BgBufferSync(struct WritebackContext *wb_context);
 extern void AtProcExit_LocalBuffers(void);
 
 extern void TestForOldSnapshot_impl(Snapshot snapshot, Relation relation);
+
+/* in localbuf.c */
+extern void ForgetLocalBuffer(RelFileNode rnode, ForkNumber forkNum,
+				  BlockNumber blockNum);
 
 /* in freelist.c */
 extern BufferAccessStrategy GetAccessStrategy(BufferAccessStrategyType btype);
