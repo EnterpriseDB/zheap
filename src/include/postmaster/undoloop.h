@@ -37,7 +37,7 @@ extern void execute_undo_actions(UndoRecPtr from_urecptr,
  * id for that undo log and see if it precedes RecentGlobalXmin, then start
  * discarding the undo log for that transaction (moving the tail pointer of
  * undo log) till it finds the transaction which is not all-visible.  This also
- * discards the buffers by calling DropUndoBuffers for which undo log is
+ * discards the buffers by calling ForgetBuffer for which undo log is
  * removed.  This function can be invoked by undoworker or after commit in
  * single user mode.
  */
