@@ -14,7 +14,9 @@
 #define UNDORECORD_H
 
 #include "common/relpath.h"
+#include "lib/stringinfo.h"
 #include "storage/block.h"
+#include "storage/bufpage.h"
 #include "storage/off.h"
 
 /*
@@ -114,7 +116,6 @@ typedef struct UnpackedUndoRecord
 	uint8		uur_type;		/* record type code */
 	uint8		uur_info;		/* flag bits */
 	uint16		uur_prevlen;	/* length of previous record */
-	Oid			uur_relid;		/* relation OID */
 	Oid			uur_relfilenode;	/* relfilenode for relation */
 	Oid			uur_tsid;		/* tablespace OID */
 	ForkNumber	uur_fork;		/* fork number */
@@ -129,7 +130,7 @@ typedef struct UnpackedUndoRecord
  * Compute the number of bytes of storage that will be required to insert
  * an undo record.  Sets uur->uur_info as a side effect.
  */
-extern void UndoRecordExpectedSize(UnpackedUndoRecord *uur);
+extern Size UndoRecordExpectedSize(UnpackedUndoRecord *uur);
 
 /*
  * To insert an undo record, call InsertUndoRecord() repeatedly until it
