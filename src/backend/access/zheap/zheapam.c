@@ -42,6 +42,7 @@
 #include "storage/predicate.h"
 #include "utils/expandeddatum.h"
 #include "utils/inval.h"
+#include "utils/memdebug.h"
 #include "utils/rel.h"
 
 bool	enable_zheap = false;
@@ -261,9 +262,9 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 	if (tupleDescriptor->tdhasoid)
 		len += sizeof(Oid);
 
-	if (data_alignment == 0)
+	if (data_alignment_zheap == 0)
 		;	/* no alignment required */
-	else if (data_alignment == 4)
+	else if (data_alignment_zheap == 4)
 		len = INTALIGN(len);
 	else
 		len = MAXALIGN(len); /* align user data safely */
@@ -403,6 +404,8 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	OffsetNumber offnum;
 	UndoRecPtr	urecptr, prev_urecptr;
 
+	data_alignment_zheap = data_alignment;
+
 	/*
 	 * Assign an OID, and toast the tuple if necessary.
 	 *
@@ -428,7 +431,7 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	/* Add the tuple to the page */
 	page = BufferGetPage(buffer);
 
-	offnum = PageAddItem(page, (Item) zheaptup->t_data,
+	offnum = ZPageAddItem(page, (Item) zheaptup->t_data,
 						 zheaptup->t_len, InvalidOffsetNumber, false, true);
 
 	if (offnum == InvalidOffsetNumber)
@@ -597,5 +600,236 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 		/*heap_freetuple(zheaptup);*/
 	}
 
+	data_alignment_zheap = 1;
+
 	return HeapTupleGetOid(tup);
+}
+
+/*
+ * ----------
+ * Page related API's.  Eventually we might need to split these API's
+ * into a separate file like bufzpage.c or buf_zheap_page.c or some
+ * thing like that.
+ * ----------
+ */
+
+/*
+ * ZPageAddItemExtended - Add an item to a zheap page.
+ *
+ *	This is similar to PageAddItemExtended except for max tuples that can
+ *	be accomodated on a page and alignment for each item.
+ */
+OffsetNumber
+ZPageAddItemExtended(Page page,
+					 Item item,
+					 Size size,
+					 OffsetNumber offsetNumber,
+					 int flags)
+{
+	PageHeader	phdr = (PageHeader) page;
+	Size		alignedSize;
+	int			lower;
+	int			upper;
+	ItemId		itemId;
+	OffsetNumber limit;
+	bool		needshuffle = false;
+
+	/*
+	 * Be wary about corrupted page pointers
+	 */
+	if (phdr->pd_lower < SizeOfPageHeaderData ||
+		phdr->pd_lower > phdr->pd_upper ||
+		phdr->pd_upper > phdr->pd_special ||
+		phdr->pd_special > BLCKSZ)
+		ereport(PANIC,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("corrupted page pointers: lower = %u, upper = %u, special = %u",
+						phdr->pd_lower, phdr->pd_upper, phdr->pd_special)));
+
+	/*
+	 * Select offsetNumber to place the new item at
+	 */
+	limit = OffsetNumberNext(PageGetMaxOffsetNumber(page));
+
+	/* was offsetNumber passed in? */
+	if (OffsetNumberIsValid(offsetNumber))
+	{
+		/* yes, check it */
+		if ((flags & PAI_OVERWRITE) != 0)
+		{
+			if (offsetNumber < limit)
+			{
+				itemId = PageGetItemId(phdr, offsetNumber);
+				if (ItemIdIsUsed(itemId) || ItemIdHasStorage(itemId))
+				{
+					elog(WARNING, "will not overwrite a used ItemId");
+					return InvalidOffsetNumber;
+				}
+			}
+		}
+		else
+		{
+			if (offsetNumber < limit)
+				needshuffle = true;		/* need to move existing linp's */
+		}
+	}
+	else
+	{
+		/* offsetNumber was not passed in, so find a free slot */
+		/* if no free slot, we'll put it at limit (1st open slot) */
+		if (PageHasFreeLinePointers(phdr))
+		{
+			/*
+			 * Look for "recyclable" (unused) ItemId.  We check for no storage
+			 * as well, just to be paranoid --- unused items should never have
+			 * storage.
+			 */
+			for (offsetNumber = 1; offsetNumber < limit; offsetNumber++)
+			{
+				itemId = PageGetItemId(phdr, offsetNumber);
+				if (!ItemIdIsUsed(itemId) && !ItemIdHasStorage(itemId))
+					break;
+			}
+			if (offsetNumber >= limit)
+			{
+				/* the hint is wrong, so reset it */
+				PageClearHasFreeLinePointers(phdr);
+			}
+		}
+		else
+		{
+			/* don't bother searching if hint says there's no free slot */
+			offsetNumber = limit;
+		}
+	}
+
+	/* Reject placing items beyond the first unused line pointer */
+	if (offsetNumber > limit)
+	{
+		elog(WARNING, "specified item offset is too large");
+		return InvalidOffsetNumber;
+	}
+
+	/* Reject placing items beyond heap boundary, if heap */
+	if ((flags & PAI_IS_HEAP) != 0 && offsetNumber > MaxZHeapTuplesPerPage)
+	{
+		elog(WARNING, "can't put more than MaxHeapTuplesPerPage items in a heap page");
+		return InvalidOffsetNumber;
+	}
+
+	/*
+	 * Compute new lower and upper pointers for page, see if it'll fit.
+	 *
+	 * Note: do arithmetic as signed ints, to avoid mistakes if, say,
+	 * alignedSize > pd_upper.
+	 */
+	if (offsetNumber == limit || needshuffle)
+		lower = phdr->pd_lower + sizeof(ItemIdData);
+	else
+		lower = phdr->pd_lower;
+
+	if (data_alignment_zheap == 0)
+		alignedSize = size;	/* no alignment */
+	else if (data_alignment_zheap == 4)
+		alignedSize = INTALIGN(size);	/* four byte alignment */
+	else
+		alignedSize = MAXALIGN(size);
+
+	upper = (int) phdr->pd_upper - (int) alignedSize;
+
+	if (lower > upper)
+		return InvalidOffsetNumber;
+
+	/*
+	 * OK to insert the item.  First, shuffle the existing pointers if needed.
+	 */
+	itemId = PageGetItemId(phdr, offsetNumber);
+
+	if (needshuffle)
+		memmove(itemId + 1, itemId,
+				(limit - offsetNumber) * sizeof(ItemIdData));
+
+	/* set the item pointer */
+	ItemIdSetNormal(itemId, upper, size);
+
+	/*
+	 * Items normally contain no uninitialized bytes.  Core bufpage consumers
+	 * conform, but this is not a necessary coding rule; a new index AM could
+	 * opt to depart from it.  However, data type input functions and other
+	 * C-language functions that synthesize datums should initialize all
+	 * bytes; datumIsEqual() relies on this.  Testing here, along with the
+	 * similar check in printtup(), helps to catch such mistakes.
+	 *
+	 * Values of the "name" type retrieved via index-only scans may contain
+	 * uninitialized bytes; see comment in btrescan().  Valgrind will report
+	 * this as an error, but it is safe to ignore.
+	 */
+	VALGRIND_CHECK_MEM_IS_DEFINED(item, size);
+
+	/* copy the item's data onto the page */
+	memcpy((char *) page + upper, item, size);
+
+	/* adjust page header */
+	phdr->pd_lower = (LocationIndex) lower;
+	phdr->pd_upper = (LocationIndex) upper;
+
+	return offsetNumber;
+}
+
+/*
+ * PageGetZHeapFreeSpace
+ *		Returns the size of the free (allocatable) space on a zheap page,
+ *		reduced by the space needed for a new line pointer.
+ *
+ * This is same as PageGetZHeapFreeSpace except for max tuples that can
+ * be accomodated on a page.
+ */
+Size
+PageGetZHeapFreeSpace(Page page)
+{
+	Size		space;
+
+	space = PageGetFreeSpace(page);
+	if (space > 0)
+	{
+		OffsetNumber offnum,
+					nline;
+
+		nline = PageGetMaxOffsetNumber(page);
+		if (nline >= MaxZHeapTuplesPerPage)
+		{
+			if (PageHasFreeLinePointers((PageHeader) page))
+			{
+				/*
+				 * Since this is just a hint, we must confirm that there is
+				 * indeed a free line pointer
+				 */
+				for (offnum = FirstOffsetNumber; offnum <= nline; offnum = OffsetNumberNext(offnum))
+				{
+					ItemId		lp = PageGetItemId(page, offnum);
+
+					if (!ItemIdIsUsed(lp))
+						break;
+				}
+
+				if (offnum > nline)
+				{
+					/*
+					 * The hint is wrong, but we can't clear it here since we
+					 * don't have the ability to mark the page dirty.
+					 */
+					space = 0;
+				}
+			}
+			else
+			{
+				/*
+				 * Although the hint might be wrong, PageAddItem will believe
+				 * it anyway, so we must believe it too.
+				 */
+				space = 0;
+			}
+		}
+	}
+	return space;
 }

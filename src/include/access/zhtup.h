@@ -89,4 +89,44 @@ extern void zheap_fill_tuple(TupleDesc tupleDesc,
 extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate);
 
+/* Page related API's. */
+
+/*
+ * MaxZHeapTupFixedSize - Fixed size for tuple, this is computed based
+ * on data alignment.
+ */
+#define MaxZHeapTupFixedSize \
+			(data_alignment_zheap == 0) ? \
+				SizeofZHeapTupleHeader  + sizeof(ItemIdData) \
+			: \
+			( \
+				(data_alignment_zheap == 4) ? \
+					(INTALIGN(SizeofZHeapTupleHeader) + sizeof(ItemIdData)) \
+				: \
+				( \
+					(MAXALIGN(SizeofZHeapTupleHeader) + sizeof(ItemIdData)) \
+				) \
+			)
+
+/* MaxZHeapPageFixedSpace - Maximum fixed size for page */
+#define MaxZHeapPageFixedSpace \
+	(BLCKSZ - SizeOfPageHeaderData - sizeof(ZHeapPageOpaqueData))
+/*
+ * MaxZHeapTuplesPerPage is an upper bound on the number of tuples that can
+ * fit on one zheap page.
+ */
+#define MaxZHeapTuplesPerPage	\
+	((int) ((MaxZHeapPageFixedSpace) / \
+			(MaxZHeapTupFixedSize)))
+
+#define ZPageAddItem(page, item, size, offsetNumber, overwrite, is_heap) \
+	ZPageAddItemExtended(page, item, size, offsetNumber, \
+						 ((overwrite) ? PAI_OVERWRITE : 0) | \
+						 ((is_heap) ? PAI_IS_HEAP : 0))
+
+extern Size PageGetZHeapFreeSpace(Page page);
+extern OffsetNumber ZPageAddItemExtended(Page page,
+					 Item item, Size size, OffsetNumber offsetNumber,
+					 int flags);
+
 #endif   /* ZHTUP_H */
