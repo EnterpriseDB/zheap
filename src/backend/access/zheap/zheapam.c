@@ -44,7 +44,13 @@
 #include "utils/inval.h"
 #include "utils/rel.h"
 
-bool	enable_zheap;
+bool	enable_zheap = false;
+/*
+ * User supplied value for data alignment is captured in data_alignment and
+ * then we internally use it only for zheap.
+ */
+int		data_alignment = 1;
+int		data_alignment_zheap = 1;
 
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup);
 
@@ -229,6 +235,9 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 				 errmsg("number of columns (%d) exceeds limit (%d)",
 						numberOfAttributes, MaxTupleAttributeNumber)));
 
+	/* we want to use user supplied data alignment only for zheap inserts */
+	data_alignment_zheap = data_alignment;
+
 	/*
 	 * Check for nulls
 	 */
@@ -252,7 +261,14 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 	if (tupleDescriptor->tdhasoid)
 		len += sizeof(Oid);
 
-	hoff = len = MAXALIGN(len); /* align user data safely */
+	if (data_alignment == 0)
+		;	/* no alignment required */
+	else if (data_alignment == 4)
+		len = INTALIGN(len);
+	else
+		len = MAXALIGN(len); /* align user data safely */
+
+	hoff = len;
 
 	data_len = heap_compute_data_size(tupleDescriptor, values, isnull);
 
@@ -289,6 +305,8 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 					 data_len,
 					 &td->t_infomask,
 					 (hasnull ? td->t_bits : NULL));
+
+	data_alignment_zheap = 1;
 
 	return tuple;
 }

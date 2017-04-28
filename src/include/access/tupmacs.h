@@ -14,6 +14,7 @@
 #ifndef TUPMACS_H
 #define TUPMACS_H
 
+#include "access/zheap.h"
 
 /*
  * check to see if the ATT'th bit of an array of 8-bit bytes is set.
@@ -127,6 +128,27 @@
 )
 
 /*
+ * att_align_nominal aligns the given offset as per requirement of
+ * data_alignment.  The data_alignment value 0 indicates no alignment,
+ * value 4 indicates align everything at 4 byte boundary and any other
+ * value indicates align as per attalign.
+ */
+#define att_align_nominal(cur_offset, attalign) \
+( \
+	(data_alignment_zheap == 0) ? \
+		(uintptr_t) (cur_offset) \
+	: \
+	( \
+		(data_alignment_zheap == 4) ? \
+			INTALIGN(cur_offset) \
+		: \
+		( \
+			att_align_nominal_internal(cur_offset, attalign) \
+		) \
+	) \
+)
+
+/*
  * att_align_nominal aligns the given offset as needed for a datum of alignment
  * requirement attalign, ignoring any consideration of packed varlena datums.
  * There are three main use cases for using this macro directly:
@@ -141,7 +163,7 @@
  * The attalign cases are tested in what is hopefully something like their
  * frequency of occurrence.
  */
-#define att_align_nominal(cur_offset, attalign) \
+#define att_align_nominal_internal(cur_offset, attalign) \
 ( \
 	((attalign) == 'i') ? INTALIGN(cur_offset) : \
 	 (((attalign) == 'c') ? (uintptr_t) (cur_offset) : \
