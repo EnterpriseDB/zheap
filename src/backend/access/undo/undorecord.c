@@ -14,6 +14,7 @@
 #include "postgres.h"
 
 #include "access/undorecord.h"
+#include "access/undoinsert.h"
 #include "catalog/pg_tablespace.h"
 
 /* Workspace for InsertUndoRecord and UnpackUndoRecord. */
@@ -241,4 +242,41 @@ UndoRecordSetInfo(UnpackedUndoRecord *uur)
 		uur->uur_info |= UREC_INFO_BLOCK;
 	if (uur->uur_payload.len || uur->uur_tuple.len)
 		uur->uur_info |= UREC_INFO_PAYLOAD;
+}
+
+/*
+ * Prototype just to ensure that code gets compiled.  We can return any
+ * magic number from this API to keep the compiler silent.
+ */
+UndoRecPtr
+PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence)
+{
+	return 54;
+}
+
+/*
+ * Prototype just to ensure that code gets compiled.
+ */
+void
+InsertPreparedUndo(void)
+{
+	return;
+}
+
+/*
+ * Prototype just to ensure that code gets compiled.
+ */
+void
+SetUndoPageLSNs(XLogRecPtr lsn)
+{
+	return;
+}
+
+/*
+ * Prototype just to ensure that code gets compiled.
+ */
+void
+UnlockReleaseUndoBuffers(void)
+{
+	return;
 }

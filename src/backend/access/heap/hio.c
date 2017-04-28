@@ -19,6 +19,7 @@
 #include "access/hio.h"
 #include "access/htup_details.h"
 #include "access/visibilitymap.h"
+#include "access/zheap.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
 #include "storage/lmgr.h"
@@ -216,7 +217,10 @@ RelationAddExtraBlocks(Relation relation, BulkInsertState bistate)
 				 BufferGetBlockNumber(buffer),
 				 RelationGetRelationName(relation));
 
-		PageInit(page, BufferGetPageSize(buffer), 0);
+		if (enable_zheap)
+			PageInit(page, BufferGetPageSize(buffer), sizeof(ZHeapPageOpaqueData));
+		else
+			PageInit(page, BufferGetPageSize(buffer), 0);
 
 		/*
 		 * We mark all the new buffers dirty, but do nothing to write them
@@ -606,7 +610,10 @@ loop:
 			 BufferGetBlockNumber(buffer),
 			 RelationGetRelationName(relation));
 
-	PageInit(page, BufferGetPageSize(buffer), 0);
+	if (enable_zheap)
+		PageInit(page, BufferGetPageSize(buffer), sizeof(ZHeapPageOpaqueData));
+	else
+		PageInit(page, BufferGetPageSize(buffer), 0);
 
 	if (len > PageGetHeapFreeSpace(page))
 	{

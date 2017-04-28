@@ -19,6 +19,13 @@
 #include "storage/bufpage.h"
 #include "storage/off.h"
 
+typedef enum undorectype
+{
+	UNDO_INSERT,
+	UNDO_DELETE,
+	UNDO_UPDATE
+} undorectype;
+
 /*
  * Every undo record begins with an UndoRecordHeader structure, which is
  * followed by the additional structures indicated by the contents of

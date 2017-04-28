@@ -39,6 +39,8 @@
 
 #include "access/htup_details.h"
 #include "access/xact.h"
+#include "access/zheap.h"
+#include "access/zhtup.h"
 #include "commands/trigger.h"
 #include "executor/execPartition.h"
 #include "executor/executor.h"
@@ -260,7 +262,8 @@ ExecInsert(ModifyTableState *mtstate,
 		   EState *estate,
 		   bool canSetTag)
 {
-	HeapTuple	tuple;
+	HeapTuple	tuple = NULL;
+	ZHeapTuple	ztuple = NULL;
 	ResultRelInfo *resultRelInfo;
 	Relation	resultRelationDesc;
 	Oid			newId;
@@ -274,7 +277,10 @@ ExecInsert(ModifyTableState *mtstate,
 	 * get the heap tuple out of the tuple table slot, making sure we have a
 	 * writable copy
 	 */
-	tuple = ExecMaterializeSlot(slot);
+	if (enable_zheap)
+		ztuple = ExecMaterializeZSlot(slot);
+	else
+		tuple = ExecMaterializeSlot(slot);
 
 	/*
 	 * get information on the (current) result relation
@@ -364,7 +370,10 @@ ExecInsert(ModifyTableState *mtstate,
 		 * Constraints might reference the tableoid column, so initialize
 		 * t_tableOid before evaluating them.
 		 */
-		tuple->t_tableOid = RelationGetRelid(resultRelationDesc);
+		if (enable_zheap)
+			ztuple->t_tableOid = RelationGetRelid(resultRelationDesc);
+		else
+			tuple->t_tableOid = RelationGetRelid(resultRelationDesc);
 
 		/*
 		 * Check any RLS WITH CHECK policies.
@@ -520,9 +529,14 @@ ExecInsert(ModifyTableState *mtstate,
 			 * Note: heap_insert returns the tid (location) of the new tuple
 			 * in the t_self field.
 			 */
-			newId = heap_insert(resultRelationDesc, tuple,
-								estate->es_output_cid,
-								0, NULL);
+			if (enable_zheap)
+				newId = zheap_insert(resultRelationDesc, ztuple,
+									 estate->es_output_cid,
+									 0, NULL);
+			else
+				newId = heap_insert(resultRelationDesc, tuple,
+									estate->es_output_cid,
+									0, NULL);
 
 			/* insert index entries for tuple */
 			if (resultRelInfo->ri_NumIndices > 0)

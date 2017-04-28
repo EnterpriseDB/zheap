@@ -60,6 +60,8 @@
 #include "access/htup_details.h"
 #include "access/tupdesc_details.h"
 #include "access/tuptoaster.h"
+#include "access/zheap.h"
+#include "access/zhtup.h"
 #include "funcapi.h"
 #include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
@@ -514,7 +516,10 @@ ExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 	 */
 	if (TTS_SHOULDFREE(slot))
 	{
-		heap_freetuple(slot->tts_tuple);
+		if (enable_zheap)
+			pfree(slot->tts_ztuple);
+		else
+			heap_freetuple(slot->tts_tuple);
 		slot->tts_flags &= ~TTS_FLAG_SHOULDFREE;
 	}
 	if (TTS_SHOULDFREEMIN(slot))
@@ -523,6 +528,7 @@ ExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 		slot->tts_flags &= ~TTS_FLAG_SHOULDFREEMIN;
 	}
 
+	slot->tts_ztuple = NULL;
 	slot->tts_tuple = NULL;
 	slot->tts_mintuple = NULL;
 
@@ -870,6 +876,73 @@ ExecMaterializeSlot(TupleTableSlot *slot)
 		slot->tts_mintuple = NULL;
 
 	return slot->tts_tuple;
+}
+
+/* --------------------------------
+ *		ExecMaterializeZSlot
+ *			This is same as ExecMaterializeSlot except for tuple type.
+ * --------------------------------
+ */
+ZHeapTuple
+ExecMaterializeZSlot(TupleTableSlot *slot)
+{
+	MemoryContext oldContext;
+
+	/*
+	 * sanity checks
+	 */
+	Assert(slot != NULL);
+	Assert(!slot->tts_isempty);
+
+	/*
+	 * If we have a regular physical tuple, and it's locally palloc'd, we have
+	 * nothing to do.
+	 */
+	if (slot->tts_ztuple && slot->tts_shouldFree)
+		return slot->tts_ztuple;
+
+	/*
+	 * Otherwise, copy or build a physical tuple, and store it into the slot.
+	 *
+	 * We may be called in a context that is shorter-lived than the tuple
+	 * slot, but we have to ensure that the materialized tuple will survive
+	 * anyway.
+	 */
+	oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
+	slot->tts_ztuple = zheap_form_tuple(slot->tts_tupleDescriptor,
+						   slot->tts_values,
+						   slot->tts_isnull);
+	slot->tts_shouldFree = true;
+	MemoryContextSwitchTo(oldContext);
+
+	/*
+	 * Drop the pin on the referenced buffer, if there is one.
+	 */
+	if (BufferIsValid(slot->tts_buffer))
+		ReleaseBuffer(slot->tts_buffer);
+
+	slot->tts_buffer = InvalidBuffer;
+
+	/*
+	 * Mark extracted state invalid.  This is important because the slot is
+	 * not supposed to depend any more on the previous external data; we
+	 * mustn't leave any dangling pass-by-reference datums in tts_values.
+	 * However, we have not actually invalidated any such datums, if there
+	 * happen to be any previously fetched from the slot.  (Note in particular
+	 * that we have not pfree'd tts_mintuple, if there is one.)
+	 */
+	slot->tts_nvalid = 0;
+
+	/*
+	 * On the same principle of not depending on previous remote storage,
+	 * forget the mintuple if it's not local storage.  (If it is local
+	 * storage, we must not pfree it now, since callers might have already
+	 * fetched datum pointers referencing it.)
+	 */
+	if (!slot->tts_shouldFreeMin)
+		slot->tts_mintuple = NULL;
+
+	return slot->tts_ztuple;
 }
 
 /* --------------------------------
