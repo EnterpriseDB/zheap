@@ -24,7 +24,7 @@ extern int	data_alignment_zheap;
 
 typedef struct ZHeapPageOpaqueData
 {
-	TransactionId	xid;	
+	TransactionId	xid;
 	UndoRecPtr	urec_ptr;
 } ZHeapPageOpaqueData;
 
