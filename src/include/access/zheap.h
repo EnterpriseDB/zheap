@@ -20,7 +20,7 @@
 
 extern bool	enable_zheap;
 extern int	data_alignment;
-extern int	data_alignment_zheap;
+extern PGDLLIMPORT int	data_alignment_zheap;
 
 typedef struct ZHeapPageOpaqueData
 {
