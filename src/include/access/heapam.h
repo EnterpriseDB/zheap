@@ -121,6 +121,7 @@ extern HeapScanDesc heap_beginscan_sampling(Relation relation,
 						bool allow_strat, bool allow_sync, bool allow_pagemode);
 extern void heap_setscanlimits(HeapScanDesc scan, BlockNumber startBlk,
 				   BlockNumber endBlk);
+extern BlockNumber heap_parallelscan_nextpage(HeapScanDesc scan);
 extern void heapgetpage(HeapScanDesc scan, BlockNumber page);
 extern void heap_rescan(HeapScanDesc scan, ScanKey key);
 extern void heap_rescan_set_params(HeapScanDesc scan, ScanKey key,

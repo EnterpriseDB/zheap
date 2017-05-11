@@ -1360,16 +1360,19 @@ heap_deform_tuple(HeapTuple tuple, TupleDesc tupleDesc,
 void
 slot_deform_tuple(TupleTableSlot *slot, int natts)
 {
-	HeapTuple	tuple = slot->tts_tuple;
+	HeapTuple	tuple = NULL;
+	ZHeapTuple	ztuple = NULL;
 	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
 	Datum	   *values = slot->tts_values;
 	bool	   *isnull = slot->tts_isnull;
-	HeapTupleHeader tup = tuple->t_data;
-	bool		hasnulls = HeapTupleHasNulls(tuple);
+	HeapTupleHeader tup;
+	ZHeapTupleHeader ztup;
+	bool		hasnulls;
+	Form_pg_attribute *att = tupleDesc->attrs;
 	int			attnum;
 	char	   *tp;				/* ptr to tuple data */
 	uint32		off;			/* offset in tuple data */
-	bits8	   *bp = tup->t_bits;	/* ptr to null bitmap in tuple */
+	bits8	   *bp;	/* ptr to null bitmap in tuple */
 	bool		slow;			/* can we use/set attcacheoff? */
 
 	/*
@@ -1390,7 +1393,23 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 		slow = TTS_SLOW(slot);
 	}
 
-	tp = (char *) tup + tup->t_hoff;
+	/* slot can either contain heap tuple or zheap tuple */
+	if (slot->tts_ztuple)
+	{
+		ztuple = slot->tts_ztuple;
+		ztup = ztuple->t_data;
+		hasnulls = ZHeapTupleHasNulls(ztuple);
+		bp = ztup->t_bits;
+		tp = (char *) ztup + ztup->t_hoff;
+	}
+	else
+	{
+		tuple = slot->tts_tuple;
+		tup = tuple->t_data;
+		hasnulls = HeapTupleHasNulls(tuple);
+		bp = tup->t_bits;
+		tp = (char *) tup + tup->t_hoff;
+	}
 
 	for (; attnum < natts; attnum++)
 	{

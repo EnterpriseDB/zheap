@@ -70,6 +70,9 @@ typedef ZHeapTupleData *ZHeapTuple;
 
 #define ZHEAPTUPLESIZE	MAXALIGN(sizeof(ZHeapTupleData))
 
+#define ZHeapTupleHasNulls(tuple) \
+		 (((tuple)->t_data->t_infomask & HEAP_HASNULL) != 0)
+
 #define ZHeapTupleHeaderGetNatts(tup) \
 ( \
 	(tup)->t_numattrs \
@@ -88,6 +91,13 @@ extern void zheap_fill_tuple(TupleDesc tupleDesc,
 				uint8 *infomask, bits8 *bit);
 extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate);
+
+extern void zheap_freetuple(ZHeapTuple zhtup);
+
+/* Zheap scan related API's */
+extern HeapScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,
+				int nkeys, ScanKey key);
+extern ZHeapTuple zheap_getnext(HeapScanDesc scan, ScanDirection direction);
 
 /* Page related API's. */
 

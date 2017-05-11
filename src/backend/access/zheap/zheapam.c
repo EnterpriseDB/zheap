@@ -28,6 +28,7 @@
 #include "access/relscan.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
+#include "access/relscan.h"
 #include "access/tuptoaster.h"
 #include "access/undorecord.h"
 #include "access/undoinsert.h"
@@ -52,8 +53,19 @@ bool	enable_zheap = false;
  */
 int		data_alignment = 1;
 int		data_alignment_zheap = 1;
+extern bool synchronize_seqscans;
 
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup);
+static HeapScanDesc
+zheap_beginscan_internal(Relation relation, Snapshot snapshot,
+						 int nkeys, ScanKey key,
+						 ParallelHeapScanDesc parallel_scan,
+						 bool allow_strat,
+						 bool allow_sync,
+						 bool allow_pagemode,
+						 bool is_bitmapscan,
+						 bool is_samplescan,
+						 bool temp_snap);
 
 /*
  * zheap_fill_tuple
@@ -595,14 +607,668 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	if (zheaptup != tup)
 	{
 		tup->t_self = zheaptup->t_self;
-		pfree(zheaptup);
-		/* Fixme - Instead of directly freeing zheaptup, write a new function zheap_freetuple*/
-		/*heap_freetuple(zheaptup);*/
+		zheap_freetuple(zheaptup);
 	}
 
 	data_alignment_zheap = 1;
 
 	return HeapTupleGetOid(tup);
+}
+
+/*
+ * zheap_freetuple
+ */
+void
+zheap_freetuple(ZHeapTuple zhtup)
+{
+	pfree(zhtup);
+}
+
+/*
+ * -----------
+ * Zheap scan related API's.
+ * -----------
+ */
+
+/*
+ * zinitscan - same as initscan except for tuple initialization
+ */
+static void
+zinitscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
+{
+	bool		allow_strat;
+	bool		allow_sync;
+
+	/*
+	 * Determine the number of blocks we have to scan.
+	 *
+	 * It is sufficient to do this once at scan start, since any tuples added
+	 * while the scan is in progress will be invisible to my snapshot anyway.
+	 * (That is not true when using a non-MVCC snapshot.  However, we couldn't
+	 * guarantee to return tuples added after scan start anyway, since they
+	 * might go into pages we already scanned.  To guarantee consistent
+	 * results for a non-MVCC snapshot, the caller must hold some higher-level
+	 * lock that ensures the interesting tuple(s) won't change.)
+	 */
+	if (scan->rs_parallel != NULL)
+		scan->rs_nblocks = scan->rs_parallel->phs_nblocks;
+	else
+		scan->rs_nblocks = RelationGetNumberOfBlocks(scan->rs_rd);
+
+	/*
+	 * If the table is large relative to NBuffers, use a bulk-read access
+	 * strategy and enable synchronized scanning (see syncscan.c).  Although
+	 * the thresholds for these features could be different, we make them the
+	 * same so that there are only two behaviors to tune rather than four.
+	 * (However, some callers need to be able to disable one or both of these
+	 * behaviors, independently of the size of the table; also there is a GUC
+	 * variable that can disable synchronized scanning.)
+	 *
+	 * Note that heap_parallelscan_initialize has a very similar test; if you
+	 * change this, consider changing that one, too.
+	 */
+	if (!RelationUsesLocalBuffers(scan->rs_rd) &&
+		scan->rs_nblocks > NBuffers / 4)
+	{
+		allow_strat = scan->rs_allow_strat;
+		allow_sync = scan->rs_allow_sync;
+	}
+	else
+		allow_strat = allow_sync = false;
+
+	if (allow_strat)
+	{
+		/* During a rescan, keep the previous strategy object. */
+		if (scan->rs_strategy == NULL)
+			scan->rs_strategy = GetAccessStrategy(BAS_BULKREAD);
+	}
+	else
+	{
+		if (scan->rs_strategy != NULL)
+			FreeAccessStrategy(scan->rs_strategy);
+		scan->rs_strategy = NULL;
+	}
+
+	if (scan->rs_parallel != NULL)
+	{
+		/* For parallel scan, believe whatever ParallelHeapScanDesc says. */
+		scan->rs_syncscan = scan->rs_parallel->phs_syncscan;
+	}
+	else if (keep_startblock)
+	{
+		/*
+		 * When rescanning, we want to keep the previous startblock setting,
+		 * so that rewinding a cursor doesn't generate surprising results.
+		 * Reset the active syncscan setting, though.
+		 */
+		scan->rs_syncscan = (allow_sync && synchronize_seqscans);
+	}
+	else if (allow_sync && synchronize_seqscans)
+	{
+		scan->rs_syncscan = true;
+		scan->rs_startblock = ss_get_location(scan->rs_rd, scan->rs_nblocks);
+	}
+	else
+	{
+		scan->rs_syncscan = false;
+		scan->rs_startblock = 0;
+	}
+
+	scan->rs_numblocks = InvalidBlockNumber;
+	scan->rs_inited = false;
+	scan->rs_cztup.t_data = NULL;
+	ItemPointerSetInvalid(&scan->rs_cztup.t_self);
+	scan->rs_cbuf = InvalidBuffer;
+	scan->rs_cblock = InvalidBlockNumber;
+
+	/* page-at-a-time fields are always invalid when not rs_inited */
+
+	/*
+	 * copy the scan key, if appropriate
+	 */
+	if (key != NULL)
+		memcpy(scan->rs_key, key, scan->rs_nkeys * sizeof(ScanKeyData));
+
+	/*
+	 * Currently, we don't have a stats counter for bitmap heap scans (but the
+	 * underlying bitmap index scans will be counted) or sample scans (we only
+	 * update stats for tuple fetches there)
+	 */
+	if (!scan->rs_bitmapscan && !scan->rs_samplescan)
+		pgstat_count_heap_scan(scan->rs_rd);
+}
+
+/*
+ * zheap_beginscan - same as heap_beginscan
+ */
+HeapScanDesc
+zheap_beginscan(Relation relation, Snapshot snapshot,
+				int nkeys, ScanKey key)
+{
+	return zheap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
+								   true, true, true, false, false, false);
+}
+
+/*
+ * zheap_beginscan_internal - same as heap_beginscan_internal except for tuple
+ *	initialization
+ */
+static HeapScanDesc
+zheap_beginscan_internal(Relation relation, Snapshot snapshot,
+						 int nkeys, ScanKey key,
+						 ParallelHeapScanDesc parallel_scan,
+						 bool allow_strat,
+						 bool allow_sync,
+						 bool allow_pagemode,
+						 bool is_bitmapscan,
+						 bool is_samplescan,
+						 bool temp_snap)
+{
+	HeapScanDesc scan;
+
+	/*
+	 * increment relation ref count while scanning relation
+	 *
+	 * This is just to make really sure the relcache entry won't go away while
+	 * the scan has a pointer to it.  Caller should be holding the rel open
+	 * anyway, so this is redundant in all normal scenarios...
+	 */
+	RelationIncrementReferenceCount(relation);
+
+	/*
+	 * allocate and initialize scan descriptor
+	 */
+	scan = (HeapScanDesc) palloc(sizeof(HeapScanDescData));
+
+	scan->rs_rd = relation;
+	scan->rs_snapshot = snapshot;
+	scan->rs_nkeys = nkeys;
+	scan->rs_bitmapscan = is_bitmapscan;
+	scan->rs_samplescan = is_samplescan;
+	scan->rs_strategy = NULL;	/* set in initscan */
+	scan->rs_allow_strat = allow_strat;
+	scan->rs_allow_sync = allow_sync;
+	scan->rs_temp_snap = temp_snap;
+	scan->rs_parallel = parallel_scan;
+
+	/*
+	 * we can use page-at-a-time mode if it's an MVCC-safe snapshot
+	 */
+	scan->rs_pageatatime = allow_pagemode && IsMVCCSnapshot(snapshot);
+
+	/*
+	 * For a seqscan in a serializable transaction, acquire a predicate lock
+	 * on the entire relation. This is required not only to lock all the
+	 * matching tuples, but also to conflict with new insertions into the
+	 * table. In an indexscan, we take page locks on the index pages covering
+	 * the range specified in the scan qual, but in a heap scan there is
+	 * nothing more fine-grained to lock. A bitmap scan is a different story,
+	 * there we have already scanned the index and locked the index pages
+	 * covering the predicate. But in that case we still have to lock any
+	 * matching heap tuples.
+	 */
+	if (!is_bitmapscan)
+		PredicateLockRelation(relation, snapshot);
+
+	/* we only need to set this up once */
+	scan->rs_cztup.t_tableOid = RelationGetRelid(relation);
+
+	/*
+	 * we do this here instead of in initscan() because heap_rescan also calls
+	 * initscan() and we don't want to allocate memory again
+	 */
+	if (nkeys > 0)
+		scan->rs_key = (ScanKey) palloc(sizeof(ScanKeyData) * nkeys);
+	else
+		scan->rs_key = NULL;
+
+	zinitscan(scan, key, false);
+
+	return scan;
+}
+
+/*
+ * zheapgetpage - Same as heapgetpage, but operate on zheap page and
+ * in page-at-a-time mode, visible tuples are stored in rs_visztuples.
+ */
+static void
+zheapgetpage(HeapScanDesc scan, BlockNumber page)
+{
+	Buffer		buffer;
+	Snapshot	snapshot;
+	Page		dp;
+	int			lines;
+	int			ntup;
+	OffsetNumber lineoff;
+	ItemId		lpp;
+	bool		all_visible;
+
+	Assert(page < scan->rs_nblocks);
+
+	/* release previous scan buffer, if any */
+	if (BufferIsValid(scan->rs_cbuf))
+	{
+		ReleaseBuffer(scan->rs_cbuf);
+		scan->rs_cbuf = InvalidBuffer;
+	}
+
+	/*
+	 * Be sure to check for interrupts at least once per page.  Checks at
+	 * higher code levels won't be able to stop a seqscan that encounters many
+	 * pages' worth of consecutive dead tuples.
+	 */
+	CHECK_FOR_INTERRUPTS();
+
+	/* read page using selected strategy */
+	scan->rs_cbuf = ReadBufferExtended(scan->rs_rd, MAIN_FORKNUM, page,
+									   RBM_NORMAL, scan->rs_strategy);
+	scan->rs_cblock = page;
+
+	if (!scan->rs_pageatatime)
+		return;
+
+	buffer = scan->rs_cbuf;
+	snapshot = scan->rs_snapshot;
+
+	/*
+	 * Prune and repair fragmentation for the whole page, if possible.
+	 * Fixme - Pruning is required in zheap for deletes, so we need to
+	 * make it work.
+	 */
+	/* heap_page_prune_opt(scan->rs_rd, buffer); */
+
+	/*
+	 * We must hold share lock on the buffer content while examining tuple
+	 * visibility.  Afterwards, however, the tuples we have found to be
+	 * visible are guaranteed good as long as we hold the buffer pin.
+	 */
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
+	dp = BufferGetPage(buffer);
+	TestForOldSnapshot(snapshot, scan->rs_rd, dp);
+	lines = PageGetMaxOffsetNumber(dp);
+	ntup = 0;
+
+	/*
+	 * If the all-visible flag indicates that all tuples on the page are
+	 * visible to everyone, we can skip the per-tuple visibility tests.
+	 *
+	 * Note: In hot standby, a tuple that's already visible to all
+	 * transactions in the master might still be invisible to a read-only
+	 * transaction in the standby. We partly handle this problem by tracking
+	 * the minimum xmin of visible tuples as the cut-off XID while marking a
+	 * page all-visible on master and WAL log that along with the visibility
+	 * map SET operation. In hot standby, we wait for (or abort) all
+	 * transactions that can potentially may not see one or more tuples on the
+	 * page. That's how index-only scans work fine in hot standby. A crucial
+	 * difference between index-only scans and heap scans is that the
+	 * index-only scan completely relies on the visibility map where as heap
+	 * scan looks at the page-level PD_ALL_VISIBLE flag. We are not sure if
+	 * the page-level flag can be trusted in the same way, because it might
+	 * get propagated somehow without being explicitly WAL-logged, e.g. via a
+	 * full page write. Until we can prove that beyond doubt, let's check each
+	 * tuple for visibility the hard way.
+	 */
+	all_visible = PageIsAllVisible(dp) && !snapshot->takenDuringRecovery;
+
+	for (lineoff = FirstOffsetNumber, lpp = PageGetItemId(dp, lineoff);
+		 lineoff <= lines;
+		 lineoff++, lpp++)
+	{
+		if (ItemIdIsNormal(lpp))
+		{
+			ZHeapTupleData loctup;
+			bool		valid;
+
+			loctup.t_tableOid = RelationGetRelid(scan->rs_rd);
+			loctup.t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lpp);
+			loctup.t_len = ItemIdGetLength(lpp);
+			ItemPointerSet(&(loctup.t_self), page, lineoff);
+
+			if (all_visible)
+				valid = true;
+			else
+			{
+				/* Fixme - Visibility checks needs to be implemented for zheap. */
+				valid = true;
+				/* valid = HeapTupleSatisfiesVisibility(&loctup, snapshot, buffer); */
+			}
+
+			/* Fixme - Serialization failures needs to be detected for zheap. */
+			/* CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
+											buffer, snapshot); */
+
+			if (valid)
+				scan->rs_visztuples[ntup++] = lineoff;
+		}
+	}
+
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+	Assert(ntup <= MaxZHeapTuplesPerPage);
+	scan->rs_ntuples = ntup;
+}
+
+/* ----------------
+ *		zheapgettup_pagemode - fetch next zheap tuple in page-at-a-time mode
+ *
+ *		Same API as heapgettup_pagemode, but used to get zheap tuple.
+ * ----------------
+ */
+static void
+zheapgettup_pagemode(HeapScanDesc scan,
+					 ScanDirection dir,
+					 int nkeys,
+					 ScanKey key)
+{
+	ZHeapTuple	tuple = &(scan->rs_cztup);
+	bool		backward = ScanDirectionIsBackward(dir);
+	BlockNumber page;
+	bool		finished;
+	Page		dp;
+	int			lines;
+	int			lineindex;
+	OffsetNumber lineoff;
+	int			linesleft;
+	ItemId		lpp;
+
+	/*
+	 * calculate next starting lineindex, given scan direction
+	 */
+	if (ScanDirectionIsForward(dir))
+	{
+		if (!scan->rs_inited)
+		{
+			/*
+			 * return null immediately if relation is empty
+			 */
+			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
+			{
+				Assert(!BufferIsValid(scan->rs_cbuf));
+				tuple->t_data = NULL;
+				return;
+			}
+			if (scan->rs_parallel != NULL)
+			{
+				page = heap_parallelscan_nextpage(scan);
+
+				/* Other processes might have already finished the scan. */
+				if (page == InvalidBlockNumber)
+				{
+					Assert(!BufferIsValid(scan->rs_cbuf));
+					tuple->t_data = NULL;
+					return;
+				}
+			}
+			else
+				page = scan->rs_startblock;		/* first page */
+			zheapgetpage(scan, page);
+			lineindex = 0;
+			scan->rs_inited = true;
+		}
+		else
+		{
+			/* continue from previously returned page/tuple */
+			page = scan->rs_cblock;		/* current page */
+			lineindex = scan->rs_cindex + 1;
+		}
+
+		dp = BufferGetPage(scan->rs_cbuf);
+		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
+		lines = scan->rs_ntuples;
+		/* page and lineindex now reference the next visible tid */
+
+		linesleft = lines - lineindex;
+	}
+	else if (backward)
+	{
+		/* backward parallel scan not supported */
+		Assert(scan->rs_parallel == NULL);
+
+		if (!scan->rs_inited)
+		{
+			/*
+			 * return null immediately if relation is empty
+			 */
+			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
+			{
+				Assert(!BufferIsValid(scan->rs_cbuf));
+				tuple->t_data = NULL;
+				return;
+			}
+
+			/*
+			 * Disable reporting to syncscan logic in a backwards scan; it's
+			 * not very likely anyone else is doing the same thing at the same
+			 * time, and much more likely that we'll just bollix things for
+			 * forward scanners.
+			 */
+			scan->rs_syncscan = false;
+			/* start from last page of the scan */
+			if (scan->rs_startblock > 0)
+				page = scan->rs_startblock - 1;
+			else
+				page = scan->rs_nblocks - 1;
+			zheapgetpage(scan, page);
+		}
+		else
+		{
+			/* continue from previously returned page/tuple */
+			page = scan->rs_cblock;		/* current page */
+		}
+
+		dp = BufferGetPage(scan->rs_cbuf);
+		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
+		lines = scan->rs_ntuples;
+
+		if (!scan->rs_inited)
+		{
+			lineindex = lines - 1;
+			scan->rs_inited = true;
+		}
+		else
+		{
+			lineindex = scan->rs_cindex - 1;
+		}
+		/* page and lineindex now reference the previous visible tid */
+
+		linesleft = lineindex + 1;
+	}
+	else
+	{
+		/*
+		 * ``no movement'' scan direction: refetch prior tuple
+		 */
+		if (!scan->rs_inited)
+		{
+			Assert(!BufferIsValid(scan->rs_cbuf));
+			tuple->t_data = NULL;
+			return;
+		}
+
+		page = ItemPointerGetBlockNumber(&(tuple->t_self));
+		if (page != scan->rs_cblock)
+			zheapgetpage(scan, page);
+
+		/* Since the tuple was previously fetched, needn't lock page here */
+		dp = BufferGetPage(scan->rs_cbuf);
+		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
+		lineoff = ItemPointerGetOffsetNumber(&(tuple->t_self));
+		lpp = PageGetItemId(dp, lineoff);
+		Assert(ItemIdIsNormal(lpp));
+
+		tuple->t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lpp);
+		tuple->t_len = ItemIdGetLength(lpp);
+
+		/* check that rs_cindex is in sync */
+		Assert(scan->rs_cindex < scan->rs_ntuples);
+		Assert(lineoff == scan->rs_visztuples[scan->rs_cindex]);
+
+		return;
+	}
+
+	/*
+	 * advance the scan until we find a qualifying tuple or run out of stuff
+	 * to scan
+	 */
+	for (;;)
+	{
+		while (linesleft > 0)
+		{
+			lineoff = scan->rs_visztuples[lineindex];
+			lpp = PageGetItemId(dp, lineoff);
+			Assert(ItemIdIsNormal(lpp));
+
+			tuple->t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lpp);
+			tuple->t_len = ItemIdGetLength(lpp);
+			ItemPointerSet(&(tuple->t_self), page, lineoff);
+
+			/*
+			 * if current tuple qualifies, return it.
+			 * Fixme - Key test needs to be implemented for zheap.
+			 */
+			Assert(key == NULL);
+			/* if (key != NULL)
+			{
+				bool		valid;
+
+				HeapKeyTest(tuple, RelationGetDescr(scan->rs_rd),
+							nkeys, key, valid);
+				if (valid)
+				{
+					scan->rs_cindex = lineindex;
+					return;
+				}
+			}
+			else
+			{
+				scan->rs_cindex = lineindex;
+				return;
+			} */
+
+			scan->rs_cindex = lineindex;
+			return;
+			/*
+			 * otherwise move to the next item on the page
+			 */
+			/*--linesleft;
+			if (backward)
+				--lineindex;
+			else
+				++lineindex;*/
+		}
+
+		/*
+		 * if we get here, it means we've exhausted the items on this page and
+		 * it's time to move to the next.
+		 */
+		if (backward)
+		{
+			finished = (page == scan->rs_startblock) ||
+				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
+			if (page == 0)
+				page = scan->rs_nblocks;
+			page--;
+		}
+		else if (scan->rs_parallel != NULL)
+		{
+			page = heap_parallelscan_nextpage(scan);
+			finished = (page == InvalidBlockNumber);
+		}
+		else
+		{
+			page++;
+			if (page >= scan->rs_nblocks)
+				page = 0;
+			finished = (page == scan->rs_startblock) ||
+				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
+
+			/*
+			 * Report our new scan position for synchronization purposes. We
+			 * don't do that when moving backwards, however. That would just
+			 * mess up any other forward-moving scanners.
+			 *
+			 * Note: we do this before checking for end of scan so that the
+			 * final state of the position hint is back at the start of the
+			 * rel.  That's not strictly necessary, but otherwise when you run
+			 * the same query multiple times the starting position would shift
+			 * a little bit backwards on every invocation, which is confusing.
+			 * We don't guarantee any specific ordering in general, though.
+			 */
+			if (scan->rs_syncscan)
+				ss_report_location(scan->rs_rd, page);
+		}
+
+		/*
+		 * return NULL if we've exhausted all the pages
+		 */
+		if (finished)
+		{
+			if (BufferIsValid(scan->rs_cbuf))
+				ReleaseBuffer(scan->rs_cbuf);
+			scan->rs_cbuf = InvalidBuffer;
+			scan->rs_cblock = InvalidBlockNumber;
+			tuple->t_data = NULL;
+			scan->rs_inited = false;
+			return;
+		}
+
+		zheapgetpage(scan, page);
+
+		dp = BufferGetPage(scan->rs_cbuf);
+		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
+		lines = scan->rs_ntuples;
+		linesleft = lines;
+		if (backward)
+			lineindex = lines - 1;
+		else
+			lineindex = 0;
+	}
+}
+
+#ifdef ZHEAPDEBUGALL
+#define ZHEAPDEBUG_1 \
+	elog(DEBUG2, "zheap_getnext([%s,nkeys=%d],dir=%d) called", \
+		 RelationGetRelationName(scan->rs_rd), scan->rs_nkeys, (int) direction)
+#define ZHEAPDEBUG_2 \
+	elog(DEBUG2, "zheap_getnext returning EOS")
+#define ZHEAPDEBUG_3 \
+	elog(DEBUG2, "zheap_getnext returning tuple")
+#else
+#define ZHEAPDEBUG_1
+#define ZHEAPDEBUG_2
+#define ZHEAPDEBUG_3
+#endif   /* !defined(ZHEAPDEBUGALL) */
+
+
+ZHeapTuple
+zheap_getnext(HeapScanDesc scan, ScanDirection direction)
+{
+	/* Note: no locking manipulations needed */
+
+	ZHEAPDEBUG_1;				/* zheap_getnext( info ) */
+
+	if (scan->rs_pageatatime)
+		zheapgettup_pagemode(scan, direction,
+							scan->rs_nkeys, scan->rs_key);
+	else
+		Assert(false);	/* tuple mode is not supported for zheap */
+
+	if (scan->rs_cztup.t_data == NULL)
+	{
+		ZHEAPDEBUG_2;			/* zheap_getnext returning EOS */
+		return NULL;
+	}
+
+	/*
+	 * if we get here it means we have a new current scan tuple, so point to
+	 * the proper return buffer and return the tuple.
+	 */
+	ZHEAPDEBUG_3;				/* zheap_getnext returning tuple */
+
+	pgstat_count_heap_getnext(scan->rs_rd);
+
+	return &(scan->rs_cztup);
 }
 
 /*

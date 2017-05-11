@@ -173,12 +173,17 @@ extern void ExecResetTupleTable(List *tupleTable, bool shouldFree);
 extern TupleTableSlot *MakeSingleTupleTableSlot(TupleDesc tupdesc);
 extern void ExecDropSingleTupleTableSlot(TupleTableSlot *slot);
 extern void ExecSetSlotDescriptor(TupleTableSlot *slot, TupleDesc tupdesc);
+
 extern TupleTableSlot *ExecStoreHeapTuple(HeapTuple tuple,
 				   TupleTableSlot *slot,
 				   bool shouldFree);
 extern TupleTableSlot *ExecStoreBufferHeapTuple(HeapTuple tuple,
 						 TupleTableSlot *slot,
 						 Buffer buffer);
+extern TupleTableSlot *ExecStoreZTuple(ZHeapTuple tuple,
+				TupleTableSlot *slot,
+				Buffer buffer,
+				bool shouldFree);
 extern TupleTableSlot *ExecStoreMinimalTuple(MinimalTuple mtup,
 					  TupleTableSlot *slot,
 					  bool shouldFree);

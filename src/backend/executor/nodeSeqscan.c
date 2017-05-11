@@ -48,7 +48,8 @@ static TupleTableSlot *SeqNext(SeqScanState *node);
 static TupleTableSlot *
 SeqNext(SeqScanState *node)
 {
-	HeapTuple	tuple;
+	HeapTuple	tuple = NULL;
+	ZHeapTuple	ztuple = NULL;
 	HeapScanDesc scandesc;
 	EState	   *estate;
 	ScanDirection direction;
@@ -68,16 +69,24 @@ SeqNext(SeqScanState *node)
 		 * We reach here if the scan is not parallel, or if we're serially
 		 * executing a scan that was planned to be parallel.
 		 */
-		scandesc = heap_beginscan(node->ss.ss_currentRelation,
-								  estate->es_snapshot,
-								  0, NULL);
+		if (enable_zheap)
+			scandesc = zheap_beginscan(node->ss.ss_currentRelation,
+									   estate->es_snapshot,
+									   0, NULL);
+		else
+			scandesc = heap_beginscan(node->ss.ss_currentRelation,
+									  estate->es_snapshot,
+									  0, NULL);
 		node->ss.ss_currentScanDesc = scandesc;
 	}
 
 	/*
 	 * get the next tuple from the table
 	 */
-	tuple = heap_getnext(scandesc, direction);
+	if (enable_zheap)
+		ztuple = zheap_getnext(scandesc, direction);
+	else
+		tuple = heap_getnext(scandesc, direction);
 
 	/*
 	 * save the tuple and the buffer returned to us by the access methods in
@@ -87,13 +96,27 @@ SeqNext(SeqScanState *node)
 	 * that ExecStoreHeapTuple will increment the refcount of the buffer; the
 	 * refcount will not be dropped until the tuple table slot is cleared.
 	 */
-	if (tuple)
-		ExecStoreBufferHeapTuple(tuple, /* tuple to store */
-								 slot,	/* slot to store in */
-								 scandesc->rs_cbuf);	/* buffer associated
-														 * with this tuple */
+	if (enable_zheap)
+	{
+		if (ztuple)
+			ExecStoreZTuple(ztuple,	/* tuple to store */
+							slot,	/* slot to store in */
+							scandesc->rs_cbuf,		/* buffer associated with this
+													 * tuple */
+							false);	/* don't pfree this pointer */
+		else
+			ExecClearTuple(slot);
+	}
 	else
-		ExecClearTuple(slot);
+	{
+		if (tuple)
+			ExecStoreBufferHeapTuple(tuple, /* tuple to store */
+									 slot,	/* slot to store in */
+									 scandesc->rs_cbuf);	/* buffer associated
+															 * with this tuple */
+		else
+			ExecClearTuple(slot);
+	}
 
 	return slot;
 }
