@@ -17,6 +17,7 @@
 
 #include "utils/snapshot.h"
 #include "access/xlogdefs.h"
+#include "utils/ztqual.h"
 
 
 /* Static variables representing various special snapshot semantics */
@@ -30,7 +31,8 @@ extern PGDLLIMPORT SnapshotData CatalogSnapshotData;
 /* This macro encodes the knowledge of which snapshots are MVCC-safe */
 #define IsMVCCSnapshot(snapshot)  \
 	((snapshot)->satisfies == HeapTupleSatisfiesMVCC || \
-	 (snapshot)->satisfies == HeapTupleSatisfiesHistoricMVCC)
+	 (snapshot)->satisfies == HeapTupleSatisfiesHistoricMVCC || \
+	 (snapshot)->zsatisfies == ZHeapTupleSatisfiesMVCC)
 
 /*
  * HeapTupleSatisfiesVisibility
@@ -83,6 +85,8 @@ extern bool XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot);
 extern void HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,
 					 uint16 infomask, TransactionId xid);
 extern bool HeapTupleHeaderIsOnlyLocked(HeapTupleHeader tuple);
+
+extern bool XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot);
 
 /*
  * To avoid leaking too much knowledge about reorderbuffer implementation

@@ -743,6 +743,7 @@ typedef enum BackendState
 #define PG_WAIT_IPC					0x08000000U
 #define PG_WAIT_TIMEOUT				0x09000000U
 #define PG_WAIT_IO					0x0A000000U
+#define PG_WAIT_PAGE_TRANS_SLOT		0x0B000000U
 
 /* ----------
  * Wait Events - Activity

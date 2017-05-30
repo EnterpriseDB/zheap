@@ -14,8 +14,7 @@
 #ifndef HEAPAM_H
 #define HEAPAM_H
 
-#include "access/sdir.h"
-#include "access/skey.h"
+#include "access/genham.h"
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
 #include "storage/bufpage.h"
@@ -96,10 +95,6 @@ extern Relation heap_openrv_extended(const RangeVar *relation,
 					 LOCKMODE lockmode, bool missing_ok);
 
 #define heap_close(r,l)  relation_close(r,l)
-
-/* struct definitions appear in relscan.h */
-typedef struct HeapScanDescData *HeapScanDesc;
-typedef struct ParallelHeapScanDescData *ParallelHeapScanDesc;
 
 /*
  * HeapScanIsValid

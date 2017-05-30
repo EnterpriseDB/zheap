@@ -14,18 +14,16 @@
 #ifndef ZHTUP_H
 #define ZHTUP_H
 
-/*
- * Fixme - We should not include heap related headers such as
- * heapam.h or htup.h.  Common things should be moved to some
- * common header.
- */
-#include "access/heapam.h"
-#include "access/htup.h"
+#include "access/genham.h"
 #include "access/tupdesc.h"
 #include "access/tupmacs.h"
 #include "access/transam.h"
 #include "storage/bufpage.h"
-#include "utils/rel.h"
+#include "storage/buf.h"
+#include "storage/itemptr.h"
+
+/* valid values for transaction slot is between 0 and MAX_PAGE_TRANS_INFO_SLOTS */
+#define InvalidXactSlotId	(-1)
 
 /*
  * Heap tuple header.  To avoid wasting space, the fields should be
@@ -41,7 +39,7 @@
 
 typedef struct ZHeapTupleHeaderData
 {
-	uint8		t_numattrs;	/* number of attributes */
+	uint16		t_infomask2;	/* number of attributes + translot info + various flags */
 
 	uint8		t_infomask;	/* various flag bits, see below */
 
@@ -70,17 +68,45 @@ typedef ZHeapTupleData *ZHeapTuple;
 
 #define ZHEAPTUPLESIZE	MAXALIGN(sizeof(ZHeapTupleData))
 
+/*
+ * information stored in t_infomask2:
+ */
+#define ZHEAP_NATTS_MASK			0x07FF	/* 11 bits for number of attributes */
+#define ZHEAP_XACT_SLOT				0x1800	/* 2 bits (12 and 13) for transaction slot */
+#define	ZHEAP_XACT_SLOT_MASK		0x000B	/* 11 - mask to retrieve transaction slot */
+
 #define ZHeapTupleHasNulls(tuple) \
 		 (((tuple)->t_data->t_infomask & HEAP_HASNULL) != 0)
 
 #define ZHeapTupleHeaderGetNatts(tup) \
 ( \
-	(tup)->t_numattrs \
+	((tup)->t_infomask2 & HEAP_NATTS_MASK) \
 )
 
 #define ZHeapTupleHeaderSetNatts(tup, natts) \
 ( \
-	(tup)->t_numattrs = (natts) \
+	(tup)->t_infomask2 = ((tup)->t_infomask2 & ~ZHEAP_NATTS_MASK) | (natts) \
+)
+
+#define ZHeapTupleHeaderGetXactSlot(tup) \
+( \
+	(((tup)->t_infomask2 & ZHEAP_XACT_SLOT) >> ZHEAP_XACT_SLOT_MASK) \
+)
+
+#define ZHeapTupleHeaderSetXactSlot(tup, slotno) \
+( \
+	(tup)->t_infomask2 = ((tup)->t_infomask2 & ~ZHEAP_XACT_SLOT) | \
+						 (slotno << ZHEAP_XACT_SLOT_MASK) \
+)
+
+#define ZHeapTupleHeaderGetRawXid(tup, opaque) \
+( \
+	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].xid \
+)
+
+#define ZHeapTupleHeaderGetRawCommandId(tup, opaque) \
+( \
+	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].cid \
 )
 
 extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
@@ -89,15 +115,11 @@ extern void zheap_fill_tuple(TupleDesc tupleDesc,
 				Datum *values, bool *isnull,
 				char *data, Size data_size,
 				uint8 *infomask, bits8 *bit);
-extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
-			 int options, BulkInsertState bistate);
 
 extern void zheap_freetuple(ZHeapTuple zhtup);
 
-/* Zheap scan related API's */
-extern HeapScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,
-				int nkeys, ScanKey key);
-extern ZHeapTuple zheap_getnext(HeapScanDesc scan, ScanDirection direction);
+/* Zheap transaction information related API's */
+extern CommandId ZHeapTupleHeaderGetCid(ZHeapTupleHeader tup, Buffer buf);
 
 /* Page related API's. */
 

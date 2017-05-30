@@ -14,7 +14,7 @@
 #ifndef TUPMACS_H
 #define TUPMACS_H
 
-#include "access/zheap.h"
+#include "access/genham.h"
 
 /*
  * check to see if the ATT'th bit of an array of 8-bit bytes is set.

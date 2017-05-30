@@ -67,6 +67,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/tqual.h"
+#include "utils/ztqual.h"
 
 
 /*
@@ -141,9 +142,9 @@ static volatile OldSnapshotControlData *oldSnapshotControl;
  * These SnapshotData structs are static to simplify memory allocation
  * (see the hack in GetSnapshotData to avoid repeated malloc/free).
  */
-static SnapshotData CurrentSnapshotData = {HeapTupleSatisfiesMVCC};
-static SnapshotData SecondarySnapshotData = {HeapTupleSatisfiesMVCC};
-SnapshotData CatalogSnapshotData = {HeapTupleSatisfiesMVCC};
+static SnapshotData CurrentSnapshotData = {HeapTupleSatisfiesMVCC, ZHeapTupleSatisfiesMVCC};
+static SnapshotData SecondarySnapshotData = {HeapTupleSatisfiesMVCC, ZHeapTupleSatisfiesMVCC};
+SnapshotData CatalogSnapshotData = {HeapTupleSatisfiesMVCC, ZHeapTupleSatisfiesMVCC};
 
 /* Pointers to valid snapshots */
 static Snapshot CurrentSnapshot = NULL;

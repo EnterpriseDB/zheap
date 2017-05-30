@@ -1147,7 +1147,6 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot,
 	return false;
 }
 
-
 /*
  * HeapTupleSatisfiesVacuum
  *

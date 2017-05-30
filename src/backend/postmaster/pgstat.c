@@ -3371,6 +3371,9 @@ pgstat_get_wait_event_type(uint32 wait_event_info)
 		case PG_WAIT_IO:
 			event_type = "IO";
 			break;
+		case PG_WAIT_PAGE_TRANS_SLOT:
+			event_type = "TransSlot";
+			break;
 		default:
 			event_type = "???";
 			break;
@@ -3448,6 +3451,9 @@ pgstat_get_wait_event(uint32 wait_event_info)
 				event_name = pgstat_get_wait_io(w);
 				break;
 			}
+		case PG_WAIT_PAGE_TRANS_SLOT:
+			event_name = "TransSlot";
+			break;
 		default:
 			event_name = "unknown wait event";
 			break;

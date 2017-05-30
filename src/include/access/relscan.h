@@ -20,6 +20,7 @@
 #include "access/itup.h"
 #include "access/tupdesc.h"
 #include "access/zhtup.h"
+#include "access/zheap.h"
 #include "storage/spin.h"
 
 /*

@@ -16,28 +16,42 @@
 
 #include "postgres.h"
 
+#include "access/genham.h"
 #include "access/undoinsert.h"
+#include "access/zhtup.h"
+#include "utils/rel.h"
+#include "utils/snapshot.h"
 
-extern bool	enable_zheap;
-extern int	data_alignment;
-extern PGDLLIMPORT int	data_alignment_zheap;
+#define MAX_PAGE_TRANS_INFO_SLOTS	4
+
+/*
+ * We need tansactionid and undo pointer to retrieve the undo information
+ * for a particular transaction.  However, due to alignment storing commandid
+ * is free and it saves us the fetching the undo record in many cases to check
+ * the visibility information.
+ */
+typedef struct TransInfo
+{
+	TransactionId	xid;
+	CommandId		cid;
+	UndoRecPtr	urec_ptr;
+} TransInfo;
 
 typedef struct ZHeapPageOpaqueData
 {
-	TransactionId	xid;
-	UndoRecPtr	urec_ptr;
+	TransInfo	transinfo[MAX_PAGE_TRANS_INFO_SLOTS];
 } ZHeapPageOpaqueData;
 
 typedef ZHeapPageOpaqueData *ZHeapPageOpaque;
 
-/*
- * macros for access to zheap page's special space. (Beware multiple evaluation
- * of the arguments!)
- */
-#define PageGetUNDO(opaque) \
-	((opaque)->urec_ptr)
-#define PageSetUNDO(opaque, xid, undo) \
-	((opaque)->xid = xid, (opaque)->urec_ptr = undo)
+extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
+			 int options);
+extern void ZheapInitPage(Page page, Size pageSize);
+
+/* Zheap scan related API's */
+extern HeapScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,
+				int nkeys, ScanKey key);
+extern ZHeapTuple zheap_getnext(HeapScanDesc scan, ScanDirection direction);
 
 /* WAL Stuff */
 
@@ -67,7 +81,7 @@ typedef ZHeapPageOpaqueData *ZHeapPageOpaque;
  */
 typedef struct xl_zheap_header
 {
-	uint8		t_numattrs;
+	uint16		t_infomask2;
 	uint8		t_infomask;
 	uint8		t_hoff;
 } xl_zheap_header;
