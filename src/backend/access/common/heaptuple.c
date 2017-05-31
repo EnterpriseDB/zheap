@@ -1466,6 +1466,7 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 	 */
 	slot->tts_nvalid = attnum;
 	slot->tts_off = off;
+
 	if (slow)
 		slot->tts_flags |= TTS_FLAG_SLOW;
 	else
