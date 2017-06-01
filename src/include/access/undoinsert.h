@@ -13,18 +13,10 @@
 #ifndef UNDOINSERT_H
 #define UNDOINSERT_H
 
+#include "access/undolog.h"
 #include "access/undorecord.h"
 #include "access/xlogdefs.h"
 #include "catalog/pg_class.h"
-
-typedef enum
-{
-	UNDO_PERSISTENT = RELPERSISTENCE_PERMANENT,
-	UNDO_UNLOGGED = RELPERSISTENCE_UNLOGGED,
-	UNDO_TEMP = RELPERSISTENCE_TEMP
-} UndoPersistence;
-
-typedef uint64 UndoRecPtr;
 
 /*
  * Call PrepareUndoInsert to tell the undo subsystem about the undo record you

@@ -85,6 +85,26 @@ static const f_smgr smgrsw[] = {
 		.smgr_pre_ckpt = mdpreckpt,
 		.smgr_sync = mdsync,
 		.smgr_post_ckpt = mdpostckpt
+	},
+	/* undo storage */
+	{
+		.smgr_init = undofile_init,
+		.smgr_shutdown = undofile_shutdown,
+		.smgr_close = undofile_close,
+		.smgr_create = undofile_create,
+		.smgr_exists = undofile_exists,
+		.smgr_unlink = undofile_unlink,
+		.smgr_extend = undofile_extend,
+		.smgr_prefetch = undofile_prefetch,
+		.smgr_read = undofile_read,
+		.smgr_write = undofile_write,
+		.smgr_writeback = undofile_writeback,
+		.smgr_nblocks = undofile_nblocks,
+		.smgr_truncate = undofile_truncate,
+		.smgr_immedsync = undofile_immedsync,
+		.smgr_pre_ckpt = undofile_preckpt,
+		.smgr_sync = undofile_sync,
+		.smgr_post_ckpt = undofile_postckpt
 	}
 };
 
@@ -185,11 +205,24 @@ smgropen(RelFileNode rnode, BackendId backend)
 		reln->smgr_targblock = InvalidBlockNumber;
 		reln->smgr_fsm_nblocks = InvalidBlockNumber;
 		reln->smgr_vm_nblocks = InvalidBlockNumber;
-		reln->smgr_which = 0;	/* we only have md.c at present */
+
+		/*
+		 * In ancient Postgres the catalog entry for each relation controlled
+		 * the choice of storage manager implementation.  Now we have only
+		 * md.c for regular relations, and undofile.c for undo log storage in
+		 * the undolog pseudo-database.
+		 */
+		if (rnode.dbNode == 9)
+			reln->smgr_which = 1;	/* use undofile.c implementation */
+		else
+			reln->smgr_which = 0;	/* use md.c implementation */
 
 		/* mark it not open */
 		for (forknum = 0; forknum <= MAX_FORKNUM; forknum++)
+		{
 			reln->md_num_open_segs[forknum] = 0;
+			reln->md_seg_fds[forknum] = NULL;
+		}
 
 		/* it has no owner yet */
 		add_to_unowned_list(reln);

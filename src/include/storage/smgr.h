@@ -138,6 +138,33 @@ extern void mdpreckpt(void);
 extern void mdsync(void);
 extern void mdpostckpt(void);
 
+/* in undofile.c */
+extern void undofile_init(void);
+extern void undofile_shutdown(void);
+extern void undofile_close(SMgrRelation reln, ForkNumber forknum);
+extern void undofile_create(SMgrRelation reln, ForkNumber forknum,
+							bool isRedo);
+extern bool undofile_exists(SMgrRelation reln, ForkNumber forknum);
+extern void undofile_unlink(RelFileNodeBackend rnode, ForkNumber forknum,
+							bool isRedo);
+extern void undofile_extend(SMgrRelation reln, ForkNumber forknum,
+		 BlockNumber blocknum, char *buffer, bool skipFsync);
+extern void undofile_prefetch(SMgrRelation reln, ForkNumber forknum,
+		   BlockNumber blocknum);
+extern void undofile_read(SMgrRelation reln, ForkNumber forknum,
+						  BlockNumber blocknum, char *buffer);
+extern void undofile_write(SMgrRelation reln, ForkNumber forknum,
+		BlockNumber blocknum, char *buffer, bool skipFsync);
+extern void undofile_writeback(SMgrRelation reln, ForkNumber forknum,
+			BlockNumber blocknum, BlockNumber nblocks);
+extern BlockNumber undofile_nblocks(SMgrRelation reln, ForkNumber forknum);
+extern void undofile_truncate(SMgrRelation reln, ForkNumber forknum,
+		   BlockNumber nblocks);
+extern void undofile_immedsync(SMgrRelation reln, ForkNumber forknum);
+extern void undofile_preckpt(void);
+extern void undofile_sync(void);
+extern void undofile_postckpt(void);
+
 extern void SetForwardFsyncRequests(void);
 extern void RememberFsyncRequest(RelFileNode rnode, ForkNumber forknum,
 					 BlockNumber segno);

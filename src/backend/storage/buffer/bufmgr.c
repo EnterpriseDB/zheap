@@ -688,7 +688,11 @@ ReadBufferWithoutRelcache(RelFileNode rnode, ForkNumber forkNum,
 
 	SMgrRelation smgr = smgropen(rnode, InvalidBackendId);
 
-	Assert(InRecovery);
+	/*
+	 * XXX TM:TODO figure out what to do about temporary/unlogged, and whether
+	 * this assertion was important
+	 */
+	/* Assert(InRecovery); */
 
 	return ReadBuffer_common(smgr, RELPERSISTENCE_PERMANENT, forkNum, blockNum,
 							 mode, strategy, &hit);
