@@ -17,7 +17,6 @@
 #include "access/sdir.h"
 #include "access/skey.h"
 
-extern bool	enable_zheap;
 extern int	data_alignment;
 extern PGDLLIMPORT int	data_alignment_zheap;
 

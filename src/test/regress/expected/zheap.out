@@ -1,0 +1,38 @@
+--
+-- Test cases for ZHeap
+--
+--
+-- 1. Test for storage engine
+--
+-- Normal heap
+CREATE TABLE t1_heap
+(
+ a int
+);
+\d+ t1_heap;
+                                  Table "public.t1_heap"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           |          |         | plain   |              | 
+
+-- Zheap heap
+CREATE TABLE t1_zheap
+(
+ a int
+) WITH (storage_engine = 'zheap');
+\d+ t1_zheap;
+                                 Table "public.t1_zheap"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           |          |         | plain   |              | 
+Options: storage_engine=zheap
+
+-- Should throw error
+CREATE TABLE t1_invalid
+(
+ a int
+) WITH (storage_engine = 'invalid');
+ERROR:  invalid value for "storage_engine" option
+DETAIL:  Valid values are "heap" and "zheap".
+DROP TABLE t1_heap;
+DROP TABLE t1_zheap;

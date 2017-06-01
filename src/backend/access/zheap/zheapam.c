@@ -47,7 +47,6 @@
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
-bool	enable_zheap = false;
 /*
  * User supplied value for data alignment is captured in data_alignment and
  * then we internally use it only for zheap.

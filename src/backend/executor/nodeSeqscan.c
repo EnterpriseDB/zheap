@@ -69,7 +69,7 @@ SeqNext(SeqScanState *node)
 		 * We reach here if the scan is not parallel, or if we're serially
 		 * executing a scan that was planned to be parallel.
 		 */
-		if (enable_zheap)
+		if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
 			scandesc = zheap_beginscan(node->ss.ss_currentRelation,
 									   estate->es_snapshot,
 									   0, NULL);
@@ -83,7 +83,7 @@ SeqNext(SeqScanState *node)
 	/*
 	 * get the next tuple from the table
 	 */
-	if (enable_zheap)
+	if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
 		ztuple = zheap_getnext(scandesc, direction);
 	else
 		tuple = heap_getnext(scandesc, direction);
@@ -96,7 +96,7 @@ SeqNext(SeqScanState *node)
 	 * that ExecStoreHeapTuple will increment the refcount of the buffer; the
 	 * refcount will not be dropped until the tuple table slot is cleared.
 	 */
-	if (enable_zheap)
+	if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
 	{
 		if (ztuple)
 			ExecStoreZTuple(ztuple,	/* tuple to store */

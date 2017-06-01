@@ -264,10 +264,14 @@ typedef struct StdRdOptions
 	AutoVacOpts autovacuum;		/* autovacuum-related options */
 	bool		user_catalog_table; /* use as an additional catalog relation */
 	int			parallel_workers;	/* max number of parallel workers */
+	int			relstorage_offset;		/* see RELSTORAGE_xxx constants below */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10
 #define HEAP_DEFAULT_FILLFACTOR		100
+
+#define RELSTORAGE_HEAP	"heap"		/* heap table */
+#define RELSTORAGE_ZHEAP	"zheap"		/* zheap table */
 
 /*
  * RelationGetToastTupleTarget
@@ -319,6 +323,16 @@ typedef struct StdRdOptions
 	((relation)->rd_options ? \
 	 ((StdRdOptions *) (relation)->rd_options)->parallel_workers : (defaultpw))
 
+/*
+ * RelationStorageIsZHeap
+ * 	TRUE if relation stored in a zheap format
+ */
+#define RelationStorageIsZHeap(relation) \
+	((relation)->rd_options && \
+	((StdRdOptions *) (relation)->rd_options)->relstorage_offset != 0 ? \
+		 strcmp((char *) (relation)->rd_options +								\
+			((StdRdOptions *) (relation)->rd_options)->relstorage_offset, \
+			RELSTORAGE_ZHEAP) == 0 : false) \
 
 /*
  * ViewOptions

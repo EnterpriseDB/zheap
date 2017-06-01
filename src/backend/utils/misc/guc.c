@@ -1725,17 +1725,6 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
-		{"enable_zheap", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Generates debugging output for LISTEN and NOTIFY."),
-			NULL,
-			GUC_NOT_IN_SAMPLE
-		},
-		&enable_zheap,
-		false,
-		NULL, NULL, NULL
-	},
-
-	{
 		{"syslog_sequence_numbers", PGC_SIGHUP, LOGGING_WHERE,
 			gettext_noop("Add sequence number to syslog messages to avoid duplicate suppression."),
 			NULL

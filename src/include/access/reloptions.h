@@ -283,3 +283,4 @@ extern bytea *tablespace_reloptions(Datum reloptions, bool validate);
 extern LOCKMODE AlterTableGetRelOptionsLockLevel(List *defList);
 
 #endif							/* RELOPTIONS_H */
+extern void validateStorageEngine(const char *value);
