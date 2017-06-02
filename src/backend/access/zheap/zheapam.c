@@ -805,7 +805,7 @@ ZheapInitPage(Page page, Size pageSize)
 	ZHeapPageOpaque	opaque;
 	int				i;
 
-	PageInit(page, pageSize, sizeof(ZHeapPageOpaque));
+	PageInit(page, pageSize, sizeof(ZHeapPageOpaqueData));
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 
