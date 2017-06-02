@@ -3977,10 +3977,16 @@ ExecEvalSysVar(ExprState *state, ExprEvalStep *op, ExprContext *econtext,
 	bool success;
 
 	/* slot_getsysattr has sufficient defenses against bad attnums */
-	success = slot_getsysattr(slot,
-							  op->d.var.attnum,
-							  op->resvalue,
-							  op->resnull);
+	if (slot->tts_ztuple)
+		success = slot_getsyszattr(slot,
+								  op->d.var.attnum,
+								  op->resvalue,
+								  op->resnull);
+	else
+		success = slot_getsysattr(slot,
+								  op->d.var.attnum,
+								  op->resvalue,
+								  op->resnull);
 	/* this ought to be unreachable, but it's cheap enough to check */
 	if (unlikely(!success))
 		elog(ERROR, "failed to fetch attribute from slot");

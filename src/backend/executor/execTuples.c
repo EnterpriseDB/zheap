@@ -1205,20 +1205,34 @@ slot_getmissingattrs(TupleTableSlot *slot, int startAttNum, int lastAttNum)
 Datum
 slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
 {
-	HeapTuple	tuple = slot->tts_tuple;
 	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
 	HeapTupleHeader tup;
+	ZHeapTupleHeader ztup;
+	HeapTuple	tuple = NULL;
+	ZHeapTuple	ztuple = NULL;
+
+	/*
+	 * Tuple can be either a heap tuple or a zheap tuple.
+	 */
+	if (slot->tts_ztuple)
+		ztuple = slot->tts_ztuple;
+	else
+		tuple = slot->tts_tuple;
 
 	/*
 	 * system attributes are handled by heap_getsysattr
 	 */
 	if (attnum <= 0)
 	{
-		if (tuple == NULL)		/* internal error */
+		if (tuple == NULL && ztuple == NULL)		/* internal error */
 			elog(ERROR, "cannot extract system attribute from virtual tuple");
 		if (tuple == &(slot->tts_minhdr))	/* internal error */
 			elog(ERROR, "cannot extract system attribute from minimal tuple");
-		return heap_getsysattr(tuple, attnum, tupleDesc, isnull);
+
+		if (ztuple)
+			return zheap_getsysattr(ztuple, slot->tts_buffer, attnum, tupleDesc, isnull);
+		else
+			return heap_getsysattr(tuple, attnum, tupleDesc, isnull);
 	}
 
 	/*
@@ -1243,7 +1257,7 @@ slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
 	 * otherwise we had better have a physical tuple (tts_nvalid should equal
 	 * natts in all virtual-tuple cases)
 	 */
-	if (tuple == NULL)			/* internal error */
+	if (ztuple == NULL && tuple == NULL)			/* internal error */
 		elog(ERROR, "cannot extract attribute from empty tuple slot");
 
 	/*
@@ -1254,14 +1268,31 @@ slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
 	 * table-alteration scenarios: the tuple could be either longer or shorter
 	 * than the tupdesc.)
 	 */
-	tup = tuple->t_data;
-	if (attnum > HeapTupleHeaderGetNatts(tup))
+	if (ztuple)
+		ztup = ztuple->t_data;
+	else
+		tup = tuple->t_data;
+
+	if (ztuple)
+	{
+		if (attnum > ZHeapTupleHeaderGetNatts(ztup))
+			return getmissingattr(slot->tts_tupleDescriptor, attnum, isnull);
+	}
+	else if (attnum > HeapTupleHeaderGetNatts(tup))
 		return getmissingattr(slot->tts_tupleDescriptor, attnum, isnull);
 
 	/*
 	 * check if target attribute is null: no point in groveling through tuple
 	 */
-	if (HeapTupleHasNulls(tuple) && att_isnull(attnum - 1, tup->t_bits))
+	if (ztuple)
+	{
+		if (ZHeapTupleHasNulls(ztuple) && att_isnull(attnum - 1, ztup->t_bits))
+		{
+			*isnull = true;
+			return (Datum) 0;
+		}
+	}
+	else if (HeapTupleHasNulls(tuple) && att_isnull(attnum - 1, tup->t_bits))
 	{
 		*isnull = true;
 		return (Datum) 0;
@@ -1287,8 +1318,17 @@ slot_getattr(TupleTableSlot *slot, int attnum, bool *isnull)
 void
 slot_getsomeattrs(TupleTableSlot *slot, int attnum)
 {
-	HeapTuple	tuple;
+	HeapTuple	tuple = NULL;
+	ZHeapTuple	ztuple = NULL;
 	int			attno;
+
+	/*
+	 * Tuple can be either a heap tuple or a zheap tuple.
+	 */
+	if (slot->tts_ztuple)
+		ztuple = slot->tts_ztuple;
+	else
+		tuple = slot->tts_tuple;
 
 	/* Quick out if we have 'em all already */
 	if (slot->tts_nvalid >= attnum)
@@ -1302,14 +1342,17 @@ slot_getsomeattrs(TupleTableSlot *slot, int attnum)
 	 * otherwise we had better have a physical tuple (tts_nvalid should equal
 	 * natts in all virtual-tuple cases)
 	 */
-	tuple = slot->tts_tuple;
-	if (tuple == NULL)			/* internal error */
+	if (ztuple == NULL && tuple == NULL)			/* internal error */
 		elog(ERROR, "cannot extract attribute from empty tuple slot");
 
 	/*
 	 * load up any slots available from physical tuple
 	 */
-	attno = HeapTupleHeaderGetNatts(tuple->t_data);
+	if (ztuple)
+		attno = ZHeapTupleHeaderGetNatts(ztuple->t_data);
+	else
+		attno = HeapTupleHeaderGetNatts(tuple->t_data);
+
 	attno = Min(attno, attnum);
 
 	slot_deform_tuple(slot, attno);

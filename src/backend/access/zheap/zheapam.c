@@ -352,7 +352,7 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 	td->t_hoff = hoff;
 
 	if (tupleDescriptor->tdhasoid)		/* else leave infomask = 0 */
-		td->t_infomask = HEAP_HASOID;
+		td->t_infomask = ZHEAP_HASOID;
 
 	zheap_fill_tuple(tupleDescriptor,
 					 values,
@@ -392,7 +392,7 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup)
 	{
 #ifdef NOT_USED
 		/* this is redundant with an Assert in HeapTupleSetOid */
-		Assert(tup->t_data->t_infomask & HEAP_HASOID);
+		Assert(tup->t_data->t_infomask & ZHEAP_HASOID);
 #endif
 
 		/*
@@ -409,7 +409,7 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup)
 	else
 	{
 		/* check there is not space for an OID */
-		Assert(!(tup->t_data->t_infomask & HEAP_HASOID));
+		Assert(!(tup->t_data->t_infomask & ZHEAP_HASOID));
 	}
 
 	tup->t_tableOid = RelationGetRelid(relation);
@@ -681,12 +681,100 @@ reacquire_buffer:
 }
 
 /*
+ * slot_getsyszattr
+ *		This function fetches a system attribute of the slot's current tuple.
+ *		Unlike slot_getattr, if the slot does not contain system attributes,
+ *		this will return false (with a NULL attribute value) instead of
+ *		throwing an error.
+ */
+bool
+slot_getsyszattr(TupleTableSlot *slot, int attnum,
+				Datum *value, bool *isnull)
+{
+	ZHeapTuple	tuple = slot->tts_ztuple;
+
+	Assert(attnum < 0);			/* else caller error */
+	if (tuple == NULL ||
+		tuple == (ZHeapTuple) &(slot->tts_minhdr))
+	{
+		/* No physical tuple, or minimal tuple, so fail */
+		*value = (Datum) 0;
+		*isnull = true;
+		return false;
+	}
+	*value = zheap_getsysattr(tuple, slot->tts_buffer, attnum,
+							  slot->tts_tupleDescriptor, isnull);
+	return true;
+}
+
+/*
  * zheap_freetuple
  */
 void
 zheap_freetuple(ZHeapTuple zhtup)
 {
 	pfree(zhtup);
+}
+
+/* ----------------
+ *		zheap_getsysattr
+ *
+ *		Fetch the value of a system attribute for a tuple.
+ *
+ * This provides same information as heap_getsysattr, but for zheap tuple.
+ * ----------------
+ */
+Datum
+zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
+				 TupleDesc tupleDesc, bool *isnull)
+{
+	Datum		result;
+	ZHeapPageOpaque	opaque;
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
+
+	Assert(zhtup);
+
+	/* Currently, no sys attribute ever reads as NULL. */
+	*isnull = false;
+
+	/*
+	 * Fixme - Attributes related to transaction information won't give
+	 * correct information for all cases.  As of now, they will always
+	 * return the latest xid, cid information on tuple, we need to fetch
+	 * exact information using undo.
+	 */
+	switch (attnum)
+	{
+		case SelfItemPointerAttributeNumber:
+			/* pass-by-reference datatype */
+			result = PointerGetDatum(&(zhtup->t_self));
+			break;
+		case ObjectIdAttributeNumber:
+			result = ObjectIdGetDatum(ZHeapTupleGetOid(zhtup));
+			break;
+		case MinTransactionIdAttributeNumber:
+			result = TransactionIdGetDatum(ZHeapTupleHeaderGetRawXid(zhtup->t_data, opaque));
+			Assert (false);
+			break;
+		case MaxTransactionIdAttributeNumber:
+			result = TransactionIdGetDatum(ZHeapTupleHeaderGetRawXid(zhtup->t_data, opaque));
+			Assert (false);
+			break;
+		case MinCommandIdAttributeNumber:
+		case MaxCommandIdAttributeNumber:
+			result = CommandIdGetDatum(ZHeapTupleHeaderGetRawCommandId(zhtup->t_data, opaque));
+			Assert (false);
+			break;
+		case TableOidAttributeNumber:
+			result = ObjectIdGetDatum(zhtup->t_tableOid);
+			break;
+		default:
+			elog(ERROR, "invalid attnum: %d", attnum);
+			result = 0;			/* keep compiler quiet */
+			break;
+	}
+	return result;
 }
 
 /*

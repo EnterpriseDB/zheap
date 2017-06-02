@@ -99,6 +99,17 @@ typedef ZHeapTupleData *ZHeapTuple;
 						 (slotno << ZHEAP_XACT_SLOT_MASK) \
 )
 
+#define ZHeapTupleHeaderGetOid(tup) \
+( \
+	((tup)->t_infomask & ZHEAP_HASOID) ? \
+		*((Oid *) ((char *)(tup) + (tup)->t_hoff - sizeof(Oid))) \
+	: \
+		InvalidOid \
+)
+
+#define ZHeapTupleGetOid(tuple) \
+		ZHeapTupleHeaderGetOid((tuple)->t_data)
+
 #define ZHeapTupleHeaderGetRawXid(tup, opaque) \
 ( \
 	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].xid \
@@ -117,6 +128,8 @@ extern void zheap_fill_tuple(TupleDesc tupleDesc,
 				uint8 *infomask, bits8 *bit);
 
 extern void zheap_freetuple(ZHeapTuple zhtup);
+extern Datum zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
+				 TupleDesc tupleDesc, bool *isnull);
 
 /* Zheap transaction information related API's */
 extern CommandId ZHeapTupleHeaderGetCid(ZHeapTupleHeader tup, Buffer buf);

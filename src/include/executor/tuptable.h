@@ -212,6 +212,8 @@ extern bool slot_getsysattr(TupleTableSlot *slot, int attnum,
 extern Datum getmissingattr(TupleDesc tupleDesc,
 			   int attnum, bool *isnull);
 
+extern bool slot_getsyszattr(TupleTableSlot *slot, int attnum,
+				Datum *value, bool *isnull);
 #ifndef FRONTEND
 
 /*
