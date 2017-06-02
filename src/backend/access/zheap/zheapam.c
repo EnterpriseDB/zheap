@@ -545,9 +545,6 @@ reacquire_buffer:
 	undorecord.uur_block = blkno;
 	undorecord.uur_offset = offnum;
 
-	initStringInfo(&undorecord.uur_tuple);
-	appendBinaryStringInfo(&undorecord.uur_tuple, (char *) &cid, sizeof(cid));
-
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
 
 	/* NO EREPORT(ERROR) from here till changes are logged */
@@ -646,9 +643,6 @@ reacquire_buffer:
 	if (vmbuffer != InvalidBuffer)
 		ReleaseBuffer(vmbuffer);
 	UnlockReleaseUndoBuffers();
-
-	/* be tidy */
-	pfree(undorecord.uur_tuple.data);
 
 	/*
 	 * If tuple is cachable, mark it for invalidation from the caches in case
