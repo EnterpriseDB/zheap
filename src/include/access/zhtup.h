@@ -69,6 +69,15 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define ZHEAPTUPLESIZE	MAXALIGN(sizeof(ZHeapTupleData))
 
 /*
+ * information stored in t_infomask:
+ */
+#define ZHEAP_HASNULL			0x0001	/* has null attribute(s) */
+#define ZHEAP_HASVARWIDTH		0x0002	/* has variable-width attribute(s) */
+#define ZHEAP_HASEXTERNAL		0x0004	/* has external stored attribute(s) */
+#define ZHEAP_HASOID			0x0008	/* has an object-id field */
+#define	ZHEAP_DELETED			0x0010	/* tuple deleted */
+
+/*
  * information stored in t_infomask2:
  */
 #define ZHEAP_NATTS_MASK			0x07FF	/* 11 bits for number of attributes */
