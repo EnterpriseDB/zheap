@@ -328,7 +328,7 @@ typedef struct StdRdOptions
  * 	TRUE if relation stored in a zheap format
  */
 #define RelationStorageIsZHeap(relation) \
-	((relation)->rd_options && \
+	(relation && (relation)->rd_options && \
 	((StdRdOptions *) (relation)->rd_options)->relstorage_offset != 0 ? \
 		 strcmp((char *) (relation)->rd_options +								\
 			((StdRdOptions *) (relation)->rd_options)->relstorage_offset, \
