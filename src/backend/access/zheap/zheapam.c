@@ -671,7 +671,7 @@ reacquire_buffer:
 
 	data_alignment_zheap = 1;
 
-	return HeapTupleGetOid(tup);
+	return ZHeapTupleGetOid(tup);
 }
 
 /*
