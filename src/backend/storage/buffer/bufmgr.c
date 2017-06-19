@@ -1371,7 +1371,7 @@ ForgetBuffer(RelFileNode rnode, ForkNumber forkNum, BlockNumber blockNum)
 
 	/* didn't find it, so nothing to do */
 	if (buf_id < 0)
-		LWLockRelease(partitionLock);
+		return;
 
 	/* take the buffer header lock */
 	bufHdr = GetBufferDescriptor(buf_id);
