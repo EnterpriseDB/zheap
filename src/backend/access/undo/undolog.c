@@ -32,13 +32,15 @@
 #include "nodes/execnodes.h"
 #include "pgstat.h"
 #include "storage/buf.h"
+#include "storage/bufmgr.h"
 #include "storage/dsm.h"
 #include "storage/fd.h"
+#include "storage/ipc.h"
 #include "storage/lwlock.h"
-#include "storage/spin.h"
 #include "storage/shmem.h"
 #include "utils/memutils.h"
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* End-of-list value when building linked lists of undo logs. */
@@ -85,7 +87,8 @@
 typedef struct UndoLogControl
 {
 	UndoLogMetaData meta;			/* control data */
-	slock_t		mutex;				/* protects the above */
+	bool	need_attach_wal_record;		/* need_attach_wal_record */
+	LWLock	mutex;					/* protects the above */
 
 	pid_t		pid;				/* InvalidPid for unattached */
 	TransactionId xid;
@@ -152,7 +155,8 @@ static UndoLogControl *get_undo_log_by_number(UndoLogNumber logno);
 static void ensure_undo_log_number(UndoLogNumber logno);
 static void attach_undo_log(void);
 static void detach_current_undo_log(void);
-static void extend_undo_log(UndoLogNumber logno, UndoLogOffset capacity);
+static void extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end);
+static void undo_log_before_exit(int code, Datum value);
 
 PG_FUNCTION_INFO_V1(pg_stat_get_undo_logs);
 
@@ -184,8 +188,8 @@ UndoLogShmemInit(void)
 		Assert(!found);
 
 		/*
-		 * For now there are no undo logs.  StartUpUndoLogs() will recreate
-		 * undo logs that were known at last checkpoint.
+		 * We start with no undo logs.  StartUpUndoLogs() will recreate undo
+		 * logs that were known at last checkpoint.
 		 */
 		memset(shared, 0, sizeof(*shared));
 		shared->free_list = InvalidUndoLogNumber;
@@ -196,29 +200,53 @@ UndoLogShmemInit(void)
 		Assert(found);
 }
 
-/*
- * Compute the pathname to use for an undo log segment file.  Also return the
- * parent pathname separately, so that it can be fsync'ed if necessary.
- */
 void
-UndoLogSegmentPath(UndoLogNumber logno, int segno, Oid tablespace,
-				   char *dir, char *path)
+UndoLogInit(void)
 {
-	/* Figure out which directory holds the segment, based on tablespace. */
+	before_shmem_exit(undo_log_before_exit, 0);
+}
+
+/*
+ * Figure out which directory holds an undo log based on tablespace.
+ */
+static void
+UndoLogDirectory(Oid tablespace, char *dir)
+{
 	if (tablespace == DEFAULTTABLESPACE_OID ||
 		tablespace == InvalidOid)
-		snprintf(dir, MAXPGPATH, "base/%u", UndoLogDatabaseOid);
+		snprintf(dir, MAXPGPATH, "base/undo");
 	else
-		snprintf(dir, MAXPGPATH, "pg_tblspc/%u/%s/%u",
-				 tablespace, TABLESPACE_VERSION_DIRECTORY,
-				 UndoLogDatabaseOid);
-	/* Build the path from the top bits of the offset. */
-	snprintf(path, MAXPGPATH, "%s/%06X.%02X", dir, logno, segno);
+		snprintf(dir, MAXPGPATH, "pg_tblspc/%u/%s/undo",
+				 tablespace, TABLESPACE_VERSION_DIRECTORY);
+
+	/* XXX Should we use UndoLogDatabaseOid (9) instead of "undo"? */
 
 	/*
-	 * XXX Make the number of characters used to represent segno dependent on
-	 * the compile time segment size?
+	 * XXX Should we add an extra directory between log number and segment
+	 * files?  If all undo logs are in the same directory then
+	 * fsync(directory) may create contention in the OS between unrelated
+	 * backends that as they rotate segment files.
 	 */
+}
+
+/*
+ * Compute the pathname to use for an undo log segment file.
+ */
+void
+UndoLogSegmentPath(UndoLogNumber logno, int segno, Oid tablespace, char *path)
+{
+	char		dir[MAXPGPATH];
+
+	/* Figure out which directory holds the segment, based on tablespace. */
+	UndoLogDirectory(tablespace, dir);
+
+	/*
+	 * Build the path from log number and offset.  The pathname is the
+	 * UndoRecPtr of the first byte in the segment in hexadecimal, with a
+	 * period inserted between the components.
+	 */
+	snprintf(path, MAXPGPATH, "%s/%06X.%010zX", dir, logno,
+			 segno * UndoLogSegmentSize);
 }
 
 /*
@@ -260,6 +288,36 @@ UndoLogSetHighestSyncedSegment(UndoLogNumber logno, int segno)
 }
 
 /*
+ * Check if an undo log position has been discarded.  'point' must be an undo
+ * log pointer that was allocated at some point in the past, otherwise the
+ * result is undefined.
+ */
+bool
+UndoLogIsDiscarded(UndoRecPtr point)
+{
+	UndoLogControl *log = get_undo_log_by_number(UndoRecPtrGetLogNo(point));
+	bool	result;
+
+	/*
+	 * If we don't recognize the log number, it's either entirely discarded or
+	 * it's never been allocated (ie from the future) and our result is
+	 * undefined.
+	 */
+	if (log == NULL)
+		return true;
+
+	/*
+	 * XXX For a super cheap locked operation, it's better to use LW_EXLUSIVE
+	 * even though we don't need exclusivity, right?
+	 */
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	result = UndoRecPtrGetOffset(point) < log->meta.discard;
+	LWLockRelease(&log->mutex);
+
+	return result;
+}
+
+/*
  * Detach from the undo log we are currently attached to, returning it to the
  * free list if it still has space.
  */
@@ -278,19 +336,82 @@ detach_current_undo_log()
 	log->pid = InvalidPid;
 	log->xid = InvalidTransactionId;
 
-	/* If it doesn't have a useful amount of space left, just forget about it. */
-	if (log->meta.capacity < (UndoLogMaxSize - 1024)) /* TODO: ??? */
+	/*
+	 * XXX: If it's almost completely full, mark it as retired somehow rather
+	 * than putting in in the freelist.
+	 */
+
+	/* Push back onto the freelist. */
+	LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
+	log->next_free = shared->free_list;
+	shared->free_list = logno;
+	LWLockRelease(UndoLogLock);
+}
+
+static void
+undo_log_before_exit(int code, Datum arg)
+{
+	if (MyUndoLogState.log != NULL)
+		detach_current_undo_log();
+}
+
+/*
+ * Create a fully allocated empty segment file on disk for the byte starting
+ * at 'end'.
+ */
+static void
+allocate_empty_undo_segment(UndoLogNumber logno, Oid tablespace,
+							UndoLogOffset end)
+{
+	struct stat	stat_buffer;
+	off_t	size;
+	char	path[MAXPGPATH];
+	void   *zeroes;
+	size_t	nzeroes = 8192;
+	int		fd;
+
+	UndoLogSegmentPath(logno, end / UndoLogSegmentSize, tablespace, path);
+
+	/*
+	 * Create and fully allocate a new file.  If we crashed and recovered
+	 * then the file might already exist, so use flags that tolerate that.
+	 * It's also possible that it exists but is too short, in which case
+	 * we'll write the rest.  We don't really care what's in the file, we
+	 * just want to make sure that the filesystem has allocated physical
+	 * blocks for it, so that non-COW filesystems will report ENOSPACE now
+	 * rather than later when the space is needed and we'll avoid creating
+	 * files with holes.
+	 */
+	fd = OpenTransientFile(path,
+						   O_RDWR | O_CREAT | PG_BINARY);
+	if (fd < 0)
+		elog(ERROR, "could not create new file \"%s\": %m", path);
+	if (fstat(fd, &stat_buffer) < 0)
+		elog(ERROR, "could not stat \"%s\": %m", path);
+	size = stat_buffer.st_size;
+
+	/* A buffer full of zeroes we'll use to fill up new segment files. */
+	zeroes = palloc0(nzeroes);
+
+	while (size < UndoLogSegmentSize)
 	{
-		/* TODO: mark as retired */
+		ssize_t written;
+
+		written = write(fd, zeroes, Min(nzeroes, UndoLogSegmentSize - size));
+		if (written < 0)
+			elog(ERROR, "cannot initialize undo log segment file \"%s\": %m",
+				 path);
+		size += written;
 	}
-	else
-	{
-		/* Push back onto the freelist. */
-		LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
-		log->next_free = shared->free_list;
-		shared->free_list = logno;
-		LWLockRelease(UndoLogLock);
-	}
+
+	/* Flush the contents of the file to disk. */
+	if (pg_fsync(fd) != 0)
+		elog(ERROR, "cannot fsync file \"%s\": %m", path);
+	CloseTransientFile(fd);
+
+	pfree(zeroes);
+
+	elog(NOTICE, "created undo segment \"%s\"", path); /* XXX: remove me */
 }
 
 /*
@@ -298,21 +419,18 @@ detach_current_undo_log()
  * attached to.
  */
 static void
-extend_undo_log(UndoLogNumber logno, UndoLogOffset capacity)
+extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end)
 {
 	UndoLogControl *log;
-	char	dir[MAXPGPATH];
-	char	path[MAXPGPATH];
-	Size	total_written = 0;
-	int		fd;
-	void   *zeroes;
+	char		dir[MAXPGPATH];
+	size_t		end;
 
 	log = get_undo_log_by_number(logno);
 
-	/* This must be a request to add exactly one segment to an existing log. */
 	Assert(log != NULL);
-	Assert(log->meta.capacity % (UNDOSEG_SIZE * BLCKSZ) == 0);
-	Assert(capacity == log->meta.capacity + (UNDOSEG_SIZE * BLCKSZ));
+	Assert(log->meta.end % UndoLogSegmentSize == 0);
+	Assert(new_end % UndoLogSegmentSize == 0);
+	Assert(MyUndoLogState.log == log || InRecovery);
 
 	/* Create (pseudo) database directory if it doesn't exist. */
 	if (log->meta.tablespace != InvalidOid &&
@@ -320,55 +438,35 @@ extend_undo_log(UndoLogNumber logno, UndoLogOffset capacity)
 		TablespaceCreateDbspace(log->meta.tablespace, UndoLogDatabaseOid,
 								false /* TODO: redo flag */);
 
-	UndoLogSegmentPath(logno, log->meta.capacity / BLCKSZ,
-					   log->meta.tablespace, dir, path);
-
-	if (false) /* TODO: if was can rename an existing file into place... */
+	/*
+	 * Create all the segments needed to increase 'end' to the requested
+	 * size.  This is quite expensive, so we will try to avoid it completely
+	 * by renaming files into place in UndoLogDiscard instead.
+	 */
+	end = log->meta.end;
+	while (end < new_end)
 	{
-		/*
-		 * Rename an old file into place.  If we crashed and recovered then
-		 * this might already have been done, and we'll need to tolerate that.
-		 */
-
-		/* TODO */
+		allocate_empty_undo_segment(logno, log->meta.tablespace, end);
+		end += UndoLogSegmentSize;
 	}
-	else
-	{
-		/*
-		 * Create and fully allocate a new file.  If we crashed and recovered
-		 * then the file might already exist, so use flags that tolerate that.
-		 */
-		fd = OpenTransientFile(path, O_RDWR | O_CREAT | PG_BINARY);
-		zeroes = palloc0(8192);
-		while (total_written < (UNDOSEG_SIZE * BLCKSZ))
-		{
-			ssize_t written;
 
-			written = write(fd, zeroes,
-							Min(8192, (UNDOSEG_SIZE * BLCKSZ) - total_written));
-			if (written < 0)
-				elog(ERROR, "cannot initialize undo log segment file \"%s\": %m",
-					 path);
-			total_written += written;
-		}
-		if (pg_fsync(fd) != 0)
-			elog(ERROR, "cannot fsync file \"%s\": %m", path);
-		CloseTransientFile(fd);
-	}
+	Assert(end == new_end);
 
 	/*
-	 * Flush the parent dir so that the directory metadata survives a crash after
-	 * this point.
+	 * Flush the parent dir so that the directory metadata survives a crash
+	 * after this point.
 	 */
+	UndoLogDirectory(log->meta.tablespace, dir);
 	fsync_fname(dir, true);
 
 	/*
-	 * If we're not in recovery, we need to WAL-log the file creation.  We do
-	 * that after the above filesystem modifications, in violation of the
-	 * data-before-WAL rule as exempted by src/backend/access/transam/README.
-	 * This means that it's possible for us to crash having made the
-	 * filesystem changes but before WAL logging, but in that case we'll
-	 * eventually try to create the same segment again which is tolerated.
+	 * If we're not in recovery, we need to WAL-log the creation of the new
+	 * file(s).  We do that after the above filesystem modifications, in
+	 * violation of the data-before-WAL rule as exempted by
+	 * src/backend/access/transam/README.  This means that it's possible for
+	 * us to crash having made some or all of the filesystem changes but
+	 * before WAL logging, but in that case we'll eventually try to create the
+	 * same segment(s) again which is tolerated.
 	 */
 	if (!InRecovery)
 	{
@@ -376,7 +474,7 @@ extend_undo_log(UndoLogNumber logno, UndoLogOffset capacity)
 		XLogRecPtr	ptr;
 
 		xlrec.logno = logno;
-		xlrec.capacity = capacity;
+		xlrec.end = end;
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
@@ -385,13 +483,19 @@ extend_undo_log(UndoLogNumber logno, UndoLogOffset capacity)
 	}
 
 	/*
-	 * We didn't need to acquire the mutex to read capacity above because only
+	 * We didn't need to acquire the mutex to read 'end' above because only
 	 * we write to it.  But we need the mutex to update it, because the
 	 * checkpointer might read it concurrently.
+	 *
+	 * XXX It's possible for meta.end to be higher already during
+	 * recovery, because of the timing of a checkpoint; in that case we did
+	 * nothing above and we shouldn't update shmem here.  That interaction
+	 * needs more analysis.
 	 */
-	SpinLockAcquire(&log->mutex);
-	log->meta.capacity = capacity;
-	SpinLockRelease(&log->mutex);
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	if (log->meta.end < end)
+		log->meta.end = end;
+	LWLockRelease(&log->mutex);
 }
 
 /*
@@ -410,6 +514,7 @@ UndoRecPtr
 UndoLogAllocate(UndoRecordSize size, UndoPersistence level)
 {
 	UndoLogControl *log = MyUndoLogState.log;
+	bool	need_attach_wal_record = false;
 
  retry:
 
@@ -422,10 +527,10 @@ UndoLogAllocate(UndoRecordSize size, UndoPersistence level)
 
 	/*
 	 * We don't need to acquire log->mutex to read log->meta.insert and
-	 * log->meta.capacity, because this backend is the only one that can
+	 * log->meta.end, because this backend is the only one that can
 	 * modify them.
 	 */
-	if (unlikely(log->meta.insert + size > log->meta.capacity))
+	if (unlikely(log->meta.insert + size > log->meta.end))
 	{
 		if (log->meta.insert + size > UndoLogMaxSize)
 		{
@@ -436,16 +541,22 @@ UndoLogAllocate(UndoRecordSize size, UndoPersistence level)
 		}
 		else
 		{
-			/* Extend the capacity of this undo log by one segment. */
+			/*
+			 * Extend the 'end' of this undo log by one segment.
+			 *
+			 * XXX Would there ever be a case for extending by more than one
+			 * segment at a time?  This is already the slow path, where we
+			 * aren't able to recycle enough segments during UndoLogDiscard,
+			 * and it's not clear that there is any batching advantage when
+			 * creating new segments anyway.
+			 */
 			extend_undo_log(MyUndoLogState.logno,
-							log->meta.capacity + (UNDOSEG_SIZE * BLCKSZ));
+							log->meta.end + UndoLogSegmentSize);
 			/*
 			 * That must be enough, because segments are bigger than the
 			 * maximum value for UndoRecordSize.
-			 *
-			 * XXX static assert that?
 			 */
-			Assert(log->meta.insert + size <= log->meta.capacity);
+			Assert(log->meta.insert + size <= log->meta.end);
 		}
 	}
 
@@ -453,10 +564,18 @@ UndoLogAllocate(UndoRecordSize size, UndoPersistence level)
 	 * If we haven't already done so since the last checkpoint, associate the
 	 * current transaction ID with this undo log, so that
 	 * UndoLogAllocateInRecovery knows how to replay this undo space
-	 * allocation.  XXX TODO for now it's every time; probably need
-	 * interlocking with checkpoint to make this work :-(
+	 * allocation.
 	 */
-	if (true)
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	if (log->need_attach_wal_record || log->xid != GetTopTransactionId())
+	{
+		need_attach_wal_record = true;
+		log->xid = GetTopTransactionId();
+		log->need_attach_wal_record = false;
+	}
+	LWLockRelease(&log->mutex);
+
+	if (need_attach_wal_record)
 	{
 		xl_undolog_attach xlrec;
 
@@ -522,9 +641,10 @@ UndoLogAllocateInRecovery(TransactionId xid, UndoRecordSize size,
 
 	/*
 	 * This log must already have been extended to cover the requested size by
-	 * XLOG_UNDOLOG_EXTEND records emitted by UndoLogAllocate.
+	 * XLOG_UNDOLOG_EXTEND records emitted by UndoLogAllocate, or by
+	 * XLOG_UNDLOG_DISCARD records recycling segments.
 	 */
-	if (log->meta.capacity < log->meta.insert + size)
+	if (log->meta.end < log->meta.insert + size)
 		elog(ERROR,
 			 "unexpectedly couldn't allocate %u bytes in undo log number %d",
 			 size, logno);
@@ -547,10 +667,215 @@ UndoLogAdvance(UndoRecPtr insertion_point, UndoRecordSize size)
 	Assert(UndoRecPtrGetLogNo(insertion_point) == MyUndoLogState.logno);
 	Assert(UndoRecPtrGetOffset(insertion_point) == log->meta.insert);
 
-	SpinLockAcquire(&log->mutex);
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->meta.insert += size;
 	log->meta.last_size = size;
-	SpinLockRelease(&log->mutex);
+	LWLockRelease(&log->mutex);
+}
+
+/*
+ * Advance the discard pointer, discarding all undo data relating to one or
+ * more whole transactions.
+ *
+ * This generates WAL records, but only when segment file boundaries are
+ * crossed and filesystem operations are required.  After a crash or fast
+ * shutdown, we may have lost track of the fact that some undo log has been
+ * discarded.  That's OK, because (1) the undo worker subsystem is expected to
+ * be smart enough to realize that it needs to wake up and check for space
+ * that needs to be discarded so it'll just do that again; (2) the discard
+ * pointer will always point to valid undo space containing valid data, since
+ * any physical file changes are WAL-logged; (3) the discard point will always
+ * point to the start of a transaction's undo data so that it can be
+ * understood; (4) nothing in the zheap system relies on undo data being
+ * discarded as soon as possible, so having previously discarded undo data
+ * 'come back' and need to be discarded again doesn't hurt.
+ *
+ * The caller asserts that there will be no attempts to access the undo log
+ * region being discarded after this moment.  This operation will cause the
+ * relevant buffers to be dropped immediately, without writing any data out to
+ * disk.  Any attempt to read the buffers (except a partial buffer at the end
+ * of this range which will remain) may result in IO errors, because the
+ * underlying segment file may physically removed.
+ *
+ * In the common case that the discard pointer doesn't move over a segment
+ * file boundary, this just updates a pointer in shared memory.
+ */
+void
+UndoLogDiscard(UndoRecPtr discard_point, UndoLogOffset size)
+{
+	UndoLogNumber logno = UndoRecPtrGetLogNo(discard_point);
+	UndoLogControl *log = get_undo_log_by_number(logno);
+	UndoLogOffset discard = UndoRecPtrGetOffset(discard_point);
+	UndoLogOffset new_discard = discard + size;
+	UndoLogOffset new_end;
+	BlockNumber blockno;
+	BlockNumber new_blockno;
+	RelFileNode	rnode;
+	int		segno;
+	int		new_segno;
+	bool		need_to_flush_wal = false;
+
+	if (log == NULL)
+		elog(ERROR, "cannot advance discard pointer for unknown undo log %d",
+			 logno);
+
+	/*
+	 * Drop all buffers holding this undo data out of the buffer pool (except
+	 * the last one, if the new location is in the middle of it somewhere), so
+	 * it doesn't ever touch the disk.  The caller promises that this data
+	 * will not be needed again.
+	 */
+	UndoRecPtrAssignRelFileNode(rnode, discard_point);
+	blockno = discard / UndoLogUsableBytesPerPage;
+	new_blockno = new_discard / UndoLogUsableBytesPerPage;
+	for (; blockno < new_blockno; ++blockno)
+		ForgetBuffer(rnode, UndoLogForkNum, blockno);
+
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	/*
+	 * XXX Probably shouldn't hold this lock while we run the filesystem
+	 * syscall
+	 */
+	if (new_discard > log->meta.insert)
+	{
+		/*
+		 * We just summarily dropped a bunch of data out of shared buffers,
+		 * and yet clearly the caller is insane.  Ideally we'd have checked
+		 * this BEFORE we dropped the buffers, but then we'd have to hold the
+		 * undo log lock while looping over the buffers, or obtain and release
+		 * the undo log lock twice, before and after the ForgetBuffer loop.
+		 *
+		 * XXX Assertion instead?
+		 */
+		elog(PANIC, "cannot move undo log discard point past insert point");
+	}
+
+	/* We may be able to advance 'end' if we can recycle files. */
+	new_end = log->meta.end;
+
+	/*
+	 * Check if we crossed a segment boundary and need to do some synchronous
+	 * filesystem operations.
+	 */
+	segno = discard / UndoLogSegmentSize;
+	new_segno = new_discard / UndoLogSegmentSize;
+	if (segno < new_segno)
+	{
+		int		recycle;
+		UndoLogOffset pointer;
+
+		/*
+		 * We always WAL-log discards, but we only need to flush the WAL if we
+		 * have performed a filesystem operation.
+		 */
+		need_to_flush_wal = true;
+
+		/*
+		 * XXX When we rename or unlink a file, it's possible that some
+		 * backend still has it open because it has recently read a page from
+		 * it.  smgr/undofile.c in any such backend will eventually close it,
+		 * because it considers that fd to belong to the file that we're
+		 * unlinking or renaming (ie the old name, not the new one) and it
+		 * doesn't like to keep more than one open at a time.  No backend
+		 * should ever try to read from such a file descriptor; that is what
+		 * it means when we say that the caller of UndoLogDiscard() asserts
+		 * that there will be no attempts to access the discarded range of
+		 * undo log!  In the case of a rename, if a backend were to attempt to
+		 * read undo data in the range being discarded, it would read entirely
+		 * the wrong data.
+		 *
+		 * XXX What defenses could we build against that happening due to
+		 * bugs/corruption?  One way would be for undofile.c to refuse to read
+		 * buffers from before the current discard point, but currently
+		 * undofile.c doesn't need to deal with shmem/locks.  That may be
+		 * false economy, but we really don't want reader to have to wait to
+		 * acquire the undo log lock just to read undo data while we are doing
+		 * filesystem stuff in here.
+		 */
+
+		/*
+		 * XXX Decide how many segments to recycle (= rename from tail
+		 * position to head position).
+		 *
+		 * XXX For now it's always 1 unless there is already a spare one, but
+		 * we could have an adaptive algorithm with the following goals:
+		 *
+		 * (1) handle future workload without having to create new segment
+		 * files from scratch
+		 *
+		 * (2) reduce the rate of fsyncs require for recycling by doing
+		 * several at once
+		 */
+		if (log->meta.end - log->meta.insert < UndoLogSegmentSize)
+			recycle = 1;
+		else
+			recycle = 0;
+
+		/* Rewind to the start of the segment. */
+		pointer = segno * UndoLogSegmentSize;
+
+		while (pointer < new_segno * UndoLogSegmentSize)
+		{
+			char	discard_path[MAXPGPATH];
+
+			UndoLogSegmentPath(logno, pointer / UndoLogSegmentSize,
+							   log->meta.tablespace, discard_path);
+
+			/* Can we recycle the oldest segment? */
+			if (recycle > 0)
+			{
+				char	recycle_path[MAXPGPATH];
+
+				UndoLogSegmentPath(logno, new_end / UndoLogSegmentSize,
+								   log->meta.tablespace, recycle_path);
+				if (rename(discard_path, recycle_path) == 0)
+				{
+					elog(NOTICE, "renamed undo segment \"%s\" -> \"%s\"", discard_path, recycle_path); /* XXX: remove me */
+					new_end += UndoLogSegmentSize;
+					--recycle;
+				}
+				else
+				{
+					elog(ERROR, "could not rename \"%s\" to \"%s\": %m",
+						 discard_path, recycle_path);
+				}
+			}
+			else
+			{
+				if (unlink(discard_path) == 0)
+					elog(NOTICE, "unlinked \"%s\"", discard_path); /* XXX: remove me */
+				else
+					elog(ERROR, "could not unlink \"%s\": %m", discard_path);
+			}
+			pointer += UndoLogSegmentSize;
+		}
+
+	}
+
+	/* WAL log the discard. */
+	{
+		xl_undolog_discard xlrec;
+		XLogRecPtr ptr;
+
+		xlrec.logno = logno;
+		xlrec.discard = new_discard;
+		xlrec.end = new_end;
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
+		ptr = XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_DISCARD);
+
+		if (need_to_flush_wal)
+			XLogFlush(ptr);
+	}
+
+	/*
+	 * XXX Need to figure out when we should hold the lock -- this is probably
+	 * way too long and unnecessary
+	 */
+	log->meta.discard = new_discard;
+	log->meta.end = new_end;
+	LWLockRelease(&log->mutex);
 }
 
 Oid
@@ -586,6 +911,15 @@ CleanUpUndoCheckPointFiles(XLogRecPtr checkPointRedo)
 	char	path[MAXPGPATH];
 	char	oldest_path[MAXPGPATH];
 
+	/*
+	 * If a base backup is in progress, we can't delete any checkpoint
+	 * snapshot files because one of them corresponds to the backup label but
+	 * there could be any number of checkpoints during the backup.
+	 */
+	if (BackupInProgress())
+		return;
+
+	/* Otherwise keep only those >= the previous checkpoint's redo point. */
 	snprintf(oldest_path, MAXPGPATH, "%016" INT64_MODIFIER "X",
 			 checkPointRedo);
 	dir = AllocateDir("pg_undo");
@@ -664,10 +998,11 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo)
 			if (log == NULL) /* XXX can this happen? */
 				continue;
 
-			/* Snapshot while holding the spinlock. */
-			SpinLockAcquire(&log->mutex);
+			/* Snapshot while holding the mutex. */
+			LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+			log->need_attach_wal_record = true;
 			memcpy(&serialized[logno], &log->meta, sizeof(UndoLogMetaData));
-			SpinLockRelease(&log->mutex);
+			LWLockRelease(&log->mutex);
 		}
 	}
 
@@ -733,7 +1068,7 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 			 checkPointRedo);
 	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
 	if (fd < 0)
-		elog(ERROR, "cannot open pg_undo file \"%s\": %m", path);
+		elog(ERROR, "cannot open undo checkpoint snapshot \"%s\": %m", path);
 
 	/* Read the active log number range. */
 	if ((read(fd, &shared->low_logno, sizeof(shared->low_logno))
@@ -765,7 +1100,7 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 		log->xid = InvalidTransactionId;
 		log->next_free = shared->free_list;
 		shared->free_list = logno;
-		SpinLockInit(&log->mutex);
+		LWLockInitialize(&log->mutex, LWTRANCHE_UNDOLOG);
 	}
 	CloseTransientFile(fd);
 }
@@ -822,6 +1157,7 @@ ensure_undo_log_number(UndoLogNumber logno)
 		size_t size;
 
 		size = sizeof(UndoLogControl) * (1 << UndoLogBankBits);
+		elog(LOG, "size = %zd", size);
 		segment = dsm_create(size, 0);
 		dsm_pin_mapping(segment);
 		dsm_pin_segment(segment);
@@ -888,15 +1224,14 @@ attach_undo_log(void)
 		Assert(log->meta.tablespace == InvalidOid);
 		Assert(log->meta.last_size == 0);
 		Assert(log->meta.insert == 0);
-		Assert(log->meta.capacity == 0);
-		Assert(log->meta.mvcc == 0);
-		Assert(log->meta.rollback == 0);
+		Assert(log->meta.end == 0);
+		Assert(log->meta.discard == 0);
 		Assert(log->pid == 0);
 		Assert(log->xid == 0);
 		Assert(log->next_free == 0);
 
 		/* Initialize. */
-		SpinLockInit(&log->mutex);
+		LWLockInitialize(&log->mutex, LWTRANCHE_UNDOLOG);
 
 		/* TODO: Choose log->meta.tablespace */
 
@@ -922,10 +1257,11 @@ attach_undo_log(void)
 	}
 	LWLockRelease(UndoLogLock);
 
-	SpinLockAcquire(&log->mutex);
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->pid = MyProcPid;
 	log->xid = GetTopTransactionId();
-	SpinLockRelease(&log->mutex);
+	log->need_attach_wal_record = true;
+	LWLockRelease(&log->mutex);
 
 	MyUndoLogState.logno = logno;
 	MyUndoLogState.log = log;
@@ -991,16 +1327,15 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 		 * log will be consistent because we'll take the per-log spinlock
 		 * while copying them.
 		 */
-		SpinLockAcquire(&log->mutex);
+		LWLockAcquire(&log->mutex, LW_SHARED);
 		values[0] = ObjectIdGetDatum((Oid) logno);
 		values[1] = ObjectIdGetDatum(log->meta.tablespace);
-		values[2] = Int64GetDatum(log->meta.capacity);
+		values[2] = Int64GetDatum(log->meta.end);
 		values[3] = Int64GetDatum(log->meta.insert);
-		values[4] = Int64GetDatum(log->meta.mvcc);
-		values[5] = Int64GetDatum(log->meta.rollback);
-		values[6] = TransactionIdGetDatum(log->xid);
-		values[7] = Int32GetDatum((int64) log->pid);
-		SpinLockRelease(&log->mutex);
+		values[4] = Int64GetDatum(log->meta.discard);
+		values[5] = TransactionIdGetDatum(log->xid);
+		values[6] = Int32GetDatum((int64) log->pid);
+		LWLockRelease(&log->mutex);
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
@@ -1024,7 +1359,7 @@ undolog_xlog_create(XLogReaderState *record)
 
 	log = get_undo_log_by_number(xlrec->logno);
 	log->meta.tablespace = xlrec->tablespace;
-	SpinLockInit(&log->mutex);
+	LWLockInitialize(&log->mutex, LWTRANCHE_UNDOLOG);
 
 	LWLockAcquire(UndoLogLock, LW_SHARED);
 	shared->high_logno = Max(xlrec->logno + 1, shared->high_logno);
@@ -1038,20 +1373,9 @@ static void
 undolog_xlog_extend(XLogReaderState *record)
 {
 	xl_undolog_extend *xlrec = (xl_undolog_extend *) XLogRecGetData(record);
-	UndoLogControl *log;
 
-	log = get_undo_log_by_number(xlrec->logno);
-
-	/*
-	 * It's possible that the checkpoint snapshot already includes the
-	 * extension, due to races between extension and checkpointing.  So we
-	 * have to tolerate that possibility here.
-	 */
-	if (log->meta.capacity >= xlrec->capacity)
-		return;
-
-	/* Otherwise, extend exactly as we would during DO phase. */
-	extend_undo_log(xlrec->logno, xlrec->capacity);
+	/* Extend exactly as we would during DO phase. */
+	extend_undo_log(xlrec->logno, xlrec->end);
 }
 
 /*
@@ -1106,11 +1430,100 @@ undolog_xlog_attach(XLogReaderState *record)
 	 * subsequent data appended by this transaction, so we can simply
 	 * overwrite it here.
 	 */
-	SpinLockAcquire(&log->mutex);
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->meta.insert = xlrec->insert;
 	log->xid = xlrec->xid;
 	log->pid = MyProcPid; /* show as recovery process */
-	SpinLockRelease(&log->mutex);
+	LWLockRelease(&log->mutex);
+}
+
+/*
+ * replay an undo segment discard record
+ */
+static void
+undolog_xlog_discard(XLogReaderState *record)
+{
+	xl_undolog_discard *xlrec = (xl_undolog_discard *) XLogRecGetData(record);
+	UndoLogControl *log;
+	UndoLogOffset discard;
+	UndoLogOffset end;
+	UndoLogOffset old_segment_begin;
+	UndoLogOffset new_segment_begin;
+	char	dir[MAXPGPATH];
+
+	log = get_undo_log_by_number(xlrec->logno);
+	if (log == NULL)
+		elog(ERROR, "unknown undo log %d", xlrec->logno);
+
+	/*
+	 * See if we need to unlink or rename any files, but don't consider it an
+	 * error if we find that files are missing.  Since UndoLogDiscard()
+	 * performs filesystem operations before WAL logging or updating shmem
+	 * which could be checkpointed, a crash could have left files already
+	 * deleted, but we could replay WAL that expects the files to be there.
+	 */
+
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	discard = log->meta.discard;
+	end = log->meta.end;
+	LWLockRelease(&log->mutex);
+
+	/* Rewind to the start of the segment. */
+	old_segment_begin = discard - discard % UndoLogSegmentSize;
+	new_segment_begin = xlrec->discard - xlrec->discard % UndoLogSegmentSize;
+
+	/* Unlink or rename segments that are no longer in range. */
+	while (old_segment_begin < new_segment_begin)
+	{
+		char	discard_path[MAXPGPATH];
+
+		UndoLogSegmentPath(xlrec->logno, old_segment_begin / UndoLogSegmentSize,
+						   log->meta.tablespace, discard_path);
+
+		/* Can we recycle the oldest segment? */
+		if (end < xlrec->end)
+		{
+			char	recycle_path[MAXPGPATH];
+
+			UndoLogSegmentPath(xlrec->logno, end / UndoLogSegmentSize,
+							   log->meta.tablespace, recycle_path);
+			if (rename(discard_path, recycle_path) == 0)
+			{
+				elog(NOTICE, "renamed undo segment \"%s\" -> \"%s\"", discard_path, recycle_path); /* XXX: remove me */
+				end += UndoLogSegmentSize;
+			}
+			else
+			{
+				elog(LOG, "could not rename \"%s\" to \"%s\": %m",
+					 discard_path, recycle_path);
+			}
+		}
+		else
+		{
+			if (unlink(discard_path) == 0)
+				elog(NOTICE, "unlinked \"%s\"", discard_path); /* XXX: remove me */
+			else
+				elog(LOG, "could not unlink \"%s\": %m", discard_path);
+		}
+		old_segment_begin += UndoLogSegmentSize;
+	}
+
+	/* Create any further new segments that are needed the slow way. */
+	while (end < xlrec->end)
+	{
+		allocate_empty_undo_segment(xlrec->logno, log->meta.tablespace, end);
+		end += UndoLogSegmentSize;
+	}
+
+	/* Flush the directory entries. */
+	UndoLogDirectory(log->meta.tablespace, dir);
+	fsync_fname(dir, true);
+
+	/* Update shmem. */
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	log->meta.discard = xlrec->discard;
+	log->meta.end = end;
+	LWLockRelease(&log->mutex);
 }
 
 void
@@ -1118,7 +1531,6 @@ undolog_redo(XLogReaderState *record)
 {
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
-	elog(LOG, "undolog_redo!");
 	switch (info)
 	{
 		case XLOG_UNDOLOG_CREATE:
@@ -1129,6 +1541,9 @@ undolog_redo(XLogReaderState *record)
 			break;
 		case XLOG_UNDOLOG_ATTACH:
 			undolog_xlog_attach(record);
+			break;
+		case XLOG_UNDOLOG_DISCARD:
+			undolog_xlog_discard(record);
 			break;
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);

@@ -264,13 +264,15 @@ void undofile_postckpt(void)
 static File undofile_open_segment_file(Oid relNode, Oid spcNode, int segno)
 {
 	File		file;
-	char		dir[MAXPGPATH]; /* unused */
 	char		path[MAXPGPATH];
 
+<<<<<<< HEAD
 	UndoLogSegmentPath(relNode, segno, spcNode, dir, path);
 	file = PathNameOpenFile(path, O_RDWR | PG_BINARY);
-
-	/* Assert that its size is exactly UndoLogSegmentSize? */
+=======
+	UndoLogSegmentPath(relNode, segno, spcNode, path);
+	file = PathNameOpenFile(path, O_RDWR | PG_BINARY, 0600);
+>>>>>>> 7c696f5... Implemented UndoLogDiscard and related things.
 
 	return file;
 }

@@ -9907,6 +9907,9 @@ xlog_redo(XLogReaderState *record)
 		XLogCtl->ckptXid = checkPoint.nextXid;
 		SpinLockRelease(&XLogCtl->info_lck);
 
+		/* Write an undo log metadata snapshot. */
+		CheckPointUndoLogs(checkPoint.redo);
+
 		/*
 		 * We should've already switched to the new TLI before replaying this
 		 * record.
@@ -9965,6 +9968,9 @@ xlog_redo(XLogReaderState *record)
 		XLogCtl->ckptXidEpoch = checkPoint.nextXidEpoch;
 		XLogCtl->ckptXid = checkPoint.nextXid;
 		SpinLockRelease(&XLogCtl->info_lck);
+
+		/* Write an undo log metadata snapshot. */
+		CheckPointUndoLogs(checkPoint.redo);
 
 		/* TLI should not change in an on-line checkpoint */
 		if (checkPoint.ThisTimeLineID != ThisTimeLineID)

@@ -33,8 +33,8 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 	{
 		xl_undolog_extend *xlrec = (xl_undolog_extend *) rec;
 
-		appendStringInfo(buf, "logno %u capacity %zu", xlrec->logno,
-						 xlrec->capacity);
+		appendStringInfo(buf, "logno %u end %zu", xlrec->logno,
+						 xlrec->end);
 	}
 	else if (info == XLOG_UNDOLOG_ATTACH)
 	{
@@ -43,6 +43,13 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 		appendStringInfo(buf, "logno %u xid %u insert %zu last_size %lu",
 						 xlrec->logno, xlrec->xid, xlrec->insert,
 						 xlrec->insert);
+	}
+	else if (info == XLOG_UNDOLOG_DISCARD)
+	{
+		xl_undolog_discard *xlrec = (xl_undolog_discard *) rec;
+
+		appendStringInfo(buf, "logno %u discard %zu end %zu",
+						 xlrec->logno, xlrec->discard, xlrec->end);
 	}
 }
 
@@ -61,6 +68,9 @@ undolog_identify(uint8 info)
 			break;
 		case XLOG_UNDOLOG_ATTACH:
 			id = "ATTACH";
+			break;
+		case XLOG_UNDOLOG_DISCARD:
+			id = "DISCARD";
 			break;
 	}
 

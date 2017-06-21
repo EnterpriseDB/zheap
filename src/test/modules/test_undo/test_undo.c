@@ -18,9 +18,12 @@ PG_FUNCTION_INFO_V1(undo_advance);
 PG_FUNCTION_INFO_V1(undo_append);
 PG_FUNCTION_INFO_V1(undo_read);
 PG_FUNCTION_INFO_V1(undo_discard);
+PG_FUNCTION_INFO_V1(undo_is_discarded);
+PG_FUNCTION_INFO_V1(undo_foreground_discard_test);
 
 /*
- * Just allocate some undo space, for testing.
+ * Just allocate some undo space, for testing.  This may cause us to be
+ * attached to an undo log, possibly creating it on demand.
  */
 Datum
 undo_allocate(PG_FUNCTION_ARGS)
@@ -34,7 +37,12 @@ undo_allocate(PG_FUNCTION_ARGS)
 }
 
 /*
- * Advance the insert pointer for an undo log, for testing.
+ * Advance the insert pointer for an undo log, for testing.  This must
+ * undo_ptr value give must have been returned by undo_allocate(), and the
+ * size give must be the argument that was given to undo_allocate().  The call
+ * to undo_allocate() reserved space for us and told us where it is, and now
+ * we are advancing the insertion pointer (presumably having written data
+ * there).
  */
 Datum
 undo_advance(PG_FUNCTION_ARGS)
@@ -43,6 +51,20 @@ undo_advance(PG_FUNCTION_ARGS)
 	int size = PG_GETARG_INT32(1);
 
 	UndoLogAdvance(undo_ptr, size);
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * Advance the discard pointer in an undo log.
+ */
+Datum
+undo_discard(PG_FUNCTION_ARGS)
+{
+	UndoRecPtr undo_ptr = PG_GETARG_INT64(0);
+	int size = PG_GETARG_INT32(1);
+
+	UndoLogDiscard(undo_ptr, size);
 
 	PG_RETURN_VOID();
 }
@@ -127,8 +149,38 @@ undo_read(PG_FUNCTION_ARGS)
 }
 
 Datum
-undo_discard(PG_FUNCTION_ARGS)
+undo_foreground_discard_test(PG_FUNCTION_ARGS)
 {
-	/* TODO: write me */
+	int loops = PG_GETARG_INT32(0);
+	int size = PG_GETARG_INT32(1);
+	int i;
+
+	if (size > BLCKSZ)
+		elog(ERROR, "data too large");
+
+	/* Discard any data in the undo log that we are attached to. */
+	/* TODO !!! */
+
+	for (i = 0; i < loops; ++i)
+	{
+		UndoRecPtr undo_ptr;
+
+		/* Allocate some space. */
+		undo_ptr = UndoLogAllocate(size, RELPERSISTENCE_PERMANENT);
+		UndoLogAdvance(undo_ptr, size);
+
+		/* Discard the space that we just allocated. */
+		UndoLogDiscard(undo_ptr, size);
+	}
+
 	PG_RETURN_VOID();
+}
+
+/*
+ * Check if an undo pointer has been discarded.
+ */
+Datum
+undo_is_discarded(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(UndoLogIsDiscarded(PG_GETARG_INT64(0)));
 }

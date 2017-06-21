@@ -38,8 +38,11 @@ typedef enum
 /* Type for offsets within undo logs */
 typedef uint64 UndoLogOffset;
 
-/* Number of blocks of BLCKSZ in an undo log segment file.  2048 = 16MB. */
-#define UNDOSEG_SIZE 2048
+/* Number of blocks of BLCKSZ in an undo log segment file.  512 = 4MB. */
+#define UNDOSEG_SIZE 512
+
+/* Size of an undo log segment file in bytes. */
+#define UndoLogSegmentSize ((size_t) BLCKSZ * UNDOSEG_SIZE)
 
 /* The width of an undo log number in bits.  24 allows for 16.7m logs. */
 #define UndoLogNumberBits 24
@@ -62,7 +65,7 @@ typedef int UndoLogNumber;
 
 /* Extract the offset from an UndoRecPtr. */
 #define UndoRecPtrGetOffset(urp)				\
-	((urp) & (1L << UndoLogOffsetBits) - 1)
+	((urp) & (UINT64CONST(1) << UndoLogOffsetBits) - 1)
 
 /* Make an UndoRecPtr from an log number and offset. */
 #define MakeUndoRecPtr(logno, offset)			\
@@ -113,30 +116,36 @@ typedef struct UndoLogMetaData
 {
 	Oid		tablespace;
 	UndoRecordSize last_size;		/* size of last inserted record */
-	UndoLogOffset insert;			/* next insertion point */
-	UndoLogOffset capacity;			/* one past end of highest segment */
-	UndoLogOffset mvcc;				/* oldest data needed for MVCC */
-	UndoLogOffset rollback;			/* oldest data needed for rollback */
+	UndoLogOffset insert;			/* next insertion point (head) */
+	UndoLogOffset end;				/* one past end of highest segment */
+	UndoLogOffset discard;			/* oldest data needed (tail) */
 } UndoLogMetaData;
 
+/* Space management. */
 extern UndoRecPtr UndoLogAllocate(UndoRecordSize size, UndoPersistence level);
 extern UndoRecPtr UndoLogAllocateInRecovery(TransactionId xid,
 											UndoRecordSize size,
 											UndoPersistence level);
 extern void UndoLogAdvance(UndoRecPtr insertion_point, UndoRecordSize size);
+extern void UndoLogDiscard(UndoRecPtr discard_point, UndoLogOffset size);
+extern bool UndoLogIsDiscarded(UndoRecPtr point);
 
-
-extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo);
+/* Initialization interfaces. */
 extern void StartupUndoLogs(XLogRecPtr checkPointRedo);
 extern void UndoLogShmemInit(void);
 extern Size UndoLogShmemSize(void);
+extern void UndoLogInit(void);
 extern void UndoLogSegmentPath(UndoLogNumber logno, int segno, Oid tablespace,
-							   char *dir, char *path);
+							   char *path);
+
+/* Checkpointing interfaces. */
+extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo);
 extern bool UndoLogNextActiveLog(UndoLogNumber *logno, Oid *spcNode);
 extern void UndoLogGetDirtySegmentRange(UndoLogNumber logno,
 										int *low_segno, int *high_segno);
 extern void UndoLogSetHighestSyncedSegment(UndoLogNumber logno, int segno);
 
+/* Redo interface. */
 extern void undolog_redo(XLogReaderState *record);
 
 #endif
