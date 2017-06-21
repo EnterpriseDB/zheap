@@ -127,7 +127,7 @@ extern UndoRecPtr UndoLogAllocateInRecovery(TransactionId xid,
 											UndoRecordSize size,
 											UndoPersistence level);
 extern void UndoLogAdvance(UndoRecPtr insertion_point, UndoRecordSize size);
-extern void UndoLogDiscard(UndoRecPtr discard_point, UndoLogOffset size);
+extern void UndoLogDiscard(UndoRecPtr discard_point);
 extern bool UndoLogIsDiscarded(UndoRecPtr point);
 
 /* Initialization interfaces. */

@@ -158,9 +158,6 @@ undo_foreground_discard_test(PG_FUNCTION_ARGS)
 	if (size > BLCKSZ)
 		elog(ERROR, "data too large");
 
-	/* Discard any data in the undo log that we are attached to. */
-	/* TODO !!! */
-
 	for (i = 0; i < loops; ++i)
 	{
 		UndoRecPtr undo_ptr;
@@ -170,7 +167,7 @@ undo_foreground_discard_test(PG_FUNCTION_ARGS)
 		UndoLogAdvance(undo_ptr, size);
 
 		/* Discard the space that we just allocated. */
-		UndoLogDiscard(undo_ptr, size);
+		UndoLogDiscard(undo_ptr + size);
 	}
 
 	PG_RETURN_VOID();

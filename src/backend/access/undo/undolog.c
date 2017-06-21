@@ -507,6 +507,31 @@ extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end)
  * data is crash safe, the *contents* of the undo log and (indirectly) the
  * insertion point are the responsibility of client code.
  *
+ * XXX As an optimization, we could take a third argument 'discard_last'.  If
+ * the caller knows that the last transaction it committed is all visible and
+ * has its undo pointer, it could supply that value.  Then while we hold
+ * log->mutex we could check if log->meta.discard == discard_last, and if it's
+ * in the same undo log segment as the current insert then it could cheaply
+ * update it in shmem and include the value in the existing
+ * XLOG_UNDOLOG_ATTACH WAL record.  We'd be leaving the heavier lifting of
+ * dealing with segment roll-over to undo workers, but avoiding work for undo
+ * workers by folding a super cheap common case into the next foreground xact.
+ * (Not sure how we actually avoid waking up the undo work though...)
+ *
+ * XXX Problem: if foreground processes can move the discard pointer as well
+ * as background processes (undo workers), then how is the undo worker
+ * supposed to access the undo data pointed to by the discard pointer so that
+ * it can read the xid?  We certainly don't want to hold the undo log lock
+ * while doing stuff like that, because it would interfere with read-only
+ * sessions that need to check the discard pointer.  Possible solution: we may
+ * need a way to 'pin' the discard pointer while the undo worker is
+ * considering what to do.  If we add 'discard_last' as described in the
+ * previous paragraph, that optimisation would need to be skipped if the
+ * foreground process running UndoLogAllocate sees that the discard pointer is
+ * currently pinned by a background worker.  Going to sit on this thought for
+ * a little while before writing any code... need to contemplate undo workers
+ * some more.
+ *
  * Returns an undo log insertion point that can be converted to a buffer tag
  * and an insertion point within a buffer page using the macros above.
  */
@@ -674,21 +699,11 @@ UndoLogAdvance(UndoRecPtr insertion_point, UndoRecordSize size)
 }
 
 /*
- * Advance the discard pointer, discarding all undo data relating to one or
- * more whole transactions.
- *
- * This generates WAL records, but only when segment file boundaries are
- * crossed and filesystem operations are required.  After a crash or fast
- * shutdown, we may have lost track of the fact that some undo log has been
- * discarded.  That's OK, because (1) the undo worker subsystem is expected to
- * be smart enough to realize that it needs to wake up and check for space
- * that needs to be discarded so it'll just do that again; (2) the discard
- * pointer will always point to valid undo space containing valid data, since
- * any physical file changes are WAL-logged; (3) the discard point will always
- * point to the start of a transaction's undo data so that it can be
- * understood; (4) nothing in the zheap system relies on undo data being
- * discarded as soon as possible, so having previously discarded undo data
- * 'come back' and need to be discarded again doesn't hurt.
+ * Advance the discard pointer in one undo log, discarding all undo data
+ * relating to one or more whole transactions.  The passed in undo pointer is
+ * the address of the oldest data that the called would like to keep, and the
+ * affected undo log is implied by this pointer, ie
+ * UndoRecPtrGetLogNo(discard_pointer).
  *
  * The caller asserts that there will be no attempts to access the undo log
  * region being discarded after this moment.  This operation will cause the
@@ -697,19 +712,26 @@ UndoLogAdvance(UndoRecPtr insertion_point, UndoRecordSize size)
  * of this range which will remain) may result in IO errors, because the
  * underlying segment file may physically removed.
  *
- * In the common case that the discard pointer doesn't move over a segment
- * file boundary, this just updates a pointer in shared memory.
+ * Only one backend should call this for a given undo log concurrently, or
+ * data structures will become corrupted.  It is expected that the caller will
+ * be an undo worker; only one undo worker should be working on a given undo
+ * log at a time.
+ *
+ * XXX Special case for when we wrapped past the end of an undo log, spilling
+ * into a new one.  How do we discard that?  Essentially we'll be discarding
+ * the whole undo log, but not sure how the caller should know that or deal
+ * with it and how this code should handle it.
  */
 void
-UndoLogDiscard(UndoRecPtr discard_point, UndoLogOffset size)
+UndoLogDiscard(UndoRecPtr discard_point)
 {
 	UndoLogNumber logno = UndoRecPtrGetLogNo(discard_point);
 	UndoLogControl *log = get_undo_log_by_number(logno);
+	UndoLogOffset old_discard;
 	UndoLogOffset discard = UndoRecPtrGetOffset(discard_point);
-	UndoLogOffset new_discard = discard + size;
-	UndoLogOffset new_end;
+	UndoLogOffset end;
+	BlockNumber old_blockno;
 	BlockNumber blockno;
-	BlockNumber new_blockno;
 	RelFileNode	rnode;
 	int		segno;
 	int		new_segno;
@@ -719,46 +741,21 @@ UndoLogDiscard(UndoRecPtr discard_point, UndoLogOffset size)
 		elog(ERROR, "cannot advance discard pointer for unknown undo log %d",
 			 logno);
 
-	/*
-	 * Drop all buffers holding this undo data out of the buffer pool (except
-	 * the last one, if the new location is in the middle of it somewhere), so
-	 * it doesn't ever touch the disk.  The caller promises that this data
-	 * will not be needed again.
-	 */
-	UndoRecPtrAssignRelFileNode(rnode, discard_point);
-	blockno = discard / UndoLogUsableBytesPerPage;
-	new_blockno = new_discard / UndoLogUsableBytesPerPage;
-	for (; blockno < new_blockno; ++blockno)
-		ForgetBuffer(rnode, UndoLogForkNum, blockno);
-
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	/*
-	 * XXX Probably shouldn't hold this lock while we run the filesystem
-	 * syscall
-	 */
-	if (new_discard > log->meta.insert)
-	{
-		/*
-		 * We just summarily dropped a bunch of data out of shared buffers,
-		 * and yet clearly the caller is insane.  Ideally we'd have checked
-		 * this BEFORE we dropped the buffers, but then we'd have to hold the
-		 * undo log lock while looping over the buffers, or obtain and release
-		 * the undo log lock twice, before and after the ForgetBuffer loop.
-		 *
-		 * XXX Assertion instead?
-		 */
-		elog(PANIC, "cannot move undo log discard point past insert point");
-	}
-
-	/* We may be able to advance 'end' if we can recycle files. */
-	new_end = log->meta.end;
+	if (discard > log->meta.insert)
+		elog(ERROR, "cannot move discard point past insert point");
+	old_discard = log->meta.discard;
+	if (discard < old_discard)
+		elog(ERROR, "cannot move discard pointer backwards");
+	end = log->meta.end;
+	LWLockRelease(&log->mutex);
 
 	/*
 	 * Check if we crossed a segment boundary and need to do some synchronous
 	 * filesystem operations.
 	 */
-	segno = discard / UndoLogSegmentSize;
-	new_segno = new_discard / UndoLogSegmentSize;
+	segno = old_discard / UndoLogSegmentSize;
+	new_segno = discard / UndoLogSegmentSize;
 	if (segno < new_segno)
 	{
 		int		recycle;
@@ -774,15 +771,14 @@ UndoLogDiscard(UndoRecPtr discard_point, UndoLogOffset size)
 		 * XXX When we rename or unlink a file, it's possible that some
 		 * backend still has it open because it has recently read a page from
 		 * it.  smgr/undofile.c in any such backend will eventually close it,
-		 * because it considers that fd to belong to the file that we're
-		 * unlinking or renaming (ie the old name, not the new one) and it
-		 * doesn't like to keep more than one open at a time.  No backend
-		 * should ever try to read from such a file descriptor; that is what
-		 * it means when we say that the caller of UndoLogDiscard() asserts
-		 * that there will be no attempts to access the discarded range of
-		 * undo log!  In the case of a rename, if a backend were to attempt to
-		 * read undo data in the range being discarded, it would read entirely
-		 * the wrong data.
+		 * because it considers that fd to belong to the file with the name
+		 * that we're unlinking or renaming and it doesn't like to keep more
+		 * than one open at a time.  No backend should ever try to read from
+		 * such a file descriptor; that is what it means when we say that the
+		 * caller of UndoLogDiscard() asserts that there will be no attempts
+		 * to access the discarded range of undo log!  In the case of a
+		 * rename, if a backend were to attempt to read undo data in the range
+		 * being discarded, it would read entirely the wrong data.
 		 *
 		 * XXX What defenses could we build against that happening due to
 		 * bugs/corruption?  One way would be for undofile.c to refuse to read
@@ -826,12 +822,16 @@ UndoLogDiscard(UndoRecPtr discard_point, UndoLogOffset size)
 			{
 				char	recycle_path[MAXPGPATH];
 
-				UndoLogSegmentPath(logno, new_end / UndoLogSegmentSize,
+				/*
+				 * End points one byte past the end of the current undo space,
+				 * ie to the first byte of the segment file we want to create.
+				 */
+				UndoLogSegmentPath(logno, end / UndoLogSegmentSize,
 								   log->meta.tablespace, recycle_path);
 				if (rename(discard_path, recycle_path) == 0)
 				{
 					elog(NOTICE, "renamed undo segment \"%s\" -> \"%s\"", discard_path, recycle_path); /* XXX: remove me */
-					new_end += UndoLogSegmentSize;
+					end += UndoLogSegmentSize;
 					--recycle;
 				}
 				else
@@ -849,7 +849,6 @@ UndoLogDiscard(UndoRecPtr discard_point, UndoLogOffset size)
 			}
 			pointer += UndoLogSegmentSize;
 		}
-
 	}
 
 	/* WAL log the discard. */
@@ -858,8 +857,8 @@ UndoLogDiscard(UndoRecPtr discard_point, UndoLogOffset size)
 		XLogRecPtr ptr;
 
 		xlrec.logno = logno;
-		xlrec.discard = new_discard;
-		xlrec.end = new_end;
+		xlrec.discard = discard;
+		xlrec.end = end;
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
@@ -870,11 +869,21 @@ UndoLogDiscard(UndoRecPtr discard_point, UndoLogOffset size)
 	}
 
 	/*
-	 * XXX Need to figure out when we should hold the lock -- this is probably
-	 * way too long and unnecessary
+	 * Drop all buffers holding this undo data out of the buffer pool (except
+	 * the last one, if the new location is in the middle of it somewhere), so
+	 * that the contained data doesn't ever touch the disk.  The caller
+	 * promises that this data will not be needed again.
 	 */
-	log->meta.discard = new_discard;
-	log->meta.end = new_end;
+	UndoRecPtrAssignRelFileNode(rnode, MakeUndoRecPtr(logno, old_discard));
+	old_blockno = old_discard / UndoLogUsableBytesPerPage;
+	blockno = discard / UndoLogUsableBytesPerPage;
+	for (; old_blockno < blockno; ++old_blockno)
+		ForgetBuffer(rnode, UndoLogForkNum, old_blockno);
+
+	/* Update shmem to show the new discard and end pointers. */
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	log->meta.discard = discard;
+	log->meta.end = end;
 	LWLockRelease(&log->mutex);
 }
 
@@ -1223,9 +1232,9 @@ attach_undo_log(void)
 
 		Assert(log->meta.tablespace == InvalidOid);
 		Assert(log->meta.last_size == 0);
+		Assert(log->meta.discard == 0);
 		Assert(log->meta.insert == 0);
 		Assert(log->meta.end == 0);
-		Assert(log->meta.discard == 0);
 		Assert(log->pid == 0);
 		Assert(log->xid == 0);
 		Assert(log->next_free == 0);
