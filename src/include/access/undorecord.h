@@ -17,6 +17,7 @@
 #include "lib/stringinfo.h"
 #include "storage/block.h"
 #include "storage/bufpage.h"
+#include "storage/buf.h"
 #include "storage/off.h"
 
 typedef enum undorectype
@@ -129,6 +130,7 @@ typedef struct UnpackedUndoRecord
 	uint64		uur_blkprev;	/* byte offset of previous undo for block */
 	BlockNumber uur_block;		/* block number */
 	OffsetNumber uur_offset;	/* offset number */
+	Buffer		uur_buffer;		/* buffer in which undo record data points */
 	StringInfoData uur_payload;	/* payload bytes */
 	StringInfoData uur_tuple;	/* tuple bytes */
 } UnpackedUndoRecord;

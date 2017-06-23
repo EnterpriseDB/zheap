@@ -55,4 +55,17 @@ extern void UnlockReleaseUndoBuffers(void);
  */
 extern void CancelPreparedUndo(void);
 
+/*
+ * Fetch the next undo record for given blkno and offset.  Start the search
+ * from urp.  Caller need to call UndoRecordRelease to release the resources
+ * allocated by this function.
+ */
+extern UnpackedUndoRecord* UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno,
+										   OffsetNumber offset);
+/*
+ * Release the resources allocated by UndoFetchRecord.
+ */
+extern void UndoRecordRelease(UnpackedUndoRecord *urec);
+
+
 #endif   /* UNDOINSERT_H */
