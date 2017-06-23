@@ -72,7 +72,8 @@ zheap_beginscan_internal(Relation relation, Snapshot snapshot,
 						 bool is_samplescan,
 						 bool temp_snap);
 
-static int PageReserveTransactionSlot(Page page, TransactionId xid);
+static int PageReserveTransactionSlot(Buffer buf, TransactionId xid);
+static bool PageFreezeTransSlots(Buffer buf);
 static inline UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
 static inline void PageSetUNDO(Page page, int trans_slot_id, TransactionId xid,
 						CommandId cid, UndoRecPtr urecptr);
@@ -489,7 +490,7 @@ reacquire_buffer:
 	 * operation.  It will be costly to wait for getting the slot, but we do
 	 * that by releasing the buffer lock.
 	 */
-	trans_slot_id = PageReserveTransactionSlot(page, xid);
+	trans_slot_id = PageReserveTransactionSlot(buffer, xid);
 
 	if (trans_slot_id == InvalidXactSlotId)
 	{
@@ -785,7 +786,7 @@ reacquire_buffer:
 	 * operation.  It will be costly to wait for getting the slot, but we do
 	 * that by releasing the buffer lock.
 	 */
-	trans_slot_id = PageReserveTransactionSlot(page, xid);
+	trans_slot_id = PageReserveTransactionSlot(buffer, xid);
 
 	if (trans_slot_id == InvalidXactSlotId)
 	{
@@ -1232,7 +1233,7 @@ check_tup_satisfies_update:
 	 * operation.  It will be costly to wait for getting the slot, but we do
 	 * that by releasing the buffer lock.
 	 */
-	trans_slot_id = PageReserveTransactionSlot(page, xid);
+	trans_slot_id = PageReserveTransactionSlot(buffer, xid);
 
 	if (trans_slot_id == InvalidXactSlotId)
 	{
@@ -1772,33 +1773,156 @@ PageSetUNDO(Page page, int trans_slot_id, TransactionId xid,
 /*
  * PageReserveTransactionSlot - Reserve the transaction slot in page.
  *
- *	This function returns true if either the page already has some slot that
- *	contains the transaction info or there is an empty slot; otherwise retruns
- *	false.
+ *	This function returns transaction slot number if either the page already
+ *	has some slot that contains the transaction info or there is an empty
+ *	slot or it manages to reuse some existing slot; otherwise retruns false.
  */
 static int
-PageReserveTransactionSlot(Page page, TransactionId xid)
+PageReserveTransactionSlot(Buffer buf, TransactionId xid)
 {
 	ZHeapPageOpaque	opaque;
 	int		latestFreeTransSlot = InvalidXactSlotId;
-	int		i;
+	int		slot_no;
 
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
 
-	for (i = 0; i < MAX_PAGE_TRANS_INFO_SLOTS; i++)
+	for (slot_no = 0; slot_no < MAX_PAGE_TRANS_INFO_SLOTS; slot_no++)
 	{
-		if (opaque->transinfo[i].xid == xid)
-			return i;
-		else if (opaque->transinfo[i].xid == InvalidTransactionId &&
+		if (opaque->transinfo[slot_no].xid == xid)
+			return slot_no;
+		else if (opaque->transinfo[slot_no].xid == InvalidTransactionId &&
 				 latestFreeTransSlot == InvalidXactSlotId)
-			latestFreeTransSlot = i;
+			latestFreeTransSlot = slot_no;
 	}
 
 	if (latestFreeTransSlot >= 0)
 		return latestFreeTransSlot;
 
+	/* no transaction slot available, try to reuse some existing slot */
+	if (PageFreezeTransSlots(buf))
+	{
+		for (slot_no = 0; slot_no < MAX_PAGE_TRANS_INFO_SLOTS; slot_no++)
+			if (opaque->transinfo[slot_no].xid == InvalidTransactionId)
+				return slot_no;
+
+		/*
+		 * After freezing transaction slots, we should get atleast one free
+		 * slot.
+		 */
+		Assert(false);
+	}
+
 	/* no transaction slot available */
 	return InvalidXactSlotId;
+}
+
+/*
+ * PageFreezeTransSlots - Make the transaction slots available for reuse.
+ *
+ *	This function tries to free up some existing transaction slot so that
+ *	it can be reused.  To reuse the slot, it needs to ensure that the xid
+ *	is committed and all-visible and doesn't have pending rollback to apply.
+ *
+ *	This function assumes that the caller already has Exclusive lock on the
+ *	buffer.
+ *
+ *	This function returns true if it manages to free some transaction slot,
+ *	false otherwise.
+ */
+static bool
+PageFreezeTransSlots(Buffer buf)
+{
+	Page	page;
+	ZHeapPageOpaque	opaque;
+	int		slot_no;
+	int		frozen_slots[MAX_PAGE_TRANS_INFO_SLOTS];
+	int		nfrozenslots = 0;
+
+	page = BufferGetPage(buf);
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+	/*
+	 * Clear the slot information from tuples.  The basic idea is to collect
+	 * all the transaction slots that can be cleared.  Then traverse the page
+	 * to see if any tuple has marking for any of the slots, if so, just clear
+	 * the slot information from the tuple.
+	 */
+	for (slot_no = 0; slot_no < MAX_PAGE_TRANS_INFO_SLOTS; slot_no++)
+	{
+		if (TransactionIdPrecedes(opaque->transinfo[slot_no].xid, RecentGlobalXmin))
+			frozen_slots[nfrozenslots++] = slot_no;
+	}
+
+	if (nfrozenslots)
+	{
+		OffsetNumber	*offset_frozen_slots;
+		OffsetNumber offnum,
+					 maxoff;
+		int		noffsets = 0;
+		int		i;
+
+		offset_frozen_slots = palloc(sizeof(OffsetNumber) * MaxZHeapTuplesPerPage);
+
+		START_CRIT_SECTION();
+
+		MarkBufferDirty(buf);
+
+		/* clear the slot info from tuples */
+		maxoff = PageGetMaxOffsetNumber(page);
+
+		for (offnum = FirstOffsetNumber;
+			 offnum <= maxoff;
+			 offnum = OffsetNumberNext(offnum))
+		{
+			ZHeapTupleHeader	tup_hdr;
+			ItemId		itemid;
+
+			itemid = PageGetItemId(page, offnum);
+
+			if (!ItemIdIsUsed(itemid))
+				continue;
+
+			tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
+
+			for (i = 0; i < nfrozenslots; i++)
+			{
+				if (ZHeapTupleHeaderGetXactSlot(tup_hdr) == frozen_slots[i])
+				{
+					ZHeapTupleHeaderSetXactSlot(tup_hdr, ZHTUP_SLOT_FROZEN);
+					offset_frozen_slots[noffsets++] = offnum;
+					break;
+				}
+			}
+		}
+
+		/* Initialize the frozen slots. */
+		for (i = 0; i < nfrozenslots; i++)
+		{
+			slot_no = frozen_slots[i];
+
+			opaque->transinfo[slot_no].xid = InvalidTransactionId;
+			opaque->transinfo[slot_no].cid = InvalidCommandId;
+			/* Fixme: set the InvalidUrecPtr once it is defined. */
+			opaque->transinfo[slot_no].urec_ptr = -1;
+		}
+
+		/* Xlog Stuff */
+		/*
+		 * Log all the offsets offset_frozen_slots for which we need to clear
+		 * the transaction slot information.  Also note down the Xid for which
+		 * we are clearing the slot as that will be required to ensure that
+		 * there is no running query on standby that can see such a xid. See
+		 * heap_xlog_freeze_page.
+		 */
+
+		END_CRIT_SECTION();
+
+		pfree(offset_frozen_slots);
+
+		return true;
+	}
+
+	return false;
 }
 
 /*

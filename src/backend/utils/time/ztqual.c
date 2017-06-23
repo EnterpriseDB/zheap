@@ -185,6 +185,10 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 			elog(ERROR, "unsupported undo record type");
 	}
 
+	/* if the transaction slot is cleared, tuple must be all visible */
+	if (trans_slot_id == ZHTUP_SLOT_FROZEN)
+		return undo_tup;
+
 	if (undo_oper == ZHEAP_INPLACE_UPDATED)
 	{
 		if (TransactionIdIsCurrentTransactionId(ZHeapPageGetRawXid(trans_slot_id, opaque)))
@@ -309,6 +313,13 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 			elog(ERROR, "unsupported undo record type");
 	}
 
+	/* if the transaction slot is cleared, tuple must be all visible */
+	if (trans_slot_id == ZHTUP_SLOT_FROZEN)
+	{
+		result = true;
+		goto result_available;
+	}
+
 	if (undo_oper == ZHEAP_INPLACE_UPDATED)
 	{
 		if (TransactionIdIsCurrentTransactionId(ZHeapPageGetRawXid(trans_slot_id, opaque)))
@@ -360,6 +371,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 			result = false;
 	}
 
+result_available:
 	if (undo_tup)
 		pfree(undo_tup);
 	return result;
@@ -389,6 +401,13 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 
 	if (tuple->t_infomask & ZHEAP_DELETED)
 	{
+		/*
+		 * if the transaction slot is cleared, tuple must be deleted and all
+		 * visible
+		 */
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
+			return NULL;
+
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 		{
 			if (ZHeapTupleHeaderGetCid(tuple, buffer) >= snapshot->curcid)
@@ -417,6 +436,10 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	}
 	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED)
 	{
+		/* if the transaction slot is cleared, tuple must be all visible */
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
+			return zhtup;	/* tuple is updated */
+
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 		{
 			if (ZHeapTupleHeaderGetCid(tuple, buffer) >= snapshot->curcid)
@@ -443,6 +466,10 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 									snapshot,
 									buffer);
 	}
+
+	/* if the transaction slot is cleared, tuple must be all visible */
+	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
+			return zhtup;
 
 	if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 	{
@@ -491,6 +518,14 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	if (tuple->t_infomask & ZHEAP_DELETED)
 	{
 		*in_place_updated = false;
+
+		/*
+		 * if the transaction slot is cleared, tuple is deleted and must be
+		 * all visible
+		 */
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
+			return HeapTupleUpdated;
+
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 		{
 			if (ZHeapTupleHeaderGetCid(tuple, buffer) >= curcid)
@@ -549,6 +584,14 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED)
 	{
 		*in_place_updated = true;
+
+		/*
+		 * if the transaction slot is cleared, tuple is updated and must be
+		 * all visible
+		 */
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
+			return HeapTupleMayBeUpdated;
+
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 		{
 			if (ZHeapTupleHeaderGetCid(tuple, buffer) >= curcid)
@@ -604,6 +647,12 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 				return HeapTupleInvisible;
 		}
 	}
+
+	/*
+	 * if the transaction slot is cleared, tuple must be all visible
+	 */
+	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
+		return HeapTupleMayBeUpdated;
 
 	if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 	{

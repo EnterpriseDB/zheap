@@ -24,6 +24,8 @@
 
 /* valid values for transaction slot is between 0 and MAX_PAGE_TRANS_INFO_SLOTS */
 #define InvalidXactSlotId	(-1)
+/* we use frozen slot to indicate that the tuple is all visible now */
+#define	ZHTUP_SLOT_FROZEN	0x007
 
 /*
  * Heap tuple header.  To avoid wasting space, the fields should be
@@ -82,7 +84,7 @@ typedef ZHeapTupleData *ZHeapTuple;
  * information stored in t_infomask2:
  */
 #define ZHEAP_NATTS_MASK			0x07FF	/* 11 bits for number of attributes */
-#define ZHEAP_XACT_SLOT				0x1800	/* 2 bits (12 and 13) for transaction slot */
+#define ZHEAP_XACT_SLOT				0x3800	/* 3 bits (12, 13 and 14) for transaction slot */
 #define	ZHEAP_XACT_SLOT_MASK		0x000B	/* 11 - mask to retrieve transaction slot */
 
 
