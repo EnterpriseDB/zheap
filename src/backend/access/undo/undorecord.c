@@ -502,7 +502,6 @@ InsertPreparedUndo(void)
 	int		starting_byte;
 	int		already_written = 0;
 	int		i;
-	ListCell *lc;
 
 	starting_byte = UndoRecPtrGetPageOffset(undo_rec_ptr);
 

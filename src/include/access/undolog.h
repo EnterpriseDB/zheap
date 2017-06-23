@@ -65,7 +65,7 @@ typedef int UndoLogNumber;
 
 /* Extract the offset from an UndoRecPtr. */
 #define UndoRecPtrGetOffset(urp)				\
-	((urp) & (UINT64CONST(1) << UndoLogOffsetBits) - 1)
+	((urp) & ((UINT64CONST(1) << UndoLogOffsetBits) - 1))
 
 /* Make an UndoRecPtr from an log number and offset. */
 #define MakeUndoRecPtr(logno, offset)			\
