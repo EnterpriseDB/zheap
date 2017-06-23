@@ -46,6 +46,12 @@ typedef ZHeapPageOpaqueData *ZHeapPageOpaque;
 
 extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options);
+extern HTSU_Result zheap_delete(Relation relation, ItemPointer tid,
+						CommandId cid, Snapshot crosscheck, bool wait,
+						HeapUpdateFailureData *hufd);
+extern HTSU_Result zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
+					CommandId cid, Snapshot crosscheck, bool wait,
+					HeapUpdateFailureData *hufd, LockTupleMode *lockmode);
 extern void ZheapInitPage(Page page, Size pageSize);
 
 /* Zheap scan related API's */

@@ -40,7 +40,9 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
+#include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "utils/datum.h"
 #include "utils/expandeddatum.h"
 #include "utils/inval.h"
 #include "utils/memdebug.h"
@@ -56,6 +58,9 @@ int		data_alignment_zheap = 1;
 extern bool synchronize_seqscans;
 
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup);
+static Bitmapset *
+ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
+							  ZHeapTuple oldtup, ZHeapTuple newtup);
 static HeapScanDesc
 zheap_beginscan_internal(Relation relation, Snapshot snapshot,
 						 int nkeys, ScanKey key,
@@ -69,8 +74,8 @@ zheap_beginscan_internal(Relation relation, Snapshot snapshot,
 
 static int PageReserveTransactionSlot(Page page, TransactionId xid);
 static inline UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
-static inline void PageSetUNDO(Page page, int trans_slot_id, CommandId cid,
-						UndoRecPtr urecptr);
+static inline void PageSetUNDO(Page page, int trans_slot_id, TransactionId xid,
+						CommandId cid, UndoRecPtr urecptr);
 
 
 #include "access/bufmask.h"
@@ -149,7 +154,7 @@ zheap_fill_tuple(TupleDesc tupleDesc,
 		bitmask = 0;
 	}
 
-	*infomask &= ~(HEAP_HASNULL | HEAP_HASVARWIDTH | HEAP_HASEXTERNAL);
+	*infomask &= ~(ZHEAP_HASNULL | ZHEAP_HASVARWIDTH | ZHEAP_HASEXTERNAL);
 
 	for (i = 0; i < numberOfAttributes; i++)
 	{
@@ -169,7 +174,7 @@ zheap_fill_tuple(TupleDesc tupleDesc,
 
 			if (isnull[i])
 			{
-				*infomask |= HEAP_HASNULL;
+				*infomask |= ZHEAP_HASNULL;
 				continue;
 			}
 
@@ -193,7 +198,7 @@ zheap_fill_tuple(TupleDesc tupleDesc,
 			/* varlena */
 			Pointer		val = DatumGetPointer(values[i]);
 
-			*infomask |= HEAP_HASVARWIDTH;
+			*infomask |= ZHEAP_HASVARWIDTH;
 			if (VARATT_IS_EXTERNAL(val))
 			{
 				if (VARATT_IS_EXTERNAL_EXPANDED(val))
@@ -211,7 +216,7 @@ zheap_fill_tuple(TupleDesc tupleDesc,
 				}
 				else
 				{
-					*infomask |= HEAP_HASEXTERNAL;
+					*infomask |= ZHEAP_HASEXTERNAL;
 					/* no alignment, since it's short by definition */
 					data_length = VARSIZE_EXTERNAL(val);
 					memcpy(data, val, data_length);
@@ -243,7 +248,7 @@ zheap_fill_tuple(TupleDesc tupleDesc,
 		else if (att->attlen == -2)
 		{
 			/* cstring ... never needs alignment */
-			*infomask |= HEAP_HASVARWIDTH;
+			*infomask |= ZHEAP_HASVARWIDTH;
 			Assert(att->attalign == 'c');
 			data_length = strlen(DatumGetCString(values[i])) + 1;
 			memcpy(data, DatumGetPointer(values[i]), data_length);
@@ -332,7 +337,7 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 
 	/*
 	 * Allocate and zero the space needed.  Note that the tuple body and
-	 * HeapTupleData management structure are allocated in one chunk.
+	 * ZHeapTupleData management structure are allocated in one chunk.
 	 */
 	tuple = MemoryContextAllocExtended(CurrentMemoryContext,
 									   ZHEAPTUPLESIZE + len,
@@ -438,7 +443,6 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup)
 /*
  * zheap_insert - insert tuple into a zheap
  *
- * There are notable
  * The functionality related to heap is quite similar to heap_insert,
  * additionaly this function inserts an undo record and updates the undo
  * pointer in page header or in TPD entry for this page.
@@ -544,6 +548,8 @@ reacquire_buffer:
 	undorecord.uur_blkprev = prev_urecptr;
 	undorecord.uur_block = blkno;
 	undorecord.uur_offset = offnum;
+	undorecord.uur_payload.len = 0;
+	undorecord.uur_tuple.len = 0;
 
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
 
@@ -551,7 +557,7 @@ reacquire_buffer:
 	START_CRIT_SECTION();
 
 	InsertPreparedUndo();
-	PageSetUNDO(page, trans_slot_id, cid, urecptr);
+	PageSetUNDO(page, trans_slot_id, xid, cid, urecptr);
 
 	/* XLOG stuff */
 	if (!(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation))
@@ -702,12 +708,857 @@ slot_getsyszattr(TupleTableSlot *slot, int attnum,
 }
 
 /*
+ * zheap_delete - delete a tuple
+ *
+ * The functionality related to heap is quite similar to heap_delete,
+ * additionaly this function inserts an undo record and updates the undo
+ * pointer in page header or in TPD entry for this page.
+ */
+HTSU_Result
+zheap_delete(Relation relation, ItemPointer tid,
+			 CommandId cid, Snapshot crosscheck, bool wait,
+			 HeapUpdateFailureData *hufd)
+{
+	HTSU_Result result;
+	TransactionId xid = GetCurrentTransactionId();
+	ItemId		lp;
+	ZHeapTupleData zheaptup;
+	UnpackedUndoRecord	undorecord;
+	Page		page;
+	BlockNumber blkno;
+	OffsetNumber offnum;
+	Buffer		buffer;
+	Buffer		vmbuffer = InvalidBuffer;
+	UndoRecPtr	urecptr, prev_urecptr;
+	ItemPointerData	ctid;
+	ZHeapPageOpaque	opaque;
+	int			trans_slot_id;
+	bool		have_tuple_lock = false;
+	bool		in_place_updated = false;
+
+	Assert(ItemPointerIsValid(tid));
+
+	/*
+	 * Forbid this during a parallel operation, lest it allocate a combocid.
+	 * Other workers might need that combocid for visibility checks, and we
+	 * have no provision for broadcasting it to them.
+	 */
+	if (IsInParallelMode())
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
+				 errmsg("cannot delete tuples during a parallel operation")));
+
+	blkno = ItemPointerGetBlockNumber(tid);
+	buffer = ReadBuffer(relation, blkno);
+	page = BufferGetPage(buffer);
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+	/*
+	 * Before locking the buffer, pin the visibility map page if it appears to
+	 * be necessary.  Since we haven't got the lock yet, someone else might be
+	 * in the middle of changing this, so we'll need to recheck after we have
+	 * the lock.
+	 */
+	if (PageIsAllVisible(page))
+		visibilitymap_pin(relation, blkno, &vmbuffer);
+
+reacquire_buffer:
+
+	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+	/*
+	 * If we didn't pin the visibility map page and the page has become all
+	 * visible while we were busy locking the buffer, we'll have to unlock and
+	 * re-lock, to avoid holding the buffer lock across an I/O.  That's a bit
+	 * unfortunate, but hopefully shouldn't happen often.
+	 */
+	if (vmbuffer == InvalidBuffer && PageIsAllVisible(page))
+	{
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		visibilitymap_pin(relation, blkno, &vmbuffer);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+	}
+
+	/*
+	 * The transaction information of tuple needs to be set in transaction
+	 * slot, so needs to reserve the slot before proceeding with the actual
+	 * operation.  It will be costly to wait for getting the slot, but we do
+	 * that by releasing the buffer lock.
+	 */
+	trans_slot_id = PageReserveTransactionSlot(page, xid);
+
+	if (trans_slot_id == InvalidXactSlotId)
+	{
+		UnlockReleaseBuffer(buffer);
+
+		pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
+		pg_usleep(10000L);	/* 10 ms */
+		pgstat_report_wait_end();
+
+		goto reacquire_buffer;
+	}
+
+	/* transaction slot must be reserved before adding tuple to page */
+	Assert(trans_slot_id != InvalidXactSlotId);
+
+	offnum = ItemPointerGetOffsetNumber(tid);
+	lp = PageGetItemId(page, offnum);
+	Assert(ItemIdIsNormal(lp));
+
+	zheaptup.t_tableOid = RelationGetRelid(relation);
+	zheaptup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+	zheaptup.t_len = ItemIdGetLength(lp);
+	zheaptup.t_self = *tid;
+
+	ctid = *tid;
+
+check_tup_satisfies_update:
+	result = ZHeapTupleSatisfiesUpdate(&zheaptup, cid, buffer, &ctid, false,
+									   &in_place_updated);
+
+	if (result == HeapTupleInvisible)
+	{
+		UnlockReleaseBuffer(buffer);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("attempted to delete invisible tuple")));
+	}
+	else if (result == HeapTupleBeingUpdated && wait)
+	{
+		TransactionId xwait;
+
+		/* must copy state data before unlocking buffer */
+		xwait = ZHeapTupleHeaderGetRawXid(zheaptup.t_data, opaque);
+
+		/*
+		 * Sleep until concurrent transaction ends -- except when there's a
+		 * single locker and it's our own transaction.  Note we don't care
+		 * which lock mode the locker has, because we need the strongest one.
+		 *
+		 * Before sleeping, we need to acquire tuple lock to establish our
+		 * priority for the tuple (see heap_lock_tuple).  LockTuple will
+		 * release us when we are next-in-line for the tuple.
+		 *
+		 * If we are forced to "start over" below, we keep the tuple lock;
+		 * this arranges that we stay at the head of the line while rechecking
+		 * tuple state.
+		 */
+		if (!TransactionIdIsCurrentTransactionId(xwait))
+		{
+			/*
+			 * Wait for regular transaction to end; but first, acquire tuple
+			 * lock.
+			 */
+			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+			heap_acquire_tuplock(relation, &(zheaptup.t_self), LockTupleExclusive,
+								 LockWaitBlock, &have_tuple_lock);
+			XactLockTableWait(xwait, relation, &(zheaptup.t_self), XLTW_Delete);
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+			/*
+			 * xwait is done, but if xwait had just locked the tuple then some
+			 * other xact could update this tuple before we get to this point.
+			 * Check for xid change, and start over if so.
+			 */
+			if (!TransactionIdEquals(ZHeapTupleHeaderGetRawXid(zheaptup.t_data, opaque),
+									 xwait))
+				goto check_tup_satisfies_update;
+		}
+
+		/*
+		 * We may overwrite if previous xid aborted, or if it committed but
+		 * only locked the tuple without updating it.
+		 */
+		if (TransactionIdDidCommit(xwait))
+			result = HeapTupleUpdated;
+		else
+			result = HeapTupleMayBeUpdated;
+	}
+
+	if (crosscheck != InvalidSnapshot && result == HeapTupleMayBeUpdated)
+	{
+		/* Perform additional check for transaction-snapshot mode RI updates */
+		if (!ZHeapTupleSatisfiesVisibility(&zheaptup, crosscheck, buffer))
+			result = HeapTupleUpdated;
+	}
+
+	if (result != HeapTupleMayBeUpdated)
+	{
+		Assert(result == HeapTupleSelfUpdated ||
+			   result == HeapTupleUpdated ||
+			   result == HeapTupleBeingUpdated);
+		Assert(zheaptup.t_data->t_infomask & ZHEAP_DELETED ||
+			   zheaptup.t_data->t_infomask & ZHEAP_INPLACE_UPDATED);
+		hufd->ctid = ctid;
+		hufd->xmax = ZHeapTupleHeaderGetRawXid(zheaptup.t_data, opaque);
+		if (result == HeapTupleSelfUpdated)
+			hufd->cmax = ZHeapTupleHeaderGetRawCommandId(zheaptup.t_data, opaque);
+		else
+			hufd->cmax = InvalidCommandId;
+		UnlockReleaseBuffer(buffer);
+		hufd->in_place_updated = in_place_updated;
+		if (have_tuple_lock)
+			UnlockTupleTuplock(relation, &(zheaptup.t_self), LockTupleExclusive);
+		if (vmbuffer != InvalidBuffer)
+			ReleaseBuffer(vmbuffer);
+		return result;
+	}
+
+	/*
+	 * Fixme: Api's for serializable isolation level that take zheaptuple as
+	 * input needs to be written.
+	 */
+	/* CheckForSerializableConflictIn(relation, &tp, buffer); */
+
+	prev_urecptr = PageGetUNDO(page, trans_slot_id);
+
+	/* prepare an undo record */
+	undorecord.uur_type = UNDO_DELETE;
+	undorecord.uur_info = 0;
+	undorecord.uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
+	undorecord.uur_relfilenode = relation->rd_node.relNode;
+	undorecord.uur_tsid = relation->rd_node.spcNode;
+	undorecord.uur_fork = MAIN_FORKNUM;
+	undorecord.uur_blkprev = prev_urecptr;
+	undorecord.uur_block = blkno;
+	undorecord.uur_offset = offnum;
+	undorecord.uur_payload.len = 0;
+
+	initStringInfo(&undorecord.uur_tuple);
+
+	/*
+	 * Here, we are storing transaction slot id as an integer, but we can optimize
+	 * it to just store as two bits as we do in tuple header.
+	 *
+	 * XXX - The transaction slot id is stored in undo on the assumption that
+	 * if the slot got reused or transaction info is removed from page header
+	 * (after transaction becomes all-visible), corresponding undo will never
+	 * be referred.
+	 */
+	appendBinaryStringInfo(&undorecord.uur_tuple,
+						   (char *) zheaptup.t_data,
+						   SizeofZHeapTupleHeader);
+
+	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+
+	START_CRIT_SECTION();
+
+	if (PageIsAllVisible(page))
+	{
+		PageClearAllVisible(page);
+		visibilitymap_clear(relation, BufferGetBlockNumber(buffer),
+							vmbuffer, VISIBILITYMAP_VALID_BITS);
+	}
+
+	ZHeapTupleHeaderSetXactSlot(zheaptup.t_data, trans_slot_id);
+
+	InsertPreparedUndo();
+	PageSetUNDO(page, trans_slot_id, xid, cid, urecptr);
+
+	zheaptup.t_data->t_infomask |= ZHEAP_DELETED;
+
+	MarkBufferDirty(buffer);
+
+	/*
+	 * Fixme - Do xlog stuff
+	 */
+
+	END_CRIT_SECTION();
+
+	/* be tidy */
+	pfree(undorecord.uur_tuple.data);
+
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+	if (vmbuffer != InvalidBuffer)
+		ReleaseBuffer(vmbuffer);
+
+	/*
+	 * Fixme - Delete from toast table before releasing the buffer pin.
+	 */
+
+	/* Now we can release the buffer */
+	ReleaseBuffer(buffer);
+	UnlockReleaseUndoBuffers();
+
+	pgstat_count_heap_delete(relation);
+
+	return HeapTupleMayBeUpdated;
+}
+
+/*
+ * zheap_update - update a tuple
+ *
+ * This function either updates the tuple in-place or it deletes the old
+ * tuple and new tuple for non-in-place updates.  Additionaly this function
+ * inserts an undo record and updates the undo pointer in page header or in
+ * TPD entry for this page.
+ *
+ * For input and output values, see heap_update.
+ */
+HTSU_Result
+zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
+			 CommandId cid, Snapshot crosscheck, bool wait,
+			 HeapUpdateFailureData *hufd, LockTupleMode *lockmode)
+{
+	HTSU_Result result;
+	TransactionId xid = GetCurrentTransactionId();
+	Bitmapset  *inplace_upd_attrs;
+	Bitmapset  *interesting_attrs;
+	Bitmapset  *modified_attrs;
+	ItemId		lp;
+	ZHeapTupleData oldtup;
+	ZHeapPageOpaque	opaque;
+	UndoRecPtr	urecptr, prev_urecptr;
+	UnpackedUndoRecord	undorecord;
+	Page		page;
+	BlockNumber block;
+	ItemPointerData	ctid;
+	Buffer		buffer,
+				vmbuffer = InvalidBuffer;
+	int			trans_slot_id;
+	bool		have_tuple_lock = false;
+	bool		inplace_upd_attrs_checked = false;
+	bool		use_inplace_update = false;
+	bool		in_place_updated = false;
+
+	Assert(ItemPointerIsValid(otid));
+
+	/*
+	 * Forbid this during a parallel operation, lest it allocate a combocid.
+	 * Other workers might need that combocid for visibility checks, and we
+	 * have no provision for broadcasting it to them.
+	 */
+	if (IsInParallelMode())
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
+				 errmsg("cannot update tuples during a parallel operation")));
+
+	/*
+	 * Fetch the list of attributes to be checked for in-place update.  This is
+	 * wasted effort if we fail to update or have to put the new tuple on a
+	 * different page.  But we must compute the list before obtaining buffer
+	 * lock --- in the worst case, if we are doing an update on one of the
+	 * relevant system catalogs, we could deadlock if we try to fetch the list
+	 * later.  In any case, the relcache caches the data so this is usually
+	 * pretty cheap.
+	 *
+	 * Note that we get a copy here, so we need not worry about relcache flush
+	 * happening midway through.
+	 */
+	inplace_upd_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_HOT);
+
+	block = ItemPointerGetBlockNumber(otid);
+	buffer = ReadBuffer(relation, block);
+	page = BufferGetPage(buffer);
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+	interesting_attrs = NULL;
+
+	/*
+	 * Before locking the buffer, pin the visibility map page if it appears to
+	 * be necessary.  Since we haven't got the lock yet, someone else might be
+	 * in the middle of changing this, so we'll need to recheck after we have
+	 * the lock.
+	 */
+	if (PageIsAllVisible(page))
+		visibilitymap_pin(relation, block, &vmbuffer);
+
+	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(otid));
+	Assert(ItemIdIsNormal(lp));
+
+	/*
+	 * Fill in enough data in oldtup for ZHeapDetermineModifiedColumns to work
+	 * properly.
+	 */
+	oldtup.t_tableOid = RelationGetRelid(relation);
+	oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+	oldtup.t_len = ItemIdGetLength(lp);
+	oldtup.t_self = *otid;
+
+	/* the new tuple is ready, except for this: */
+	newtup->t_tableOid = RelationGetRelid(relation);
+
+	/* Fill in OID for newtup */
+	if (relation->rd_rel->relhasoids)
+	{
+#ifdef NOT_USED
+		/* this is redundant with an Assert in HeapTupleSetOid */
+		Assert(newtup->t_data->t_infomask & HEAP_HASOID);
+#endif
+		ZHeapTupleSetOid(newtup, ZHeapTupleGetOid(&oldtup));
+	}
+	else
+	{
+		/* check there is not space for an OID */
+		Assert(!(newtup->t_data->t_infomask & ZHEAP_HASOID));
+	}
+
+	/*
+	 * inplace updates can be done only if the length of new tuple is lesser
+	 * than or equal to old tuple and there are no index column updates.
+	 */
+	if (newtup->t_len <= oldtup.t_len)
+	{
+		interesting_attrs = bms_add_members(interesting_attrs, inplace_upd_attrs);
+		inplace_upd_attrs_checked = true;
+	}
+
+	/* Determine columns modified by the update. */
+	modified_attrs = ZHeapDetermineModifiedColumns(relation, interesting_attrs,
+												  &oldtup, newtup);
+
+	if (inplace_upd_attrs_checked &&
+		!bms_overlap(modified_attrs, inplace_upd_attrs))
+		use_inplace_update = true;
+	else
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("non inplace updates are not supported")));
+
+	/*
+	 * Fixme - Weaker locks can be used for non-key column updates, however
+	 * the same is not supportted for zheap as of now.
+	 */
+	*lockmode = LockTupleExclusive;
+
+	/*
+	 * ctid needs to be fetched from undo chain.  You might think that it will
+	 * be always same as the passed in ctid as the old tuple is already visible
+	 * out snapshot.  However, it is quite possible that after checking the
+	 * visibility of old tuple, some concurrent session would have performed
+	 * non in-place update and in such a case we need can only get it via
+	 * undo.
+	 */
+	ctid = *otid;
+
+check_tup_satisfies_update:
+	result = ZHeapTupleSatisfiesUpdate(&oldtup, cid, buffer, &ctid, false,
+									   &in_place_updated);
+
+	if (result == HeapTupleInvisible)
+	{
+		UnlockReleaseBuffer(buffer);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("attempted to delete invisible tuple")));
+	}
+	else if (result == HeapTupleBeingUpdated && wait)
+	{
+		TransactionId xwait;
+
+		/* must copy state data before unlocking buffer */
+		xwait = ZHeapTupleHeaderGetRawXid(oldtup.t_data, opaque);
+
+		if (!TransactionIdIsCurrentTransactionId(xwait))
+		{
+			/*
+			 * Wait for regular transaction to end; but first, acquire tuple
+			 * lock.
+			 */
+			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+			heap_acquire_tuplock(relation, &(oldtup.t_self), *lockmode,
+								 LockWaitBlock, &have_tuple_lock);
+			XactLockTableWait(xwait, relation, &oldtup.t_self,
+							  XLTW_Update);
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+			/*
+			 * xwait is done, but if xwait had just locked the tuple then some
+			 * other xact could update this tuple before we get to this point.
+			 * Check for xid change, and start over if so.
+			 */
+			if (!TransactionIdEquals(ZHeapTupleHeaderGetRawXid(oldtup.t_data, opaque),
+									 xwait))
+				goto check_tup_satisfies_update;
+		}
+
+		/*
+		 * We may overwrite if previous xid aborted, or if it committed but
+		 * only locked the tuple without updating it.
+		 */
+		if (TransactionIdDidCommit(xwait))
+			result = HeapTupleUpdated;
+		else
+			result = HeapTupleMayBeUpdated;
+	}
+
+	if (crosscheck != InvalidSnapshot && result == HeapTupleMayBeUpdated)
+	{
+		/* Perform additional check for transaction-snapshot mode RI updates */
+		if (!ZHeapTupleSatisfiesVisibility(&oldtup, crosscheck, buffer))
+			result = HeapTupleUpdated;
+	}
+
+	if (result != HeapTupleMayBeUpdated)
+	{
+		Assert(result == HeapTupleSelfUpdated ||
+			   result == HeapTupleUpdated ||
+			   result == HeapTupleBeingUpdated);
+
+		hufd->ctid = ctid;
+		hufd->xmax = ZHeapTupleHeaderGetRawXid(oldtup.t_data, opaque);
+		if (result == HeapTupleSelfUpdated)
+			hufd->cmax = ZHeapTupleHeaderGetRawCommandId(oldtup.t_data, opaque);
+		else
+			hufd->cmax = InvalidCommandId;
+		UnlockReleaseBuffer(buffer);
+		hufd->in_place_updated = in_place_updated;
+		if (have_tuple_lock)
+			UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
+		if (vmbuffer != InvalidBuffer)
+			ReleaseBuffer(vmbuffer);
+		bms_free(inplace_upd_attrs);
+		return result;
+	}
+
+	/*
+	 * Try to acquire the pin on visibility map if it is not already pinned.
+	 * See heap_update for the detailed reason.
+	 */
+	if (vmbuffer == InvalidBuffer && PageIsAllVisible(page))
+	{
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		visibilitymap_pin(relation, block, &vmbuffer);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		goto check_tup_satisfies_update;
+	}
+
+	/*
+	 * The transaction information of tuple needs to be set in transaction
+	 * slot, so needs to reserve the slot before proceeding with the actual
+	 * operation.  It will be costly to wait for getting the slot, but we do
+	 * that by releasing the buffer lock.
+	 */
+	trans_slot_id = PageReserveTransactionSlot(page, xid);
+
+	if (trans_slot_id == InvalidXactSlotId)
+	{
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+		pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
+		pg_usleep(10000L);	/* 10 ms */
+		pgstat_report_wait_end();
+
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+		goto check_tup_satisfies_update;
+	}
+
+	/* transaction slot must be reserved before adding tuple to page */
+	Assert(trans_slot_id != InvalidXactSlotId);
+
+	/*
+	 * Fixme: Api's for serializable isolation level that take zheaptuple as
+	 * input needs to be written.
+	 */
+	/* CheckForSerializableConflictIn(relation, &oldtup, buffer); */
+
+	prev_urecptr = PageGetUNDO(page, trans_slot_id);
+
+	/* prepare an undo record */
+	undorecord.uur_type = UNDO_INPLACE_UPDATE;
+	undorecord.uur_info = 0;
+	undorecord.uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
+	undorecord.uur_relfilenode = relation->rd_node.relNode;
+	undorecord.uur_tsid = relation->rd_node.spcNode;
+	undorecord.uur_fork = MAIN_FORKNUM;
+	undorecord.uur_blkprev = prev_urecptr;
+	undorecord.uur_block = ItemPointerGetBlockNumber(&(oldtup.t_self));
+	undorecord.uur_offset = ItemPointerGetOffsetNumber(&(oldtup.t_self));
+	undorecord.uur_payload.len = 0;
+
+	initStringInfo(&undorecord.uur_tuple);
+
+	/*
+	 * Copy the entire old tuple including it's header in the undo record.
+	 * We need this to reconstruct the old tuple if current tuple is not
+	 * visible to some other transaction.
+	 */
+	appendBinaryStringInfo(&undorecord.uur_tuple,
+						   (char *) &oldtup.t_len,
+						   sizeof(uint32));
+	appendBinaryStringInfo(&undorecord.uur_tuple,
+						   (char *) &oldtup.t_self,
+						   sizeof(ItemPointerData));
+	appendBinaryStringInfo(&undorecord.uur_tuple,
+						   (char *) &oldtup.t_tableOid,
+						   sizeof(Oid));
+	appendBinaryStringInfo(&undorecord.uur_tuple,
+						   (char *) oldtup.t_data,
+						   oldtup.t_len);
+
+	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+
+	START_CRIT_SECTION();
+
+	if (PageIsAllVisible(page))
+	{
+		PageClearAllVisible(page);
+		visibilitymap_clear(relation, BufferGetBlockNumber(buffer),
+							vmbuffer, VISIBILITYMAP_VALID_BITS);
+	}
+
+	InsertPreparedUndo();
+	PageSetUNDO(page, trans_slot_id, xid, cid, urecptr);
+
+	ZHeapTupleHeaderSetXactSlot(oldtup.t_data, trans_slot_id);
+	oldtup.t_data->t_infomask |= ZHEAP_INPLACE_UPDATED;
+
+	/* keep the new tuple copy updated for the caller */
+	ZHeapTupleHeaderSetXactSlot(newtup->t_data, trans_slot_id);
+	newtup->t_data->t_infomask |= ZHEAP_INPLACE_UPDATED;
+
+	/*
+	 * For inplace updates, we copy the entire data portion including null
+	 * bitmap of new tuple.
+	 */
+	ItemIdChangeLen(lp, newtup->t_len);
+	memcpy((char *) oldtup.t_data + SizeofZHeapTupleHeader,
+		   (char *) newtup->t_data + SizeofZHeapTupleHeader,
+		   newtup->t_len - SizeofZHeapTupleHeader);
+
+	MarkBufferDirty(buffer);
+
+	/*
+	 * Fixme - Do xlog stuff
+	 */
+	END_CRIT_SECTION();
+
+	/* be tidy */
+	pfree(undorecord.uur_tuple.data);
+
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+	/*
+	 * Fixme - need to support cache invalidation API's for zheaptuples.
+	 */
+	/* CacheInvalidateHeapTuple(relation, &oldtup, heaptup); */
+
+	if (vmbuffer != InvalidBuffer)
+		ReleaseBuffer(vmbuffer);
+	ReleaseBuffer(buffer);
+	UnlockReleaseUndoBuffers();
+
+	/*
+	 * Release the lmgr tuple lock, if we had it.
+	 */
+	if (have_tuple_lock)
+		UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
+
+	pgstat_count_heap_update(relation, use_inplace_update);
+
+	return HeapTupleMayBeUpdated;
+}
+
+/*
  * zheap_freetuple
  */
 void
 zheap_freetuple(ZHeapTuple zhtup)
 {
 	pfree(zhtup);
+}
+
+/*
+ * znocachegetattr - This is same as nocachegetattr except that it takes
+ * ZHeapTuple as input.
+ */
+Datum
+znocachegetattr(ZHeapTuple tuple,
+				int attnum,
+				TupleDesc tupleDesc)
+{
+	ZHeapTupleHeader tup = tuple->t_data;
+	char	   *tp;				/* ptr to data part of tuple */
+	bits8	   *bp = tup->t_bits;	/* ptr to null bitmap in tuple */
+	bool		slow = false;	/* do we have to walk attrs? */
+	int			off;			/* current offset within data */
+
+	/* ----------------
+	 *	 Three cases:
+	 *
+	 *	 1: No nulls and no variable-width attributes.
+	 *	 2: Has a null or a var-width AFTER att.
+	 *	 3: Has nulls or var-widths BEFORE att.
+	 * ----------------
+	 */
+
+	attnum--;
+
+	if (!ZHeapTupleNoNulls(tuple))
+	{
+		/*
+		 * there's a null somewhere in the tuple
+		 *
+		 * check to see if any preceding bits are null...
+		 */
+		int			byte = attnum >> 3;
+		int			finalbit = attnum & 0x07;
+
+		/* check for nulls "before" final bit of last byte */
+		if ((~bp[byte]) & ((1 << finalbit) - 1))
+			slow = true;
+		else
+		{
+			/* check for nulls in any "earlier" bytes */
+			int			i;
+
+			for (i = 0; i < byte; i++)
+			{
+				if (bp[i] != 0xFF)
+				{
+					slow = true;
+					break;
+				}
+			}
+		}
+	}
+
+	tp = (char *) tup + tup->t_hoff;
+
+	if (!slow)
+	{
+		Form_pg_attribute att;
+
+		/*
+		 * If we get here, there are no nulls up to and including the target
+		 * attribute.  If we have a cached offset, we can use it.
+		 */
+		att = TupleDescAttr(tupleDesc, attnum);
+		if (att->attcacheoff >= 0)
+			return fetchatt(att, tp + att->attcacheoff);
+
+		/*
+		 * Otherwise, check for non-fixed-length attrs up to and including
+		 * target.  If there aren't any, it's safe to cheaply initialize the
+		 * cached offsets for these attrs.
+		 */
+		if (ZHeapTupleHasVarWidth(tuple))
+		{
+			int			j;
+
+			for (j = 0; j <= attnum; j++)
+			{
+				if (TupleDescAttr(tupleDesc, j)->attlen <= 0)
+				{
+					slow = true;
+					break;
+				}
+			}
+		}
+	}
+
+	if (!slow)
+	{
+		int			natts = tupleDesc->natts;
+		int			j = 1;
+
+		/*
+		 * If we get here, we have a tuple with no nulls or var-widths up to
+		 * and including the target attribute, so we can use the cached offset
+		 * ... only we don't have it yet, or we'd not have got here.  Since
+		 * it's cheap to compute offsets for fixed-width columns, we take the
+		 * opportunity to initialize the cached offsets for *all* the leading
+		 * fixed-width columns, in hope of avoiding future visits to this
+		 * routine.
+		 */
+		TupleDescAttr(tupleDesc, 0)->attcacheoff = 0;
+
+		/* we might have set some offsets in the slow path previously */
+		while (j < natts && TupleDescAttr(tupleDesc, j)->attcacheoff > 0)
+			j++;
+
+		off = TupleDescAttr(tupleDesc, j - 1)->attcacheoff +
+			TupleDescAttr(tupleDesc, j - 1)->attlen;
+
+		for (; j < natts; j++)
+		{
+			Form_pg_attribute att = TupleDescAttr(tupleDesc, j);
+
+			if (att->attlen <= 0)
+				break;
+
+			off = att_align_nominal(off, att->attalign);
+
+			att->attcacheoff = off;
+
+			off += att->attlen;
+		}
+
+		Assert(j > attnum);
+
+		off = TupleDescAttr(tupleDesc, attnum)->attcacheoff;
+	}
+	else
+	{
+		bool		usecache = true;
+		int			i;
+
+		/*
+		 * Now we know that we have to walk the tuple CAREFULLY.  But we still
+		 * might be able to cache some offsets for next time.
+		 *
+		 * Note - This loop is a little tricky.  For each non-null attribute,
+		 * we have to first account for alignment padding before the attr,
+		 * then advance over the attr based on its length.  Nulls have no
+		 * storage and no alignment padding either.  We can use/set
+		 * attcacheoff until we reach either a null or a var-width attribute.
+		 */
+		off = 0;
+		for (i = 0;; i++)		/* loop exit is at "break" */
+		{
+			Form_pg_attribute att = TupleDescAttr(tupleDesc, i);
+
+			if (ZHeapTupleHasNulls(tuple) && att_isnull(i, bp))
+			{
+				usecache = false;
+				continue;		/* this cannot be the target att */
+			}
+
+			/* If we know the next offset, we can skip the rest */
+			if (usecache && att->attcacheoff >= 0)
+				off = att->attcacheoff;
+			else if (att->attlen == -1)
+			{
+				/*
+				 * We can only cache the offset for a varlena attribute if the
+				 * offset is already suitably aligned, so that there would be
+				 * no pad bytes in any case: then the offset will be valid for
+				 * either an aligned or unaligned value.
+				 */
+				if (usecache &&
+					off == att_align_nominal(off, att->attalign))
+					att->attcacheoff = off;
+				else
+				{
+					off = att_align_pointer(off, att->attalign, -1,
+											tp + off);
+					usecache = false;
+				}
+			}
+			else
+			{
+				/* not varlena, so safe to use att_align_nominal */
+				off = att_align_nominal(off, att->attalign);
+
+				if (usecache)
+					att->attcacheoff = off;
+			}
+
+			if (i == attnum)
+				break;
+
+			off = att_addlength_pointer(off, att->attlen, tp + off);
+
+			if (usecache && att->attlen <= 0)
+				usecache = false;
+		}
+	}
+
+	return fetchatt(TupleDescAttr(tupleDesc, attnum), tp + off);
 }
 
 /* ----------------
@@ -723,9 +1574,10 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 TupleDesc tupleDesc, bool *isnull)
 {
 	Datum		result;
-	ZHeapPageOpaque	opaque;
+	ZHeapPageOpaque	opaque = NULL;
 
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
+	if (BufferIsValid(buf))
+		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
 
 	Assert(zhtup);
 
@@ -748,15 +1600,18 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 			result = ObjectIdGetDatum(ZHeapTupleGetOid(zhtup));
 			break;
 		case MinTransactionIdAttributeNumber:
+			Assert (BufferIsValid(buf));
 			result = TransactionIdGetDatum(ZHeapTupleHeaderGetRawXid(zhtup->t_data, opaque));
 			Assert (false);
 			break;
 		case MaxTransactionIdAttributeNumber:
+			Assert (BufferIsValid(buf));
 			result = TransactionIdGetDatum(ZHeapTupleHeaderGetRawXid(zhtup->t_data, opaque));
 			Assert (false);
 			break;
 		case MinCommandIdAttributeNumber:
 		case MaxCommandIdAttributeNumber:
+			Assert (BufferIsValid(buf));
 			result = CommandIdGetDatum(ZHeapTupleHeaderGetRawCommandId(zhtup->t_data, opaque));
 			Assert (false);
 			break;
@@ -769,6 +1624,109 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 			break;
 	}
 	return result;
+}
+
+/*
+ * Check if the specified attribute's value is same in both given tuples.
+ * Subroutine for ZHeapDetermineModifiedColumns.
+ */
+static bool
+zheap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
+						ZHeapTuple tup1, ZHeapTuple tup2)
+{
+	Datum		value1,
+				value2;
+	bool		isnull1,
+				isnull2;
+	Form_pg_attribute att;
+
+	/*
+	 * If it's a whole-tuple reference, say "not equal".  It's not really
+	 * worth supporting this case, since it could only succeed after a no-op
+	 * update, which is hardly a case worth optimizing for.
+	 */
+	if (attrnum == 0)
+		return false;
+
+	/*
+	 * Likewise, automatically say "not equal" for any system attribute other
+	 * than OID and tableOID; we cannot expect these to be consistent in a HOT
+	 * chain, or even to be set correctly yet in the new tuple.
+	 */
+	if (attrnum < 0)
+	{
+		if (attrnum != ObjectIdAttributeNumber &&
+			attrnum != TableOidAttributeNumber)
+			return false;
+	}
+
+	/*
+	 * Extract the corresponding values.  XXX this is pretty inefficient if
+	 * there are many indexed columns.  Should HeapDetermineModifiedColumns do
+	 * a single heap_deform_tuple call on each tuple, instead?	But that
+	 * doesn't work for system columns ...
+	 */
+	value1 = zheap_getattr(tup1, attrnum, tupdesc, &isnull1);
+	value2 = zheap_getattr(tup2, attrnum, tupdesc, &isnull2);
+
+	/*
+	 * If one value is NULL and other is not, then they are certainly not
+	 * equal
+	 */
+	if (isnull1 != isnull2)
+		return false;
+
+	/*
+	 * If both are NULL, they can be considered equal.
+	 */
+	if (isnull1)
+		return true;
+
+	/*
+	 * We do simple binary comparison of the two datums.  This may be overly
+	 * strict because there can be multiple binary representations for the
+	 * same logical value.  But we should be OK as long as there are no false
+	 * positives.  Using a type-specific equality operator is messy because
+	 * there could be multiple notions of equality in different operator
+	 * classes; furthermore, we cannot safely invoke user-defined functions
+	 * while holding exclusive buffer lock.
+	 */
+	if (attrnum <= 0)
+	{
+		/* The only allowed system columns are OIDs, so do this */
+		return (DatumGetObjectId(value1) == DatumGetObjectId(value2));
+	}
+	else
+	{
+		Assert(attrnum <= tupdesc->natts);
+		att = TupleDescAttr(tupdesc, attrnum - 1);
+		return datumIsEqual(value1, value2, att->attbyval, att->attlen);
+	}
+}
+
+/*
+ * ZHeapDetermineModifiedColumns - Check which columns are being updated.
+ *	This is same as HeapDetermineModifiedColumns except that it takes
+ *	ZHeapTuple as input.
+ */
+static Bitmapset *
+ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
+							  ZHeapTuple oldtup, ZHeapTuple newtup)
+{
+	int			attnum;
+	Bitmapset  *modified = NULL;
+
+	while ((attnum = bms_first_member(interesting_cols)) >= 0)
+	{
+		attnum += FirstLowInvalidHeapAttributeNumber;
+
+		if (!zheap_tuple_attr_equals(RelationGetDescr(relation),
+									 attnum, oldtup, newtup))
+			modified = bms_add_member(modified,
+								attnum - FirstLowInvalidHeapAttributeNumber);
+	}
+
+	return modified;
 }
 
 /*
@@ -797,8 +1755,8 @@ PageGetUNDO(Page page, int trans_slot_id)
  *		transaction slot.
  */
 static inline void
-PageSetUNDO(Page page, int trans_slot_id, CommandId cid,
-			UndoRecPtr urecptr)
+PageSetUNDO(Page page, int trans_slot_id, TransactionId xid,
+			CommandId cid, UndoRecPtr urecptr)
 {
 	ZHeapPageOpaque	opaque;
 
@@ -806,6 +1764,7 @@ PageSetUNDO(Page page, int trans_slot_id, CommandId cid,
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 
+	opaque->transinfo[trans_slot_id].xid = xid;
 	opaque->transinfo[trans_slot_id].cid = cid;
 	opaque->transinfo[trans_slot_id].urec_ptr = urecptr;
 }
@@ -815,7 +1774,7 @@ PageSetUNDO(Page page, int trans_slot_id, CommandId cid,
  *
  *	This function returns true if either the page already has some slot that
  *	contains the transaction info or there is an empty slot; otherwise retruns
- *	false.  This also sets the tranasction id in the reserved slot.
+ *	false.
  */
 static int
 PageReserveTransactionSlot(Page page, TransactionId xid)
@@ -836,10 +1795,7 @@ PageReserveTransactionSlot(Page page, TransactionId xid)
 	}
 
 	if (latestFreeTransSlot >= 0)
-	{
-		opaque->transinfo[latestFreeTransSlot].xid = xid;
 		return latestFreeTransSlot;
-	}
 
 	/* no transaction slot available */
 	return InvalidXactSlotId;
@@ -992,8 +1948,6 @@ zinitscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 
 	scan->rs_numblocks = InvalidBlockNumber;
 	scan->rs_inited = false;
-	scan->rs_cztup.t_data = NULL;
-	ItemPointerSetInvalid(&scan->rs_cztup.t_self);
 	scan->rs_cbuf = InvalidBuffer;
 	scan->rs_cblock = InvalidBlockNumber;
 
@@ -1086,8 +2040,7 @@ zheap_beginscan_internal(Relation relation, Snapshot snapshot,
 	if (!is_bitmapscan)
 		PredicateLockRelation(relation, snapshot);
 
-	/* we only need to set this up once */
-	scan->rs_cztup.t_tableOid = RelationGetRelid(relation);
+	scan->rs_cztup = NULL;
 
 	/*
 	 * we do this here instead of in initscan() because heap_rescan also calls
@@ -1136,14 +2089,16 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 	CHECK_FOR_INTERRUPTS();
 
 	/* read page using selected strategy */
-	scan->rs_cbuf = ReadBufferExtended(scan->rs_rd, MAIN_FORKNUM, page,
+	buffer = ReadBufferExtended(scan->rs_rd, MAIN_FORKNUM, page,
 									   RBM_NORMAL, scan->rs_strategy);
 	scan->rs_cblock = page;
 
 	if (!scan->rs_pageatatime)
+	{
+		scan->rs_cbuf = buffer;
 		return;
+	}
 
-	buffer = scan->rs_cbuf;
 	snapshot = scan->rs_snapshot;
 
 	/*
@@ -1193,35 +2148,35 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 	{
 		if (ItemIdIsNormal(lpp))
 		{
-			ZHeapTupleData loctup;
+			ZHeapTuple loctup;
 			ZHeapTuple	resulttup;
+			Size		loctup_len;
 			bool		valid = false;
 
-			loctup.t_tableOid = RelationGetRelid(scan->rs_rd);
-			loctup.t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lpp);
-			loctup.t_len = ItemIdGetLength(lpp);
-			ItemPointerSet(&(loctup.t_self), page, lineoff);
+			loctup_len = ItemIdGetLength(lpp);
+
+			loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
+			loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
+
+			loctup->t_tableOid = RelationGetRelid(scan->rs_rd);
+			loctup->t_len = loctup_len;
+			ItemPointerSet(&(loctup->t_self), page, lineoff);
+
+			/*
+			 * We always need to make a copy of zheap tuple as once we release
+			 * the buffer an in-place update can change the tuple.
+			 */
+			memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lpp)), loctup->t_len);
 
 			if (all_visible)
+			{
 				valid = true;
+				resulttup = loctup;
+			}
 			else
 			{
-				resulttup = ZHeapTupleSatisfiesVisibility(&loctup, snapshot, buffer);
-
-				if (!resulttup)
-					valid = false;
-				else if (ItemPointerEquals(&resulttup->t_self, &loctup.t_self))
-					valid = true;
-				else
-				{
-					/*
-					 * Fixme: This can only happen once we have in-place updates.
-					 * We need to re-visit once we have in-place updates as then
-					 * it won't be feasible to maintain just an array of line
-					 * offsets.  We might want to maintain an array zheaptuples.
-					 */
-					Assert(false);
-				}
+				resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer);
+				valid = resulttup ? true : false;
 			}
 
 			/* Fixme - Serialization failures needs to be detected for zheap. */
@@ -1229,11 +2184,11 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 											buffer, snapshot); */
 
 			if (valid)
-				scan->rs_visztuples[ntup++] = lineoff;
+				scan->rs_visztuples[ntup++] = resulttup;
 		}
 	}
 
-	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+	UnlockReleaseBuffer(buffer);
 
 	Assert(ntup <= MaxZHeapTuplesPerPage);
 	scan->rs_ntuples = ntup;
@@ -1242,25 +2197,21 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 /* ----------------
  *		zheapgettup_pagemode - fetch next zheap tuple in page-at-a-time mode
  *
- *		Same API as heapgettup_pagemode, but used to get zheap tuple.
  * ----------------
  */
-static void
+static ZHeapTuple
 zheapgettup_pagemode(HeapScanDesc scan,
 					 ScanDirection dir,
 					 int nkeys,
 					 ScanKey key)
 {
-	ZHeapTuple	tuple = &(scan->rs_cztup);
+	ZHeapTuple	tuple = scan->rs_cztup;
 	bool		backward = ScanDirectionIsBackward(dir);
 	BlockNumber page;
 	bool		finished;
-	Page		dp;
 	int			lines;
 	int			lineindex;
-	OffsetNumber lineoff;
 	int			linesleft;
-	ItemId		lpp;
 
 	/*
 	 * calculate next starting lineindex, given scan direction
@@ -1275,8 +2226,8 @@ zheapgettup_pagemode(HeapScanDesc scan,
 			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
-				tuple->t_data = NULL;
-				return;
+				tuple = NULL;
+				return tuple;
 			}
 			if (scan->rs_parallel != NULL)
 			{
@@ -1286,8 +2237,8 @@ zheapgettup_pagemode(HeapScanDesc scan,
 				if (page == InvalidBlockNumber)
 				{
 					Assert(!BufferIsValid(scan->rs_cbuf));
-					tuple->t_data = NULL;
-					return;
+					tuple = NULL;
+					return tuple;
 				}
 			}
 			else
@@ -1303,8 +2254,8 @@ zheapgettup_pagemode(HeapScanDesc scan,
 			lineindex = scan->rs_cindex + 1;
 		}
 
-		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
+		/*dp = BufferGetPage(scan->rs_cbuf);
+		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);*/
 		lines = scan->rs_ntuples;
 		/* page and lineindex now reference the next visible tid */
 
@@ -1323,8 +2274,8 @@ zheapgettup_pagemode(HeapScanDesc scan,
 			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
-				tuple->t_data = NULL;
-				return;
+				tuple = NULL;
+				return tuple;
 			}
 
 			/*
@@ -1347,8 +2298,6 @@ zheapgettup_pagemode(HeapScanDesc scan,
 			page = scan->rs_cblock;		/* current page */
 		}
 
-		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
 		lines = scan->rs_ntuples;
 
 		if (!scan->rs_inited)
@@ -1366,35 +2315,30 @@ zheapgettup_pagemode(HeapScanDesc scan,
 	}
 	else
 	{
+		/* Fixme - no movement scan direction is yet to be implemented */
+		Assert(false);
 		/*
 		 * ``no movement'' scan direction: refetch prior tuple
 		 */
 		if (!scan->rs_inited)
 		{
 			Assert(!BufferIsValid(scan->rs_cbuf));
-			tuple->t_data = NULL;
-			return;
+			tuple = NULL;
+			return tuple;
 		}
 
 		page = ItemPointerGetBlockNumber(&(tuple->t_self));
 		if (page != scan->rs_cblock)
 			zheapgetpage(scan, page);
 
-		/* Since the tuple was previously fetched, needn't lock page here */
-		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
-		lineoff = ItemPointerGetOffsetNumber(&(tuple->t_self));
-		lpp = PageGetItemId(dp, lineoff);
-		Assert(ItemIdIsNormal(lpp));
-
-		tuple->t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lpp);
-		tuple->t_len = ItemIdGetLength(lpp);
-
-		/* check that rs_cindex is in sync */
-		Assert(scan->rs_cindex < scan->rs_ntuples);
-		Assert(lineoff == scan->rs_visztuples[scan->rs_cindex]);
-
-		return;
+		/*
+		 * Fixme - We can't rely on the current tuple as an in-place update
+		 * would have updated it, so we need to check its visibility again
+		 * and fetch the latest tuple if required.
+		 *
+		 * Also need to think if we need to take a lock on page.
+		 */
+		return NULL;
 	}
 
 	/*
@@ -1405,13 +2349,7 @@ zheapgettup_pagemode(HeapScanDesc scan,
 	{
 		while (linesleft > 0)
 		{
-			lineoff = scan->rs_visztuples[lineindex];
-			lpp = PageGetItemId(dp, lineoff);
-			Assert(ItemIdIsNormal(lpp));
-
-			tuple->t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lpp);
-			tuple->t_len = ItemIdGetLength(lpp);
-			ItemPointerSet(&(tuple->t_self), page, lineoff);
+			tuple = scan->rs_visztuples[lineindex];
 
 			/*
 			 * if current tuple qualifies, return it.
@@ -1437,7 +2375,7 @@ zheapgettup_pagemode(HeapScanDesc scan,
 			} */
 
 			scan->rs_cindex = lineindex;
-			return;
+			return tuple;
 			/*
 			 * otherwise move to the next item on the page
 			 */
@@ -1498,15 +2436,15 @@ zheapgettup_pagemode(HeapScanDesc scan,
 				ReleaseBuffer(scan->rs_cbuf);
 			scan->rs_cbuf = InvalidBuffer;
 			scan->rs_cblock = InvalidBlockNumber;
-			tuple->t_data = NULL;
+			tuple = NULL;
 			scan->rs_inited = false;
-			return;
+			return tuple;
 		}
 
 		zheapgetpage(scan, page);
 
-		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
+		/*dp = BufferGetPage(scan->rs_cbuf);
+		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);*/
 		lines = scan->rs_ntuples;
 		linesleft = lines;
 		if (backward)
@@ -1534,21 +2472,25 @@ zheapgettup_pagemode(HeapScanDesc scan,
 ZHeapTuple
 zheap_getnext(HeapScanDesc scan, ScanDirection direction)
 {
+	ZHeapTuple	zhtup = NULL;
+
 	/* Note: no locking manipulations needed */
 
 	ZHEAPDEBUG_1;				/* zheap_getnext( info ) */
 
 	if (scan->rs_pageatatime)
-		zheapgettup_pagemode(scan, direction,
+		zhtup = zheapgettup_pagemode(scan, direction,
 							scan->rs_nkeys, scan->rs_key);
 	else
 		Assert(false);	/* tuple mode is not supported for zheap */
 
-	if (scan->rs_cztup.t_data == NULL)
+	if (zhtup == NULL)
 	{
 		ZHEAPDEBUG_2;			/* zheap_getnext returning EOS */
 		return NULL;
 	}
+
+	scan->rs_cztup = zhtup;
 
 	/*
 	 * if we get here it means we have a new current scan tuple, so point to
@@ -1558,7 +2500,7 @@ zheap_getnext(HeapScanDesc scan, ScanDirection direction)
 
 	pgstat_count_heap_getnext(scan->rs_rd);
 
-	return &(scan->rs_cztup);
+	return zhtup;
 }
 
 /*

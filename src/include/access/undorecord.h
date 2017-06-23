@@ -24,7 +24,7 @@ typedef enum undorectype
 {
 	UNDO_INSERT,
 	UNDO_DELETE,
-	UNDO_UPDATE
+	UNDO_INPLACE_UPDATE
 } undorectype;
 
 /*

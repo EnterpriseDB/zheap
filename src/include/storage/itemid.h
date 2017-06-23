@@ -144,6 +144,17 @@ typedef uint16 ItemLength;
 )
 
 /*
+ * ItemIdChangeLen
+ *		Change the length of itemid.  The new length must be less than or
+ *		equal to existing length.
+ */
+#define ItemIdChangeLen(itemId, len) \
+( \
+	AssertMacro((itemId)->lp_len >= (len)), \
+	(itemId)->lp_len = (len) \
+)
+
+/*
  * ItemIdSetRedirect
  *		Set the item identifier to be REDIRECT, with the specified link.
  *		Beware of multiple evaluations of itemId!

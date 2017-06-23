@@ -32,46 +32,6 @@
 
 typedef struct BulkInsertStateData *BulkInsertState;
 
-/*
- * Possible lock modes for a tuple.
- */
-typedef enum LockTupleMode
-{
-	/* SELECT FOR KEY SHARE */
-	LockTupleKeyShare,
-	/* SELECT FOR SHARE */
-	LockTupleShare,
-	/* SELECT FOR NO KEY UPDATE, and UPDATEs that don't modify key columns */
-	LockTupleNoKeyExclusive,
-	/* SELECT FOR UPDATE, UPDATEs that modify key columns, and DELETE */
-	LockTupleExclusive
-} LockTupleMode;
-
-#define MaxLockTupleMode	LockTupleExclusive
-
-/*
- * When heap_update, heap_delete, or heap_lock_tuple fail because the target
- * tuple is already outdated, they fill in this struct to provide information
- * to the caller about what happened.
- * ctid is the target's ctid link: it is the same as the target's TID if the
- * target was deleted, or the location of the replacement tuple if the target
- * was updated.
- * xmax is the outdating transaction's XID.  If the caller wants to visit the
- * replacement tuple, it must check that this matches before believing the
- * replacement is really a match.
- * cmax is the outdating command's CID, but only when the failure code is
- * HeapTupleSelfUpdated (i.e., something in the current transaction outdated
- * the tuple); otherwise cmax is zero.  (We make this restriction because
- * HeapTupleHeaderGetCmax doesn't work for tuples outdated in other
- * transactions.)
- */
-typedef struct HeapUpdateFailureData
-{
-	ItemPointerData ctid;
-	TransactionId xmax;
-	CommandId	cmax;
-} HeapUpdateFailureData;
-
 
 /* ----------------
  *		function prototypes for heap access method

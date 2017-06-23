@@ -103,9 +103,6 @@ static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 static Bitmapset *HeapDetermineModifiedColumns(Relation relation,
 							 Bitmapset *interesting_cols,
 							 HeapTuple oldtup, HeapTuple newtup);
-static bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
-					 LockTupleMode mode, LockWaitPolicy wait_policy,
-					 bool *have_tuple_lock);
 static void compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
 						  uint16 old_infomask2, TransactionId add_to_xmax,
 						  LockTupleMode mode, bool is_update,
@@ -141,36 +138,7 @@ static bool ProjIndexIsUnchanged(Relation relation, HeapTuple oldtup, HeapTuple 
  * Don't look at lockstatus/updstatus directly!  Use get_mxact_status_for_lock
  * instead.
  */
-static const struct
-{
-	LOCKMODE	hwlock;
-	int			lockstatus;
-	int			updstatus;
-}
 
-			tupleLockExtraInfo[MaxLockTupleMode + 1] =
-{
-	{							/* LockTupleKeyShare */
-		AccessShareLock,
-		MultiXactStatusForKeyShare,
-		-1						/* KeyShare does not allow updating tuples */
-	},
-	{							/* LockTupleShare */
-		RowShareLock,
-		MultiXactStatusForShare,
-		-1						/* Share does not allow updating tuples */
-	},
-	{							/* LockTupleNoKeyExclusive */
-		ExclusiveLock,
-		MultiXactStatusForNoKeyUpdate,
-		MultiXactStatusNoKeyUpdate
-	},
-	{							/* LockTupleExclusive */
-		AccessExclusiveLock,
-		MultiXactStatusForUpdate,
-		MultiXactStatusUpdate
-	}
-};
 
 /* Get the LOCKMODE for a given MultiXactStatus */
 #define LOCKMODE_from_mxstatus(status) \
@@ -183,8 +151,6 @@ static const struct
  */
 #define LockTupleTuplock(rel, tup, mode) \
 	LockTuple((rel), (tup), tupleLockExtraInfo[mode].hwlock)
-#define UnlockTupleTuplock(rel, tup, mode) \
-	UnlockTuple((rel), (tup), tupleLockExtraInfo[mode].hwlock)
 #define ConditionalLockTupleTuplock(rel, tup, mode) \
 	ConditionalLockTuple((rel), (tup), tupleLockExtraInfo[mode].hwlock)
 
@@ -5362,7 +5328,7 @@ out_unlocked:
  * Returns false if it was unable to obtain the lock; this can only happen if
  * wait_policy is Skip.
  */
-static bool
+bool
 heap_acquire_tuplock(Relation relation, ItemPointer tid, LockTupleMode mode,
 					 LockWaitPolicy wait_policy, bool *have_tuple_lock)
 {

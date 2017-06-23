@@ -28,5 +28,8 @@
 /* These are the "satisfies" test routines for the zheap. */
 extern ZHeapTuple ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup,
 					   Snapshot snapshot, Buffer buffer);
+extern HTSU_Result ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup,
+						CommandId curcid, Buffer buffer, ItemPointer ctid,
+						bool free_zhtup, bool *in_place_updated);
 
 #endif   /* ZTQUAL_H */

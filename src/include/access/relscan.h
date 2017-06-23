@@ -70,7 +70,7 @@ typedef struct HeapScanDescData
 	/* scan current state */
 	bool		rs_inited;		/* false = scan not init'd yet */
 	HeapTupleData rs_ctup;		/* current tuple in scan, if any */
-	ZHeapTupleData rs_cztup;	/* current zheap tuple in scan, if any */
+	ZHeapTuple	rs_cztup;	/* current zheap tuple in scan, if any */
 	BlockNumber rs_cblock;		/* current block # in scan, if any */
 	Buffer		rs_cbuf;		/* current buffer in scan, if any */
 	/* NB: if rs_cbuf is not InvalidBuffer, we hold a pin on that buffer */
@@ -81,11 +81,11 @@ typedef struct HeapScanDescData
 	int			rs_ntuples;		/* number of visible tuples on page */
 	OffsetNumber rs_vistuples[MaxHeapTuplesPerPage];	/* their offsets */
 	/*
-	 * Fixme - offset array for zheap tuples must use MaxZHeapTuplesPerPage,
+	 * Fixme - array for zheap tuples must use MaxZHeapTuplesPerPage,
 	 * once we have constant value for the same.  we can get maximum 1164
 	 * tuples considering no alignment, so using 1200 seems sane.
 	 */
-	OffsetNumber rs_visztuples[1200];
+	ZHeapTuple      rs_visztuples[1200];
 }			HeapScanDescData;
 
 /*

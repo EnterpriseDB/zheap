@@ -90,11 +90,13 @@ SeqNext(SeqScanState *node)
 
 	/*
 	 * save the tuple and the buffer returned to us by the access methods in
-	 * our scan tuple slot and return the slot.  Note: we pass 'false' because
-	 * tuples returned by heap_getnext() are pointers onto disk pages and were
-	 * not created with palloc() and so should not be pfree()'d.  Note also
-	 * that ExecStoreHeapTuple will increment the refcount of the buffer; the
-	 * refcount will not be dropped until the tuple table slot is cleared.
+	 * our scan tuple slot and return the slot.  Note: we pass 'false' for
+	 * heap tuples because tuples returned by heap_getnext() are pointers onto
+	 * disk pages and were not created with palloc() and so should not be
+	 * pfree()'d.  OTOH, we pass 'true' for zheap tuples as they were created
+	 * created with palloc.  Note also that ExecStoreTuple will increment the
+	 * refcount of the buffer; the refcount will not be dropped until the tuple
+	 * table slot is cleared.
 	 */
 	if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
 	{
@@ -103,7 +105,7 @@ SeqNext(SeqScanState *node)
 							slot,	/* slot to store in */
 							scandesc->rs_cbuf,		/* buffer associated with this
 													 * tuple */
-							false);	/* don't pfree this pointer */
+							true);	/* pfree this pointer */
 		else
 			ExecClearTuple(slot);
 	}

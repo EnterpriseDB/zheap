@@ -45,7 +45,7 @@ typedef struct ZHeapTupleHeaderData
 
 	uint8		t_hoff;		/* sizeof header incl. bitmap, padding */
 
-	/* ^ - 3 bytes - ^ */
+	/* ^ - 4 bytes - ^ */
 
 	bits8		t_bits[FLEXIBLE_ARRAY_MEMBER];	/* bitmap of NULLs */
 
@@ -76,6 +76,7 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define ZHEAP_HASEXTERNAL		0x0004	/* has external stored attribute(s) */
 #define ZHEAP_HASOID			0x0008	/* has an object-id field */
 #define	ZHEAP_DELETED			0x0010	/* tuple deleted */
+#define	ZHEAP_INPLACE_UPDATED	0x0020	/* tuple is updated inplace */
 
 /*
  * information stored in t_infomask2:
@@ -84,8 +85,6 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define ZHEAP_XACT_SLOT				0x1800	/* 2 bits (12 and 13) for transaction slot */
 #define	ZHEAP_XACT_SLOT_MASK		0x000B	/* 11 - mask to retrieve transaction slot */
 
-#define ZHeapTupleHasNulls(tuple) \
-		 (((tuple)->t_data->t_infomask & HEAP_HASNULL) != 0)
 
 #define ZHeapTupleHeaderGetNatts(tup) \
 ( \
@@ -116,8 +115,30 @@ typedef ZHeapTupleData *ZHeapTuple;
 		InvalidOid \
 )
 
+#define ZHeapTupleHeaderSetOid(tup, oid) \
+do { \
+	Assert((tup)->t_infomask & ZHEAP_HASOID); \
+	*((Oid *) ((char *)(tup) + (tup)->t_hoff - sizeof(Oid))) = (oid); \
+} while (0)
+
 #define ZHeapTupleGetOid(tuple) \
 		ZHeapTupleHeaderGetOid((tuple)->t_data)
+
+#define ZHeapTupleSetOid(tuple, oid) \
+		ZHeapTupleHeaderSetOid((tuple)->t_data, (oid))
+
+/*
+ * Accessor macros to be used with HeapTuple pointers.
+ */
+
+#define ZHeapTupleHasNulls(tuple) \
+		(((tuple)->t_data->t_infomask & ZHEAP_HASNULL) != 0)
+
+#define ZHeapTupleNoNulls(tuple) \
+		(!((tuple)->t_data->t_infomask & ZHEAP_HASNULL))
+
+#define ZHeapTupleHasVarWidth(tuple) \
+		(((tuple)->t_data->t_infomask & ZHEAP_HASVARWIDTH) != 0)
 
 #define ZHeapTupleHeaderGetRawXid(tup, opaque) \
 ( \
@@ -129,6 +150,21 @@ typedef ZHeapTupleData *ZHeapTuple;
 	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].cid \
 )
 
+#define ZHeapTupleHeaderGetRawUndoPtr(tup, opaque) \
+( \
+	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].urec_ptr \
+)
+
+#define ZHeapPageGetRawXid(slot, opaque) \
+( \
+	opaque->transinfo[slot].xid \
+)
+
+#define ZHeapPageGetRawCommandId(slot, opaque) \
+( \
+	opaque->transinfo[slot].cid \
+)
+
 extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
 				Datum *values, bool *isnull);
 extern void zheap_fill_tuple(TupleDesc tupleDesc,
@@ -137,8 +173,57 @@ extern void zheap_fill_tuple(TupleDesc tupleDesc,
 				uint8 *infomask, bits8 *bit);
 
 extern void zheap_freetuple(ZHeapTuple zhtup);
+extern Datum znocachegetattr(ZHeapTuple tup, int attnum,
+				TupleDesc att);
 extern Datum zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 TupleDesc tupleDesc, bool *isnull);
+
+/* This is same as fastgetattr except that it takes ZHeapTuple as input. */
+#define zfastgetattr(tup, attnum, tupleDesc, isnull)					\
+(																	\
+	AssertMacro((attnum) > 0),										\
+	(*(isnull) = false),											\
+	ZHeapTupleNoNulls(tup) ?											\
+	(																\
+		TupleDescAttr((tupleDesc), (attnum)-1)->attcacheoff >= 0 ?	\
+		(															\
+			fetchatt(TupleDescAttr((tupleDesc), (attnum)-1),		\
+				(char *) (tup)->t_data + (tup)->t_data->t_hoff +	\
+				TupleDescAttr((tupleDesc), (attnum)-1)->attcacheoff)\
+		)															\
+		:															\
+			znocachegetattr((tup), (attnum), (tupleDesc))			\
+	)																\
+	:																\
+	(																\
+		att_isnull((attnum)-1, (tup)->t_data->t_bits) ?				\
+		(															\
+			(*(isnull) = true),										\
+			(Datum)NULL												\
+		)															\
+		:															\
+		(															\
+			znocachegetattr((tup), (attnum), (tupleDesc))			\
+		)															\
+	)																\
+)
+
+/* This is same as heap_getattr except that it takes ZHeapTuple as input. */
+#define zheap_getattr(tup, attnum, tupleDesc, isnull) \
+	( \
+		((attnum) > 0) ? \
+		( \
+			((attnum) > (int) ZHeapTupleHeaderGetNatts((tup)->t_data)) ? \
+			( \
+				(*(isnull) = true), \
+				(Datum)NULL \
+			) \
+			: \
+				zfastgetattr((tup), (attnum), (tupleDesc), (isnull)) \
+		) \
+		: \
+			zheap_getsysattr((tup), (InvalidBuffer), (attnum), (tupleDesc), (isnull)) \
+	)
 
 /* Zheap transaction information related API's */
 extern CommandId ZHeapTupleHeaderGetCid(ZHeapTupleHeader tup, Buffer buf);

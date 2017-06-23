@@ -14,8 +14,13 @@
 #ifndef GENHAM_H
 #define GENHAM_H
 
+#include "access/multixact.h"
 #include "access/sdir.h"
 #include "access/skey.h"
+#include "nodes/lockoptions.h"
+#include "storage/itemptr.h"
+#include "storage/lockdefs.h"
+#include "utils/relcache.h"
 
 extern int	data_alignment;
 extern PGDLLIMPORT int	data_alignment_zheap;
@@ -23,5 +28,86 @@ extern PGDLLIMPORT int	data_alignment_zheap;
 /* struct definitions appear in relscan.h */
 typedef struct HeapScanDescData *HeapScanDesc;
 typedef struct ParallelHeapScanDescData *ParallelHeapScanDesc;
+
+/*
+ * When heap_update, heap_delete, or heap_lock_tuple fail because the target
+ * tuple is already outdated, they fill in this struct to provide information
+ * to the caller about what happened.
+ * ctid is the target's ctid link: it is the same as the target's TID if the
+ * target was deleted, or the location of the replacement tuple if the target
+ * was updated.
+ * xmax is the outdating transaction's XID.  If the caller wants to visit the
+ * replacement tuple, it must check that this matches before believing the
+ * replacement is really a match.
+ * cmax is the outdating command's CID, but only when the failure code is
+ * HeapTupleSelfUpdated (i.e., something in the current transaction outdated
+ * the tuple); otherwise cmax is zero.  (We make this restriction because
+ * HeapTupleHeaderGetCmax doesn't work for tuples outdated in other
+ * transactions.)
+ */
+typedef struct HeapUpdateFailureData
+{
+	ItemPointerData ctid;
+	TransactionId xmax;
+	CommandId	cmax;
+	bool		in_place_updated;
+} HeapUpdateFailureData;
+
+/*
+ * Possible lock modes for a tuple.
+ */
+typedef enum LockTupleMode
+{
+	/* SELECT FOR KEY SHARE */
+	LockTupleKeyShare,
+	/* SELECT FOR SHARE */
+	LockTupleShare,
+	/* SELECT FOR NO KEY UPDATE, and UPDATEs that don't modify key columns */
+	LockTupleNoKeyExclusive,
+	/* SELECT FOR UPDATE, UPDATEs that modify key columns, and DELETE */
+	LockTupleExclusive
+} LockTupleMode;
+
+#define MaxLockTupleMode	LockTupleExclusive
+
+
+static const struct
+{
+	LOCKMODE	hwlock;
+	int			lockstatus;
+	int			updstatus;
+}
+
+			tupleLockExtraInfo[MaxLockTupleMode + 1] =
+{
+	{							/* LockTupleKeyShare */
+		AccessShareLock,
+		MultiXactStatusForKeyShare,
+		-1						/* KeyShare does not allow updating tuples */
+	},
+	{							/* LockTupleShare */
+		RowShareLock,
+		MultiXactStatusForShare,
+		-1						/* Share does not allow updating tuples */
+	},
+	{							/* LockTupleNoKeyExclusive */
+		ExclusiveLock,
+		MultiXactStatusForNoKeyUpdate,
+		MultiXactStatusNoKeyUpdate
+	},
+	{							/* LockTupleExclusive */
+		AccessExclusiveLock,
+		MultiXactStatusForUpdate,
+		MultiXactStatusUpdate
+	}
+};
+
+#define UnlockTupleTuplock(rel, tup, mode) \
+	UnlockTuple((rel), (tup), tupleLockExtraInfo[mode].hwlock)
+
+extern bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
+					 LockTupleMode mode, LockWaitPolicy wait_policy,
+					 bool *have_tuple_lock);
+
 
 #endif   /* GENHAM_H */
