@@ -479,6 +479,8 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence)
 		cur_blk++;
 	} while (cur_size < size);
 
+	undobuffers[index] = InvalidBuffer;
+
 	/*
 	 * Save referenced of undo record pointer as well as undo record.
 	 * InsertPreparedUndo will use these to insert the prepared record.
