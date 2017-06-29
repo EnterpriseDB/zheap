@@ -120,6 +120,7 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		work_hdr.urec_info = uur->uur_info;
 		work_hdr.urec_prevlen = uur->uur_prevlen;
 		work_hdr.urec_relfilenode = uur->uur_relfilenode;
+		work_hdr.urec_cid = uur->uur_cid;
 		work_rd.urec_tsid = uur->uur_tsid;
 		work_rd.urec_fork = uur->uur_fork;
 		work_blk.urec_blkprev = uur->uur_blkprev;
@@ -138,6 +139,7 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		Assert(work_hdr.urec_info == uur->uur_info);
 		Assert(work_hdr.urec_prevlen == uur->uur_prevlen);
 		Assert(work_hdr.urec_relfilenode == uur->uur_relfilenode);
+		Assert(work_hdr.urec_cid == uur->uur_cid);
 		Assert(work_rd.urec_tsid == uur->uur_tsid);
 		Assert(work_rd.urec_fork == uur->uur_fork);
 		Assert(work_blk.urec_blkprev == uur->uur_blkprev);
@@ -281,6 +283,7 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 		uur->uur_info = wrk_hdr->urec_info;
 		uur->uur_prevlen = wrk_hdr->urec_prevlen;
 		uur->uur_relfilenode = wrk_hdr->urec_relfilenode;
+		uur->uur_cid = wrk_hdr->urec_cid;
 
 		readptr += SizeOfUndoRecordHeader;
 	}

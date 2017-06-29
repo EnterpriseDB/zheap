@@ -40,10 +40,11 @@ typedef struct UndoRecordHeader
 	uint8		urec_info;		/* flag bits */
 	uint16		urec_prevlen;	/* length of previous record in bytes */
 	Oid			urec_relfilenode;		/* relfilenode for relation */
+	CommandId	urec_cid;			/* command id */
 } UndoRecordHeader;
 
 #define SizeOfUndoRecordHeader	\
-	(offsetof(UndoRecordHeader, urec_relfilenode) + sizeof(Oid))
+	(offsetof(UndoRecordHeader, urec_cid) + sizeof(CommandId))
 
 /*
  * If UREC_INFO_RELATION_DETAILS is set, an UndoRecordRelationDetails structure
@@ -125,6 +126,7 @@ typedef struct UnpackedUndoRecord
 	uint8		uur_info;		/* flag bits */
 	uint16		uur_prevlen;	/* length of previous record */
 	Oid			uur_relfilenode;	/* relfilenode for relation */
+	CommandId	uur_cid;		/* command id */
 	Oid			uur_tsid;		/* tablespace OID */
 	ForkNumber	uur_fork;		/* fork number */
 	uint64		uur_blkprev;	/* byte offset of previous undo for block */
