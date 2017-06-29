@@ -1064,7 +1064,6 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 {
 	UndoLogSharedData *shared = MyUndoLogState.shared;
 	char	path[MAXPGPATH];
-	int		num_logs;
 	int		logno;
 	int		fd;
 
@@ -1085,7 +1084,6 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 		(read(fd, &shared->high_logno, sizeof(shared->high_logno))
 		 != sizeof(shared->high_logno)))
 		elog(ERROR, "pg_undo file \"%s\" is corrupted", path);
-	num_logs = shared->high_logno - shared->low_logno;
 
 	/* Initialize all the logs and set up the freelist. */
 	for (logno = shared->low_logno; logno < shared->high_logno; ++logno)
