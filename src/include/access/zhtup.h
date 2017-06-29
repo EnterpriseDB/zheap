@@ -147,11 +147,6 @@ do { \
 	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].xid \
 )
 
-#define ZHeapTupleHeaderGetRawCommandId(tup, opaque) \
-( \
-	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].cid \
-)
-
 #define ZHeapTupleHeaderGetRawUndoPtr(tup, opaque) \
 ( \
 	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].urec_ptr \
@@ -160,11 +155,6 @@ do { \
 #define ZHeapPageGetRawXid(slot, opaque) \
 ( \
 	opaque->transinfo[slot].xid \
-)
-
-#define ZHeapPageGetRawCommandId(slot, opaque) \
-( \
-	opaque->transinfo[slot].cid \
 )
 
 extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
@@ -228,7 +218,7 @@ extern Datum zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 	)
 
 /* Zheap transaction information related API's */
-extern CommandId ZHeapTupleHeaderGetCid(ZHeapTupleHeader tup, Buffer buf);
+extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf);
 
 /* Page related API's. */
 

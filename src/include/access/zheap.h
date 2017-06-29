@@ -26,14 +26,11 @@
 
 /*
  * We need tansactionid and undo pointer to retrieve the undo information
- * for a particular transaction.  However, due to alignment storing commandid
- * is free and it saves us the fetching the undo record in many cases to check
- * the visibility information.
+ * for a particular transaction.
  */
 typedef struct TransInfo
 {
 	TransactionId	xid;
-	CommandId		cid;
 	UndoRecPtr	urec_ptr;
 } TransInfo;
 

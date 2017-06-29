@@ -193,7 +193,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 	{
 		if (TransactionIdIsCurrentTransactionId(ZHeapPageGetRawXid(trans_slot_id, opaque)))
 		{
-			if (ZHeapPageGetRawCommandId(trans_slot_id, opaque) >= snapshot->curcid)
+			if (ZHeapTupleGetCid(undo_tup, buffer) >= snapshot->curcid)
 			{
 				/* updated after scan started */
 				return GetTupleFromUndo(prev_urec_ptr,
@@ -221,7 +221,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 	{
 		if (TransactionIdIsCurrentTransactionId(ZHeapPageGetRawXid(trans_slot_id, opaque)))
 		{
-			if (ZHeapPageGetRawCommandId(trans_slot_id, opaque) >= snapshot->curcid)
+			if (ZHeapTupleGetCid(undo_tup, buffer) >= snapshot->curcid)
 				return NULL;	/* inserted after scan started */
 			else
 				return undo_tup;	/* inserted before scan started */
@@ -324,7 +324,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	{
 		if (TransactionIdIsCurrentTransactionId(ZHeapPageGetRawXid(trans_slot_id, opaque)))
 		{
-			if (ZHeapPageGetRawCommandId(trans_slot_id, opaque) >= curcid)
+			if (ZHeapTupleGetCid(undo_tup, buffer) >= curcid)
 			{
 				/* updated after scan started */
 				return UndoTupleSatisfiesUpdate(prev_urec_ptr,
@@ -358,7 +358,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	{
 		if (TransactionIdIsCurrentTransactionId(ZHeapPageGetRawXid(trans_slot_id, opaque)))
 		{
-			if (ZHeapPageGetRawCommandId(trans_slot_id, opaque) >= curcid)
+			if (ZHeapTupleGetCid(undo_tup, buffer) >= curcid)
 				result = false;	/* inserted after scan started */
 			else
 				result = true;	/* inserted before scan started */
@@ -410,7 +410,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 		{
-			if (ZHeapTupleHeaderGetCid(tuple, buffer) >= snapshot->curcid)
+			if (ZHeapTupleGetCid(zhtup, buffer) >= snapshot->curcid)
 			{
 				/* deleted after scan started, get previous tuple from undo */
 				return GetTupleFromUndo(ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque),
@@ -442,7 +442,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 		{
-			if (ZHeapTupleHeaderGetCid(tuple, buffer) >= snapshot->curcid)
+			if (ZHeapTupleGetCid(zhtup, buffer) >= snapshot->curcid)
 			{
 				/* updated after scan started, get previous tuple from undo */
 				return GetTupleFromUndo(ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque),
@@ -473,7 +473,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 
 	if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 	{
-		if (ZHeapTupleHeaderGetCid(tuple, buffer) >= snapshot->curcid)
+		if (ZHeapTupleGetCid(zhtup, buffer) >= snapshot->curcid)
 			return NULL;	/* inserted after scan started */
 		else
 			return zhtup;	/* inserted before scan started */
@@ -528,7 +528,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 		{
-			if (ZHeapTupleHeaderGetCid(tuple, buffer) >= curcid)
+			if (ZHeapTupleGetCid(zhtup, buffer) >= curcid)
 			{
 				/* deleted after scan started, check previous tuple from undo */
 				visible = UndoTupleSatisfiesUpdate(ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque),
@@ -594,7 +594,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 		{
-			if (ZHeapTupleHeaderGetCid(tuple, buffer) >= curcid)
+			if (ZHeapTupleGetCid(zhtup, buffer) >= curcid)
 			{
 				/* updated after scan started, check previous tuple from undo */
 				visible = UndoTupleSatisfiesUpdate(ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque),
@@ -656,7 +656,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 
 	if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 	{
-		if (ZHeapTupleHeaderGetCid(tuple, buffer) >= curcid)
+		if (ZHeapTupleGetCid(zhtup, buffer) >= curcid)
 			return HeapTupleInvisible;	/* inserted after scan started */
 		else
 			return HeapTupleMayBeUpdated;	/* inserted before scan started */

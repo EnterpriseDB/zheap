@@ -76,7 +76,7 @@ static int PageReserveTransactionSlot(Buffer buf, TransactionId xid);
 static bool PageFreezeTransSlots(Buffer buf);
 static inline UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
 static inline void PageSetUNDO(Page page, int trans_slot_id, TransactionId xid,
-						CommandId cid, UndoRecPtr urecptr);
+						UndoRecPtr urecptr);
 
 
 #include "access/bufmask.h"
@@ -544,6 +544,7 @@ reacquire_buffer:
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
 	undorecord.uur_relfilenode = relation->rd_node.relNode;
+	undorecord.uur_cid = cid;
 	undorecord.uur_tsid = relation->rd_node.spcNode;
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
@@ -558,7 +559,7 @@ reacquire_buffer:
 	START_CRIT_SECTION();
 
 	InsertPreparedUndo();
-	PageSetUNDO(page, trans_slot_id, xid, cid, urecptr);
+	PageSetUNDO(page, trans_slot_id, xid, urecptr);
 
 	/* XLOG stuff */
 	if (!(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation))
@@ -893,7 +894,7 @@ check_tup_satisfies_update:
 		hufd->ctid = ctid;
 		hufd->xmax = ZHeapTupleHeaderGetRawXid(zheaptup.t_data, opaque);
 		if (result == HeapTupleSelfUpdated)
-			hufd->cmax = ZHeapTupleHeaderGetRawCommandId(zheaptup.t_data, opaque);
+			hufd->cmax = ZHeapTupleGetCid(&zheaptup, buffer);
 		else
 			hufd->cmax = InvalidCommandId;
 		UnlockReleaseBuffer(buffer);
@@ -918,6 +919,7 @@ check_tup_satisfies_update:
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
 	undorecord.uur_relfilenode = relation->rd_node.relNode;
+	undorecord.uur_cid = cid;
 	undorecord.uur_tsid = relation->rd_node.spcNode;
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
@@ -954,7 +956,7 @@ check_tup_satisfies_update:
 	ZHeapTupleHeaderSetXactSlot(zheaptup.t_data, trans_slot_id);
 
 	InsertPreparedUndo();
-	PageSetUNDO(page, trans_slot_id, xid, cid, urecptr);
+	PageSetUNDO(page, trans_slot_id, xid, urecptr);
 
 	zheaptup.t_data->t_infomask |= ZHEAP_DELETED;
 
@@ -1202,7 +1204,7 @@ check_tup_satisfies_update:
 		hufd->ctid = ctid;
 		hufd->xmax = ZHeapTupleHeaderGetRawXid(oldtup.t_data, opaque);
 		if (result == HeapTupleSelfUpdated)
-			hufd->cmax = ZHeapTupleHeaderGetRawCommandId(oldtup.t_data, opaque);
+			hufd->cmax = ZHeapTupleGetCid(&oldtup, buffer);
 		else
 			hufd->cmax = InvalidCommandId;
 		UnlockReleaseBuffer(buffer);
@@ -1264,6 +1266,7 @@ check_tup_satisfies_update:
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
 	undorecord.uur_relfilenode = relation->rd_node.relNode;
+	undorecord.uur_cid = cid;
 	undorecord.uur_tsid = relation->rd_node.spcNode;
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
@@ -1303,7 +1306,7 @@ check_tup_satisfies_update:
 	}
 
 	InsertPreparedUndo();
-	PageSetUNDO(page, trans_slot_id, xid, cid, urecptr);
+	PageSetUNDO(page, trans_slot_id, xid, urecptr);
 
 	ZHeapTupleHeaderSetXactSlot(oldtup.t_data, trans_slot_id);
 	oldtup.t_data->t_infomask |= ZHEAP_INPLACE_UPDATED;
@@ -1613,7 +1616,7 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 		case MinCommandIdAttributeNumber:
 		case MaxCommandIdAttributeNumber:
 			Assert (BufferIsValid(buf));
-			result = CommandIdGetDatum(ZHeapTupleHeaderGetRawCommandId(zhtup->t_data, opaque));
+			result = CommandIdGetDatum(ZHeapTupleGetCid(zhtup, buf));
 			Assert (false);
 			break;
 		case TableOidAttributeNumber:
@@ -1757,7 +1760,7 @@ PageGetUNDO(Page page, int trans_slot_id)
  */
 static inline void
 PageSetUNDO(Page page, int trans_slot_id, TransactionId xid,
-			CommandId cid, UndoRecPtr urecptr)
+			UndoRecPtr urecptr)
 {
 	ZHeapPageOpaque	opaque;
 
@@ -1766,7 +1769,6 @@ PageSetUNDO(Page page, int trans_slot_id, TransactionId xid,
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 
 	opaque->transinfo[trans_slot_id].xid = xid;
-	opaque->transinfo[trans_slot_id].cid = cid;
 	opaque->transinfo[trans_slot_id].urec_ptr = urecptr;
 }
 
@@ -1901,7 +1903,6 @@ PageFreezeTransSlots(Buffer buf)
 			slot_no = frozen_slots[i];
 
 			opaque->transinfo[slot_no].xid = InvalidTransactionId;
-			opaque->transinfo[slot_no].cid = InvalidCommandId;
 			/* Fixme: set the InvalidUrecPtr once it is defined. */
 			opaque->transinfo[slot_no].urec_ptr = -1;
 		}
@@ -1926,36 +1927,26 @@ PageFreezeTransSlots(Buffer buf)
 }
 
 /*
- * This function is similar to HeapTupleHeaderGetCmin except that it needs
- * to retrieve the cmin from zheap tuple.
+ * ZHeapTupleGetCid - Retrieve command id from tuple's undo record.
  */
 CommandId
-ZHeapTupleHeaderGetCid(ZHeapTupleHeader tup, Buffer buf)
+ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf)
 {
 	ZHeapPageOpaque	opaque;
-	CommandId	cid;
+	UnpackedUndoRecord	*urec;
+	CommandId	current_cid;
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
+
+	urec = UndoFetchRecord(ZHeapTupleHeaderGetRawUndoPtr(zhtup->t_data, opaque),
+						   ItemPointerGetBlockNumber(&zhtup->t_self),
+						   ItemPointerGetOffsetNumber(&zhtup->t_self));
+
+	current_cid = urec->uur_cid;
+
+	UndoRecordRelease(urec);
 	
-	cid = ZHeapTupleHeaderGetRawCommandId(tup, opaque);
-
-	/*
-	 * Fixme : We need to define and use ZHeapTupleHeaderGetXmin, once we
-	 * we decide whether we need to freeze the tuples like we do for regular
-	 * heap.
-	 */
-	Assert(TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tup, opaque)));
-
-	/*
-	 * Fixme : We need to enable combocid functionality once we define
-	 * delete/update for zheap.
-	 */
-	/* if (tup->t_infomask & HEAP_COMBOCID)
-		return GetRealCmin(cid);
-	else
-		return cid; */
-
-	return cid;
+	return current_cid;
 }
 
 /*
@@ -1974,7 +1965,6 @@ ZheapInitPage(Page page, Size pageSize)
 	for (i = 0; i < MAX_PAGE_TRANS_INFO_SLOTS; i++)
 	{
 		opaque->transinfo[i].xid = InvalidTransactionId;
-		opaque->transinfo[i].cid = InvalidCommandId;
 		/* Fixme: set the InvalidUrecPtr once it is defined. */
 		opaque->transinfo[i].urec_ptr = -1;
 	}
