@@ -62,9 +62,8 @@ Datum
 undo_discard(PG_FUNCTION_ARGS)
 {
 	UndoRecPtr undo_ptr = PG_GETARG_INT64(0);
-	int size = PG_GETARG_INT32(1);
 
-	UndoLogDiscard(undo_ptr, size);
+	UndoLogDiscard(undo_ptr);
 
 	PG_RETURN_VOID();
 }

@@ -20,7 +20,7 @@ RETURNS bytea
 AS 'MODULE_PATHNAME'
 LANGUAGE C;
 
-CREATE FUNCTION undo_discard(undo_ptr bigint, size int)
+CREATE FUNCTION undo_discard(undo_ptr bigint)
 RETURNS void
 AS 'MODULE_PATHNAME'
 LANGUAGE C;

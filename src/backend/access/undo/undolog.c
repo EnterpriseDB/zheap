@@ -75,6 +75,21 @@
 /* Extract the lower bits of an xid, for undo log mapping purposes. */
 #define UndoLogGetXidLow(xid) ((xid) & ((1 << UndoLogXidLowBits) - 1))
 
+/* What is the offset of the i'th non-header byte? */
+#define UndoLogOffsetFromUsableByteNo(i)								\
+	(((i) / UndoLogUsableBytesPerPage) * BLCKSZ +						\
+	 UndoLogBlockHeaderSize +											\
+	 ((i) % UndoLogUsableBytesPerPage))
+
+/* How many non-header bytes are there before a given offset? */
+#define UndoLogOffsetToUsableByteNo(offset)				\
+	(((offset) % BLCKSZ - UndoLogBlockHeaderSize) +		\
+	 ((offset) / BLCKSZ) * UndoLogUsableBytesPerPage)
+
+/* Add 'n' usable bytes to offset stepping over headers to find new offset. */
+#define UndoLogOffsetPlusUsableBytes(offset, n)							\
+	UndoLogOffsetFromUsableByteNo(UndoLogOffsetToUsableByteNo(offset) + (n))
+
 /*
  * The in-memory control object for an undo log.  Wraps an UndoLogMetaData and
  * adds a mutex and some link pointers.
@@ -540,6 +555,7 @@ UndoLogAllocate(UndoRecordSize size, UndoPersistence level)
 {
 	UndoLogControl *log = MyUndoLogState.log;
 	bool	need_attach_wal_record = false;
+	UndoLogOffset new_insert;
 
  retry:
 
@@ -551,15 +567,29 @@ UndoLogAllocate(UndoRecordSize size, UndoPersistence level)
 	}
 
 	/*
+	 * 'size' is expressed in usable non-header bytes.  Figure out how far we
+	 * have to move insert to create space for 'size' usable bytes (stepping
+	 * over any intervening headers).
+	 */
+	Assert(log->meta.insert % BLCKSZ >= UndoLogBlockHeaderSize);
+	new_insert = UndoLogOffsetPlusUsableBytes(log->meta.insert, size);
+	Assert(new_insert % BLCKSZ >= UndoLogBlockHeaderSize);
+
+	/*
 	 * We don't need to acquire log->mutex to read log->meta.insert and
 	 * log->meta.end, because this backend is the only one that can
 	 * modify them.
 	 */
-	if (unlikely(log->meta.insert + size > log->meta.end))
+	if (unlikely(new_insert > log->meta.end))
 	{
-		if (log->meta.insert + size > UndoLogMaxSize)
+		if (new_insert > UndoLogMaxSize)
 		{
 			/* This undo log is entirely full.  Get a new one. */
+			/*
+			 * TODO: do we need to do something more here?  How will the
+			 * caller or later the undo worker deal with a transaction being
+			 * split over two undo logs?
+			 */
 			log = MyUndoLogState.log = NULL;
 			detach_current_undo_log();
 			goto retry;
@@ -581,7 +611,7 @@ UndoLogAllocate(UndoRecordSize size, UndoPersistence level)
 			 * That must be enough, because segments are bigger than the
 			 * maximum value for UndoRecordSize.
 			 */
-			Assert(log->meta.insert + size <= log->meta.end);
+			Assert(new_insert <= log->meta.end);
 		}
 	}
 
@@ -669,7 +699,7 @@ UndoLogAllocateInRecovery(TransactionId xid, UndoRecordSize size,
 	 * XLOG_UNDOLOG_EXTEND records emitted by UndoLogAllocate, or by
 	 * XLOG_UNDLOG_DISCARD records recycling segments.
 	 */
-	if (log->meta.end < log->meta.insert + size)
+	if (log->meta.end < UndoLogOffsetPlusUsableBytes(log->meta.insert, size))
 		elog(ERROR,
 			 "unexpectedly couldn't allocate %u bytes in undo log number %d",
 			 size, logno);
@@ -678,7 +708,7 @@ UndoLogAllocateInRecovery(TransactionId xid, UndoRecordSize size,
 }
 
 /*
- * Advance the insertion pointer.
+ * Advance the insertion pointer by 'size' usable (non-header) bytes.
  *
  * Caller must WAL-log this operation first, and must replay it during
  * recovery.
@@ -693,7 +723,7 @@ UndoLogAdvance(UndoRecPtr insertion_point, UndoRecordSize size)
 	Assert(UndoRecPtrGetOffset(insertion_point) == log->meta.insert);
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	log->meta.insert += size;
+	log->meta.insert = UndoLogOffsetPlusUsableBytes(log->meta.insert, size);
 	log->meta.last_size = size;
 	LWLockRelease(&log->mutex);
 }
@@ -1237,6 +1267,14 @@ attach_undo_log(void)
 		Assert(log->xid == 0);
 		Assert(log->next_free == 0);
 
+		/*
+		 * The insert and discard pointers start after the first block's
+		 * header.  XXX That means that insert is > end for a short time in a
+		 * newly created undo log.  Is there any problem with that?
+		 */
+		log->meta.insert = UndoLogBlockHeaderSize;
+		log->meta.discard = UndoLogBlockHeaderSize;
+
 		/* Initialize. */
 		LWLockInitialize(&log->mutex, LWTRANCHE_UNDOLOG);
 
@@ -1337,9 +1375,9 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 		LWLockAcquire(&log->mutex, LW_SHARED);
 		values[0] = ObjectIdGetDatum((Oid) logno);
 		values[1] = ObjectIdGetDatum(log->meta.tablespace);
-		values[2] = Int64GetDatum(log->meta.end);
+		values[2] = Int64GetDatum(log->meta.discard);
 		values[3] = Int64GetDatum(log->meta.insert);
-		values[4] = Int64GetDatum(log->meta.discard);
+		values[4] = Int64GetDatum(log->meta.end);
 		values[5] = TransactionIdGetDatum(log->xid);
 		values[6] = Int32GetDatum((int64) log->pid);
 		LWLockRelease(&log->mutex);
@@ -1366,6 +1404,8 @@ undolog_xlog_create(XLogReaderState *record)
 
 	log = get_undo_log_by_number(xlrec->logno);
 	log->meta.tablespace = xlrec->tablespace;
+	log->meta.insert = UndoLogBlockHeaderSize;
+	log->meta.discard = UndoLogBlockHeaderSize;
 	LWLockInitialize(&log->mutex, LWTRANCHE_UNDOLOG);
 
 	LWLockAcquire(UndoLogLock, LW_SHARED);

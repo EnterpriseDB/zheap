@@ -88,13 +88,12 @@ typedef int UndoLogNumber;
 #define UndoLogForkNum MAIN_FORKNUM
 
 /* Compute the block number that holds a given UndoRecPtr. */
-#define UndoRecPtrGetBlockNum(urp)							\
-	(UndoRecPtrGetOffset(urp) / UndoLogUsableBytesPerPage)
+#define UndoRecPtrGetBlockNum(urp)				\
+	(UndoRecPtrGetOffset(urp) / BLCKSZ)
 
 /* Compute the offset of a given UndoRecPtr in the page that holds it. */
-#define UndoRecPtrGetPageOffset(urp)							\
-	(UndoRecPtrGetOffset(urp) % UndoLogUsableBytesPerPage +		\
-	 UndoLogBlockHeaderSize)
+#define UndoRecPtrGetPageOffset(urp)			\
+	(UndoRecPtrGetOffset(urp) % BLCKSZ)
 
 /* Find out which tablespace the given undo log location is backed by. */
 extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
