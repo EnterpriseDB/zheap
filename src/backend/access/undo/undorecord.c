@@ -25,14 +25,14 @@
  * FIXME:  Do we want to support undo tuple size which is more than the BLCKSZ
  * if not than undo record can spread across 2 buffers at the max.
  */
-#define MAX_UNDO_BUUFER	2
+#define MAX_UNDO_BUFFER	2
 
 /* Workspace for InsertUndoRecord and UnpackUndoRecord. */
 static UndoRecordHeader work_hdr;
 static UndoRecordRelationDetails work_rd;
 static UndoRecordBlock work_blk;
 static UndoRecordPayload work_payload;
-static Buffer undobuffers[MAX_UNDO_BUUFER];
+static Buffer undobuffers[MAX_UNDO_BUFFER];
 
 /*
  * Unpacked undo record reference passed to PrepareUndoInsert which will be
@@ -274,19 +274,19 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 	char	*readptr = (char *)page + starting_byte;
 	char	*endptr = (char *) page + BLCKSZ;
 	int		my_bytes_decoded = *already_decoded;
+	bool	is_undo_splited = (my_bytes_decoded > 0) ? true : false;
 
-	if (*already_decoded == 0)
-	{
-		UndoRecordHeader *wrk_hdr = (UndoRecordHeader*)readptr;
+	/* Decode header (if not already done). */
+	if (!ReadUndoBytes((char *) &work_hdr, SizeOfUndoRecordHeader,
+					   &readptr, endptr,
+					   &my_bytes_decoded, already_decoded))
+		return false;
 
-		uur->uur_type = wrk_hdr->urec_type;
-		uur->uur_info = wrk_hdr->urec_info;
-		uur->uur_prevlen = wrk_hdr->urec_prevlen;
-		uur->uur_relfilenode = wrk_hdr->urec_relfilenode;
-		uur->uur_cid = wrk_hdr->urec_cid;
-
-		readptr += SizeOfUndoRecordHeader;
-	}
+	uur->uur_type = work_hdr.urec_type;
+	uur->uur_info = work_hdr.urec_info;
+	uur->uur_prevlen = work_hdr.urec_prevlen;
+	uur->uur_relfilenode = work_hdr.urec_relfilenode;
+	uur->uur_cid = work_hdr.urec_cid;
 
 	if ((uur->uur_info & UREC_INFO_RELATION_DETAILS) != 0)
 	{
@@ -323,28 +323,40 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 		uur->uur_payload.len = work_payload.urec_payload_len;
 		uur->uur_tuple.len = work_payload.urec_tuple_len;
 
-		/* Payload bytes. */
-		if (uur->uur_payload.len > 0)
+		/*
+		 * If we can read the complete record from a single page then just
+		 * point payload data and tuple data into the page otherwise allocate
+		 * the memory.
+		 *
+		 * XXX There is possibility of optimization that instead of always
+		 * allocating the memory whenever tuple is split we can check if any of
+		 * the payload or tuple data falling into the same page then don't
+		 * allocate the memory for that.
+		 */
+		if (!is_undo_splited &&
+			uur->uur_payload.len + uur->uur_tuple.len <= (endptr - readptr))
 		{
-			if (uur->uur_payload.data == NULL)
-			{
-				uur->uur_payload.data = readptr;
-				readptr += uur->uur_payload.len;
-			}
-			else if (!ReadUndoBytes((char *) uur->uur_payload.data,
-					 uur->uur_payload.len, &readptr, endptr,
-					 &my_bytes_decoded, already_decoded))
-				return false;
-		}
+			uur->uur_payload.data = readptr;
+			readptr += uur->uur_payload.len;
 
-		/* Tuple bytes. */
-		if (uur->uur_tuple.len > 0)
+			uur->uur_tuple.data = readptr;
+		}
+		else
 		{
-			if (uur->uur_tuple.data == NULL)
-				uur->uur_tuple.data = readptr;
-			else if (!ReadUndoBytes((char *) uur->uur_tuple.data,
-					 uur->uur_tuple.len, &readptr, endptr,
-					 &my_bytes_decoded, already_decoded))
+			if (uur->uur_payload.len > 0 && uur->uur_payload.data == NULL)
+				uur->uur_payload.data = (char *) palloc0(uur->uur_payload.len);
+
+			if (uur->uur_tuple.len > 0 && uur->uur_tuple.data == NULL)
+				uur->uur_tuple.data = (char *) palloc0(uur->uur_tuple.len);
+
+			if (!ReadUndoBytes((char *) uur->uur_payload.data,
+							   uur->uur_payload.len, &readptr, endptr,
+							   &my_bytes_decoded, already_decoded))
+				return false;
+
+			if (!ReadUndoBytes((char *) uur->uur_tuple.data,
+							   uur->uur_tuple.len, &readptr, endptr,
+							   &my_bytes_decoded, already_decoded))
 				return false;
 		}
 	}
@@ -476,7 +488,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence)
 		undobuffers[index++] = buffer;
 
 		/* FIXME: Should we just report error ? */
-		Assert(index < MAX_UNDO_BUUFER);
+		Assert(index < MAX_UNDO_BUFFER);
 
 		/* Undo record can not fit into this block so go to the next block. */
 		cur_blk++;
@@ -510,7 +522,7 @@ InsertPreparedUndo(void)
 
 	starting_byte = UndoRecPtrGetPageOffset(undo_rec_ptr);
 
-	for(i = 0; i < MAX_UNDO_BUUFER; i++)
+	for(i = 0; i < MAX_UNDO_BUFFER; i++)
 	{
 		Buffer	buffer = undobuffers[i];
 
@@ -548,7 +560,7 @@ UnlockReleaseUndoBuffers(void)
 {
 	int i;
 
-	for(i = 0; i < MAX_UNDO_BUUFER; i++)
+	for(i = 0; i < MAX_UNDO_BUFFER; i++)
 	{
 		if (!BufferIsValid(undobuffers[i]))
 			break;
@@ -575,7 +587,7 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode)
 	int				 starting_byte = UndoRecPtrGetPageOffset(urp);
 	int				 already_decoded = 0;
 	BlockNumber		 cur_blk;
-	bool			 data_allocated = false;
+	bool			 is_undo_splited = false;
 
 	cur_blk = UndoRecPtrGetBlockNum(urp);
 
@@ -601,48 +613,14 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode)
 		if (UnpackUndoRecord(urec, page, starting_byte, &already_decoded))
 			break;
 
+		starting_byte = 0;
+		is_undo_splited = true;
+
 		/*
-		 * Complete record is not fitting into one buffer so allocate memory
-		 * for payload and tuple data and make copy.
+		 * Complete record is not fitting into one buffer so release the buffer
+		 * pin and also set invalid buffer in the undo record.
 		 */
 		urec->uur_buffer = InvalidBuffer;
-		if (!data_allocated &&
-			(urec->uur_payload.len > 0 || urec->uur_tuple.len > 0))
-		{
-			char *data;
-
-			if (urec->uur_payload.len)
-				data = palloc(urec->uur_payload.len);
-
-			/*
-			 * It's possible that we have already decoded the payload header
-			 * but havn't yet got the data.
-			 */
-			if (urec->uur_payload.data)
-			{
-				memcpy(data, urec->uur_payload.data, urec->uur_payload.len);
-				urec->uur_payload.data = data;
-			}
-
-			if (urec->uur_tuple.len)
-				data = palloc(urec->uur_payload.len);
-
-			if (urec->uur_tuple.data)
-			{
-				memcpy(data, urec->uur_tuple.data, urec->uur_tuple.len);
-				urec->uur_tuple.data = data;
-			}
-
-			/*
-			 * We have already allocated the memory for payload and tuple data
-			 * so we can set this flag.  UnpackUndoRecord will take care of
-			 * copying the data if we have already allocated the memory so
-			 * next time we need not to worry about copying the data if we
-			 * haven't copied.
-			 */
-			data_allocated = true;
-		}
-
 		UnlockReleaseBuffer(buffer);
 
 		/* Go to next block. */
@@ -655,7 +633,7 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode)
 	 * If we have copied the data then release the buffer. Otherwise just
 	 * unlock it.
 	 */
-	if (data_allocated)
+	if (is_undo_splited)
 		UnlockReleaseBuffer(buffer);
 	else
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
