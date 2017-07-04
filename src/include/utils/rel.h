@@ -330,7 +330,7 @@ typedef struct StdRdOptions
 #define RelationStorageIsZHeap(relation) \
 	(relation && (relation)->rd_options && \
 	((StdRdOptions *) (relation)->rd_options)->relstorage_offset != 0 ? \
-		 strcmp((char *) (relation)->rd_options +								\
+		 pg_strcasecmp((char *) (relation)->rd_options +								\
 			((StdRdOptions *) (relation)->rd_options)->relstorage_offset, \
 			RELSTORAGE_ZHEAP) == 0 : false) \
 
