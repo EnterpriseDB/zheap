@@ -480,6 +480,9 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence)
 		else
 			cur_size += BLCKSZ;
 
+		/* FIXME: Should we just report error ? */
+		Assert(index < MAX_UNDO_BUFFER);
+
 		/*
 		 * Keep the track of the buffers we have pinned.  InsertPreparedUndo
 		 * will release the pins and free the memory after inserting the undo
@@ -487,14 +490,12 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence)
 		 */
 		undobuffers[index++] = buffer;
 
-		/* FIXME: Should we just report error ? */
-		Assert(index < MAX_UNDO_BUFFER);
-
 		/* Undo record can not fit into this block so go to the next block. */
 		cur_blk++;
 	} while (cur_size < size);
 
-	undobuffers[index] = InvalidBuffer;
+	if (index < MAX_UNDO_BUFFER)
+		undobuffers[index] = InvalidBuffer;
 
 	/*
 	 * Save referenced of undo record pointer as well as undo record.
