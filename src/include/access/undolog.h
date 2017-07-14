@@ -50,6 +50,9 @@ typedef uint64 UndoLogOffset;
 /* The width of an undo log offset in bits.  40 allows for 1TB per log.*/
 #define UndoLogOffsetBits (64 - UndoLogNumberBits)
 
+/* Special value for undo record pointer which indicates that it is invalid. */
+#define	InvalidUndoRecPtr	((UndoRecPtr) 0)
+
 /*
  * The maximum amount of data that can be stored in an undo log.  Can be set
  * artificially low to test full log behavior.
@@ -79,6 +82,13 @@ typedef int UndoLogNumber;
 
 /* The pseudo-database OID used for undo logs. */
 #define UndoLogDatabaseOid 9
+
+/*
+ * UndoRecPtrIsValid
+ *		True iff undoRecPtr is valid.
+ */
+#define UndoRecPtrIsValid(undoRecPtr) \
+	((bool) ((UndoRecPtr) (undoRecPtr) != InvalidUndoRecPtr))
 
 /* Extract the relnode for an undo log. */
 #define UndoRecPtrGetRelNode(urp)				\

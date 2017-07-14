@@ -127,7 +127,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 	UnpackedUndoRecord	*urec;
 	ZHeapPageOpaque	opaque;
 	ZHeapTuple	undo_tup;
-	UndoRecPtr	prev_urec_ptr = -1;
+	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
 	int	trans_slot_id = InvalidXactSlotId;
 	int	undo_oper = -1;
 
@@ -252,7 +252,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	UnpackedUndoRecord	*urec;
 	ZHeapPageOpaque	opaque;
 	ZHeapTuple	undo_tup = NULL;
-	UndoRecPtr	prev_urec_ptr = -1;
+	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
 	int	trans_slot_id = InvalidXactSlotId;
 	int	undo_oper = -1;
 	bool result = false;
