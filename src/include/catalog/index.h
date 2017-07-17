@@ -128,6 +128,16 @@ extern double IndexBuildHeapRangeScan(Relation heapRelation,
 						IndexBuildCallback callback,
 						void *callback_state,
 						HeapScanDesc scan);
+extern double IndexBuildZHeapRangeScan(Relation zheapRelation,
+						Relation indexRelation,
+						IndexInfo *indexInfo,
+						bool allow_sync,
+						bool anyvisible,
+						BlockNumber start_blockno,
+						BlockNumber end_blockno,
+						IndexBuildCallback callback,
+						void *callback_state,
+						HeapScanDesc scan);
 
 extern void validate_index(Oid heapId, Oid indexId, Snapshot snapshot);
 

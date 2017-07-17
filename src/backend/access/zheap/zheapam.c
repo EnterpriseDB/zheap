@@ -2093,6 +2093,19 @@ zheap_beginscan(Relation relation, Snapshot snapshot,
 }
 
 /*
+ * zheap_beginscan_strat - same as heap_beginscan_strat
+ */
+HeapScanDesc
+zheap_beginscan_strat(Relation relation, Snapshot snapshot,
+					int nkeys, ScanKey key,
+					bool allow_strat, bool allow_sync)
+{
+	return zheap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
+									allow_strat, allow_sync, true,
+									false, false, false);
+}
+
+/*
  * zheap_beginscan_internal - same as heap_beginscan_internal except for tuple
  *	initialization
  */

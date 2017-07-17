@@ -54,6 +54,9 @@ extern void ZheapInitPage(Page page, Size pageSize);
 /* Zheap scan related API's */
 extern HeapScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,
 				int nkeys, ScanKey key);
+extern HeapScanDesc zheap_beginscan_strat(Relation relation, Snapshot snapshot,
+					int nkeys, ScanKey key,
+					bool allow_strat, bool allow_sync);
 extern ZHeapTuple zheap_getnext(HeapScanDesc scan, ScanDirection direction);
 
 /* WAL Stuff */

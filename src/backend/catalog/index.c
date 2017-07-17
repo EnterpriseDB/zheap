@@ -2441,11 +2441,18 @@ IndexBuildHeapScan(Relation heapRelation,
 				   void *callback_state,
 				   HeapScanDesc scan)
 {
-	return IndexBuildHeapRangeScan(heapRelation, indexRelation,
-								   indexInfo, allow_sync,
-								   false,
-								   0, InvalidBlockNumber,
-								   callback, callback_state, scan);
+	if (RelationStorageIsZHeap(heapRelation))
+		return IndexBuildZHeapRangeScan(heapRelation, indexRelation,
+									   indexInfo, allow_sync,
+									   false,
+									   0, InvalidBlockNumber,
+									   callback, callback_state, scan);
+	else
+		return IndexBuildHeapRangeScan(heapRelation, indexRelation,
+									   indexInfo, allow_sync,
+									   false,
+									   0, InvalidBlockNumber,
+									   callback, callback_state, scan);
 }
 
 /*
@@ -2955,6 +2962,126 @@ IndexBuildHeapRangeScan(Relation heapRelation,
 	return reltuples;
 }
 
+/*
+ * Similar to IndexBuildHeapRangeScan, but for zheap relations.
+ */
+double
+IndexBuildZHeapRangeScan(Relation zheapRelation,
+						Relation indexRelation,
+						IndexInfo *indexInfo,
+						bool allow_sync,
+						bool anyvisible,
+						BlockNumber start_blockno,
+						BlockNumber numblocks,
+						IndexBuildCallback callback,
+						void *callback_state,
+						HeapScanDesc scan)
+{
+	bool		checking_uniqueness;
+	ZHeapTuple	zheapTuple;
+	double		reltuples;
+	Snapshot	snapshot;
+
+	/*
+	 * sanity checks
+	 */
+	Assert(OidIsValid(indexRelation->rd_rel->relam));
+	Assert(RelationStorageIsZHeap(zheapRelation));
+
+	/* See whether we're verifying uniqueness/exclusion properties */
+	checking_uniqueness = (indexInfo->ii_Unique ||
+						   indexInfo->ii_ExclusionOps != NULL);
+
+	/*
+	 * "Any visible" mode is not compatible with uniqueness checks; make sure
+	 * only one of those is requested.
+	 */
+	Assert(!(anyvisible && checking_uniqueness));
+
+	/*
+	 * Prepare for scan of the base relation.  In a normal index build, we use
+	 * SnapshotAny because we must retrieve all tuples and do our own time
+	 * qual checks (because we have to index RECENTLY_DEAD tuples). In a
+	 * concurrent build, or during bootstrap, we take a regular MVCC snapshot
+	 * and index whatever's live according to that.
+	 */
+	if (!scan)
+	{
+		if (IsBootstrapProcessingMode() || indexInfo->ii_Concurrent)
+		{
+			snapshot = RegisterSnapshot(GetTransactionSnapshot());
+
+			/* "any visible" mode is not compatible with this */
+			Assert(!anyvisible);
+		}
+		else
+		{
+			/*
+			 * FIXME: We need to support SnapshotAny mode for zheap relations. For now,
+			 * let it be an MVCC snapshot.
+			 */
+			snapshot = RegisterSnapshot(GetTransactionSnapshot());
+
+			/* "any visible" mode is not compatible with this */
+			Assert(!anyvisible);
+		}
+
+		scan = zheap_beginscan_strat(zheapRelation,		/* relation */
+									 snapshot,	/* snapshot */
+									 0, /* number of keys */
+									 NULL,		/* scan key */
+									 true,		/* buffer access strategy OK */
+									 allow_sync);		/* syncscan OK? */
+	}
+	else
+	{
+		/*
+		 * Parallel index build.
+		 *
+		 * Parallel case never registers/unregisters own snapshot.  Snapshot
+		 * is taken from parallel heap scan, and is SnapshotAny or an MVCC
+		 * snapshot, based on same criteria as serial case.
+		 */
+		Assert(!IsBootstrapProcessingMode());
+		Assert(allow_sync);
+		snapshot = scan->rs_snapshot;
+	}
+
+	/* set our scan endpoints */
+	if (!allow_sync)
+		heap_setscanlimits(scan, start_blockno, numblocks);
+	else
+	{
+		/* syncscan can only be requested on whole relation */
+		Assert(start_blockno == 0);
+		Assert(numblocks == InvalidBlockNumber);
+	}
+
+	reltuples = 0;
+
+	/*
+	 * Scan all tuples in the base relation.
+	 */
+	while ((zheapTuple = zheap_getnext(scan, ForwardScanDirection)) != NULL)
+	{
+		/*
+		 * FIXME: Index can't be created on non-empty zheap relation.
+		 */
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("cannot create index on non-empty zheap relation")));
+	}
+
+	heap_endscan(scan);
+
+	UnregisterSnapshot(snapshot);
+
+	/* These may have been pointing to the now-gone estate */
+	indexInfo->ii_ExpressionsState = NIL;
+	indexInfo->ii_PredicateState = NIL;
+
+	return reltuples;
+}
 
 /*
  * IndexCheckExclusion - verify that a new exclusion constraint is satisfied
