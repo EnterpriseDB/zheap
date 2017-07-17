@@ -1,6 +1,7 @@
 --
 -- Test cases for ZHeap
 --
+set client_min_messages = warning;
 --
 -- 1. Test for storage engine
 --
@@ -36,3 +37,49 @@ ERROR:  invalid value for "storage_engine" option
 DETAIL:  Valid values are "heap" and "zheap".
 DROP TABLE t1_heap;
 DROP TABLE t1_zheap;
+--
+-- 2. Test for Index Scan on zheap
+--
+set enable_seqscan to false;
+set enable_indexonlyscan to false;
+set enable_indexscan to true;
+set enable_bitmapscan to false;
+create table btree_zheap_tbl(id int4, t text) WITH (storage_engine='zheap', autovacuum_enabled=false);
+create index btree_zheap_idx on btree_zheap_tbl (id);
+insert into btree_zheap_tbl
+  select g, g::text || '_' ||
+            (select string_agg(md5(i::text), '_') from generate_series(1, 50) i)
+			from generate_series(1, 100) g;
+-- check the plan with index scan
+explain (costs false) select * from btree_zheap_tbl where id=1;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Index Scan using btree_zheap_idx on btree_zheap_tbl
+   Index Cond: (id = 1)
+(2 rows)
+
+select id from btree_zheap_tbl where id=1;
+ id 
+----
+  1
+(1 row)
+
+-- update a non-key column and delete a row
+update btree_zheap_tbl set t='modified' where id=1;
+select * from btree_zheap_tbl where id = 1;
+ id |    t     
+----+----------
+  1 | modified
+(1 row)
+
+delete from btree_zheap_tbl where id=2;
+select * from btree_zheap_tbl where id = 2;
+ id | t 
+----+---
+(0 rows)
+
+-- index creation on non-empty zheap relation. SHOULD FAIL!!
+create index btree_zheap_idx1 on btree_zheap_tbl (id, t);
+ERROR:  cannot create index on non-empty zheap relation
+drop table btree_zheap_tbl;
+set client_min_messages = notice;

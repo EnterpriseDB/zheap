@@ -179,6 +179,12 @@ extern void index_store_float8_orderby_distances(IndexScanDesc scan,
 									 bool recheckOrderBy);
 
 /*
+ * Methods for accessing zheap tuples.
+ */
+extern ZHeapTuple index_getnext_ztuple(IndexScanDesc scan, ScanDirection direction);
+extern ZHeapTuple index_fetch_zheap(IndexScanDesc scan);
+
+/*
  * index access method support routines (in genam.c)
  */
 extern IndexScanDesc RelationGetIndexScan(Relation indexRelation,

@@ -2630,6 +2630,82 @@ zheap_getnext(HeapScanDesc scan, ScanDirection direction)
 }
 
 /*
+ *	zheap_search_buffer - search tuple satisfying snapshot
+ *
+ * On entry, *tid is the TID of a tuple, and buffer is the buffer holding
+ * this tuple.  We search for the first visible member satisfying the given
+ * snapshot. If one is found, we return the tuple, in addition to updating
+ * *tid. Return NULL otherwise.
+ *
+ * The caller must already have pin and (at least) share lock on the buffer;
+ * it is still pinned/locked at exit.  Also, We do not report any pgstats
+ * count; caller may do so if wanted.
+ */
+ZHeapTuple
+zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
+					Snapshot snapshot, bool *all_dead)
+{
+	Page		dp = (Page) BufferGetPage(buffer);
+	ItemId		lp;
+	OffsetNumber offnum;
+	ZHeapTuple	loctup;
+	ZHeapTuple	resulttup = NULL;
+	Size		loctup_len;
+
+	if (all_dead)
+		*all_dead = false;
+
+	Assert(TransactionIdIsValid(RecentGlobalXmin));
+
+	Assert(ItemPointerGetBlockNumber(tid) == BufferGetBlockNumber(buffer));
+	offnum = ItemPointerGetOffsetNumber(tid);
+	/* check for bogus TID */
+	if (offnum < FirstOffsetNumber || offnum > PageGetMaxOffsetNumber(dp))
+		return NULL;
+
+	lp = PageGetItemId(dp, offnum);
+	/* check for unused or dead items */
+	if (!ItemIdIsNormal(lp))
+		return NULL;
+
+	loctup_len = ItemIdGetLength(lp);
+
+	loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
+	loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
+
+	loctup->t_tableOid = RelationGetRelid(relation);
+	loctup->t_len = loctup_len;
+	loctup->t_self = *tid;
+
+	/*
+	 * We always need to make a copy of zheap tuple as once we release the
+	 * buffer an in-place update can change the tuple.
+	 */
+	memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lp)), loctup->t_len);
+
+	/* If it's visible per the snapshot, we must return it */
+	resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer);
+
+	/* Fixme - Serialization failures needs to be detected for zheap. */
+	/* CheckForSerializableConflictOut(valid, relation, zheapTuple,
+									buffer, snapshot); */
+
+	/* set the tid */
+	if (resulttup)
+		*tid = resulttup->t_self;
+
+	/*
+	 * If we can't see it, maybe no one else can either.  At caller
+	 * request, check whether tuple is dead to all transactions.
+	 */
+	if (!resulttup && all_dead &&
+		ZHeapTupleIsSurelyDead(loctup, RecentGlobalXmin, buffer))
+		*all_dead = true;
+
+	return resulttup;
+}
+
+/*
  * ----------
  * Page related API's.  Eventually we might need to split these API's
  * into a separate file like bufzpage.c or buf_zheap_page.c or some

@@ -85,6 +85,7 @@ IndexNext(IndexScanState *node)
 	ScanDirection direction;
 	IndexScanDesc scandesc;
 	HeapTuple	tuple;
+	ZHeapTuple	ztuple;
 	TupleTableSlot *slot;
 
 	/*
@@ -131,19 +132,42 @@ IndexNext(IndexScanState *node)
 	/*
 	 * ok, now that we have what we need, fetch the next tuple.
 	 */
-	while ((tuple = index_getnext(scandesc, direction)) != NULL)
+	while (true)
 	{
 		CHECK_FOR_INTERRUPTS();
 
-		/*
-		 * Store the scanned tuple in the scan tuple slot of the scan state.
-		 * Note: we pass 'false' because tuples returned by amgetnext are
-		 * pointers onto disk pages and must not be pfree()'d.
-		 */
-		ExecStoreBufferHeapTuple(tuple, /* tuple to store */
-								 slot,	/* slot to store in */
-								 scandesc->xs_cbuf);	/* buffer containing
-														 * tuple */
+		if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
+		{
+			ztuple = index_getnext_ztuple(scandesc, direction);
+			if (ztuple == NULL)
+				break;
+
+			/*
+			 * Store the scanned ztuple in the scan tuple slot of the scan
+			 * state. Note: we pass 'true' because zheap tuples returned by
+			 * amgetnext are allocated locally.
+			 */
+			ExecStoreZTuple(ztuple,		/* tuple to store */
+							slot,		/* slot to store in */
+							scandesc->xs_cbuf,	/* buffer containing tuple */
+							true);		/* should pfree */
+		}
+		else
+		{
+			tuple = index_getnext(scandesc, direction);
+			if (tuple == NULL)
+				break;
+
+			/*
+			 * Store the scanned tuple in the scan tuple slot of the scan state.
+			 * Note: we pass 'false' because tuples returned by amgetnext are
+			 * pointers onto disk pages and must not be pfree()'d.
+			 */
+			ExecStoreBufferHeapTuple(tuple, /* tuple to store */
+									 slot,	/* slot to store in */
+									 scandesc->xs_cbuf);	/* buffer containing
+															 * tuple */
+		}
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals using

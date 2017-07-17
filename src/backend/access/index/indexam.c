@@ -559,7 +559,10 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	pgstat_count_index_tuples(scan->indexRelation, 1);
 
 	/* Return the TID of the tuple we found. */
-	return &scan->xs_ctup.t_self;
+	if (RelationStorageIsZHeap(scan->heapRelation))
+		return &scan->cur_tid;
+	else
+		return &scan->xs_ctup.t_self;
 }
 
 /* ----------------
@@ -966,4 +969,106 @@ index_store_float8_orderby_distances(IndexScanDesc scan, Oid *orderByTypes,
 			scan->xs_orderbynulls[i] = true;
 		}
 	}
+}
+
+/*
+ * ZHeap Stuff
+ */
+
+/* ----------------
+ *		index_fetch_zheap - get the scan's next zheap tuple
+ *
+ * Similar to index_fetch_heap, but fetches zheap tuple.
+ *
+ * FIXME: We have to decide how to fetch multiple versions of a tuple
+ * from the UNDO chain in case of non-MVCC snapshot.
+ * FIXME: Do we need any pruning logic here?
+ * ----------------
+ */
+ZHeapTuple
+index_fetch_zheap(IndexScanDesc scan)
+{
+	ItemPointer tid = &scan->cur_tid;
+	ZHeapTuple	zheapTuple;
+	bool	all_dead;
+
+	Assert(RelationStorageIsZHeap(scan->heapRelation));
+
+	/*
+	 * No HOT chains in zheap.
+	 */
+	Assert(!scan->xs_continue_hot);
+
+	/* Switch to correct buffer. */
+	scan->xs_cbuf = ReleaseAndReadBuffer(scan->xs_cbuf,
+										 scan->heapRelation,
+										 ItemPointerGetBlockNumber(tid));
+
+	/* Obtain share-lock on the buffer so we can examine visibility */
+	LockBuffer(scan->xs_cbuf, BUFFER_LOCK_SHARE);
+
+	zheapTuple = zheap_search_buffer(tid, scan->heapRelation,
+										 scan->xs_cbuf,
+										 scan->xs_snapshot,
+										 &all_dead);
+
+	LockBuffer(scan->xs_cbuf, BUFFER_LOCK_UNLOCK);
+
+	if (zheapTuple != NULL)
+	{
+		pgstat_count_heap_fetch(scan->indexRelation);
+		return zheapTuple;
+	}
+
+	/*
+	 * Tell index AM to kill its entry for that TID (this will take effect in
+	 * the next amgettuple call, in index_getnext_tid).  We do not do this when
+	 * in recovery because it may violate MVCC to do so.  See comments in
+	 * RelationGetIndexScan().
+	 */
+	if (!scan->xactStartedInRecovery)
+		scan->kill_prior_tuple = all_dead;
+
+	return NULL;
+}
+
+/* ----------------
+ *		index_getnext_ztuple - get the next zheap tuple from a scan
+ *
+ * Similar to index_getnext_tuple, but for zheap tuples.
+ * ----------------
+ */
+ZHeapTuple
+index_getnext_ztuple(IndexScanDesc scan, ScanDirection direction)
+{
+	ZHeapTuple	zheapTuple;
+	ItemPointer tid;
+
+	Assert(RelationStorageIsZHeap(scan->heapRelation));
+
+	for (;;)
+	{
+		/*
+		 * No HOT chains in zheap.
+		 */
+		Assert(!scan->xs_continue_hot);
+
+		/* Time to fetch the next TID from the index */
+		tid = index_getnext_tid(scan, direction);
+
+		/* If we're out of index entries, we're done */
+		if (tid == NULL)
+			break;
+
+		/*
+		 * Fetch the next (or only) visible zheap tuple for this index entry.
+		 * If we don't find anything, loop around and grab the next TID from
+		 * the index.
+		 */
+		zheapTuple = index_fetch_zheap(scan);
+		if (zheapTuple != NULL)
+			return zheapTuple;
+	}
+
+	return NULL;				/* failure exit */
 }

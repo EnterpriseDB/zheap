@@ -670,3 +670,38 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 
 	return HeapTupleInvisible;
 }
+
+/*
+ * ZHeapTupleIsSurelyDead
+ *
+ * Similar to HeapTupleIsSurelyDead, but for zheap tuples.
+ */
+bool
+ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer)
+{
+	ZHeapPageOpaque	opaque;
+	ZHeapTupleHeader tuple = zhtup->t_data;
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
+
+	Assert(ItemPointerIsValid(&zhtup->t_self));
+	Assert(zhtup->t_tableOid != InvalidOid);
+
+	if (tuple->t_infomask & ZHEAP_DELETED)
+	{
+		/*
+		 * The tuple is deleted and must be all visible if the transaction slot
+		 * is cleared or latest xid that has touched the tuple precedes
+		 * smallest xid that has undo.
+		 *
+		 * Fixme - Once we have a variable that defines smallest xid that has
+		 * undo, we need to use that instead of RecentGlobalXmin.
+		 */
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+						TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+											  RecentGlobalXmin))
+			return true;
+	}
+
+	return false; /* Tuple is still alive */
+}

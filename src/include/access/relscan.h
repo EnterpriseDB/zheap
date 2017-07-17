@@ -129,6 +129,7 @@ typedef struct IndexScanDescData
 	/* xs_ctup/xs_cbuf/xs_recheck are valid after a successful index_getnext */
 	HeapTupleData xs_ctup;		/* current heap tuple, if any */
 	Buffer		xs_cbuf;		/* current heap buffer in scan, if any */
+	ItemPointerData cur_tid;	/* current tid from the index */
 	/* NB: if xs_cbuf is not InvalidBuffer, we hold a pin on that buffer */
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
 

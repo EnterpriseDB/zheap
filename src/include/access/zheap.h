@@ -58,6 +58,9 @@ extern HeapScanDesc zheap_beginscan_strat(Relation relation, Snapshot snapshot,
 					int nkeys, ScanKey key,
 					bool allow_strat, bool allow_sync);
 extern ZHeapTuple zheap_getnext(HeapScanDesc scan, ScanDirection direction);
+extern ZHeapTuple zheap_search_buffer(ItemPointer tid, Relation relation,
+									  Buffer buffer, Snapshot snapshot,
+									  bool *all_dead);
 
 /* WAL Stuff */
 

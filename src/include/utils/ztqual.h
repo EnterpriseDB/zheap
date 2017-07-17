@@ -31,5 +31,7 @@ extern ZHeapTuple ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup,
 extern HTSU_Result ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup,
 						CommandId curcid, Buffer buffer, ItemPointer ctid,
 						bool free_zhtup, bool *in_place_updated);
+extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin,
+								   Buffer buffer);
 
 #endif   /* ZTQUAL_H */

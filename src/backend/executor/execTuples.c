@@ -439,6 +439,11 @@ ExecStoreBufferHeapTuple(HeapTuple tuple,
  *
  *		This function is same as ExecStoreTuple except that it used to store a
  *		physical zheap tuple into a specified slot in the tuple table.
+ *
+ *		NOTE: Unlike ExecStoreTuple, it's possible that buffer is valid and
+ *		should_free is true. Because, slot->tts_ztuple may be a copy of the
+ *		tuple allocated locally. So, we want to free the tuple even after
+ *		keeping a pin/lock to the previously valid buffer.
  */
 TupleTableSlot *
 ExecStoreZTuple(ZHeapTuple tuple,
@@ -452,8 +457,6 @@ ExecStoreZTuple(ZHeapTuple tuple,
 	Assert(tuple != NULL);
 	Assert(slot != NULL);
 	Assert(slot->tts_tupleDescriptor != NULL);
-	/* passing shouldFree=true for a tuple on a disk page is not sane */
-	Assert(BufferIsValid(buffer) ? (!shouldFree) : true);
 
 	/*
 	 * Free any old physical tuple belonging to the slot.
