@@ -547,9 +547,22 @@ ExecInsert(ModifyTableState *mtstate,
 
 			/* insert index entries for tuple */
 			if (resultRelInfo->ri_NumIndices > 0)
+<<<<<<< HEAD
 				recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
 													   estate, false, NULL,
 													   NIL);
+=======
+			{
+				if (RelationStorageIsZHeap(resultRelationDesc))
+					recheckIndexes = ExecInsertIndexTuples(slot, &(ztuple->t_self),
+														   estate, false, NULL,
+														   arbiterIndexes);
+				else
+					recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
+														   estate, false, NULL,
+														   arbiterIndexes);
+			}
+>>>>>>> Implement insertion of zheap tuples in btree index
 		}
 	}
 
@@ -1351,8 +1364,15 @@ lreplace:;
 		 * the t_self field.
 		 *
 		 * If it's a HOT update, we mustn't insert new index entries.
+		 *
+		 * FIXME: For a zheap update, we don't update the index entry. It only
+		 * supports in-place updates on non-index columns. We need to decide
+		 * how to do non-in-place updates and deletion marking on the index
+		 * entry for a zheap tuple.
 		 */
-		if (resultRelInfo->ri_NumIndices > 0 && !HeapTupleIsHeapOnly(tuple))
+		if (resultRelInfo->ri_NumIndices > 0
+				&& !RelationStorageIsZHeap(resultRelationDesc)
+				&& !HeapTupleIsHeapOnly(tuple))
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
 												   estate, false, NULL, NIL);
 	}
