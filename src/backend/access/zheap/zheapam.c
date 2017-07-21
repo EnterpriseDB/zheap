@@ -59,7 +59,8 @@ int		data_alignment = 1;
 int		data_alignment_zheap = 1;
 extern bool synchronize_seqscans;
 
-static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup);
+static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
+									   int options);
 static Bitmapset *
 ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 							  ZHeapTuple oldtup, ZHeapTuple newtup);
@@ -477,7 +478,7 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
  * TPD entry or undorecord for this tuple.
  */
 static ZHeapTuple
-zheap_prepare_insert(Relation relation, ZHeapTuple tup)
+zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 {
 	/*
 	 * For now, parallel operations are required to be strictly read-only.
@@ -514,6 +515,8 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup)
 		Assert(!(tup->t_data->t_infomask & ZHEAP_HASOID));
 	}
 
+	if (options & ZHTUP_SLOT_FROZEN)
+		ZHeapTupleHeaderSetXactSlot(tup->t_data, ZHTUP_SLOT_FROZEN);
 	tup->t_tableOid = RelationGetRelid(relation);
 
 	/*
@@ -586,7 +589,7 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	 * Note: below this point, heaptup is the data we actually intend to store
 	 * into the relation; tup is the caller's original untoasted data.
 	 */
-	zheaptup = zheap_prepare_insert(relation, tup);
+	zheaptup = zheap_prepare_insert(relation, tup, options);
 
 reacquire_buffer:
 	/*
