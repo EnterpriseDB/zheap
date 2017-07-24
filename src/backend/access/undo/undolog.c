@@ -905,8 +905,8 @@ UndoLogDiscard(UndoRecPtr discard_point)
 	 * promises that this data will not be needed again.
 	 */
 	UndoRecPtrAssignRelFileNode(rnode, MakeUndoRecPtr(logno, old_discard));
-	old_blockno = old_discard / UndoLogUsableBytesPerPage;
-	blockno = discard / UndoLogUsableBytesPerPage;
+	old_blockno = old_discard / BLCKSZ;
+	blockno = discard / BLCKSZ;
 	for (; old_blockno < blockno; ++old_blockno)
 		ForgetBuffer(rnode, UndoLogForkNum, old_blockno);
 
