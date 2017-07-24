@@ -907,8 +907,8 @@ UndoLogDiscard(UndoRecPtr discard_point)
 	UndoRecPtrAssignRelFileNode(rnode, MakeUndoRecPtr(logno, old_discard));
 	old_blockno = old_discard / BLCKSZ;
 	blockno = discard / BLCKSZ;
-	for (; old_blockno < blockno; ++old_blockno)
-		ForgetBuffer(rnode, UndoLogForkNum, old_blockno);
+	while (old_blockno < blockno)
+		ForgetBuffer(rnode, UndoLogForkNum, old_blockno++);
 
 	/* Update shmem to show the new discard and end pointers. */
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
