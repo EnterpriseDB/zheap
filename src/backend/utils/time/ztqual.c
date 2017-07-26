@@ -16,102 +16,11 @@
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "access/zheap.h"
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
 #include "utils/tqual.h"
 #include "utils/ztqual.h"
-
-
-/*
- * CopyTupleFromUndoRecord
- *	Extract the tuple from undo record.  Deallocate the previous version
- *	of tuple and form the new version.
- *
- *	free_zhtup - if true, free the previous version of tuple.
- */
-static ZHeapTuple
-CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
-						bool free_zhtup)
-{
-	ZHeapTuple	undo_tup;
-
-	switch (urec->uur_type)
-	{
-		case UNDO_DELETE:
-			{
-				ZHeapTupleHeader	undo_tup_hdr;
-
-				undo_tup_hdr = (ZHeapTupleHeader) urec->uur_tuple.data;
-
-				/*
-				 * For deletes, undo tuple data is always same as prior tuple's data
-				 * as we don't modify the same in delete operation.
-				 */
-				undo_tup = palloc(ZHEAPTUPLESIZE + zhtup->t_len);
-				undo_tup->t_data = (ZHeapTupleHeader) ((char *) undo_tup + ZHEAPTUPLESIZE);
-
-				undo_tup->t_tableOid = zhtup->t_tableOid;
-				undo_tup->t_len = zhtup->t_len;
-				undo_tup->t_self = zhtup->t_self;
-				memcpy(undo_tup->t_data, zhtup->t_data, zhtup->t_len);
-
-				/*
-				 * Free the previous version of tuple, see comments in
-				 * UNDO_INPLACE_UPDATE case.
-				 */
-				if (free_zhtup)
-					zheap_freetuple(zhtup);
-
-				/*
-				 * override the tuple header values with values fetched from
-				 * undo record
-				 */
-				undo_tup->t_data->t_infomask2 = undo_tup_hdr->t_infomask2;
-				undo_tup->t_data->t_infomask = undo_tup_hdr->t_infomask;
-				undo_tup->t_data->t_hoff = undo_tup_hdr->t_hoff;
-			}
-			break;
-		case UNDO_INPLACE_UPDATE:
-			{
-				Size		offset = 0;
-				uint32		undo_tup_len;
-
-				/*
-				 * After this point, the previous version of tuple won't be used.
-				 * If we don't free the previous version, then we might accumulate
-				 * lot of memory when many prior versions needs to be traversed.
-				 *
-				 * XXX One way to save deallocation and allocation of memory is to
-				 * only make a copy of prior version of tuple when it is determined
-				 * that the version is visible to current snapshot.  In practise,
-				 * we don't need to traverse many prior versions, so let's be tidy.
-				 */
-				if (free_zhtup)
-					zheap_freetuple(zhtup);
-
-				undo_tup_len = *((uint32 *) &urec->uur_tuple.data[offset]);
-
-				undo_tup = palloc(ZHEAPTUPLESIZE + undo_tup_len);
-				undo_tup->t_data = (ZHeapTupleHeader) ((char *) undo_tup + ZHEAPTUPLESIZE);
-
-				memcpy(&undo_tup->t_len, &urec->uur_tuple.data[offset], sizeof(uint32));
-				offset += sizeof(uint32);
-
-				memcpy(&undo_tup->t_self, &urec->uur_tuple.data[offset], sizeof(ItemPointerData));
-				offset += sizeof(ItemPointerData);
-
-				memcpy(&undo_tup->t_tableOid, &urec->uur_tuple.data[offset], sizeof(Oid));
-				offset += sizeof(Oid);
-
-				memcpy(undo_tup->t_data, (ZHeapTupleHeader) &urec->uur_tuple.data[offset], undo_tup_len);
-			}
-			break;
-		default:
-			elog(ERROR, "unsupported undo record type");
-	}
-
-	return undo_tup;
-}
 
 /*
  * GetTupleFromUndo
@@ -119,6 +28,12 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
  *	Fetch the record from undo and determine if previous version of tuple
  *	is visible for the given snapshot.  If there exists a visible version
  *	of tuple in undo, then return the same, else return NULL.
+ *
+ *	During undo chain traversal, we need to ensure that we switch the undo
+ *	chain if the current version of undo tuple is modified by a transaction
+ *	that is different from transaction that has modified the previous version
+ *	of undo tuple.  This is primarily done because undo chain for a particular
+ *	tuple is formed based on the transaction id that has modified the tuple.
  */
 static ZHeapTuple
 GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
@@ -129,6 +44,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 	ZHeapTuple	undo_tup;
 	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
 	int	trans_slot_id = InvalidXactSlotId;
+	int	prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
 	int	undo_oper = -1;
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
@@ -141,58 +57,44 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self));
 
-	switch (urec->uur_type)
+	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, true);
+	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
+	prev_urec_ptr = urec->uur_blkprev;
+
+	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
 	{
-		case UNDO_DELETE:
-			{
-				undo_tup = CopyTupleFromUndoRecord(urec, zhtup, true);
-				trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
-				prev_urec_ptr = urec->uur_blkprev;
-
-				if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
-				{
-					undo_oper = ZHEAP_INPLACE_UPDATED;
-				}
-				else
-				{
-					/* we can't further operate on deleted tuple */
-					Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED));
-				}
-
-				UndoRecordRelease(urec);
-			}
-			break;
-		case UNDO_INPLACE_UPDATE:
-			{
-				undo_tup = CopyTupleFromUndoRecord(urec, zhtup, true);
-				trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
-				prev_urec_ptr = urec->uur_blkprev;
-
-				if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
-				{
-					undo_oper = ZHEAP_INPLACE_UPDATED;
-				}
-				else
-				{
-					/* we can't further operate on deleted tuple */
-					Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED));
-				}
-
-				UndoRecordRelease(urec);
-			}
-			break;
-		default:
-			elog(ERROR, "unsupported undo record type");
+		undo_oper = ZHEAP_INPLACE_UPDATED;
 	}
+	else if (undo_tup->t_data->t_infomask & ZHEAP_XID_LOCK_ONLY)
+	{
+		undo_oper = ZHEAP_XID_LOCK_ONLY;
+	}
+	else
+	{
+		/* we can't further operate on deleted tuple */
+		Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED));
+	}
+
+	UndoRecordRelease(urec);
 
 	/* if the transaction slot is cleared, tuple must be all visible */
 	if (trans_slot_id == ZHTUP_SLOT_FROZEN)
 		return undo_tup;
 
-	if (undo_oper == ZHEAP_INPLACE_UPDATED)
+	if (undo_oper == ZHEAP_INPLACE_UPDATED ||
+		undo_oper == ZHEAP_XID_LOCK_ONLY)
 	{
+		/*
+		 * Change the undo chain if the undo tuple is stamped with the different
+		 * transaction.
+		 */
+		if (trans_slot_id != prev_trans_slot_id)
+			prev_urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(undo_tup->t_data, opaque);
+
 		if (TransactionIdIsCurrentTransactionId(ZHeapPageGetRawXid(trans_slot_id, opaque)))
 		{
+			if (undo_oper == ZHEAP_XID_LOCK_ONLY)
+				return undo_tup;
 			if (ZHeapTupleGetCid(undo_tup, buffer) >= snapshot->curcid)
 			{
 				/* updated after scan started */
@@ -243,17 +145,22 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
  *
  *	This function returns ctid for the undo tuple which will be always
  *	same as the ctid of zhtup except for non-in-place update case.
+ *
+ *	The Undo chain traversal follows similar protocol as mentioned atop
+ *	GetTupleFromUndo.
  */
 static bool
 UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 						 CommandId curcid, Buffer buffer,
-						 ItemPointer ctid, bool free_zhtup)
+						 ItemPointer ctid, bool free_zhtup,
+						 bool *in_place_updated_or_locked)
 {
 	UnpackedUndoRecord	*urec;
 	ZHeapPageOpaque	opaque;
 	ZHeapTuple	undo_tup = NULL;
 	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
 	int	trans_slot_id = InvalidXactSlotId;
+	int prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
 	int	undo_oper = -1;
 	bool result = false;
 
@@ -267,51 +174,28 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self));
 
-	switch (urec->uur_type)
+	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, free_zhtup);
+	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
+	prev_urec_ptr = urec->uur_blkprev;
+	*ctid = undo_tup->t_self;
+
+	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
 	{
-		case UNDO_DELETE:
-			{
-				undo_tup = CopyTupleFromUndoRecord(urec, zhtup, free_zhtup);
-				trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
-				prev_urec_ptr = urec->uur_blkprev;
-				*ctid = undo_tup->t_self;
-
-				if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
-				{
-					undo_oper = ZHEAP_INPLACE_UPDATED;
-				}
-				else
-				{
-					/* we can't further operate on deleted tuple */
-					Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED));
-				}
-
-				UndoRecordRelease(urec);
-			}
-			break;
-		case UNDO_INPLACE_UPDATE:
-			{
-				undo_tup = CopyTupleFromUndoRecord(urec, zhtup, free_zhtup);
-				trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
-				prev_urec_ptr = urec->uur_blkprev;
-				*ctid = undo_tup->t_self;
-
-				if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
-				{
-					undo_oper = ZHEAP_INPLACE_UPDATED;
-				}
-				else
-				{
-					/* we can't further operate on deleted tuple */
-					Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED));
-				}
-
-				UndoRecordRelease(urec);
-			}
-			break;
-		default:
-			elog(ERROR, "unsupported undo record type");
+		undo_oper = ZHEAP_INPLACE_UPDATED;
+		*in_place_updated_or_locked = true;
 	}
+	else if (undo_tup->t_data->t_infomask & ZHEAP_XID_LOCK_ONLY)
+	{
+		undo_oper = ZHEAP_XID_LOCK_ONLY;
+		*in_place_updated_or_locked = true;
+	}
+	else
+	{
+		/* we can't further operate on deleted tuple */
+		Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED));
+	}
+
+	UndoRecordRelease(urec);
 
 	/* if the transaction slot is cleared, tuple must be all visible */
 	if (trans_slot_id == ZHTUP_SLOT_FROZEN)
@@ -320,10 +204,23 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 		goto result_available;
 	}
 
-	if (undo_oper == ZHEAP_INPLACE_UPDATED)
+	if (undo_oper == ZHEAP_INPLACE_UPDATED ||
+		undo_oper == ZHEAP_XID_LOCK_ONLY)
 	{
+		/*
+		 * Change the undo chain if the undo tuple is stamped with the different
+		 * transaction.
+		 */
+		if (trans_slot_id != prev_trans_slot_id)
+			prev_urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(undo_tup->t_data, opaque);
+
 		if (TransactionIdIsCurrentTransactionId(ZHeapPageGetRawXid(trans_slot_id, opaque)))
 		{
+			if (undo_oper == ZHEAP_XID_LOCK_ONLY)
+			{
+				result = true;
+				goto result_available;
+			}
 			if (ZHeapTupleGetCid(undo_tup, buffer) >= curcid)
 			{
 				/* updated after scan started */
@@ -332,7 +229,8 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 												curcid,
 												buffer,
 												ctid,
-												true);
+												true,
+												in_place_updated_or_locked);
 			}
 			else
 				result = true;	/* updated before scan started */
@@ -343,7 +241,8 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 											curcid,
 											buffer,
 											ctid,
-											true);
+											true,
+											in_place_updated_or_locked);
 		else if (TransactionIdDidCommit(ZHeapPageGetRawXid(trans_slot_id, opaque)))
 			result = true;
 		else
@@ -352,7 +251,8 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 											curcid,
 											buffer,
 											ctid,
-											true);
+											true,
+											in_place_updated_or_locked);
 	}
 	else	/* undo tuple is the root tuple */
 	{
@@ -386,6 +286,25 @@ result_available:
  *	tuple and if it is not visible, then we need to fetch the prior version
  *	of tuple from undo chain and decide based on its visibility.  The undo
  *	chain needs to be traversed till we reach root version of the tuple.
+ *
+ *	Here, we consider the effects of:
+ *		all transactions committed as of the time of the given snapshot
+ *		previous commands of this transaction
+ *
+ *	Does _not_ include:
+ *		transactions shown as in-progress by the snapshot
+ *		transactions started after the snapshot was taken
+ *		changes made by the current command
+ *
+ *	The tuple will be considered visible iff latest operation on tuple is
+ *	Insert, In-Place update or tuple is locked and the transaction that has
+ *	performed operation is current transaction (and the operation is performed
+ *	by some previous command) or is committed.
+ *
+ *	We traverse the undo chain to get the visible tuple if any, in case the
+ *	the latest transaction that has operated on tuple is shown as in-progress
+ *	by the snapshot or is started after the snapshot was taken or is current
+ *	transaction and the changes are made by current command.
  */
 ZHeapTuple
 ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
@@ -402,10 +321,15 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	if (tuple->t_infomask & ZHEAP_DELETED)
 	{
 		/*
-		 * if the transaction slot is cleared, tuple must be deleted and all
-		 * visible
+		 * The tuple is deleted and must be all visible if the transaction slot
+		 * is cleared or latest xid that has touched the tuple precedes
+		 * smallest xid that has undo.
+		 *
+		 * Fixme - Once we have a variable that defines smallest xid that has
+		 * undo, we need to use that instead of RecentGlobalXmin.
 		 */
-		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
 			return NULL;
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
@@ -434,14 +358,25 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 									snapshot,
 									buffer);
 	}
-	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED)
+	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
+			 tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
 	{
-		/* if the transaction slot is cleared, tuple must be all visible */
-		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
+		/*
+		 * The tuple is updated/locked and must be all visible if the
+		 * transaction slot is cleared or latest xid that has touched the
+		 * tuple precedes smallest xid that has undo.
+		 *
+		 * Fixme - Once we have a variable that defines smallest xid that has
+		 * undo, we need to use that instead of RecentGlobalXmin.
+		 */
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
 			return zhtup;	/* tuple is updated */
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 		{
+			if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
+				return zhtup;
 			if (ZHeapTupleGetCid(zhtup, buffer) >= snapshot->curcid)
 			{
 				/* updated after scan started, get previous tuple from undo */
@@ -467,9 +402,17 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 									buffer);
 	}
 
-	/* if the transaction slot is cleared, tuple must be all visible */
-	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
-			return zhtup;
+	/*
+	 * The tuple must be all visible if the transaction slot
+	 * is cleared or latest xid that has touched the tuple precedes
+	 * smallest xid that has undo.
+	 *
+	 * Fixme - Once we have a variable that defines smallest xid that has
+	 * undo, we need to use that instead of RecentGlobalXmin.
+	 */
+	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+		TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+		return zhtup;
 
 	if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 	{
@@ -498,32 +441,37 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
  *
  *	ctid - returns the ctid of visible tuple if the tuple is either deleted or
  *	updated.  ctid needs to be retrieved from undo tuple.
- *	in_place_updated - returns whether the current version of tuple is updated
- *	in place.
+ *	lock_allowed - allow caller to lock the tuple if it is in-place updated
+ *	in_place_updated - returns whether the current visible version of tuple is
+ *	updated in place.
  */
 HTSU_Result
 ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 						  Buffer buffer, ItemPointer ctid, bool free_zhtup,
-						  bool *in_place_updated)
+						  bool lock_allowed, bool *in_place_updated_or_locked)
 {
 	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	bool	visible;
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
+	*in_place_updated_or_locked = false;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	if (tuple->t_infomask & ZHEAP_DELETED)
 	{
-		*in_place_updated = false;
-
 		/*
-		 * if the transaction slot is cleared, tuple is deleted and must be
-		 * all visible
+		 * The tuple is deleted and must be all visible if the transaction slot
+		 * is cleared or latest xid that has touched the tuple precedes
+		 * smallest xid that has undo.
+		 *
+		 * Fixme - Once we have a variable that defines smallest xid that has
+		 * undo, we need to use that instead of RecentGlobalXmin.
 		 */
-		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
 			return HeapTupleUpdated;
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
@@ -536,7 +484,8 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 												   curcid,
 												   buffer,
 												   ctid,
-												   free_zhtup);
+												   free_zhtup,
+												   in_place_updated_or_locked);
 				if (visible)
 					return HeapTupleSelfUpdated;
 				else
@@ -552,7 +501,8 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 											   curcid,
 											   buffer,
 											   ctid,
-											   free_zhtup);
+											   free_zhtup,
+											   in_place_updated_or_locked);
 
 			if (visible)
 				return HeapTupleBeingUpdated;
@@ -573,7 +523,8 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 											   curcid,
 											   buffer,
 											   ctid,
-											   free_zhtup);
+											   free_zhtup,
+											   in_place_updated_or_locked);
 
 			if (visible)
 				return HeapTupleMayBeUpdated;
@@ -581,19 +532,28 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 				return HeapTupleInvisible;
 		}
 	}
-	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED)
+	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
+			 tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
 	{
-		*in_place_updated = true;
+		*in_place_updated_or_locked = true;
 
 		/*
-		 * if the transaction slot is cleared, tuple is updated and must be
-		 * all visible
+		 * The tuple is updated/locked and must be all visible if the
+		 * transaction slot is cleared or latest xid that has touched the
+		 * tuple precedes smallest xid that has undo.
+		 *
+		 * Fixme - Once we have a variable that defines smallest xid that has
+		 * undo, we need to use that instead of RecentGlobalXmin.
 		 */
-		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
 			return HeapTupleMayBeUpdated;
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
 		{
+			if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
+				return HeapTupleBeingUpdated;
+
 			if (ZHeapTupleGetCid(zhtup, buffer) >= curcid)
 			{
 				/* updated after scan started, check previous tuple from undo */
@@ -602,7 +562,8 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 												   curcid,
 												   buffer,
 												   ctid,
-												   free_zhtup);
+												   free_zhtup,
+												   in_place_updated_or_locked);
 				if (visible)
 					return HeapTupleSelfUpdated;
 				else
@@ -618,7 +579,8 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 											   curcid,
 											   buffer,
 											   ctid,
-											   free_zhtup);
+											   free_zhtup,
+											   in_place_updated_or_locked);
 
 			if (visible)
 				return HeapTupleBeingUpdated;
@@ -626,7 +588,13 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 				return HeapTupleInvisible;
 		}
 		else if (TransactionIdDidCommit(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
-			return HeapTupleMayBeUpdated;	/* tuple is updated */
+		{
+			/* tuple is updated */
+			if (lock_allowed)
+				return HeapTupleMayBeUpdated;
+			else
+				return HeapTupleUpdated;
+		}
 		else	/* transaction is aborted */
 		{
 			/*
@@ -639,7 +607,8 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 											   curcid,
 											   buffer,
 											   ctid,
-											   free_zhtup);
+											   free_zhtup,
+											   in_place_updated_or_locked);
 
 			if (visible)
 				return HeapTupleMayBeUpdated;
@@ -649,9 +618,15 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	}
 
 	/*
-	 * if the transaction slot is cleared, tuple must be all visible
+	 * The tuple must be all visible if the transaction slot
+	 * is cleared or latest xid that has touched the tuple precedes
+	 * smallest xid that has undo.
+	 *
+	 * Fixme - Once we have a variable that defines smallest xid that has
+	 * undo, we need to use that instead of RecentGlobalXmin.
 	 */
-	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN)
+	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+		TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
 		return HeapTupleMayBeUpdated;
 
 	if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
@@ -704,4 +679,138 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer
 	}
 
 	return false; /* Tuple is still alive */
+}
+
+/*
+ * ZHeapTupleSatisfiesDirty
+ *		Returns the visible version of tuple (including effects of open
+ *		transactions) if any, NULL otherwise.
+ *
+ *	Here, we consider the effects of:
+ *		all committed and in-progress transactions (as of the current instant)
+ *		previous commands of this transaction
+ *		changes made by the current command
+ *
+ *	The tuple will be considered visible iff:
+ *	(a) Latest operation on tuple is Delete and the current transaction is in
+ *		progress.
+ *	(b) Latest operation on tuple is Insert, In-Place update or tuple is
+ *		locked and the transaction that has performed operation is current
+ *		transaction or is in-progress or is committed.
+ */
+ZHeapTuple
+ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
+						 Buffer buffer)
+{
+	ZHeapPageOpaque	opaque;
+	ZHeapTupleHeader tuple = zhtup->t_data;
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
+
+	Assert(ItemPointerIsValid(&zhtup->t_self));
+	Assert(zhtup->t_tableOid != InvalidOid);
+
+	snapshot->xmin = snapshot->xmax = InvalidTransactionId;
+
+	if (tuple->t_infomask & ZHEAP_DELETED)
+	{
+		/*
+		 * The tuple is deleted and must be all visible if the transaction slot
+		 * is cleared or latest xid that has touched the tuple precedes
+		 * smallest xid that has undo.
+		 *
+		 * Fixme - Once we have a variable that defines smallest xid that has
+		 * undo, we need to use that instead of RecentGlobalXmin.
+		 */
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+			return NULL;
+
+		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
+			return NULL;
+		else if (TransactionIdIsInProgress(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
+		{
+			snapshot->xmax = ZHeapTupleHeaderGetRawXid(tuple, opaque);
+			return zhtup;		/* in deletion by other */
+		}
+		else if (TransactionIdDidCommit(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
+			return NULL;	/* tuple is deleted */
+		else	/* transaction is aborted */
+		{
+			/*
+			 * Fixme - Here we need to fetch the tuple from undo, something similar
+			 * to GetTupleFromUndo but for DirtySnapshots.
+			 */
+			Assert(false);
+			return NULL;
+		}
+	}
+	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
+			 tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
+	{
+		/*
+		 * The tuple is updated/locked and must be all visible if the
+		 * transaction slot is cleared or latest xid that has touched the
+		 * tuple precedes smallest xid that has undo.
+		 *
+		 * Fixme - Once we have a variable that defines smallest xid that has
+		 * undo, we need to use that instead of RecentGlobalXmin.
+		 */
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+			return zhtup;	/* tuple is updated */
+
+		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
+			return zhtup;
+		else if (TransactionIdIsInProgress(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
+		{
+			if (!ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
+				snapshot->xmax = ZHeapTupleHeaderGetRawXid(tuple, opaque);
+			return zhtup;		/* being updated */
+		}
+		else if (TransactionIdDidCommit(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
+			return zhtup;	/* tuple is updated by someone else */
+		else	/* transaction is aborted */
+		{
+			/*
+			 * Fixme - Here we need to fetch the tuple from undo, something similar
+			 * to GetTupleFromUndo but for DirtySnapshots.
+			 */
+			Assert(false);
+			return NULL;
+		}
+	}
+
+	/*
+	 * The tuple must be all visible if the transaction slot is cleared or
+	 * latest xid that has touched the tuple precedes smallest xid that has
+	 * undo.
+	 *
+	 * Fixme - Once we have a variable that defines smallest xid that has
+	 * undo, we need to use that instead of RecentGlobalXmin.
+	 */
+	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+		TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+		return zhtup;
+
+	if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
+		return zhtup;
+	else if (TransactionIdIsInProgress(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
+	{
+		snapshot->xmin = ZHeapTupleHeaderGetRawXid(tuple, opaque);
+		return zhtup;		/* in insertion by other */
+	}
+	else if (TransactionIdDidCommit(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
+		return zhtup;
+	else
+	{
+		/*
+		 * Fixme - Here we need to fetch the tuple from undo, something similar
+		 * to GetTupleFromUndo but for DirtySnapshots.
+		 */
+		Assert(false);
+		return NULL;
+	}
+
+	return NULL;
 }

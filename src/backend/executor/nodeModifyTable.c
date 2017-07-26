@@ -547,22 +547,16 @@ ExecInsert(ModifyTableState *mtstate,
 
 			/* insert index entries for tuple */
 			if (resultRelInfo->ri_NumIndices > 0)
-<<<<<<< HEAD
-				recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
-													   estate, false, NULL,
-													   NIL);
-=======
 			{
 				if (RelationStorageIsZHeap(resultRelationDesc))
 					recheckIndexes = ExecInsertIndexTuples(slot, &(ztuple->t_self),
 														   estate, false, NULL,
-														   arbiterIndexes);
+														   NIL);
 				else
 					recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
 														   estate, false, NULL,
-														   arbiterIndexes);
+														   NIL);
 			}
->>>>>>> Implement insertion of zheap tuples in btree index
 		}
 	}
 
@@ -811,12 +805,9 @@ ldelete:;
 							 errmsg("tuple to be deleted was already moved to another partition due to concurrent update")));
 
 				if (!ItemPointerEquals(tupleid, &hufd.ctid) ||
-					hufd.in_place_updated)
+					hufd.in_place_updated_or_locked)
 				{
 					TupleTableSlot *my_epqslot;
-
-					if (RelationStorageIsZHeap(resultRelationDesc))
-						elog(ERROR, "EvalPlanQual mechanism is not supported for zheap");
 
 					my_epqslot = EvalPlanQual(estate,
 											  epqstate,
@@ -1316,12 +1307,9 @@ lreplace:;
 							 errmsg("tuple to be updated was already moved to another partition due to concurrent update")));
 
 				if (!ItemPointerEquals(tupleid, &hufd.ctid) ||
-					hufd.in_place_updated)
+					hufd.in_place_updated_or_locked)
 				{
 					TupleTableSlot *epqslot;
-
-					if (RelationStorageIsZHeap(resultRelationDesc))
-						elog(ERROR, "EvalPlanQual mechanism is not supported for zheap");
 
 					epqslot = EvalPlanQual(estate,
 										   epqstate,

@@ -41,6 +41,8 @@
 #include "access/sysattr.h"
 #include "access/transam.h"
 #include "access/xact.h"
+#include "access/zheap.h"
+#include "access/zhtup.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_publication.h"
 #include "commands/matview.h"
@@ -983,6 +985,7 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 
 	/* mark EvalPlanQual not active */
 	estate->es_epqTuple = NULL;
+	estate->es_epqZTuple = NULL;
 	estate->es_epqTupleSet = NULL;
 	estate->es_epqScanDone = NULL;
 
@@ -2501,62 +2504,123 @@ EvalPlanQual(EState *estate, EPQState *epqstate,
 			 ItemPointer tid, TransactionId priorXmax)
 {
 	TupleTableSlot *slot;
-	HeapTuple	copyTuple;
 
 	Assert(rti > 0);
 
-	/*
-	 * Get and lock the updated version of the row; if fail, return NULL.
-	 */
-	copyTuple = EvalPlanQualFetch(estate, relation, lockmode, LockWaitBlock,
-								  tid, priorXmax);
+	if (RelationStorageIsZHeap(relation))
+	{
+		ZHeapTuple	copyTuple;
 
-	if (copyTuple == NULL)
-		return NULL;
+		/*
+		 * Get and lock the updated version of the row; if fail, return NULL.
+		 */
+		copyTuple = EvalPlanQualZFetch(estate, relation, lockmode, LockWaitBlock,
+									   tid, priorXmax);
 
-	/*
-	 * For UPDATE/DELETE we have to return tid of actual row we're executing
-	 * PQ for.
-	 */
-	*tid = copyTuple->t_self;
+		if (copyTuple == NULL)
+			return NULL;
 
-	/*
-	 * Need to run a recheck subquery.  Initialize or reinitialize EPQ state.
-	 */
-	EvalPlanQualBegin(epqstate, estate);
+		/*
+		 * For UPDATE/DELETE we have to return tid of actual row we're executing
+		 * PQ for.
+		 */
+		*tid = copyTuple->t_self;
 
-	/*
-	 * Free old test tuple, if any, and store new tuple where relation's scan
-	 * node will see it
-	 */
-	EvalPlanQualSetTuple(epqstate, rti, copyTuple);
+		/*
+		 * Need to run a recheck subquery.  Initialize or reinitialize EPQ state.
+		 */
+		EvalPlanQualBegin(epqstate, estate);
 
-	/*
-	 * Fetch any non-locked source rows
-	 */
-	EvalPlanQualFetchRowMarks(epqstate);
+		/*
+		 * Free old test tuple, if any, and store new tuple where relation's scan
+		 * node will see it
+		 */
+		EvalPlanQualSetZTuple(epqstate, rti, copyTuple);
 
-	/*
-	 * Run the EPQ query.  We assume it will return at most one tuple.
-	 */
-	slot = EvalPlanQualNext(epqstate);
+		/*
+		 * Fixme - Handling of RowMarks for ZHeap tuples is required.  It
+		 * will be done when we implement Tuple Locking.
+		 */
 
-	/*
-	 * If we got a tuple, force the slot to materialize the tuple so that it
-	 * is not dependent on any local state in the EPQ query (in particular,
-	 * it's highly likely that the slot contains references to any pass-by-ref
-	 * datums that may be present in copyTuple).  As with the next step, this
-	 * is to guard against early re-use of the EPQ query.
-	 */
-	if (!TupIsNull(slot))
-		(void) ExecMaterializeSlot(slot);
+		/*
+		 * Run the EPQ query.  We assume it will return at most one tuple.
+		 */
+		slot = EvalPlanQualNext(epqstate);
 
-	/*
-	 * Clear out the test tuple.  This is needed in case the EPQ query is
-	 * re-used to test a tuple for a different relation.  (Not clear that can
-	 * really happen, but let's be safe.)
-	 */
-	EvalPlanQualSetTuple(epqstate, rti, NULL);
+		/*
+		 * If we got a tuple, force the slot to materialize the tuple so that it
+		 * is not dependent on any local state in the EPQ query (in particular,
+		 * it's highly likely that the slot contains references to any pass-by-ref
+		 * datums that may be present in copyTuple).  As with the next step, this
+		 * is to guard against early re-use of the EPQ query.
+		 */
+		if (!TupIsNull(slot))
+			(void) ExecMaterializeZSlot(slot);
+
+		/*
+		 * Clear out the test tuple.  This is needed in case the EPQ query is
+		 * re-used to test a tuple for a different relation.  (Not clear that can
+		 * really happen, but let's be safe.)
+		 */
+		EvalPlanQualSetZTuple(epqstate, rti, NULL);
+	}
+	else
+	{
+		HeapTuple	copyTuple;
+
+		/*
+		 * Get and lock the updated version of the row; if fail, return NULL.
+		 */
+		copyTuple = EvalPlanQualFetch(estate, relation, lockmode, LockWaitBlock,
+									  tid, priorXmax);
+
+		if (copyTuple == NULL)
+			return NULL;
+
+		/*
+		 * For UPDATE/DELETE we have to return tid of actual row we're executing
+		 * PQ for.
+		 */
+		*tid = copyTuple->t_self;
+
+		/*
+		 * Need to run a recheck subquery.  Initialize or reinitialize EPQ state.
+		 */
+		EvalPlanQualBegin(epqstate, estate);
+
+		/*
+		 * Free old test tuple, if any, and store new tuple where relation's scan
+		 * node will see it
+		 */
+		EvalPlanQualSetTuple(epqstate, rti, copyTuple);
+
+		/*
+		 * Fetch any non-locked source rows
+		 */
+		EvalPlanQualFetchRowMarks(epqstate);
+
+		/*
+		 * Run the EPQ query.  We assume it will return at most one tuple.
+		 */
+		slot = EvalPlanQualNext(epqstate);
+
+		/*
+		 * If we got a tuple, force the slot to materialize the tuple so that it
+		 * is not dependent on any local state in the EPQ query (in particular,
+		 * it's highly likely that the slot contains references to any pass-by-ref
+		 * datums that may be present in copyTuple).  As with the next step, this
+		 * is to guard against early re-use of the EPQ query.
+		 */
+		if (!TupIsNull(slot))
+			(void) ExecMaterializeSlot(slot);
+
+		/*
+		 * Clear out the test tuple.  This is needed in case the EPQ query is
+		 * re-used to test a tuple for a different relation.  (Not clear that can
+		 * really happen, but let's be safe.)
+		 */
+		EvalPlanQualSetTuple(epqstate, rti, NULL);
+	}
 
 	return slot;
 }
@@ -2818,6 +2882,176 @@ EvalPlanQualFetch(EState *estate, Relation relation, int lockmode,
 }
 
 /*
+ * Fetch a copy of the newest version of an outdated Zheap tuple
+ */
+ZHeapTuple
+EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
+				   LockWaitPolicy wait_policy,
+				   ItemPointer tid, TransactionId priorXmax)
+{
+	ZHeapTuple	tuple;
+	SnapshotData SnapshotDirty;
+
+	/*
+	 * fetch target tuple
+	 *
+	 * Loop here to deal with updated or busy tuples
+	 */
+	InitDirtySnapshot(SnapshotDirty);
+	for (;;)
+	{
+		Buffer		buffer;
+
+		if (zheap_fetch(relation, &SnapshotDirty, tid, &tuple, &buffer, true, NULL))
+		{
+			HTSU_Result test;
+			HeapUpdateFailureData hufd;
+
+			/*
+			 * Ensure that the tuple is same as what we are expecting.  If the
+			 * the current or any prior version of tuple doesn't contain the
+			 * effect of priorXmax, then the slot must have been recycled and
+			 * reused for an unrelated tuple.  This implies that the latest
+			 * version of the row was deleted, so we need do nothing.
+			 */
+			if (!ValidateTuplesXact(tuple, buffer, priorXmax))
+			{
+				ReleaseBuffer(buffer);
+				return NULL;
+			}
+
+			/* otherwise xmin should not be dirty... */
+			if (TransactionIdIsValid(SnapshotDirty.xmin))
+				elog(ERROR, "t_xmin is uncommitted in tuple to be updated");
+
+			/*
+			 * If tuple is being updated by other transaction then we have to
+			 * wait for its commit/abort, or die trying.
+			 */
+			if (TransactionIdIsValid(SnapshotDirty.xmax))
+			{
+				ReleaseBuffer(buffer);
+				switch (wait_policy)
+				{
+					case LockWaitBlock:
+						XactLockTableWait(SnapshotDirty.xmax,
+										  relation, &tuple->t_self,
+										  XLTW_FetchUpdated);
+						break;
+					case LockWaitSkip:
+						if (!ConditionalXactLockTableWait(SnapshotDirty.xmax))
+							return NULL;		/* skip instead of waiting */
+						break;
+					case LockWaitError:
+						if (!ConditionalXactLockTableWait(SnapshotDirty.xmax))
+							ereport(ERROR,
+									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+									 errmsg("could not obtain lock on row in relation \"%s\"",
+										RelationGetRelationName(relation))));
+						break;
+				}
+				continue;		/* loop back to repeat zheap_fetch */
+			}
+
+			/*
+			 * If tuple was inserted by our own transaction, we have to check
+			 * cmin against es_output_cid: cmin >= current CID means our
+			 * command cannot see the tuple, so we should ignore it. Otherwise
+			 * heap_lock_tuple() will throw an error, and so would any later
+			 * attempt to update or delete the tuple.  (We need not check cmax
+			 * because ZHeapTupleSatisfiesDirty will consider a tuple deleted
+			 * by our transaction dead, regardless of cmax.) We just checked
+			 * that priorXmax == xmin, so we can test that variable instead of
+			 * doing ZHeapTupleHeaderGetXid again.
+			 */
+			if (TransactionIdIsCurrentTransactionId(priorXmax))
+			{
+				LockBuffer(buffer, BUFFER_LOCK_SHARE);
+				if (ZHeapTupleGetCid(tuple, buffer) >= estate->es_output_cid)
+				{
+					UnlockReleaseBuffer(buffer);
+					return NULL;
+				}
+				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+			}
+
+			/*
+			 * This is a live tuple, so now try to lock it.
+			 */
+			test = zheap_lock_tuple(relation, tuple,
+									estate->es_output_cid,
+									lockmode, wait_policy,
+									false, true, &buffer, &hufd);
+			/* We now have two pins on the buffer, get rid of one */
+			ReleaseBuffer(buffer);
+
+			switch (test)
+			{
+				case HeapTupleSelfUpdated:
+
+					/*
+					 * Treat the tuple as deleted and do not process.  See
+					 * EvalPlanQualFetch.
+					 */
+					ReleaseBuffer(buffer);
+					return NULL;
+
+				case HeapTupleMayBeUpdated:
+					/* successfully locked */
+					break;
+
+				case HeapTupleUpdated:
+					ReleaseBuffer(buffer);
+					if (IsolationUsesXactSnapshot())
+						ereport(ERROR,
+								(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+								 errmsg("could not serialize access due to concurrent update")));
+					if (!ItemPointerEquals(&hufd.ctid, &tuple->t_self) ||
+						hufd.in_place_updated_or_locked)
+					{
+						/* it was updated, so look at the updated version */
+						tuple->t_self = *tid = hufd.ctid;
+						/* updated row should have xid matching this xmax */
+						priorXmax = hufd.xmax;
+						continue;
+					}
+					/* tuple was deleted, so give up */
+					return NULL;
+
+				case HeapTupleWouldBlock:
+					ReleaseBuffer(buffer);
+					return NULL;
+
+				case HeapTupleInvisible:
+					elog(ERROR, "attempted to lock invisible tuple");
+
+				default:
+					ReleaseBuffer(buffer);
+					elog(ERROR, "unrecognized zheap_lock_tuple status: %u",
+						 test);
+					return NULL;	/* keep compiler quiet */
+			}
+
+			ReleaseBuffer(buffer);
+			break;
+		}
+
+		/*
+		 *  Fixme - We need to handle non in-place updates by refetching the
+		 *	tuple using tid.  We should get back the tid from Zheapvisbility
+		 *	routine.
+		 */
+		ReleaseBuffer(buffer);
+		return NULL;
+	}
+
+	/*
+	 * Return the copied tuple
+	 */
+	return tuple;
+}
+
+/*
  * EvalPlanQualInit -- initialize during creation of a plan state node
  * that might need to invoke EPQ processing.
  *
@@ -3025,6 +3259,26 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 }
 
 /*
+ * This function is same as EvalPlanQualSetTuple except for tuple format.
+ */
+void
+EvalPlanQualSetZTuple(EPQState *epqstate, Index rti, ZHeapTuple tuple)
+{
+	EState	   *estate = epqstate->estate;
+
+	Assert(rti > 0);
+
+	/*
+	 * free old test tuple, if any, and store new tuple where relation's scan
+	 * node will see it
+	 */
+	if (estate->es_epqZTuple[rti - 1] != NULL)
+		zheap_freetuple(estate->es_epqZTuple[rti - 1]);
+	estate->es_epqZTuple[rti - 1] = tuple;
+	estate->es_epqTupleSet[rti - 1] = true;
+}
+
+/*
  * Fetch the next row (if any) from EvalPlanQual testing
  *
  * (In practice, there should never be more than one row...)
@@ -3215,15 +3469,24 @@ EvalPlanQualStart(EPQState *epqstate, EState *parentestate, Plan *planTree)
 	 * sub-rechecks to inherit the values being examined by an outer recheck.
 	 */
 	estate->es_epqScanDone = (bool *) palloc0(rtsize * sizeof(bool));
-	if (parentestate->es_epqTuple != NULL)
+	if (parentestate->es_epqTuple != NULL || estate->es_epqZTuple != NULL)
 	{
 		estate->es_epqTuple = parentestate->es_epqTuple;
+		estate->es_epqZTuple = parentestate->es_epqZTuple;
 		estate->es_epqTupleSet = parentestate->es_epqTupleSet;
 	}
 	else
 	{
-		estate->es_epqTuple = (HeapTuple *)
-			palloc0(rtsize * sizeof(HeapTuple));
+		Relation	resultRelationDesc;
+
+		resultRelationDesc = parentestate->es_result_relation_info->ri_RelationDesc;
+		if (RelationStorageIsZHeap(resultRelationDesc))
+			estate->es_epqZTuple = (ZHeapTuple *)
+				palloc0(rtsize * sizeof(ZHeapTuple));
+		else
+			estate->es_epqTuple = (HeapTuple *)
+				palloc0(rtsize * sizeof(HeapTuple));
+
 		estate->es_epqTupleSet = (bool *)
 			palloc0(rtsize * sizeof(bool));
 	}

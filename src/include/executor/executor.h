@@ -203,6 +203,10 @@ extern void EvalPlanQualSetPlan(EPQState *epqstate,
 extern void EvalPlanQualSetTuple(EPQState *epqstate, Index rti,
 					 HeapTuple tuple);
 extern HeapTuple EvalPlanQualGetTuple(EPQState *epqstate, Index rti);
+extern ZHeapTuple EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
+					 LockWaitPolicy wait_policy, ItemPointer tid, TransactionId priorXmax);
+extern void EvalPlanQualSetZTuple(EPQState *epqstate, Index rti,
+					 ZHeapTuple tuple);
 
 #define EvalPlanQualSetSlot(epqstate, slot)  ((epqstate)->origslot = (slot))
 extern void EvalPlanQualFetchRowMarks(EPQState *epqstate);

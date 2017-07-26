@@ -88,6 +88,54 @@ ExecScanFetch(ScanState *node,
 			return slot;
 		}
 	}
+	else if (estate->es_epqZTuple != NULL)
+	{
+		/*
+		 * We are inside an EvalPlanQual recheck.  Return the test tuple if
+		 * one is available, after rechecking any access-method-specific
+		 * conditions.
+		 */
+		Index		scanrelid = ((Scan *) node->ps.plan)->scanrelid;
+
+		if (scanrelid == 0)
+		{
+			TupleTableSlot *slot = node->ss_ScanTupleSlot;
+
+			/*
+			 * This is a ForeignScan or CustomScan which has pushed down a
+			 * join to the remote side.  The recheck method is responsible not
+			 * only for rechecking the scan/join quals but also for storing
+			 * the correct tuple in the slot.
+			 */
+			if (!(*recheckMtd) (node, slot))
+				ExecClearTuple(slot);	/* would not be returned by scan */
+			return slot;
+		}
+		else if (estate->es_epqTupleSet[scanrelid - 1])
+		{
+			TupleTableSlot *slot = node->ss_ScanTupleSlot;
+
+			/* Return empty slot if we already returned a tuple */
+			if (estate->es_epqScanDone[scanrelid - 1])
+				return ExecClearTuple(slot);
+			/* Else mark to remember that we shouldn't return more */
+			estate->es_epqScanDone[scanrelid - 1] = true;
+
+			/* Return empty slot if we haven't got a test tuple */
+			if (estate->es_epqZTuple[scanrelid - 1] == NULL)
+				return ExecClearTuple(slot);
+
+			/* Store test tuple in the plan node's scan slot */
+			ExecStoreZTuple(estate->es_epqZTuple[scanrelid - 1],
+							slot, InvalidBuffer, false);
+
+			/* Check if it meets the access-method conditions */
+			if (!(*recheckMtd) (node, slot))
+				ExecClearTuple(slot);	/* would not be returned by scan */
+
+			return slot;
+		}
+	}
 
 	/*
 	 * Run the node-type-specific access method function to get the next tuple

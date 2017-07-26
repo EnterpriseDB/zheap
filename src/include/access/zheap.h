@@ -49,6 +49,10 @@ extern HTSU_Result zheap_delete(Relation relation, ItemPointer tid,
 extern HTSU_Result zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 					CommandId cid, Snapshot crosscheck, bool wait,
 					HeapUpdateFailureData *hufd, LockTupleMode *lockmode);
+extern HTSU_Result zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
+					CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
+					bool follow_updates, bool eval, Buffer *buffer,
+					HeapUpdateFailureData *hufd);
 extern void ZheapInitPage(Page page, Size pageSize);
 
 /* Zheap scan related API's */
@@ -61,6 +65,15 @@ extern ZHeapTuple zheap_getnext(HeapScanDesc scan, ScanDirection direction);
 extern ZHeapTuple zheap_search_buffer(ItemPointer tid, Relation relation,
 									  Buffer buffer, Snapshot snapshot,
 									  bool *all_dead);
+
+extern bool zheap_fetch(Relation relation, Snapshot snapshot,
+				ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
+				bool keep_buf, Relation stats_relation);
+
+/* Zheap and undo record interaction related API's */
+extern ZHeapTuple
+CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
+						bool free_zhtup);
 
 /* WAL Stuff */
 

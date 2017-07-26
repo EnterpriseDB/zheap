@@ -44,13 +44,16 @@ typedef struct ParallelHeapScanDescData *ParallelHeapScanDesc;
  * the tuple); otherwise cmax is zero.  (We make this restriction because
  * HeapTupleHeaderGetCmax doesn't work for tuples outdated in other
  * transactions.)
+ * in_place_updated_or_locked indicates whether the tuple is updated or locked.
+ * We need to re-verify the tuple even if it is just marked as locked, because
+ * previously someone could have updated it in place.
  */
 typedef struct HeapUpdateFailureData
 {
 	ItemPointerData ctid;
 	TransactionId xmax;
 	CommandId	cmax;
-	bool		in_place_updated;
+	bool		in_place_updated_or_locked;
 } HeapUpdateFailureData;
 
 /*

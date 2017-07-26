@@ -105,7 +105,8 @@ extern bool ResolveCminCmaxDuringDecoding(struct HTAB *tuplecid_data,
  * local variable of type SnapshotData, and initialize it with this macro.
  */
 #define InitDirtySnapshot(snapshotdata)  \
-	((snapshotdata).satisfies = HeapTupleSatisfiesDirty)
+	((snapshotdata).satisfies = HeapTupleSatisfiesDirty, \
+	 (snapshotdata).zsatisfies = ZHeapTupleSatisfiesDirty)
 
 /*
  * Similarly, some initialization is required for a NonVacuumable snapshot.

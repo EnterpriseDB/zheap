@@ -79,6 +79,9 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define ZHEAP_HASOID			0x0008	/* has an object-id field */
 #define	ZHEAP_DELETED			0x0010	/* tuple deleted */
 #define	ZHEAP_INPLACE_UPDATED	0x0020	/* tuple is updated inplace */
+#define ZHEAP_XID_LOCK_ONLY		0x0040	/* xid, if valid, is only a locker */
+
+#define ZHEAP_VIS_STATUS_MASK	0x0070	/* mask for visibility bits (5, 6, 7) */
 
 /*
  * information stored in t_infomask2:
@@ -87,6 +90,9 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define ZHEAP_XACT_SLOT				0x3800	/* 3 bits (12, 13 and 14) for transaction slot */
 #define	ZHEAP_XACT_SLOT_MASK		0x000B	/* 11 - mask to retrieve transaction slot */
 
+
+#define ZHEAP_XID_IS_LOCKED_ONLY(infomask) \
+	((infomask) & ZHEAP_XID_LOCK_ONLY)
 
 #define ZHeapTupleHeaderGetNatts(tup) \
 ( \
@@ -219,6 +225,8 @@ extern Datum zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 
 /* Zheap transaction information related API's */
 extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf);
+extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
+					TransactionId priorXmax);
 
 /* Page related API's. */
 
