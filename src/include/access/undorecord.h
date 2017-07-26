@@ -41,6 +41,7 @@ typedef struct UndoRecordHeader
 	uint8		urec_info;		/* flag bits */
 	uint16		urec_prevlen;	/* length of previous record in bytes */
 	Oid			urec_relfilenode;		/* relfilenode for relation */
+	TransactionId urec_xid;			/* Transaction id */
 	CommandId	urec_cid;			/* command id */
 } UndoRecordHeader;
 
@@ -127,6 +128,7 @@ typedef struct UnpackedUndoRecord
 	uint8		uur_info;		/* flag bits */
 	uint16		uur_prevlen;	/* length of previous record */
 	Oid			uur_relfilenode;	/* relfilenode for relation */
+	TransactionId uur_xid;		/* transaction id */
 	CommandId	uur_cid;		/* command id */
 	Oid			uur_tsid;		/* tablespace OID */
 	ForkNumber	uur_fork;		/* fork number */
