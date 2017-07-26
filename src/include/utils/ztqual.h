@@ -17,7 +17,6 @@
 #include "access/xlogdefs.h"
 #include "access/zheap.h"
 
-
 /*
  * ZHeapTupleSatisfiesVisibility
  *		True iff zheap tuple satisfies a time qual.

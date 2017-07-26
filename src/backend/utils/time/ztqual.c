@@ -34,6 +34,9 @@
  *	that is different from transaction that has modified the previous version
  *	of undo tuple.  This is primarily done because undo chain for a particular
  *	tuple is formed based on the transaction id that has modified the tuple.
+ *
+ *	Also we don't need to process the chain if the latest xid that has changed
+ *  the tuple precedes smallest xid that has undo.
  */
 static ZHeapTuple
 GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
@@ -43,6 +46,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 	ZHeapPageOpaque	opaque;
 	ZHeapTuple	undo_tup;
 	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
+	TransactionId	xid;
 	int	trans_slot_id = InvalidXactSlotId;
 	int	prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
 	int	undo_oper = -1;
@@ -60,6 +64,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, true);
 	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 	prev_urec_ptr = urec->uur_blkprev;
+	xid = urec->uur_xid;
 
 	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
 	{
@@ -77,8 +82,13 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 
 	UndoRecordRelease(urec);
 
-	/* if the transaction slot is cleared, tuple must be all visible */
-	if (trans_slot_id == ZHTUP_SLOT_FROZEN)
+	/*
+	 * The tuple must be all visible if the transaction slot is cleared or
+	 * latest xid that has changed the tuple precedes smallest xid that has
+	 * undo.
+	 */
+	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
+		TransactionIdPrecedes(xid, RecentGlobalXmin))
 		return undo_tup;
 
 	if (undo_oper == ZHEAP_INPLACE_UPDATED ||
@@ -159,6 +169,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	ZHeapPageOpaque	opaque;
 	ZHeapTuple	undo_tup = NULL;
 	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
+	TransactionId	xid;
 	int	trans_slot_id = InvalidXactSlotId;
 	int prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
 	int	undo_oper = -1;
@@ -177,6 +188,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, free_zhtup);
 	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 	prev_urec_ptr = urec->uur_blkprev;
+	xid = urec->uur_xid;
 	*ctid = undo_tup->t_self;
 
 	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
@@ -197,8 +209,13 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 
 	UndoRecordRelease(urec);
 
-	/* if the transaction slot is cleared, tuple must be all visible */
-	if (trans_slot_id == ZHTUP_SLOT_FROZEN)
+	/*
+	 * The tuple must be all visible if the transaction slot is cleared or
+	 * latest xid that has changed the tuple precedes smallest xid that has
+	 * undo.
+	 */
+	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
+		TransactionIdPrecedes(xid, RecentGlobalXmin))
 	{
 		result = true;
 		goto result_available;
@@ -322,14 +339,12 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	{
 		/*
 		 * The tuple is deleted and must be all visible if the transaction slot
-		 * is cleared or latest xid that has touched the tuple precedes
+		 * is cleared or latest xid that has changed the tuple precedes
 		 * smallest xid that has undo.
-		 *
-		 * Fixme - Once we have a variable that defines smallest xid that has
-		 * undo, we need to use that instead of RecentGlobalXmin.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+								  RecentGlobalXmin))
 			return NULL;
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
@@ -363,14 +378,12 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	{
 		/*
 		 * The tuple is updated/locked and must be all visible if the
-		 * transaction slot is cleared or latest xid that has touched the
+		 * transaction slot is cleared or latest xid that has changed the
 		 * tuple precedes smallest xid that has undo.
-		 *
-		 * Fixme - Once we have a variable that defines smallest xid that has
-		 * undo, we need to use that instead of RecentGlobalXmin.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+								  RecentGlobalXmin))
 			return zhtup;	/* tuple is updated */
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
@@ -404,14 +417,12 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 
 	/*
 	 * The tuple must be all visible if the transaction slot
-	 * is cleared or latest xid that has touched the tuple precedes
+	 * is cleared or latest xid that has changed the tuple precedes
 	 * smallest xid that has undo.
-	 *
-	 * Fixme - Once we have a variable that defines smallest xid that has
-	 * undo, we need to use that instead of RecentGlobalXmin.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+		TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+							  RecentGlobalXmin))
 		return zhtup;
 
 	if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
@@ -464,14 +475,12 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	{
 		/*
 		 * The tuple is deleted and must be all visible if the transaction slot
-		 * is cleared or latest xid that has touched the tuple precedes
+		 * is cleared or latest xid that has changed the tuple precedes
 		 * smallest xid that has undo.
-		 *
-		 * Fixme - Once we have a variable that defines smallest xid that has
-		 * undo, we need to use that instead of RecentGlobalXmin.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+								  RecentGlobalXmin))
 			return HeapTupleUpdated;
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
@@ -541,12 +550,10 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 		 * The tuple is updated/locked and must be all visible if the
 		 * transaction slot is cleared or latest xid that has touched the
 		 * tuple precedes smallest xid that has undo.
-		 *
-		 * Fixme - Once we have a variable that defines smallest xid that has
-		 * undo, we need to use that instead of RecentGlobalXmin.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+								  RecentGlobalXmin))
 			return HeapTupleMayBeUpdated;
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
@@ -619,14 +626,12 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 
 	/*
 	 * The tuple must be all visible if the transaction slot
-	 * is cleared or latest xid that has touched the tuple precedes
+	 * is cleared or latest xid that has changed the tuple precedes
 	 * smallest xid that has undo.
-	 *
-	 * Fixme - Once we have a variable that defines smallest xid that has
-	 * undo, we need to use that instead of RecentGlobalXmin.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+		TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+							  RecentGlobalXmin))
 		return HeapTupleMayBeUpdated;
 
 	if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
@@ -666,15 +671,12 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer
 	{
 		/*
 		 * The tuple is deleted and must be all visible if the transaction slot
-		 * is cleared or latest xid that has touched the tuple precedes
+		 * is cleared or latest xid that has changed the tuple precedes
 		 * smallest xid that has undo.
-		 *
-		 * Fixme - Once we have a variable that defines smallest xid that has
-		 * undo, we need to use that instead of RecentGlobalXmin.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-						TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
-											  RecentGlobalXmin))
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+								  RecentGlobalXmin))
 			return true;
 	}
 
@@ -716,14 +718,12 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	{
 		/*
 		 * The tuple is deleted and must be all visible if the transaction slot
-		 * is cleared or latest xid that has touched the tuple precedes
+		 * is cleared or latest xid that has changed the tuple precedes
 		 * smallest xid that has undo.
-		 *
-		 * Fixme - Once we have a variable that defines smallest xid that has
-		 * undo, we need to use that instead of RecentGlobalXmin.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+								  RecentGlobalXmin))
 			return NULL;
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
@@ -750,14 +750,12 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	{
 		/*
 		 * The tuple is updated/locked and must be all visible if the
-		 * transaction slot is cleared or latest xid that has touched the
+		 * transaction slot is cleared or latest xid that has changed the
 		 * tuple precedes smallest xid that has undo.
-		 *
-		 * Fixme - Once we have a variable that defines smallest xid that has
-		 * undo, we need to use that instead of RecentGlobalXmin.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+			TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+								  RecentGlobalXmin))
 			return zhtup;	/* tuple is updated */
 
 		if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
@@ -783,14 +781,12 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 
 	/*
 	 * The tuple must be all visible if the transaction slot is cleared or
-	 * latest xid that has touched the tuple precedes smallest xid that has
+	 * latest xid that has changed the tuple precedes smallest xid that has
 	 * undo.
-	 *
-	 * Fixme - Once we have a variable that defines smallest xid that has
-	 * undo, we need to use that instead of RecentGlobalXmin.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque), RecentGlobalXmin))
+		TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+							  RecentGlobalXmin))
 		return zhtup;
 
 	if (TransactionIdIsCurrentTransactionId(ZHeapTupleHeaderGetRawXid(tuple, opaque)))
