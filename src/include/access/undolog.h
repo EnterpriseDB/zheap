@@ -124,7 +124,6 @@ extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
 typedef struct UndoLogMetaData
 {
 	Oid		tablespace;
-	UndoRecordSize last_size;		/* size of last inserted record */
 	UndoLogOffset insert;			/* next insertion point (head) */
 	UndoLogOffset end;				/* one past end of highest segment */
 	UndoLogOffset discard;			/* oldest data needed (tail) */

@@ -43,7 +43,6 @@ typedef struct xl_undolog_attach
 	TransactionId xid;
 	UndoLogNumber logno;
 	UndoLogOffset insert;
-	UndoRecordSize last_size;
 } xl_undolog_attach;
 
 /* Discard space, and possibly destroy or recycle undo log segments. */

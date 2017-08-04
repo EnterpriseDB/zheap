@@ -627,7 +627,6 @@ UndoLogAllocate(size_t size, UndoPersistence level)
 		xlrec.xid = GetTopTransactionId();
 		xlrec.logno = MyUndoLogState.logno;
 		xlrec.insert = log->meta.insert;
-		xlrec.last_size = log->meta.last_size;
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
@@ -714,7 +713,6 @@ UndoLogAdvance(UndoRecPtr insertion_point, size_t size)
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->meta.insert = UndoLogOffsetPlusUsableBytes(log->meta.insert, size);
-	log->meta.last_size = size;
 	LWLockRelease(&log->mutex);
 }
 
@@ -1249,7 +1247,6 @@ attach_undo_log(void)
 		log = get_undo_log_by_number(logno);
 
 		Assert(log->meta.tablespace == InvalidOid);
-		Assert(log->meta.last_size == 0);
 		Assert(log->meta.discard == 0);
 		Assert(log->meta.insert == 0);
 		Assert(log->meta.end == 0);
