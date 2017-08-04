@@ -131,11 +131,11 @@ typedef struct UndoLogMetaData
 } UndoLogMetaData;
 
 /* Space management. */
-extern UndoRecPtr UndoLogAllocate(UndoRecordSize size, UndoPersistence level);
+extern UndoRecPtr UndoLogAllocate(size_t size, UndoPersistence level);
 extern UndoRecPtr UndoLogAllocateInRecovery(TransactionId xid,
-											UndoRecordSize size,
+											size_t size,
 											UndoPersistence level);
-extern void UndoLogAdvance(UndoRecPtr insertion_point, UndoRecordSize size);
+extern void UndoLogAdvance(UndoRecPtr insertion_point, size_t size);
 extern void UndoLogDiscard(UndoRecPtr discard_point);
 extern bool UndoLogIsDiscarded(UndoRecPtr point);
 

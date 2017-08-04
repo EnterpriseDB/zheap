@@ -551,7 +551,7 @@ extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end)
  * and an insertion point within a buffer page using the macros above.
  */
 UndoRecPtr
-UndoLogAllocate(UndoRecordSize size, UndoPersistence level)
+UndoLogAllocate(size_t size, UndoPersistence level)
 {
 	UndoLogControl *log = MyUndoLogState.log;
 	bool	need_attach_wal_record = false;
@@ -594,25 +594,14 @@ UndoLogAllocate(UndoRecordSize size, UndoPersistence level)
 			detach_current_undo_log();
 			goto retry;
 		}
-		else
-		{
-			/*
-			 * Extend the 'end' of this undo log by one segment.
-			 *
-			 * XXX Would there ever be a case for extending by more than one
-			 * segment at a time?  This is already the slow path, where we
-			 * aren't able to recycle enough segments during UndoLogDiscard,
-			 * and it's not clear that there is any batching advantage when
-			 * creating new segments anyway.
-			 */
-			extend_undo_log(MyUndoLogState.logno,
-							log->meta.end + UndoLogSegmentSize);
-			/*
-			 * That must be enough, because segments are bigger than the
-			 * maximum value for UndoRecordSize.
-			 */
-			Assert(new_insert <= log->meta.end);
-		}
+		/*
+		 * Extend the end of this undo log to cover new_insert (in other words
+		 * round up to the segment size).
+		 */
+		extend_undo_log(MyUndoLogState.logno,
+						new_insert + UndoLogSegmentSize -
+						new_insert % UndoLogSegmentSize);
+		Assert(new_insert <= log->meta.end);
 	}
 
 	/*
@@ -652,7 +641,7 @@ UndoLogAllocate(UndoRecordSize size, UndoPersistence level)
  * enough space in it.
  */
 UndoRecPtr
-UndoLogAllocateInRecovery(TransactionId xid, UndoRecordSize size,
+UndoLogAllocateInRecovery(TransactionId xid, size_t size,
 						  UndoPersistence level)
 {
 	uint16		high_bits = UndoLogGetXidHigh(xid);
@@ -701,7 +690,7 @@ UndoLogAllocateInRecovery(TransactionId xid, UndoRecordSize size,
 	 */
 	if (log->meta.end < UndoLogOffsetPlusUsableBytes(log->meta.insert, size))
 		elog(ERROR,
-			 "unexpectedly couldn't allocate %u bytes in undo log number %d",
+			 "unexpectedly couldn't allocate %zu bytes in undo log number %d",
 			 size, logno);
 
 	return MakeUndoRecPtr(logno, log->meta.insert);
@@ -714,7 +703,7 @@ UndoLogAllocateInRecovery(TransactionId xid, UndoRecordSize size,
  * recovery.
  */
 void
-UndoLogAdvance(UndoRecPtr insertion_point, UndoRecordSize size)
+UndoLogAdvance(UndoRecPtr insertion_point, size_t size)
 {
 	UndoLogControl *log = MyUndoLogState.log;
 
