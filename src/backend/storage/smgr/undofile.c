@@ -266,13 +266,11 @@ static File undofile_open_segment_file(Oid relNode, Oid spcNode, int segno)
 	File		file;
 	char		path[MAXPGPATH];
 
-<<<<<<< HEAD
-	UndoLogSegmentPath(relNode, segno, spcNode, dir, path);
-	file = PathNameOpenFile(path, O_RDWR | PG_BINARY);
-=======
 	UndoLogSegmentPath(relNode, segno, spcNode, path);
-	file = PathNameOpenFile(path, O_RDWR | PG_BINARY, 0600);
->>>>>>> 7c696f5... Implemented UndoLogDiscard and related things.
+	file = PathNameOpenFile(path, O_RDWR | PG_BINARY);
+
+	if (file <= 0)
+		elog(ERROR, "cannot open segment file '%s': %m", path);
 
 	return file;
 }
