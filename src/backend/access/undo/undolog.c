@@ -38,6 +38,7 @@
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
+#include "utils/builtins.h"
 #include "utils/memutils.h"
 
 #include <sys/stat.h>
@@ -1352,6 +1353,7 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 	for (logno = low_logno; logno < high_logno; ++logno)
 	{
 		UndoLogControl *log = get_undo_log_by_number(logno);
+		char buffer[17];
 
 		if (log == NULL)
 			continue;
@@ -1364,9 +1366,15 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 		LWLockAcquire(&log->mutex, LW_SHARED);
 		values[0] = ObjectIdGetDatum((Oid) logno);
 		values[1] = ObjectIdGetDatum(log->meta.tablespace);
-		values[2] = Int64GetDatum(log->meta.discard);
-		values[3] = Int64GetDatum(log->meta.insert);
-		values[4] = Int64GetDatum(log->meta.end);
+		snprintf(buffer, sizeof(buffer), "%016zx",
+				 MakeUndoRecPtr(logno, log->meta.discard));
+		values[2] = CStringGetTextDatum(buffer);
+		snprintf(buffer, sizeof(buffer), "%016zx",
+				 MakeUndoRecPtr(logno, log->meta.insert));
+		values[3] = CStringGetTextDatum(buffer);
+		snprintf(buffer, sizeof(buffer), "%016zx",
+				 MakeUndoRecPtr(logno, log->meta.end));
+		values[4] = CStringGetTextDatum(buffer);
 		values[5] = TransactionIdGetDatum(log->xid);
 		values[6] = Int32GetDatum((int64) log->pid);
 		LWLockRelease(&log->mutex);
