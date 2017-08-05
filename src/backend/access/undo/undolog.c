@@ -1363,13 +1363,13 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 		LWLockAcquire(&log->mutex, LW_SHARED);
 		values[0] = ObjectIdGetDatum((Oid) logno);
 		values[1] = ObjectIdGetDatum(log->meta.tablespace);
-		snprintf(buffer, sizeof(buffer), "%016zx",
+		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
 				 MakeUndoRecPtr(logno, log->meta.discard));
 		values[2] = CStringGetTextDatum(buffer);
-		snprintf(buffer, sizeof(buffer), "%016zx",
+		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
 				 MakeUndoRecPtr(logno, log->meta.insert));
 		values[3] = CStringGetTextDatum(buffer);
-		snprintf(buffer, sizeof(buffer), "%016zx",
+		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
 				 MakeUndoRecPtr(logno, log->meta.end));
 		values[4] = CStringGetTextDatum(buffer);
 		values[5] = TransactionIdGetDatum(log->xid);

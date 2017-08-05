@@ -33,7 +33,7 @@ undo_rec_ptr_to_text(UndoRecPtr undo_ptr)
 {
 	char buffer[17];
 
-	snprintf(buffer, sizeof(buffer), "%016zx", undo_ptr);
+	snprintf(buffer, sizeof(buffer), UndoRecPtrFormat, undo_ptr);
 	return cstring_to_text(buffer);
 }
 
@@ -298,8 +298,8 @@ undo_append(PG_FUNCTION_ARGS)
 	/* Allocate undo log space for our data. */
 	start_undo_ptr = UndoLogAllocate(size, RELPERSISTENCE_PERMANENT);
 
-	elog(NOTICE, "will copy %zu bytes into undo log at %016zx hex AKA %zd dec",
-		 size, start_undo_ptr, start_undo_ptr);
+	elog(NOTICE, "will copy %zu bytes into undo log at " UndoRecPtrFormat,
+		 size, start_undo_ptr);
 
 	/*
 	 * Copy data into shared buffers.  Real code that does this would need to
@@ -414,7 +414,7 @@ undo_dump(PG_FUNCTION_ARGS)
 		ReleaseBuffer(buffer);
 
 		/* Write out.  Apologies for this horrible code. */
-		snprintf(line, sizeof(line), "%016zx: ", undo_ptr);
+		snprintf(line, sizeof(line), UndoRecPtrFormat ": ", undo_ptr);
 		for (i = 0; i < 8; ++i)
 			snprintf(&line[18 + 3 * i], 4, "%02x ", data[i]);
 		for (i = 0; i < 8; ++i)
