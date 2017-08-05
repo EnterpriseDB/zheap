@@ -1357,8 +1357,8 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 
 		/*
 		 * This won't be a consistent result overall, but the values for each
-		 * log will be consistent because we'll take the per-log spinlock
-		 * while copying them.
+		 * log will be consistent because we'll take the per-log lock while
+		 * copying them.
 		 */
 		LWLockAcquire(&log->mutex, LW_SHARED);
 		values[0] = ObjectIdGetDatum((Oid) logno);
