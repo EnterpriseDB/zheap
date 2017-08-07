@@ -538,7 +538,12 @@ InsertPreparedUndo(void)
 		 * succeed then recall the routine with the next page.
 		 */
 		if (InsertUndoRecord(undo_rec, page, starting_byte, &already_written))
+		{
+			MarkBufferDirty(buffer);
 			break;
+		}
+
+		MarkBufferDirty(buffer);
 
 		starting_byte = 0;
 	}
