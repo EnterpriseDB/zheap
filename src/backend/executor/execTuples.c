@@ -700,6 +700,13 @@ ExecCopySlotTuple(TupleTableSlot *slot)
 		return heap_tuple_from_minimal_tuple(slot->tts_mintuple);
 
 	/*
+	 * FIXME: Aggregate nodes don't recognize zheap tuples as of now. If it's
+	 * a zheap tuple, deform it.
+	 */
+	if (slot->tts_ztuple != NULL)
+		zheap_deform_tuple(slot->tts_ztuple, slot->tts_tupleDescriptor,
+						  slot->tts_values, slot->tts_isnull);
+	/*
 	 * Otherwise we need to build a tuple from the Datum array.
 	 */
 	return heap_form_tuple(slot->tts_tupleDescriptor,

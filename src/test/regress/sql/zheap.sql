@@ -58,4 +58,27 @@ select * from btree_zheap_tbl where id = 2;
 create index btree_zheap_idx1 on btree_zheap_tbl (id, t);
 drop table btree_zheap_tbl;
 
+
+--
+--3. Test for aggregate nodes
+--
+CREATE TABLE aggtest_zheap
+(
+ a int,
+ b int
+) WITH (storage_engine = 'zheap');
+INSERT INTO aggtest_zheap SELECT g,g FROM generate_series(1,1000) g;
+
+SELECT sum(a) AS sum_198 FROM aggtest_zheap;
+SELECT max(aggtest_zheap.a) AS max_3 FROM aggtest_zheap;
+SELECT stddev_pop(b) FROM aggtest_zheap;
+SELECT stddev_samp(b) FROM aggtest_zheap;
+SELECT var_pop(b) FROM aggtest_zheap;
+SELECT var_samp(b) FROM aggtest_zheap;
+SELECT stddev_pop(b::numeric) FROM aggtest_zheap;
+SELECT stddev_samp(b::numeric) FROM aggtest_zheap;
+SELECT var_pop(b::numeric) FROM aggtest_zheap;
+SELECT var_samp(b::numeric) FROM aggtest_zheap;
+
+DROP TABLE aggtest_zheap;
 set client_min_messages = notice;

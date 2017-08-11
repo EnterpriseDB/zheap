@@ -165,6 +165,8 @@ do { \
 
 extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
 				Datum *values, bool *isnull);
+extern void zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
+				  Datum *values, bool *isnull);
 extern void zheap_fill_tuple(TupleDesc tupleDesc,
 				Datum *values, bool *isnull,
 				char *data, Size data_size,
