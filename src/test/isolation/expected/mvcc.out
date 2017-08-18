@@ -1,0 +1,164 @@
+Parsed test spec with 3 sessions
+
+starting permutation: r1 w2 r2 r1 c2 r1 c1 r1 c3
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step w2: UPDATE animals SET counter = counter + 1 WHERE name = 'cat';
+step r2: SELECT * FROM animals;
+name           counter        
+
+cat            2              
+dog            1              
+monkey         1              
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step c2: COMMIT;
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step c1: COMMIT;
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            2              
+dog            1              
+monkey         1              
+step c3: COMMIT;
+
+starting permutation: r1 w2 r2 r1 c2 r1 w3 r3 r1 c3 r1 c1 r1
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step w2: UPDATE animals SET counter = counter + 1 WHERE name = 'cat';
+step r2: SELECT * FROM animals;
+name           counter        
+
+cat            2              
+dog            1              
+monkey         1              
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step c2: COMMIT;
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step w3: UPDATE animals SET counter = counter + 1 WHERE name = 'cat';
+step r3: SELECT * FROM animals;
+name           counter        
+
+cat            3              
+dog            1              
+monkey         1              
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step c3: COMMIT;
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step c1: COMMIT;
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            3              
+dog            1              
+monkey         1              
+
+starting permutation: r1 d2 r2 r1 c2 r1 c1 r1 c3
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step d2: DELETE FROM animals WHERE name = 'dog';
+step r2: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+monkey         1              
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step c2: COMMIT;
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step c1: COMMIT;
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+monkey         1              
+step c3: COMMIT;
+
+starting permutation: r1 i3 r3 r1 c3 r1 c1 r1 c2
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step i3: INSERT INTO animals VALUES ('kangaroo', 1);
+step r3: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+kangaroo       1              
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step c3: COMMIT;
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+step c1: COMMIT;
+step r1: SELECT * FROM animals;
+name           counter        
+
+cat            1              
+dog            1              
+monkey         1              
+kangaroo       1              
+step c2: COMMIT;
