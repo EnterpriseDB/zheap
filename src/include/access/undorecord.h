@@ -73,7 +73,7 @@ typedef struct UndoRecordHeader
 typedef struct UndoRecordRelationDetails
 {
 	Oid			urec_tsid;		/* tablespace OID */
-	uint8		urec_fork;		/* fork number */
+	ForkNumber		urec_fork;		/* fork number */
 } UndoRecordRelationDetails;
 
 #define SizeOfUndoRecordRelationDetails \
