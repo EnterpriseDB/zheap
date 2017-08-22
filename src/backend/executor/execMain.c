@@ -3477,15 +3477,47 @@ EvalPlanQualStart(EPQState *epqstate, EState *parentestate, Plan *planTree)
 	}
 	else
 	{
-		Relation	resultRelationDesc;
+		/*
+		 * FIXME: This is an ugly way of identifying if we're dealing with zheap
+		 * relations, but here, we can't have any information about the underlying
+		 * relations without accessing range table entries. This should be fixed,
+		 * once the pluggable storage api provides an easy and global way for
+		 * determining the type of relations. Till then, please have patience!!
+		 */
+		if (rtsize > 0)
+		{
+			int i;
+			bool	isZheap = false;
 
-		resultRelationDesc = parentestate->es_result_relation_info->ri_RelationDesc;
-		if (RelationStorageIsZHeap(resultRelationDesc))
-			estate->es_epqZTuple = (ZHeapTuple *)
-				palloc0(rtsize * sizeof(ZHeapTuple));
+			for (i = 1; i <= rtsize; i++)
+			{
+				Oid			reloid;
+				Relation	rel;
+				reloid = getrelid(i, estate->es_range_table);
+				if (!OidIsValid(reloid))
+					continue;
+				rel = heap_open(reloid, NoLock);
+				if (RelationStorageIsZHeap(rel))
+				{
+					isZheap = true;
+					heap_close(rel, NoLock);
+					break;
+				}
+				heap_close(rel, NoLock);
+			}
+
+			if (isZheap)
+				estate->es_epqZTuple = (ZHeapTuple *)
+					palloc0(rtsize * sizeof(ZHeapTuple));
+			else
+				estate->es_epqTuple = (HeapTuple *)
+					palloc0(rtsize * sizeof(HeapTuple));
+		}
 		else
-			estate->es_epqTuple = (HeapTuple *)
-				palloc0(rtsize * sizeof(HeapTuple));
+		{
+			estate->es_epqZTuple = NULL;
+			estate->es_epqTuple = NULL;
+		}
 
 		estate->es_epqTupleSet = (bool *)
 			palloc0(rtsize * sizeof(bool));
