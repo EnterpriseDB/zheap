@@ -44,15 +44,15 @@ typedef ZHeapPageOpaqueData *ZHeapPageOpaque;
 extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options);
 extern HTSU_Result zheap_delete(Relation relation, ItemPointer tid,
-						CommandId cid, Snapshot crosscheck, bool wait,
-						HeapUpdateFailureData *hufd);
+						CommandId cid, Snapshot crosscheck, Snapshot snapshot,
+						bool wait, HeapUpdateFailureData *hufd);
 extern HTSU_Result zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
-					CommandId cid, Snapshot crosscheck, bool wait,
+					CommandId cid, Snapshot crosscheck, Snapshot snapshot, bool wait,
 					HeapUpdateFailureData *hufd, LockTupleMode *lockmode);
 extern HTSU_Result zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 					CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
-					bool follow_updates, bool eval, Buffer *buffer,
-					HeapUpdateFailureData *hufd);
+					bool follow_updates, bool eval, Snapshot snapshot,
+					Buffer *buffer, HeapUpdateFailureData *hufd);
 extern void ZheapInitPage(Page page, Size pageSize);
 
 /* Zheap scan related API's */
@@ -104,7 +104,7 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 typedef struct xl_zheap_header
 {
 	uint16		t_infomask2;
-	uint8		t_infomask;
+	uint16		t_infomask;
 	uint8		t_hoff;
 } xl_zheap_header;
 

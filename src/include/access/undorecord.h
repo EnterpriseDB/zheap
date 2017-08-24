@@ -25,7 +25,8 @@ typedef enum undorectype
 	UNDO_INSERT,
 	UNDO_DELETE,
 	UNDO_INPLACE_UPDATE,
-	UNDO_XID_LOCK_ONLY
+	UNDO_XID_LOCK_ONLY,
+	UNDO_INVALID_XACT_SLOT
 } undorectype;
 
 /*
@@ -41,6 +42,17 @@ typedef struct UndoRecordHeader
 	uint8		urec_info;		/* flag bits */
 	uint16		urec_prevlen;	/* length of previous record in bytes */
 	Oid			urec_relfilenode;		/* relfilenode for relation */
+	/*
+	 * Transaction id that has modified the tuple present in this undo record.
+	 * If this is older then RecentGlobalXmin, then we can consider the tuple
+	 * in this undo record as visible.
+	 */
+	TransactionId urec_prevxid;
+	/*
+	 * Transaction id that has modified the tuple for which this undo record
+	 * is written.  We use this to skip the undo records.  See comments atop
+	 * function UndoFetchRecord.
+	 */
 	TransactionId urec_xid;			/* Transaction id */
 	CommandId	urec_cid;			/* command id */
 } UndoRecordHeader;
@@ -128,6 +140,7 @@ typedef struct UnpackedUndoRecord
 	uint8		uur_info;		/* flag bits */
 	uint16		uur_prevlen;	/* length of previous record */
 	Oid			uur_relfilenode;	/* relfilenode for relation */
+	TransactionId uur_prevxid;		/* transaction id */
 	TransactionId uur_xid;		/* transaction id */
 	CommandId	uur_cid;		/* command id */
 	Oid			uur_tsid;		/* tablespace OID */

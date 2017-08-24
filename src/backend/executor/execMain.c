@@ -2981,7 +2981,7 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 			test = zheap_lock_tuple(relation, tuple,
 									estate->es_output_cid,
 									lockmode, wait_policy,
-									false, true, &buffer, &hufd);
+									false, true, NULL, &buffer, &hufd);
 			/* We now have two pins on the buffer, get rid of one */
 			ReleaseBuffer(buffer);
 

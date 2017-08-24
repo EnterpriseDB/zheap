@@ -60,8 +60,10 @@ extern void CancelPreparedUndo(void);
  * from urp.  Caller need to call UndoRecordRelease to release the resources
  * allocated by this function.
  */
-extern UnpackedUndoRecord* UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno,
-										   OffsetNumber offset);
+extern UnpackedUndoRecord* UndoFetchRecord(UndoRecPtr urp,
+										   BlockNumber blkno,
+										   OffsetNumber offset,
+										   TransactionId xid);
 /*
  * Release the resources allocated by UndoFetchRecord.
  */

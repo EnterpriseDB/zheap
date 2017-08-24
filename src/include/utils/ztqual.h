@@ -29,7 +29,9 @@ extern ZHeapTuple ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup,
 					   Snapshot snapshot, Buffer buffer);
 extern HTSU_Result ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup,
 						CommandId curcid, Buffer buffer, ItemPointer ctid,
-						bool free_zhtup, bool eval, bool *in_place_updated_or_locked);
+						TransactionId *xid, CommandId *cid, bool free_zhtup,
+						bool lock_allowed, Snapshot snapshot,
+						bool *in_place_updated_or_locked);
 extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin,
 								   Buffer buffer);
 extern ZHeapTuple ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup,

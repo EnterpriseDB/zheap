@@ -20,6 +20,7 @@
 #include "storage/block.h"
 #include "storage/buf.h"
 #include "storage/bufmgr.h"
+#include "miscadmin.h"
 
 /*
  * FIXME:  Do we want to support undo tuple size which is more than the BLCKSZ
@@ -120,6 +121,7 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		work_hdr.urec_info = uur->uur_info;
 		work_hdr.urec_prevlen = uur->uur_prevlen;
 		work_hdr.urec_relfilenode = uur->uur_relfilenode;
+		work_hdr.urec_prevxid = uur->uur_prevxid;
 		work_hdr.urec_xid = uur->uur_xid;
 		work_hdr.urec_cid = uur->uur_cid;
 		work_rd.urec_tsid = uur->uur_tsid;
@@ -140,6 +142,7 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		Assert(work_hdr.urec_info == uur->uur_info);
 		Assert(work_hdr.urec_prevlen == uur->uur_prevlen);
 		Assert(work_hdr.urec_relfilenode == uur->uur_relfilenode);
+		Assert(work_hdr.urec_prevxid == uur->uur_prevxid);
 		Assert(work_hdr.urec_xid == uur->uur_xid);
 		Assert(work_hdr.urec_cid == uur->uur_cid);
 		Assert(work_rd.urec_tsid == uur->uur_tsid);
@@ -288,6 +291,7 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 	uur->uur_info = work_hdr.urec_info;
 	uur->uur_prevlen = work_hdr.urec_prevlen;
 	uur->uur_relfilenode = work_hdr.urec_relfilenode;
+	uur->uur_prevxid = work_hdr.urec_prevxid;
 	uur->uur_xid = work_hdr.urec_xid;
 	uur->uur_cid = work_hdr.urec_cid;
 
@@ -533,6 +537,13 @@ InsertPreparedUndo(void)
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
 		page = BufferGetPage(buffer);
+
+		/*
+		 * Initialize the page whenever we try to write the first record in page.
+		 */
+		if (starting_byte == UndoLogBlockHeaderSize)
+			PageInit(page, BLCKSZ, 0);
+
 		/*
 		 * Try to insert the record into the current page. If it doesn't
 		 * succeed then recall the routine with the next page.
@@ -545,7 +556,8 @@ InsertPreparedUndo(void)
 
 		MarkBufferDirty(buffer);
 
-		starting_byte = 0;
+		/* For new page, start writing after block header. */
+		starting_byte = UndoLogBlockHeaderSize;
 	}
 
 	return;
@@ -575,6 +587,7 @@ UnlockReleaseUndoBuffers(void)
 			break;
 
 		UnlockReleaseBuffer(undobuffers[i]);
+		undobuffers[i] = InvalidBuffer;
 	}
 
 	return;
@@ -622,7 +635,7 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode)
 		if (UnpackUndoRecord(urec, page, starting_byte, &already_decoded))
 			break;
 
-		starting_byte = 0;
+		starting_byte = UndoLogBlockHeaderSize;
 		is_undo_splited = true;
 
 		/*
@@ -651,34 +664,46 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode)
 }
 
 /*
- * Fetch the next undo record for given blkno and offset.  Start the search
- * from urp.  Caller need to call UndoRecordRelease to release the resources
- * allocated by this function.
+ * Fetch the next undo record for given blkno, offset and transaction id (if
+ * valid).  We need to match transaction id along with block number and offset
+ * because in some cases (like reuse of slot for committed transaction), we
+ * need to skip the record if it is modified by a transaction later than the
+ * transaction indicated by previous undo record.  For example, consider a
+ * case where tuple (ctid - 0,1) is modified by transaction id 500 which
+ * belongs to transaction slot 0. Then, the same tuple is modified by
+ * transaction id 501 which belongs to transaction slot 1.  Then, both the
+ * transaction slots are marked for reuse. Then, again the same tuple is
+ * modified by transaction id 502 which has used slot 0.  Now, some
+ * transaction which has started before transaction 500 wants to traverse the
+ * chain to find visible tuple will keep on rotating infinitely between undo
+ * tuple written by 502 and 501.  In such a case, we need to skip the undo
+ * tuple written by transaction 502 when we want to find the undo record
+ * indicated by the previous pointer of undo tuple written by transaction 501.
+ * Start the search from urp.  Caller need to call UndoRecordRelease to release the
+ * resources allocated by this function.
  */
 UnpackedUndoRecord*
-UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset)
+UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
+				TransactionId xid)
 {
-	RelFileNode		 rnode;
+	RelFileNode		 rnode, prevrnode;
 	BlockNumber		 cur_blk;
-	UnpackedUndoRecord *urec;
+	UnpackedUndoRecord *urec = NULL;
 
 	urec = palloc0(sizeof(UnpackedUndoRecord));
 	cur_blk = UndoRecPtrGetBlockNum(urp);
-	UndoRecPtrAssignRelFileNode(rnode, urp);
 
 	/* Find the undo record pointer we are interested in. */
 	while (true)
 	{
-		urec = UndoGetOneRecord(urec, urp, rnode);
-
-		if (blkno == InvalidBlockNumber)
-			break;
-
-		if (urec->uur_block == blkno && urec->uur_offset == offset)
+		if (!UndoRecPtrIsValid(urp))
 		{
-			break;
+			if (BufferIsValid(urec->uur_buffer))
+				ReleaseBuffer(urec->uur_buffer);
+			return NULL;
 		}
-		urp = urec->uur_blkprev;
+
+		UndoRecPtrAssignRelFileNode(rnode, urp);
 
 		/*
 		 * If we have a valid buffer pinned then just ensure that we want to
@@ -687,8 +712,12 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset)
 		 */
 		if (BufferIsValid(urec->uur_buffer))
 		{
-			cur_blk = UndoRecPtrGetBlockNum(urp);
-			if (cur_blk != BufferGetBlockNumber(urec->uur_buffer))
+			/*
+			 * Undo buffer will be changed if the next undo record belongs to a
+			 * different block or undo log.
+			 */
+			if (UndoRecPtrGetBlockNum(urp) != BufferGetBlockNumber(urec->uur_buffer) ||
+				(prevrnode.relNode != rnode.relNode))
 			{
 				ReleaseBuffer(urec->uur_buffer);
 				urec->uur_buffer = InvalidBuffer;
@@ -696,7 +725,6 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset)
 		}
 		else
 		{
-
 			/*
 			 * If there is not a valid buffer in urec->uur_buffer that means we
 			 * had copied the payload data and tuple data so free them.
@@ -707,11 +735,24 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset)
 				pfree(urec->uur_tuple.data);
 		}
 
-		/* Reset the urec before fetching the next tuple */
+		/* Reset the urec before fetching the tuple */
 		urec->uur_tuple.data = NULL;
 		urec->uur_tuple.len = 0;
 		urec->uur_payload.data = NULL;
 		urec->uur_payload.len = 0;
+
+		prevrnode = rnode;
+
+		urec = UndoGetOneRecord(urec, urp, rnode);
+
+		if (blkno == InvalidBlockNumber)
+			break;
+
+		if ((urec->uur_block == blkno && urec->uur_offset == offset) &&
+			(!TransactionIdIsValid(xid) || TransactionIdEquals(xid, urec->uur_xid)))
+			break;
+
+		urp = urec->uur_blkprev;
 	}
 
 	return urec;

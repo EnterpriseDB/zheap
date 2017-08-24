@@ -43,7 +43,7 @@ typedef struct ZHeapTupleHeaderData
 {
 	uint16		t_infomask2;	/* number of attributes + translot info + various flags */
 
-	uint8		t_infomask;	/* various flag bits, see below */
+	uint16		t_infomask;	/* various flag bits, see below */
 
 	uint8		t_hoff;		/* sizeof header incl. bitmap, padding */
 
@@ -81,7 +81,9 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define	ZHEAP_INPLACE_UPDATED	0x0020	/* tuple is updated inplace */
 #define ZHEAP_XID_LOCK_ONLY		0x0040	/* xid, if valid, is only a locker */
 
-#define ZHEAP_VIS_STATUS_MASK	0x0070	/* mask for visibility bits (5, 6, 7) */
+#define ZHEAP_INVALID_XACT_SLOT	0x0100	/* transaction slot on tuple got reused */
+
+#define ZHEAP_VIS_STATUS_MASK	0x0170	/* mask for visibility bits (5, 6, 7 and 9) */
 
 /*
  * information stored in t_infomask2:
@@ -170,7 +172,7 @@ extern void zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 extern void zheap_fill_tuple(TupleDesc tupleDesc,
 				Datum *values, bool *isnull,
 				char *data, Size data_size,
-				uint8 *infomask, bits8 *bit);
+				uint16 *infomask, bits8 *bit);
 
 extern void zheap_freetuple(ZHeapTuple zhtup);
 extern Datum znocachegetattr(ZHeapTuple tup, int attnum,
