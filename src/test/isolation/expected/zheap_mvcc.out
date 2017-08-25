@@ -24,7 +24,7 @@ step c2: COMMIT;
 step r1: SELECT * FROM animals;
 name           counter        
 
-cat            1              
+cat            2              
 dog            1              
 monkey         1              
 step c1: COMMIT;
@@ -60,7 +60,7 @@ step c2: COMMIT;
 step r1: SELECT * FROM animals;
 name           counter        
 
-cat            1              
+cat            2              
 dog            1              
 monkey         1              
 step w3: UPDATE animals SET counter = counter + 1 WHERE name = 'cat';
@@ -73,14 +73,14 @@ monkey         1
 step r1: SELECT * FROM animals;
 name           counter        
 
-cat            1              
+cat            2              
 dog            1              
 monkey         1              
 step c3: COMMIT;
 step r1: SELECT * FROM animals;
 name           counter        
 
-cat            1              
+cat            3              
 dog            1              
 monkey         1              
 step c1: COMMIT;
@@ -115,7 +115,6 @@ step r1: SELECT * FROM animals;
 name           counter        
 
 cat            1              
-dog            1              
 monkey         1              
 step c1: COMMIT;
 step r1: SELECT * FROM animals;
@@ -153,6 +152,7 @@ name           counter
 cat            1              
 dog            1              
 monkey         1              
+kangaroo       1              
 step c1: COMMIT;
 step r1: SELECT * FROM animals;
 name           counter        

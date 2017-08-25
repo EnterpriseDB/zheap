@@ -12,7 +12,7 @@ teardown
 }
 
 session "s1"
-setup		{ BEGIN ISOLATION LEVEL REPEATABLE READ; }
+setup		{ BEGIN; }
 step "r1"	{ SELECT * FROM animals; }
 step "c1"	{ COMMIT; }
 
@@ -35,10 +35,10 @@ step "c3"	{ COMMIT; }
 permutation "r1" "w2" "r2" "r1" "c2" "r1" "c1" "r1"  "c3"
 
 # same thing, but with a two link update chain; again s2 and s3 see their
-# own uncommitted data but s1 sees it only after commit
+# own uncommitted data but s1 sees it only after s2 and s3 commit.
 permutation "r1" "w2" "r2" "r1" "c2" "r1" "w3" "r3" "r1" "c3" "r1" "c1" "r1"
 
-# s1 doesn't see a row as deleted until after commit, but s2 does
+# s1 doesn't see a row as deleted until s2 commits, but s2 does
 permutation "r1" "d2" "r2" "r1" "c2" "r1" "c1" "r1" "c3"
 
 # same again, but this time it's an insert
