@@ -2957,7 +2957,7 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 			 * If tuple was inserted by our own transaction, we have to check
 			 * cmin against es_output_cid: cmin >= current CID means our
 			 * command cannot see the tuple, so we should ignore it. Otherwise
-			 * heap_lock_tuple() will throw an error, and so would any later
+			 * zheap_lock_tuple() will throw an error, and so would any later
 			 * attempt to update or delete the tuple.  (We need not check cmax
 			 * because ZHeapTupleSatisfiesDirty will consider a tuple deleted
 			 * by our transaction dead, regardless of cmax.) We just checked
@@ -2967,6 +2967,13 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 			if (TransactionIdIsCurrentTransactionId(priorXmax))
 			{
 				LockBuffer(buffer, BUFFER_LOCK_SHARE);
+				/*
+				 * Fixme -If the tuple is updated such that its transaction slot
+				 * has been changed, then we will never be able to get the correct
+				 * tuple from undo.  To avoid, that we need to get the latest tuple
+				 * from page rather than relying on it's in-memory copy.  See
+				 * ValidateTuplesXact.
+				 */
 				if (ZHeapTupleGetCid(tuple, buffer) >= estate->es_output_cid)
 				{
 					UnlockReleaseBuffer(buffer);

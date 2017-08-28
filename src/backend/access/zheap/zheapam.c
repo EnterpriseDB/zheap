@@ -2603,13 +2603,18 @@ bool
 ValidateTuplesXact(ZHeapTuple tuple, Buffer buf, TransactionId priorXmax)
 {
 	ZHeapPageOpaque	opaque;
+	ZHeapTupleData	zhtup;
 	UnpackedUndoRecord	*urec = NULL;
 	UndoRecPtr		urec_ptr;
 	ZHeapTuple	undo_tup = NULL;
-	TransactionId	xid, prev_xid, prev_undo_xid = InvalidTransactionId;
+	ItemPointer tid = &(tuple->t_self);
+	ItemId		lp;
+	Page		page;
+	TransactionId	xid;
+	TransactionId	prev_undo_xid = InvalidTransactionId;
+	int	trans_slot_id = InvalidXactSlotId;
+	int	prev_trans_slot_id;
 	bool		valid = false;
-
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
 
 	/*
 	 * As we are going to access special space in the page to retrieve the
@@ -2617,29 +2622,33 @@ ValidateTuplesXact(ZHeapTuple tuple, Buffer buf, TransactionId priorXmax)
 	 */
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 
-	/*
-	 * Fixme - For now, we assume that the current tuple will
-	 * always be valid as there is no way to reuse the space.
-	 *
-	 * For actual fix we need ensure that we have latest copy
-	 * of tuple at this place.
-	 */
-	if (1)
-	{
-		valid = true;
-		goto tuple_is_valid;
-	}
+	page = BufferGetPage(buf);
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+	Assert(ItemIdIsNormal(lp));
 
-	if (TransactionIdEquals(ZHeapTupleHeaderGetRawXid(tuple->t_data, opaque),
+	/*
+	 * If the tuple is updated such that its transaction slot has been
+	 * changed, then we will never be able to get the correct tuple from undo.
+	 * To avoid, that we get the latest tuple from page rather than relying on
+	 * it's in-memory copy.
+	 */
+	zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+	zhtup.t_len = ItemIdGetLength(lp);
+	zhtup.t_tableOid = tuple->t_tableOid;
+	zhtup.t_self = *tid;
+
+	if (TransactionIdEquals(ZHeapTupleHeaderGetRawXid(zhtup.t_data, opaque),
 							priorXmax))
 	{
 		valid = true;
 		goto tuple_is_valid;
 	}
 
-	undo_tup = tuple;
+	undo_tup = &zhtup;
 	urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(undo_tup->t_data, opaque);
 	xid = ZHeapTupleHeaderGetRawXid(undo_tup->t_data, opaque);
+	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 
 	/*
 	 * Current xid on tuple must not precede RecentGlobalXmin as it will be
@@ -2650,7 +2659,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Buffer buf, TransactionId priorXmax)
 
 	do
 	{
-		prev_xid = xid;
+		prev_trans_slot_id = trans_slot_id;
 
 fetch_undo_record:
 		urec = UndoFetchRecord(urec_ptr,
@@ -2660,7 +2669,7 @@ fetch_undo_record:
 
 		/*
 		 * As we still hold a snapshot to which priorXmax is not visible, neither
-		 * the transaction slot on tuple can't be marked as frozen nor the
+		 * the transaction slot on tuple can be marked as frozen nor the
 		 * corresponding undo be discarded.
 		 */
 		Assert(!((ZHeapTupleHeaderGetXactSlot(undo_tup->t_data) == ZHTUP_SLOT_FROZEN) ||
@@ -2684,7 +2693,7 @@ fetch_undo_record:
 
 		/* don't free the tuple passed by caller */
 		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup,
-										   undo_tup == tuple ? false : true);
+										   (undo_tup) == (&zhtup) ? false : true);
 		xid = urec->uur_prevxid;
 
 		Assert(!TransactionIdPrecedes(xid, RecentGlobalXmin));
@@ -2694,15 +2703,16 @@ fetch_undo_record:
 			valid = true;
 			goto tuple_is_valid;
 		}
+
+		trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
+		prev_undo_xid = xid;
+
 		/*
 		 * Change the undo chain if the undo tuple is stamped with the different
-		 * transaction.
+		 * transaction slot.
 		 */
-		if (prev_xid != xid)
-		{
+		if (prev_trans_slot_id != trans_slot_id)
 			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(undo_tup->t_data, opaque);
-			prev_undo_xid = xid;
-		}
 		else
 			urec_ptr = urec->uur_blkprev;
 
@@ -2713,7 +2723,7 @@ fetch_undo_record:
 tuple_is_valid:
 	if (urec)
 		UndoRecordRelease(urec);
-	if (undo_tup && undo_tup != tuple)
+	if (undo_tup && undo_tup != &zhtup)
 		pfree(undo_tup);
 
 	LockBuffer(buf, BUFFER_LOCK_UNLOCK);

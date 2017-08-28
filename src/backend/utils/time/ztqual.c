@@ -102,7 +102,7 @@ fetch_undo_record:
 
 	/*
 	 * Change the undo chain if the undo tuple is stamped with the different
-	 * transaction.
+	 * transaction slot.
 	 */
 	if (trans_slot_id != ZHTUP_SLOT_FROZEN &&
 		trans_slot_id != prev_trans_slot_id)
@@ -314,7 +314,7 @@ fetch_undo_record:
 
 	/*
 	 * Change the undo chain if the undo tuple is stamped with the different
-	 * transaction.
+	 * transaction slot.
 	 */
 	if (trans_slot_id != ZHTUP_SLOT_FROZEN &&
 		trans_slot_id != prev_trans_slot_id)
@@ -516,9 +516,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	 * record for the tuples that point to a slot that gets invalidated for
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
-	if ((ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-		&& !TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
-								  RecentGlobalXmin))
+	if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
 	{
 		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
 		{
@@ -566,8 +564,6 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
 		}
 	}
-	else if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-		xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
 	else
 		xid = InvalidTransactionId;
 
@@ -720,9 +716,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	 * record for the tuples that point to a slot that gets invalidated for
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
-	if ((ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-		&& !TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
-							  RecentGlobalXmin))
+	if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
 	{
 		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
 		{
@@ -770,8 +764,6 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
 		}
 	}
-	else if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-		*xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
 	else
 		*xid = InvalidTransactionId;
 
@@ -982,9 +974,7 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer
 	 * record for the tuples that point to a slot that gets invalidated for
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
-	if ((ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-		&& !TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
-								  RecentGlobalXmin))
+	if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
 	{
 		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
 		{
@@ -1028,8 +1018,6 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer
 			xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
 		}
 	}
-	else if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-		xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
 	else
 		xid = InvalidTransactionId;
 
@@ -1087,9 +1075,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	 * record for the tuples that point to a slot that gets invalidated for
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
-	if ((ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-		&& !TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
-								  RecentGlobalXmin))
+	if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
 	{
 		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
 		{
@@ -1133,8 +1119,6 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 			xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
 		}
 	}
-	else if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-		xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
 	else
 		xid = InvalidTransactionId;
 
