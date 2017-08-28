@@ -656,7 +656,7 @@ reacquire_buffer:
 	/* prepare an undo record */
 	undorecord.uur_type = UNDO_INSERT;
 	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
+	undorecord.uur_prevlen = 0;
 	undorecord.uur_relfilenode = relation->rd_node.relNode;
 	undorecord.uur_prevxid = xid;
 	undorecord.uur_xid = xid;
@@ -1050,7 +1050,7 @@ check_tup_satisfies_update:
 	 */
 	undorecord.uur_type = UNDO_DELETE;
 	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
+	undorecord.uur_prevlen = 0;
 	undorecord.uur_relfilenode = relation->rd_node.relNode;
 	undorecord.uur_prevxid = tup_xid;
 	undorecord.uur_xid = xid;
@@ -1422,7 +1422,7 @@ check_tup_satisfies_update:
 	 */
 	undorecord.uur_type = UNDO_INPLACE_UPDATE;
 	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
+	undorecord.uur_prevlen = 0;
 	undorecord.uur_relfilenode = relation->rd_node.relNode;
 	undorecord.uur_prevxid = tup_xid;
 	undorecord.uur_xid = xid;
@@ -2284,10 +2284,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, TransactionId xid)
  *	we don't break the undo chain for that slot.  For the first case, we write
  *	undo record for each of the tuple that points to one of the committed
  *	transaction.  We also mark the tuple indicating that slot for this is
- *	reused.  It is to ensure that we are consistent with how other
- *	operations work in zheap, basically the tuple always reflect the current
- *	state.  For ex. consider if we don't mark in the tuple that the slot this
- *	tuple is pointing to is reused, then after that slot got reused for some
+ *	reused.  If we don't do so, then after that slot got reused for some
  *	other unrelated transaction, it might become tricky to traverse the undo
  *	chain.  In such a case, it is quite possible that the particular tuple
  *	has not been modified, but it is still pointing to transaction slot which
@@ -2296,7 +2293,15 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, TransactionId xid)
  *	that the tuple is modified by current transaction which is clearly wrong
  *	and can lead to wrong results.  One such case would be when we try to fetch
  *	the commandid for that tuple to check the visibility, it will fetch the
- *	commandid for a different transaction that is already committed.
+ *	commandid for a different transaction that is already committed.  The basic
+ *	principle used here is to ensure that we can always fetch the transaction
+ *	information of tuple until it is frozen (committed and all-visible).  The
+ *	reason why we don't need to write the undo record for the second case
+ *	mentioned above is that we can always retrieve the transaction information
+ *	of such a tuple from undo.
+ *
+ *	This also ensures that we are consistent with how other operations work in
+ *	zheap i.e the tuple always reflect the current state.
  *
  *	Fixme - The case for Rollback needs to be handled once we implement undo
  *	actions.
