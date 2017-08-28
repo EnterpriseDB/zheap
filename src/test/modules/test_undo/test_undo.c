@@ -108,7 +108,7 @@ undo_append_file(PG_FUNCTION_ARGS)
 	int fd;
 
 	/* Open the file and check its size. */
-	fd = open(path, O_RDONLY);
+	fd = open(path, O_RDONLY, 0);
 	if (fd < 0)
 		elog(ERROR, "could not open file '%s': %m", path);
 	size = lseek(fd, 0, SEEK_END);
