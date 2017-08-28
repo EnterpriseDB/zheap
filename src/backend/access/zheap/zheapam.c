@@ -1065,17 +1065,24 @@ check_tup_satisfies_update:
 	initStringInfo(&undorecord.uur_tuple);
 
 	/*
-	 * Here, we are storing transaction slot id as an integer, but we can optimize
-	 * it to just store as two bits as we do in tuple header.
-	 *
-	 * XXX - The transaction slot id is stored in undo on the assumption that
-	 * if the slot got reused or transaction info is removed from page header
-	 * (after transaction becomes all-visible), corresponding undo will never
-	 * be referred.
+	 * Copy the entire old tuple including it's header in the undo record.
+	 * We need this to reconstruct the tuple if current tuple is not
+	 * visible to some other transaction.  We choose to write the complete
+	 * tuple in undo record for delete operation so that we can reuse the
+	 * space after the transaction performing the operation commits.
 	 */
 	appendBinaryStringInfo(&undorecord.uur_tuple,
+						   (char *) &zheaptup.t_len,
+						   sizeof(uint32));
+	appendBinaryStringInfo(&undorecord.uur_tuple,
+						   (char *) &zheaptup.t_self,
+						   sizeof(ItemPointerData));
+	appendBinaryStringInfo(&undorecord.uur_tuple,
+						   (char *) &zheaptup.t_tableOid,
+						   sizeof(Oid));
+	appendBinaryStringInfo(&undorecord.uur_tuple,
 						   (char *) zheaptup.t_data,
-						   SizeofZHeapTupleHeader);
+						   zheaptup.t_len);
 
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
 
@@ -1088,11 +1095,10 @@ check_tup_satisfies_update:
 							vmbuffer, VISIBILITYMAP_VALID_BITS);
 	}
 
-	ZHeapTupleHeaderSetXactSlot(zheaptup.t_data, trans_slot_id);
-
 	InsertPreparedUndo();
 	PageSetUNDO(undorecord, page, trans_slot_id, xid, urecptr);
 
+	ZHeapTupleHeaderSetXactSlot(zheaptup.t_data, trans_slot_id);
 	zheaptup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
 	zheaptup.t_data->t_infomask |= ZHEAP_DELETED;
 
@@ -3847,7 +3853,6 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 
 	switch (urec->uur_type)
 	{
-		case UNDO_DELETE:
 		case UNDO_XID_LOCK_ONLY:
 			{
 				ZHeapTupleHeader	undo_tup_hdr;
@@ -3855,9 +3860,8 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 				undo_tup_hdr = (ZHeapTupleHeader) urec->uur_tuple.data;
 
 				/*
-				 * For deletes and locked tuples, undo tuple data is always
-				 * same as prior tuple's data as we don't modify the same in
-				 * those operations.
+				 * For locked tuples, undo tuple data is always same as prior
+				 * tuple's data as we don't modify it.
 				 */
 				undo_tup = palloc(ZHEAPTUPLESIZE + zhtup->t_len);
 				undo_tup->t_data = (ZHeapTupleHeader) ((char *) undo_tup + ZHEAPTUPLESIZE);
@@ -3883,6 +3887,7 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 				undo_tup->t_data->t_hoff = undo_tup_hdr->t_hoff;
 			}
 			break;
+		case UNDO_DELETE:
 		case UNDO_INPLACE_UPDATE:
 			{
 				Size		offset = 0;
