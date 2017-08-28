@@ -49,7 +49,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 	ZHeapTuple	undo_tup;
 	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
 	TransactionId	xid;
-	CommandId	cid;
+	CommandId	cid = InvalidCommandId;
 	int	trans_slot_id = InvalidXactSlotId;
 	int	prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
 	int	undo_oper = -1;
@@ -250,7 +250,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	ZHeapTuple	undo_tup = NULL;
 	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
 	TransactionId	xid;
-	CommandId	cid;
+	CommandId	cid = InvalidCommandId;
 	int	trans_slot_id = InvalidXactSlotId;
 	int prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
 	int	undo_oper = -1;
@@ -488,9 +488,9 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	UnpackedUndoRecord	*urec;
-	UndoRecPtr	urec_ptr;
+	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	TransactionId	xid;
-	CommandId		cid;
+	CommandId		cid = InvalidCommandId;
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
 
@@ -692,7 +692,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	UnpackedUndoRecord	*urec;
-	UndoRecPtr	urec_ptr;
+	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	bool	visible;
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));

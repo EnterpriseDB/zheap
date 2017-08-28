@@ -686,12 +686,10 @@ UnpackedUndoRecord*
 UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 				TransactionId xid)
 {
-	RelFileNode		 rnode, prevrnode;
-	BlockNumber		 cur_blk;
+	RelFileNode		 rnode, prevrnode = {0};
 	UnpackedUndoRecord *urec = NULL;
 
 	urec = palloc0(sizeof(UnpackedUndoRecord));
-	cur_blk = UndoRecPtrGetBlockNum(urp);
 
 	/* Find the undo record pointer we are interested in. */
 	while (true)

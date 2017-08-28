@@ -885,8 +885,6 @@ zheap_delete(Relation relation, ItemPointer tid,
 	if (PageIsAllVisible(page))
 		visibilitymap_pin(relation, blkno, &vmbuffer);
 
-reacquire_buffer:
-
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
 	/*
