@@ -162,6 +162,13 @@ fetch_undo_record:
 		}
 		else
 		{
+			/*
+ 			 * we don't use prev_undo_xid to fetch the undo record for cid as it is
+ 			 * required only when transaction is current transaction in which case
+ 			 * there is no risk of transaction chain switching, so we are safe.  It
+ 			 * might be better to move this check near to it's usage, but that will
+ 			 * make code look ugly, so keeping it here.  
+ 			 */
 			cid = ZHeapTupleGetCid(undo_tup, buffer);
 		}
 	}
@@ -367,6 +374,13 @@ fetch_undo_record:
 		}
 		else
 		{
+			/*
+ 			 * we don't use prev_undo_xid to fetch the undo record for cid as it is
+ 			 * required only when transaction is current transaction in which case
+ 			 * there is no risk of transaction chain switching, so we are safe.  It
+ 			 * might be better to move this check near to it's usage, but that will
+ 			 * make code look ugly, so keeping it here.  
+ 			 */
 			cid = ZHeapTupleGetCid(undo_tup, buffer);
 		}
 	}
