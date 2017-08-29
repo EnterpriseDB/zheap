@@ -75,7 +75,7 @@ typedef struct UndoRecordHeader
 #define UREC_INFO_RELATION_DETAILS	0x01
 #define UREC_INFO_BLOCK				0x02
 #define UREC_INFO_PAYLOAD			0x04
-
+#define UREC_INFO_TRANSACTION		0x08
 /*
  * Additional information about a relation to which this record pertains,
  * namely the tablespace OID and fork number.  If the tablespace OID is
@@ -104,6 +104,18 @@ typedef struct UndoRecordBlock
 
 #define SizeOfUndoRecordBlock \
 	(offsetof(UndoRecordBlock, urec_offset) + sizeof(OffsetNumber))
+
+/*
+ * Identifying information for a transaction to which this undo belongs.
+ * it will also store the total size of the undo for this transaction.
+ */
+typedef struct UndoRecordTransaction
+{
+	uint64			urec_next;	/* urec pointer of the next transaction */
+} UndoRecordTransaction;
+
+#define SizeOfUndoRecordTransaction \
+	(offsetof(UndoRecordTransaction, urec_next) + sizeof(uint64))
 
 /*
  * Information about the amount of payload data and tuple data present
@@ -149,6 +161,7 @@ typedef struct UnpackedUndoRecord
 	BlockNumber uur_block;		/* block number */
 	OffsetNumber uur_offset;	/* offset number */
 	Buffer		uur_buffer;		/* buffer in which undo record data points */
+	uint64		uur_next;		/* urec pointer of the next transaction */
 	StringInfoData uur_payload;	/* payload bytes */
 	StringInfoData uur_tuple;	/* tuple bytes */
 } UnpackedUndoRecord;

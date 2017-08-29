@@ -51,6 +51,13 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 		appendStringInfo(buf, "logno %u discard %zu end %zu",
 						 xlrec->logno, xlrec->discard, xlrec->end);
 	}
+	else if (info == XLOG_UNDOLOG_XACTSTART)
+	{
+		xl_undolog_xactstart *xlrec = (xl_undolog_xactstart *) rec;
+
+		appendStringInfo(buf, "logno %u last xact start point %zu",
+						 xlrec->logno, xlrec->last_xact_start);
+	}
 }
 
 const char *

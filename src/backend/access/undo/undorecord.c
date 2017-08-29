@@ -13,6 +13,7 @@
 
 #include "postgres.h"
 
+#include "access/xact.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
 #include "access/undoinsert.h"
@@ -32,6 +33,7 @@
 static UndoRecordHeader work_hdr;
 static UndoRecordRelationDetails work_rd;
 static UndoRecordBlock work_blk;
+static UndoRecordTransaction work_txn;
 static UndoRecordPayload work_payload;
 static Buffer undobuffers[MAX_UNDO_BUFFER];
 
@@ -47,6 +49,16 @@ static UnpackedUndoRecord *undo_rec;
  */
 static UndoRecPtr undo_rec_ptr;
 
+/*
+ * Previous top transaction id which inserted the undo.  Whenever a new main
+ * transaction try to prepare an undo record we will check if its txid not the
+ * same as prev_txid then we will insert the start undo record.  We will keep
+ * the reference of the previous transaction's start undo record in
+ * prev_xact_urp.
+ */
+static TransactionId	prev_txid = InvalidTransactionId;
+static UndoRecPtr		prev_xact_urp = InvalidUndoRecPtr;
+
 /* Prototypes for static functions. */
 static void UndoRecordSetInfo(UnpackedUndoRecord *uur);
 static bool InsertUndoBytes(char *sourceptr, int sourcelen,
@@ -54,9 +66,10 @@ static bool InsertUndoBytes(char *sourceptr, int sourcelen,
 				int *my_bytes_written, int *total_bytes_written);
 static bool ReadUndoBytes(char *destptr, int readlen,
 			  char **readptr, char *endptr,
-			  int *my_bytes_read, int *total_bytes_read);
+			  int *my_bytes_read, int *total_bytes_read, bool nocopy);
 static UnpackedUndoRecord* UndoGetOneRecord(UnpackedUndoRecord *urec,
 											UndoRecPtr urp, RelFileNode rnode);
+static void UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr);
 
 /*
  * Compute and return the expected size of an undo record.
@@ -74,6 +87,8 @@ UndoRecordExpectedSize(UnpackedUndoRecord *uur)
 		size += SizeOfUndoRecordRelationDetails;
 	if ((uur->uur_info & UREC_INFO_BLOCK) != 0)
 		size += SizeOfUndoRecordBlock;
+	if ((uur->uur_info & UREC_INFO_TRANSACTION) != 0)
+		size += SizeOfUndoRecordTransaction;
 	if ((uur->uur_info & UREC_INFO_PAYLOAD) != 0)
 	{
 		size += SizeOfUndoRecordPayload;
@@ -129,6 +144,7 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		work_blk.urec_blkprev = uur->uur_blkprev;
 		work_blk.urec_block = uur->uur_block;
 		work_blk.urec_offset = uur->uur_offset;
+		work_txn.urec_next = uur->uur_next;
 		work_payload.urec_payload_len = uur->uur_payload.len;
 		work_payload.urec_tuple_len = uur->uur_tuple.len;
 	}
@@ -150,6 +166,7 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		Assert(work_blk.urec_blkprev == uur->uur_blkprev);
 		Assert(work_blk.urec_block == uur->uur_block);
 		Assert(work_blk.urec_offset == uur->uur_offset);
+		Assert(work_txn.urec_next == uur->uur_next);
 		Assert(work_payload.urec_payload_len == uur->uur_payload.len);
 		Assert(work_payload.urec_tuple_len == uur->uur_tuple.len);
 	}
@@ -170,6 +187,13 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 	/* Write block information (if needed and not already done). */
 	if ((uur->uur_info & UREC_INFO_BLOCK) != 0 &&
 		!InsertUndoBytes((char *) &work_blk, SizeOfUndoRecordBlock,
+						 &writeptr, endptr,
+						 &my_bytes_written, already_written))
+		return false;
+
+	/* Write transaction information (if needed and not already done). */
+	if ((uur->uur_info & UREC_INFO_TRANSACTION) != 0 &&
+		!InsertUndoBytes((char *) &work_txn, SizeOfUndoRecordTransaction,
 						 &writeptr, endptr,
 						 &my_bytes_written, already_written))
 		return false;
@@ -284,7 +308,7 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 	/* Decode header (if not already done). */
 	if (!ReadUndoBytes((char *) &work_hdr, SizeOfUndoRecordHeader,
 					   &readptr, endptr,
-					   &my_bytes_decoded, already_decoded))
+					   &my_bytes_decoded, already_decoded, false))
 		return false;
 
 	uur->uur_type = work_hdr.urec_type;
@@ -300,7 +324,7 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 		/* Decode header (if not already done). */
 		if (!ReadUndoBytes((char *) &work_rd, SizeOfUndoRecordRelationDetails,
 							&readptr, endptr,
-							&my_bytes_decoded, already_decoded))
+							&my_bytes_decoded, already_decoded, false))
 			return false;
 
 		uur->uur_tsid = work_rd.urec_tsid;
@@ -311,7 +335,7 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 	{
 		if (!ReadUndoBytes((char *) &work_blk, SizeOfUndoRecordBlock,
 							&readptr, endptr,
-							&my_bytes_decoded, already_decoded))
+							&my_bytes_decoded, already_decoded, false))
 			return false;
 
 		uur->uur_blkprev = work_blk.urec_blkprev;
@@ -319,12 +343,22 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 		uur->uur_offset = work_blk.urec_offset;
 	}
 
+	if ((uur->uur_info & UREC_INFO_TRANSACTION) != 0)
+	{
+		if (!ReadUndoBytes((char *) &work_txn, SizeOfUndoRecordTransaction,
+							&readptr, endptr,
+							&my_bytes_decoded, already_decoded, false))
+			return false;
+
+		uur->uur_next = work_txn.urec_next;
+	}
+
 	/* Read payload information (if needed and not already done). */
 	if ((uur->uur_info & UREC_INFO_PAYLOAD) != 0)
 	{
 		if (!ReadUndoBytes((char *) &work_payload, SizeOfUndoRecordPayload,
 							&readptr, endptr,
-							&my_bytes_decoded, already_decoded))
+							&my_bytes_decoded, already_decoded, false))
 			return false;
 
 		uur->uur_payload.len = work_payload.urec_payload_len;
@@ -358,12 +392,12 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 
 			if (!ReadUndoBytes((char *) uur->uur_payload.data,
 							   uur->uur_payload.len, &readptr, endptr,
-							   &my_bytes_decoded, already_decoded))
+							   &my_bytes_decoded, already_decoded, false))
 				return false;
 
 			if (!ReadUndoBytes((char *) uur->uur_tuple.data,
 							   uur->uur_tuple.len, &readptr, endptr,
-							   &my_bytes_decoded, already_decoded))
+							   &my_bytes_decoded, already_decoded, false))
 				return false;
 		}
 	}
@@ -389,13 +423,15 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
  * 'total_bytes_read' points to the count of all previously-read bytes,
  * and must likewise be updated for the bytes we read.
  *
+ * nocopy if this flag is set true then it will just skip the readlen
+ * size in undo but it will not copy into the buffer.
+ *
  * The return value is false if we ran out of space before read all
  * the bytes, and otherwise true.
  */
 static bool
-ReadUndoBytes(char *destptr, int readlen,
-			  char **readptr, char *endptr,
-			  int *my_bytes_read, int *total_bytes_read)
+ReadUndoBytes(char *destptr, int readlen, char **readptr, char *endptr,
+			  int *my_bytes_read, int *total_bytes_read, bool nocopy)
 {
 	int		can_read;
 	int		remaining;
@@ -415,7 +451,8 @@ ReadUndoBytes(char *destptr, int readlen,
 		return false;
 
 	/* Copy the bytes we can read. */
-	memcpy(destptr + *my_bytes_read, *readptr, can_read);
+	if (!nocopy)
+		memcpy(destptr + *my_bytes_read, *readptr, can_read);
 
 	/* Update bookkeeping information. */
 	*readptr += can_read;
@@ -424,6 +461,107 @@ ReadUndoBytes(char *destptr, int readlen,
 
 	/* Return true only if we wrote the whole thing. */
 	return (can_read == remaining);
+}
+
+/*
+ * Update the transaction information inside the undo record
+ *
+ * First prepare undo record for the new transaction will invoke this routine
+ * to update its first undo record pointer in previous transaction's first undo
+ * record.
+ *
+ * FIXME this should be WAL logged.
+ */
+void
+UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
+{
+	Buffer		buffer;
+	BlockNumber	cur_blk;
+	RelFileNode	rnode;
+	Page		page;
+	char	   *readptr;
+	char	   *endptr;
+	int			my_bytes_decoded = 0;
+	int			already_decoded = 0;
+	int			starting_byte;
+
+	/*
+	 * If previous transaction's urp is not valid means this backend is
+	 * preparing its first undo so fetch the information from the undo log
+	 * if it's still invalid urp means this is the first undo record for this
+	 * log and we have nothing to update.
+	 */
+	if (!UndoRecPtrIsValid(prev_xact_urp))
+	{
+		prev_xact_urp = UndoLogGetLastXactStartPoint();
+		if (!UndoRecPtrIsValid(prev_xact_urp))
+			return;
+	}
+
+	UndoRecPtrAssignRelFileNode(rnode, prev_xact_urp);
+	cur_blk = UndoRecPtrGetBlockNum(prev_xact_urp);
+	starting_byte = UndoRecPtrGetPageOffset(prev_xact_urp);
+
+	while (true)
+	{
+		/* Go to the next block if already_decoded is non zero */
+		if (already_decoded != 0)
+		{
+			starting_byte = UndoLogBlockHeaderSize;
+			my_bytes_decoded = already_decoded;
+			UnlockReleaseBuffer(buffer);
+			cur_blk++;
+		}
+
+		buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
+										   RBM_NORMAL, NULL);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buffer);
+
+		readptr = (char *)page + starting_byte;
+		endptr = (char *) page + BLCKSZ;
+
+		/* Decode header. */
+		if (!ReadUndoBytes((char *) &work_hdr, SizeOfUndoRecordHeader,
+						   &readptr, endptr,
+						   &my_bytes_decoded, &already_decoded, false))
+			continue;
+
+		/* If the undo record has the relation header then just skip it. */
+		if ((work_hdr.urec_info & UREC_INFO_RELATION_DETAILS) != 0)
+		{
+			if (!ReadUndoBytes((char *) &work_rd, SizeOfUndoRecordRelationDetails,
+							   &readptr, endptr,
+							   &my_bytes_decoded, &already_decoded, true))
+				continue;
+		}
+
+		/* If the undo record has the block header then just skip it. */
+		if ((work_hdr.urec_info & UREC_INFO_BLOCK) != 0)
+		{
+			if (!ReadUndoBytes((char *) &work_blk, SizeOfUndoRecordBlock,
+							   &readptr, endptr,
+							   &my_bytes_decoded, &already_decoded, true))
+				continue;
+		}
+
+		/* The undo record must have transaction header. */
+		Assert(work_hdr.urec_info & UREC_INFO_TRANSACTION);
+
+		/*
+		 * Update the next transactions start urecptr in the transaction
+		 * header.
+		 */
+		work_txn.urec_next = urecptr;
+		if (!InsertUndoBytes((char*)&work_txn, SizeOfUndoRecordTransaction,
+							&readptr, endptr,
+							&my_bytes_decoded, &already_decoded))
+			continue;
+
+		UnlockReleaseBuffer(buffer);
+
+		break;
+	}
 }
 
 /*
@@ -438,6 +576,8 @@ UndoRecordSetInfo(UnpackedUndoRecord *uur)
 		uur->uur_info |= UREC_INFO_RELATION_DETAILS;
 	if (uur->uur_block != InvalidBlockNumber)
 		uur->uur_info |= UREC_INFO_BLOCK;
+	if (uur->uur_next != InvalidUndoRecPtr)
+		uur->uur_info |= UREC_INFO_TRANSACTION;
 	if (uur->uur_payload.len || uur->uur_tuple.len)
 		uur->uur_info |= UREC_INFO_PAYLOAD;
 }
@@ -457,13 +597,53 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence)
 	Buffer			buffer;
 	UndoRecordSize  cur_size = 0;
 	BlockNumber		cur_blk;
+	TransactionId	txid;
 	int				starting_byte;
 	int				index = 0;
 
-	/* calculate the size of the undo record */
+	/*
+	 * If this is the first undo record for this top transaction add the
+	 * transaction information to the undo record.
+	 *
+	 * XXX there is also an option that instead of adding the information to
+	 * this record we can prepare a new record which only contain transaction
+	 * informations.
+	 */
+	txid = GetTopTransactionId();
+
+	/*
+	 * If this is the first undo record for this transaction then set the
+	 * uur_next to the SpecialUndoRecPtr.  This is the indication to allocate
+	 * the space for the transaction header and the valid value of the uur_next
+	 * will be updated while preparing the first undo record of the next
+	 * transaction.
+	 */
+	if (prev_txid != txid)
+		urec->uur_next = SpecialUndoRecPtr;
+	else
+		urec->uur_next = InvalidUndoRecPtr;
+
+	/* calculate the size of the undo record. */
 	size = UndoRecordExpectedSize(urec);
 
 	urecptr = UndoLogAllocate(size, upersistence);
+
+	/*
+	 * If transaction id is swithed then update the previous transaction's
+	 * start undo record.
+	 */
+	if (prev_txid != txid)
+	{
+		UndoRecordUpdateTransactionInfo(urecptr);
+
+		/* Remember the current transactions xid and start undorecptr. */
+		prev_xact_urp = urecptr;
+		prev_txid = txid;
+
+		/* Store the current transaction's start undorecptr in the undo log. */
+		UndoLogSetLastXactStartPoint(urecptr);
+	}
+
 	UndoLogAdvance(urecptr, size);
 	cur_blk = UndoRecPtrGetBlockNum(urecptr);
 	UndoRecPtrAssignRelFileNode(rnode, urecptr);

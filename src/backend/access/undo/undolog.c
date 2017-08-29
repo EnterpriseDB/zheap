@@ -334,6 +334,58 @@ UndoLogIsDiscarded(UndoRecPtr point)
 }
 
 /*
+ * Store latest transaction's start undo record point in undo meta data.  It
+ * will fetched by the backend when it's reusing the undo log and preparing
+ * it's first undo.
+ */
+void
+UndoLogSetLastXactStartPoint(UndoRecPtr point)
+{
+	UndoLogNumber logno = UndoRecPtrGetLogNo(point);
+	UndoLogControl *log = get_undo_log_by_number(logno);
+
+	/* Update shmem to show the new discard and end pointers. */
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	log->meta.last_xact_start = UndoRecPtrGetOffset(point);
+	LWLockRelease(&log->mutex);
+
+	/* WAL log. */
+	{
+		xl_undolog_xactstart xlrec;
+
+		xlrec.logno = logno;
+		xlrec.last_xact_start = UndoRecPtrGetOffset(point);
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
+		XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_DISCARD);
+	}
+}
+
+/*
+ * Fetch the previous transaction's start undo record point.  Return Invalid
+ * undo pointer if backend is not attached to any log.
+ */
+UndoRecPtr
+UndoLogGetLastXactStartPoint()
+{
+	UndoLogControl *log = MyUndoLogState.log;
+	uint64 last_xact_start = 0;
+
+	if (unlikely(log == NULL))
+		return InvalidUndoRecPtr;
+
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	last_xact_start = log->meta.last_xact_start;
+	LWLockRelease(&log->mutex);
+
+	if (last_xact_start == 0)
+		return InvalidUndoRecPtr;
+
+	return MakeUndoRecPtr(MyUndoLogState.logno, last_xact_start);
+}
+
+/*
  * Detach from the undo log we are currently attached to, returning it to the
  * free list if it still has space.
  */
@@ -1567,6 +1619,25 @@ undolog_xlog_discard(XLogReaderState *record)
 	LWLockRelease(&log->mutex);
 }
 
+/*
+ * replay an undo last xact start record
+ */
+static void
+undolog_xlog_xactstart(XLogReaderState *record)
+{
+	xl_undolog_xactstart *xlrec = (xl_undolog_xactstart *) XLogRecGetData(record);
+	UndoLogControl *log;
+
+	log = get_undo_log_by_number(xlrec->logno);
+	if (log == NULL)
+		elog(ERROR, "unknown undo log %d", xlrec->logno);
+
+	/* Update shmem. */
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	log->meta.last_xact_start = xlrec->last_xact_start;
+	LWLockRelease(&log->mutex);
+}
+
 void
 undolog_redo(XLogReaderState *record)
 {
@@ -1585,6 +1656,9 @@ undolog_redo(XLogReaderState *record)
 			break;
 		case XLOG_UNDOLOG_DISCARD:
 			undolog_xlog_discard(record);
+			break;
+		case XLOG_UNDOLOG_XACTSTART:
+			undolog_xlog_xactstart(record);
 			break;
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);

@@ -57,6 +57,14 @@ typedef uint64 UndoLogOffset;
 #define	InvalidUndoRecPtr	((UndoRecPtr) 0)
 
 /*
+ * This undo record pointer will be used in the transaction header this special
+ * value is the indication that currently we don't have the value of the the
+ * next transactions start point but it will be updated with a valid value
+ * in the future.
+ */
+#define SpecialUndoRecPtr	((UndoRecPtr) 0xFFFFFFFFFFFFFFFF)
+
+/*
  * The maximum amount of data that can be stored in an undo log.  Can be set
  * artificially low to test full log behavior.
  */
@@ -130,6 +138,7 @@ typedef struct UndoLogMetaData
 	UndoLogOffset insert;			/* next insertion point (head) */
 	UndoLogOffset end;				/* one past end of highest segment */
 	UndoLogOffset discard;			/* oldest data needed (tail) */
+	UndoLogOffset last_xact_start;	/* last transactions start undo offset */
 } UndoLogMetaData;
 
 /* Space management. */
@@ -155,7 +164,8 @@ extern bool UndoLogNextActiveLog(UndoLogNumber *logno, Oid *spcNode);
 extern void UndoLogGetDirtySegmentRange(UndoLogNumber logno,
 										int *low_segno, int *high_segno);
 extern void UndoLogSetHighestSyncedSegment(UndoLogNumber logno, int segno);
-
+extern void UndoLogSetLastXactStartPoint(UndoRecPtr point);
+extern UndoRecPtr UndoLogGetLastXactStartPoint(void);
 /* Redo interface. */
 extern void undolog_redo(XLogReaderState *record);
 
