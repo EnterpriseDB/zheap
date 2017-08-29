@@ -3223,30 +3223,12 @@ zheapgettup_pagemode(HeapScanDesc scan,
 	}
 	else
 	{
-		/* Fixme - no movement scan direction is yet to be implemented */
+		/*
+		 * In executor it seems NoMovementScanDirection is nothing but
+		 * do-nothing flag so we should not be here. The else part is still
+		 * here to keep the code as in heapgettup_pagemode.
+		 */
 		Assert(false);
-		/*
-		 * ``no movement'' scan direction: refetch prior tuple
-		 */
-		if (!scan->rs_inited)
-		{
-			Assert(!BufferIsValid(scan->rs_cbuf));
-			tuple = NULL;
-			return tuple;
-		}
-
-		page = ItemPointerGetBlockNumber(&(tuple->t_self));
-		if (page != scan->rs_cblock)
-			zheapgetpage(scan, page);
-
-		/*
-		 * Fixme - We can't rely on the current tuple as an in-place update
-		 * would have updated it, so we need to check its visibility again
-		 * and fetch the latest tuple if required.
-		 *
-		 * Also need to think if we need to take a lock on page.
-		 */
-		return NULL;
 	}
 
 	/*
