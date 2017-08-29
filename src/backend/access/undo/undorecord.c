@@ -694,7 +694,7 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 	/* Find the undo record pointer we are interested in. */
 	while (true)
 	{
-		if (!UndoRecPtrIsValid(urp))
+		if (!UndoRecPtrIsValid(urp) || UndoLogIsDiscarded(urp))
 		{
 			if (BufferIsValid(urec->uur_buffer))
 				ReleaseBuffer(urec->uur_buffer);
@@ -741,7 +741,29 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 
 		prevrnode = rnode;
 
-		urec = UndoGetOneRecord(urec, urp, rnode);
+		/*
+		 * FIXME: We have already checked above that this this urp is not
+		 * discarded, but by the time we come here it might have been discarded
+		 *
+		 * This is a dirty way to handle the problem, we may need to find
+		 * a better solution to handle this case.
+		 */
+		PG_TRY();
+		{
+			urec = UndoGetOneRecord(urec, urp, rnode);
+		}
+		PG_CATCH();
+		{
+			urp = 0;
+		}
+		PG_END_TRY();
+
+		if (urp == 0)
+		{
+			if (BufferIsValid(urec->uur_buffer))
+				ReleaseBuffer(urec->uur_buffer);
+			return NULL;
+		}
 
 		if (blkno == InvalidBlockNumber)
 			break;
