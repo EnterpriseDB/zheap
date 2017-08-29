@@ -2318,11 +2318,14 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 	Page	page;
 	ZHeapPageOpaque	opaque;
 	UndoRecPtr	urecptr, prev_urecptr;
+	TransactionId	oldestXidHavingUndo;
 	int		slot_no;
 	int		frozen_slots[MAX_PAGE_TRANS_INFO_SLOTS];
 	int		nFrozenSlots = 0;
 	int		completed_xact_slots[MAX_PAGE_TRANS_INFO_SLOTS];
 	int		nCompletedXactSlots = 0;
+
+	oldestXidHavingUndo = pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo);
 
 	page = BufferGetPage(buf);
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
@@ -2335,7 +2338,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 	 */
 	for (slot_no = 0; slot_no < MAX_PAGE_TRANS_INFO_SLOTS; slot_no++)
 	{
-		if (TransactionIdPrecedes(opaque->transinfo[slot_no].xid, RecentGlobalXmin))
+		if (TransactionIdPrecedes(opaque->transinfo[slot_no].xid, oldestXidHavingUndo))
 			frozen_slots[nFrozenSlots++] = slot_no;
 	}
 

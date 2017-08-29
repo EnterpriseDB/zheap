@@ -166,6 +166,7 @@ extern void UndoLogGetDirtySegmentRange(UndoLogNumber logno,
 extern void UndoLogSetHighestSyncedSegment(UndoLogNumber logno, int segno);
 extern void UndoLogSetLastXactStartPoint(UndoRecPtr point);
 extern UndoRecPtr UndoLogGetLastXactStartPoint(void);
+extern UndoRecPtr UndoLogGetFirstValidRecord(UndoLogNumber logno);
 /* Redo interface. */
 extern void undolog_redo(XLogReaderState *record);
 

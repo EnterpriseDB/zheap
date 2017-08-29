@@ -979,6 +979,21 @@ UndoRecPtrGetTablespace(UndoRecPtr ptr)
 }
 
 /*
+ * Return first valid UndoRecPtr for a given undo logno.  If logno is invalid
+ * then return InvalidUndoRecPtr.
+ */
+UndoRecPtr
+UndoLogGetFirstValidRecord(UndoLogNumber logno)
+{
+	UndoLogControl *log = get_undo_log_by_number(logno);
+
+	if (log == NULL || log->meta.discard == log->meta.insert)
+		return InvalidUndoRecPtr;
+
+	return MakeUndoRecPtr(logno, log->meta.discard);
+}
+
+/*
  * Delete unreachable files under pg_undo.  Any files corresponding to LSN
  * positions before the previous checkpoint are no longer needed.
  */
