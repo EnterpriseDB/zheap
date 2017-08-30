@@ -28,6 +28,7 @@ extern int	UndoWorkerDelay;
  * aborts). (d) drop the buffers corresponding to truncated pages (e) Sleep for
  * UndoWorkerDelay, if there is no more work.
  */
-extern void UndoWorkerMain(void) pg_attribute_noreturn();
+extern void UndoWorkerMain(Datum main_arg) pg_attribute_noreturn();
+extern void UndoLauncherRegister(void);
 
 #endif   /* _UNDOWORKER_H */
