@@ -1069,6 +1069,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	snapshot->xmin = snapshot->xmax = InvalidTransactionId;
+	snapshot->speculativeToken = 0;
 
 	/*
 	 * We need to fetch all the transaction related information from undo

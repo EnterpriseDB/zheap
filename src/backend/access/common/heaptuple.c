@@ -1481,19 +1481,33 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 bool
 slot_attisnull(TupleTableSlot *slot, int attnum)
 {
-	HeapTuple	tuple = slot->tts_tuple;
+	HeapTuple   tuple = NULL;
+	ZHeapTuple  ztuple = NULL;
 	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
+
+	/*
+	 * Tuple can be either a heap tuple or a zheap tuple.
+	 */
+	if (slot->tts_ztuple)
+		ztuple = slot->tts_ztuple;
+	else
+		tuple = slot->tts_tuple;
+
 
 	/*
 	 * system attributes are handled by heap_attisnull
 	 */
 	if (attnum <= 0)
 	{
-		if (tuple == NULL)		/* internal error */
+		if (ztuple == NULL && tuple == NULL)		/* internal error */
 			elog(ERROR, "cannot extract system attribute from virtual tuple");
 		if (tuple == &(slot->tts_minhdr))	/* internal error */
 			elog(ERROR, "cannot extract system attribute from minimal tuple");
-		return heap_attisnull(tuple, attnum, tupleDesc);
+
+		if (ztuple)
+			return zheap_attisnull(ztuple, attnum, tupleDesc);
+		else
+			return heap_attisnull(tuple, attnum, tupleDesc);
 	}
 
 	/*
@@ -1512,11 +1526,14 @@ slot_attisnull(TupleTableSlot *slot, int attnum)
 	 * otherwise we had better have a physical tuple (tts_nvalid should equal
 	 * natts in all virtual-tuple cases)
 	 */
-	if (tuple == NULL)			/* internal error */
+	if (ztuple == NULL && tuple == NULL)			/* internal error */
 		elog(ERROR, "cannot extract attribute from empty tuple slot");
 
 	/* and let the tuple tell it */
-	return heap_attisnull(tuple, attnum, tupleDesc);
+	if (ztuple)
+		return zheap_attisnull(ztuple, attnum, tupleDesc);
+	else
+		return heap_attisnull(tuple, attnum, tupleDesc);
 }
 
 /*

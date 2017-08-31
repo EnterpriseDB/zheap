@@ -179,6 +179,7 @@ extern Datum znocachegetattr(ZHeapTuple tup, int attnum,
 				TupleDesc att);
 extern Datum zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 TupleDesc tupleDesc, bool *isnull);
+extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
 
 /* This is same as fastgetattr except that it takes ZHeapTuple as input. */
 #define zfastgetattr(tup, attnum, tupleDesc, isnull)					\

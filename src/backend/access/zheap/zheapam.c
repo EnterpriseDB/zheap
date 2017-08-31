@@ -2073,6 +2073,54 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 	return result;
 }
 
+/* ---------------------
+ *		zheap_attisnull  - returns TRUE if zheap tuple attribute is not present
+ * ---------------------
+ */
+bool
+zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc)
+{
+	if (attnum > (int) ZHeapTupleHeaderGetNatts(tup->t_data))
+		return true;
+	
+	/*
+	 * We allow a NULL tupledesc for relations not expected to have missing
+	 * values, such as catalog relations and indexes.
+	 */
+	Assert(!tupleDesc || attnum <= tupleDesc->natts);
+	if (attnum > (int) ZHeapTupleHeaderGetNatts(tup->t_data))
+	{
+		if (tupleDesc && TupleDescAttr(tupleDesc, attnum - 1)->atthasmissing)
+			return false;
+		else
+			return true;
+	}	
+
+	if (attnum > 0)
+	{
+		if (ZHeapTupleNoNulls(tup))
+			return false;
+		return att_isnull(attnum - 1, tup->t_data->t_bits);
+	}
+
+	switch (attnum)
+	{
+		case TableOidAttributeNumber:
+		case SelfItemPointerAttributeNumber:
+		case ObjectIdAttributeNumber:
+		case MinTransactionIdAttributeNumber:
+		case MinCommandIdAttributeNumber:
+		case MaxTransactionIdAttributeNumber:
+		case MaxCommandIdAttributeNumber:
+			/* these are never null */
+			break;
+		default:
+			elog(ERROR, "invalid attnum: %d", attnum);
+	}
+
+	return false;
+}
+
 /*
  * Check if the specified attribute's value is same in both given tuples.
  * Subroutine for ZHeapDetermineModifiedColumns.
@@ -3470,6 +3518,29 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		*all_dead = true;
 
 	return resulttup;
+}
+
+/*
+ * zheap_search - search for a zheap tuple satisfying snapshot.
+ *
+ * This is the same API as zheap_search_buffer, except that the caller
+ * does not provide the buffer containing the page, rather we access it
+ * locally.
+ */
+bool
+zheap_search(ItemPointer tid, Relation relation, Snapshot snapshot,
+			 bool *all_dead)
+{
+	Buffer	buffer;
+	ZHeapTuple	zheapTuple = NULL;
+
+	buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+	zheapTuple = zheap_search_buffer(tid, relation, buffer, snapshot, all_dead);
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+	ReleaseBuffer(buffer);
+
+	return (zheapTuple != NULL);
 }
 
 /*

@@ -82,3 +82,25 @@ SELECT var_samp(b::numeric) FROM aggtest_zheap;
 
 DROP TABLE aggtest_zheap;
 set client_min_messages = notice;
+
+--
+--4. Test for PRIMARY KEY on zheap tables.
+--
+CREATE TABLE pkey_test_zheap
+(
+ a int PRIMARY KEY,
+ b int
+) WITH (storage_engine = 'zheap');
+
+-- should run suucessfully.
+INSERT INTO pkey_test_zheap VALUES (10, 30);
+
+-- should error out, primary key doesn't allow NULL value.
+INSERT INTO pkey_test_zheap(b) VALUES (30);
+
+-- should error out, primary key doesn't allow duplicate value.
+INSERT INTO pkey_test_zheap VALUES (10, 30);
+
+SELECT * FROM pkey_test_zheap;
+
+DROP TABLE pkey_test_zheap;

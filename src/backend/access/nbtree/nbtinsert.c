@@ -414,9 +414,15 @@ _bt_check_unique(Relation rel, IndexTuple itup, Relation heapRel,
 				 * We check the whole HOT-chain to see if there is any tuple
 				 * that satisfies SnapshotDirty.  This is necessary because we
 				 * have just a single index entry for the entire chain.
+				 *
+				 * zheap : There is no such concept of HOT-chain in zheap and
+				 * therefore, for zheap, we have a separete API named zheap_search
+				 * to see if there is any zheap tuple that satisfies the given
+				 * Dirty Snapshot.
 				 */
-				else if (heap_hot_search(&htid, heapRel, &SnapshotDirty,
-										 &all_dead))
+				else if (RelationStorageIsZHeap(heapRel) ?
+						 zheap_search(&htid, heapRel, &SnapshotDirty, &all_dead) :
+						 heap_hot_search(&htid, heapRel, &SnapshotDirty, &all_dead))
 				{
 					TransactionId xwait;
 
@@ -467,19 +473,26 @@ _bt_check_unique(Relation rel, IndexTuple itup, Relation heapRel,
 					 * we have a unique key conflict.  The other live tuple is
 					 * not part of this chain because it had a different index
 					 * entry.
+					 *
+					 * FIXME : For zheap we are skipping this part as it is only
+					 * required for the concurrent index build and currently in
+					 * zheap that is not supported.
 					 */
 					htid = itup->t_tid;
-					if (heap_hot_search(&htid, heapRel, SnapshotSelf, NULL))
+					if (!RelationStorageIsZHeap(heapRel))
 					{
-						/* Normal case --- it's still live */
-					}
-					else
-					{
-						/*
-						 * It's been deleted, so no error, and no need to
-						 * continue searching
-						 */
-						break;
+						if (heap_hot_search(&htid, heapRel, SnapshotSelf, NULL))
+						{
+							/* Normal case --- it's still live */
+						}
+						else
+						{
+							/*
+							 * It's been deleted, so no error, and no need to
+							 * continue searching
+							 */
+							break;
+						}
 					}
 
 					/*

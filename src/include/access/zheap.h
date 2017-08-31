@@ -65,6 +65,8 @@ extern ZHeapTuple zheap_getnext(HeapScanDesc scan, ScanDirection direction);
 extern ZHeapTuple zheap_search_buffer(ItemPointer tid, Relation relation,
 									  Buffer buffer, Snapshot snapshot,
 									  bool *all_dead);
+extern bool zheap_search(ItemPointer tid, Relation relation, Snapshot snapshot,
+						 bool *all_dead);
 
 extern bool zheap_fetch(Relation relation, Snapshot snapshot,
 				ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
