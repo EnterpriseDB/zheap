@@ -35,6 +35,19 @@ CREATE TABLE t1_invalid
 ) WITH (storage_engine = 'invalid');
 ERROR:  invalid value for "storage_engine" option
 DETAIL:  Valid values are "heap" and "zheap".
+-- Should throw error - not supported feature
+ALTER TABLE t1_heap  set (storage_engine='zheap');
+ERROR:  storage_engine option can't be modified.
+HINT:  please re-create the table with the modified storage_engine
+ALTER TABLE t1_heap  reset (storage_engine);
+ERROR:  storage_engine option can't be modified.
+HINT:  please re-create the table with the modified storage_engine
+ALTER TABLE t1_zheap  set (storage_engine='heap');
+ERROR:  storage_engine option can't be modified.
+HINT:  please re-create the table with the modified storage_engine
+ALTER TABLE t1_zheap  reset (storage_engine);
+ERROR:  storage_engine option can't be modified.
+HINT:  please re-create the table with the modified storage_engine
 DROP TABLE t1_heap;
 DROP TABLE t1_zheap;
 --

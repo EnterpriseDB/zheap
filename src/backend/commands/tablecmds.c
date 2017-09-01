@@ -10835,6 +10835,25 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	}
 
 	/*
+	 * FIXME: Altering storage_engines(heap, zheap) is not yet supported.
+	 */
+	if (defList != NIL)
+	{
+		ListCell   *cell;
+
+		foreach(cell, defList)
+		{
+			DefElem    *defel = (DefElem *) lfirst(cell);
+
+			if (pg_strcasecmp(defel->defname, "storage_engine") == 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("storage_engine option can't be modified."),
+						 errhint("please re-create the table with the modified storage_engine")));
+		}
+	}
+
+	/*
 	 * All we need do here is update the pg_class row; the new options will be
 	 * propagated into relcaches during post-commit cache inval.
 	 */

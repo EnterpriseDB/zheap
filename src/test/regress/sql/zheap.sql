@@ -26,6 +26,12 @@ CREATE TABLE t1_invalid
  a int
 ) WITH (storage_engine = 'invalid');
 
+-- Should throw error - not supported feature
+ALTER TABLE t1_heap  set (storage_engine='zheap');
+ALTER TABLE t1_heap  reset (storage_engine);
+ALTER TABLE t1_zheap  set (storage_engine='heap');
+ALTER TABLE t1_zheap  reset (storage_engine);
+
 DROP TABLE t1_heap;
 DROP TABLE t1_zheap;
 
