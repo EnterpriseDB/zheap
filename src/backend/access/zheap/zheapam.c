@@ -527,7 +527,7 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup)
 	}
 	else if (HeapTupleHasExternal(tup) || tup->t_len > TOAST_TUPLE_THRESHOLD)
 	{
-		elog(ERROR, "toast tuple is not supportted for zheap.");
+		elog(ERROR, "toast tuple is not supported for zheap");
 		return NULL;
 		/* return toast_insert_or_update(relation, tup, NULL, options); */
 	}
