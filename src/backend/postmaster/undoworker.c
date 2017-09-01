@@ -28,8 +28,22 @@
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
 
+static void undoworker_sigterm_handler(SIGNAL_ARGS);
+
 /* max sleep time between cycles (100 milliseconds) */
 #define DEFAULT_NAPTIME_PER_CYCLE 100L
+
+static bool got_SIGTERM = false;
+
+/* SIGTERM: set flag to exit at next convenient time */
+static void
+undoworker_sigterm_handler(SIGNAL_ARGS)
+{
+	got_SIGTERM = true;
+
+	/* Waken anything waiting on the process latch */
+	SetLatch(MyLatch);
+}
 
 /*
  * UndoLauncherRegister -- Register a undo worker.
@@ -65,7 +79,7 @@ UndoWorkerMain(Datum main_arg)
 			(errmsg("undo worker's launcher started")));
 
 	/* Establish signal handlers. */
-	pqsignal(SIGTERM, die);
+	pqsignal(SIGTERM, undoworker_sigterm_handler);
 	BackgroundWorkerUnblockSignals();
 
 	/* Make it easy to identify our processes. */
@@ -75,13 +89,11 @@ UndoWorkerMain(Datum main_arg)
 	BackgroundWorkerInitializeConnection(NULL, NULL);
 
 	/* Enter main loop */
-	while (true)
+	while (!got_SIGTERM)
 	{
 		int			rc;
 		long		wait_time = DEFAULT_NAPTIME_PER_CYCLE;
 		TransactionId OldestXmin;
-
-		CHECK_FOR_INTERRUPTS();
 
 		OldestXmin = GetOldestXmin(NULL, true);
 
