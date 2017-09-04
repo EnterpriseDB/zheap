@@ -58,8 +58,7 @@ UndoLauncherRegister(void)
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
-	snprintf(bgw.bgw_name, BGW_MAXLEN,
-			 "undo worker's launcher");
+	snprintf(bgw.bgw_name, BGW_MAXLEN, "undo launcher");
 	sprintf(bgw.bgw_library_name, "postgres");
 	sprintf(bgw.bgw_function_name, "UndoWorkerMain");
 	bgw.bgw_restart_time = 5;
@@ -76,7 +75,7 @@ void
 UndoWorkerMain(Datum main_arg)
 {
 	ereport(LOG,
-			(errmsg("undo worker's launcher started")));
+			(errmsg("undo launcher started")));
 
 	/* Establish signal handlers. */
 	pqsignal(SIGTERM, undoworker_sigterm_handler);
@@ -116,7 +115,7 @@ UndoWorkerMain(Datum main_arg)
 
 	/* we're done */
 	ereport(LOG,
-			(errmsg("undo worker's launcher shutting down")));
+			(errmsg("undo launcher shutting down")));
 
 	proc_exit(0);
 }
