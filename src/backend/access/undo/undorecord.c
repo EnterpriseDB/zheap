@@ -14,6 +14,7 @@
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "access/undodiscard.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
 #include "access/undoinsert.h"
@@ -868,19 +869,13 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 {
 	RelFileNode		 rnode, prevrnode = {0};
 	UnpackedUndoRecord *urec = NULL;
+	int	logno;
 
 	urec = palloc0(sizeof(UnpackedUndoRecord));
 
 	/* Find the undo record pointer we are interested in. */
 	while (true)
 	{
-		if (!UndoRecPtrIsValid(urp) || UndoLogIsDiscarded(urp))
-		{
-			if (BufferIsValid(urec->uur_buffer))
-				ReleaseBuffer(urec->uur_buffer);
-			return NULL;
-		}
-
 		UndoRecPtrAssignRelFileNode(rnode, urp);
 
 		/*
@@ -918,33 +913,25 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 		urec->uur_tuple.len = 0;
 		urec->uur_payload.data = NULL;
 		urec->uur_payload.len = 0;
-
 		prevrnode = rnode;
 
-		/*
-		 * FIXME: We have already checked above that this this urp is not
-		 * discarded, but by the time we come here it might have been discarded
-		 *
-		 * This is a dirty way to handle the problem, we may need to find
-		 * a better solution to handle this case.
-		 */
-		PG_TRY();
-		{
-			urec = UndoGetOneRecord(urec, urp, rnode);
-		}
-		PG_CATCH();
-		{
-			urp = 0;
-		}
-		PG_END_TRY();
+		logno = UndoRecPtrGetLogNo(urp);
+		LWLockAcquire(&UndoDiscardInfo[logno].mutex, LW_SHARED);
 
-		if (urp == 0)
+		if (urp < UndoDiscardInfo[logno].undo_recptr)
 		{
+			LWLockRelease(&UndoDiscardInfo[logno].mutex);
+
 			if (BufferIsValid(urec->uur_buffer))
 				ReleaseBuffer(urec->uur_buffer);
+
 			return NULL;
 		}
 
+		LWLockRelease(&UndoDiscardInfo[logno].mutex);
+
+		/* Fetch the current undo record. */
+		urec = UndoGetOneRecord(urec, urp, rnode);
 		if (blkno == InvalidBlockNumber)
 			break;
 

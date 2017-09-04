@@ -24,18 +24,6 @@
 #include "storage/shmem.h"
 #include "storage/proc.h"
 
-/*
- * Hold the discard information for one undo log.
- */
-typedef struct DiscardXact
-{
-	TransactionId	xid;
-	UndoRecPtr		undo_recptr; /* first undo record location for this xid. */
-} DiscardXact;
-
-/*
- * Shared memory array to holds the discard information for all the undologs.
- */
 DiscardXact	*UndoDiscardInfo = NULL;
 
 /*
@@ -68,6 +56,9 @@ UndoDiscardShmemInit(void)
 	{
 		UndoDiscardInfo[i].xid = InvalidTransactionId;
 		UndoDiscardInfo[i].undo_recptr = InvalidUndoRecPtr;
+
+		/* Initialize. */
+		LWLockInitialize(&UndoDiscardInfo[i].mutex, LWTRANCHE_UNDODISCARD);
 	}
 }
 
@@ -98,8 +89,13 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin)
 		if (uur->uur_xid >= xmin || uur->uur_next == SpecialUndoRecPtr ||
 			uur->uur_next == InvalidUndoRecPtr)
 		{
+			LWLockAcquire(&discard->mutex, LW_EXCLUSIVE);
+
 			discard->xid = uur->uur_xid;
 			discard->undo_recptr = undo_recptr;
+
+			LWLockRelease(&discard->mutex);
+
 			UndoRecordRelease(uur);
 
 			if (need_discard)

@@ -17,6 +17,22 @@
 #include "access/undorecord.h"
 #include "access/xlogdefs.h"
 #include "catalog/pg_class.h"
+#include "storage/lwlock.h"
+
+/*
+ * Hold the discard information for one undo log.
+ */
+typedef struct DiscardXact
+{
+	TransactionId	xid;
+	LWLock			mutex;		 /* protects the below */
+	UndoRecPtr		undo_recptr; /* first undo record location for this xid. */
+} DiscardXact;
+
+/*
+ * Shared memory array to holds the discard information for all the undologs.
+ */
+extern DiscardXact	*UndoDiscardInfo;
 
 /*
  * Discard the undo for all the transaction whose xid is smaller than xmin
