@@ -40,6 +40,7 @@ extern ZHeapTuple ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup,
 extern ZHeapTuple ZHeapTupleSatisfiesAny(ZHeapTuple zhtup,
 					  Snapshot snapshot, Buffer buffer);
 extern HTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup,
-						TransactionId OldestXmin, Buffer buffer);
+						TransactionId OldestXmin, Buffer buffer,
+						TransactionId *xid);
 
 #endif   /* ZTQUAL_H */

@@ -3395,6 +3395,288 @@ zheapgettup_pagemode(HeapScanDesc scan,
 	}
 }
 
+/*
+ * Similar to heapgettup, but for fetching zheap tuple.
+ */
+static ZHeapTuple
+zheapgettup(HeapScanDesc scan,
+		   ScanDirection dir,
+		   int nkeys,
+		   ScanKey key)
+{
+	ZHeapTuple	tuple = scan->rs_cztup;
+	Snapshot	snapshot = scan->rs_snapshot;
+	bool		backward = ScanDirectionIsBackward(dir);
+	BlockNumber page;
+	bool		finished;
+	Page		dp;
+	int			lines;
+	OffsetNumber lineoff;
+	int			linesleft;
+	ItemId		lpp;
+
+	/*
+	 * calculate next starting lineoff, given scan direction
+	 */
+	if (ScanDirectionIsForward(dir))
+	{
+		if (!scan->rs_inited)
+		{
+			/*
+			 * return null immediately if relation is empty
+			 */
+			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
+			{
+				Assert(!BufferIsValid(scan->rs_cbuf));
+				return NULL;
+			}
+			if (scan->rs_parallel != NULL)
+			{
+				page = heap_parallelscan_nextpage(scan);
+
+				/* Other processes might have already finished the scan. */
+				if (page == InvalidBlockNumber)
+				{
+					Assert(!BufferIsValid(scan->rs_cbuf));
+					return NULL;
+				}
+			}
+			else
+				page = scan->rs_startblock;		/* first page */
+			zheapgetpage(scan, page);
+			lineoff = FirstOffsetNumber;		/* first offnum */
+			scan->rs_inited = true;
+		}
+		else
+		{
+			/* continue from previously returned page/tuple */
+			page = scan->rs_cblock;		/* current page */
+			lineoff =			/* next offnum */
+				OffsetNumberNext(ItemPointerGetOffsetNumber(&(tuple->t_self)));
+		}
+
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+
+		dp = BufferGetPage(scan->rs_cbuf);
+		TestForOldSnapshot(snapshot, scan->rs_rd, dp);
+		lines = PageGetMaxOffsetNumber(dp);
+		/* page and lineoff now reference the physically next tid */
+
+		linesleft = lines - lineoff + 1;
+	}
+	else if (backward)
+	{
+		/* backward parallel scan not supported */
+		Assert(scan->rs_parallel == NULL);
+
+		if (!scan->rs_inited)
+		{
+			/*
+			 * return null immediately if relation is empty
+			 */
+			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
+			{
+				Assert(!BufferIsValid(scan->rs_cbuf));
+				return NULL;
+			}
+
+			/*
+			 * Disable reporting to syncscan logic in a backwards scan; it's
+			 * not very likely anyone else is doing the same thing at the same
+			 * time, and much more likely that we'll just bollix things for
+			 * forward scanners.
+			 */
+			scan->rs_syncscan = false;
+			/* start from last page of the scan */
+			if (scan->rs_startblock > 0)
+				page = scan->rs_startblock - 1;
+			else
+				page = scan->rs_nblocks - 1;
+			zheapgetpage(scan, page);
+		}
+		else
+		{
+			/* continue from previously returned page/tuple */
+			page = scan->rs_cblock;		/* current page */
+		}
+
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+
+		dp = BufferGetPage(scan->rs_cbuf);
+		TestForOldSnapshot(snapshot, scan->rs_rd, dp);
+		lines = PageGetMaxOffsetNumber(dp);
+
+		if (!scan->rs_inited)
+		{
+			lineoff = lines;	/* final offnum */
+			scan->rs_inited = true;
+		}
+		else
+		{
+			lineoff =			/* previous offnum */
+				OffsetNumberPrev(ItemPointerGetOffsetNumber(&(tuple->t_self)));
+		}
+		/* page and lineoff now reference the physically previous tid */
+
+		linesleft = lineoff;
+	}
+	else
+	{
+		/*
+		 * In executor it seems NoMovementScanDirection is nothing but
+		 * do-nothing flag so we should not be here. The else part is still
+		 * here to keep the code as in heapgettup_pagemode.
+		 */
+		Assert(false);
+
+		return NULL;
+	}
+
+	/*
+	 * advance the scan until we find a qualifying tuple or run out of stuff
+	 * to scan
+	 */
+	lpp = PageGetItemId(dp, lineoff);
+	for (;;)
+	{
+		while (linesleft > 0)
+		{
+			if (ItemIdIsNormal(lpp))
+			{
+				ZHeapTuple	tuple;
+				ZHeapTuple loctup;
+				Size		loctup_len;
+				bool		valid = false;
+
+				loctup_len = ItemIdGetLength(lpp);
+
+				loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
+				loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
+
+				loctup->t_tableOid = RelationGetRelid(scan->rs_rd);
+				loctup->t_len = loctup_len;
+				ItemPointerSet(&(loctup->t_self), page, lineoff);
+
+				/*
+				 * We always need to make a copy of zheap tuple as once we release
+				 * the buffer an in-place update can change the tuple.
+				 */
+				memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lpp)), loctup->t_len);
+
+				tuple = ZHeapTupleSatisfiesVisibility(loctup, snapshot, scan->rs_cbuf);
+				valid = tuple ? true : false;
+
+				/* FIXME - Serialization failures needs to be detected for zheap. */
+				/* CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
+												buffer, snapshot); */
+
+				/* FIXME - Implement Key Test for zheap */
+				/* if (valid && key != NULL)
+					HeapKeyTest(tuple, RelationGetDescr(scan->rs_rd),
+								nkeys, key, valid); */
+
+				if (valid)
+				{
+					LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+					return tuple;
+				}
+			}
+
+			/*
+			 * otherwise move to the next item on the page
+			 */
+			--linesleft;
+			if (backward)
+			{
+				--lpp;			/* move back in this page's ItemId array */
+				--lineoff;
+			}
+			else
+			{
+				++lpp;			/* move forward in this page's ItemId array */
+				++lineoff;
+			}
+		}
+
+		/*
+		 * if we get here, it means we've exhausted the items on this page and
+		 * it's time to move to the next.
+		 */
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+
+		/*
+		 * advance to next/prior page and detect end of scan
+		 */
+		if (backward)
+		{
+			finished = (page == scan->rs_startblock) ||
+				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
+			if (page == 0)
+				page = scan->rs_nblocks;
+			page--;
+		}
+		else if (scan->rs_parallel != NULL)
+		{
+			page = heap_parallelscan_nextpage(scan);
+			finished = (page == InvalidBlockNumber);
+		}
+		else
+		{
+			page++;
+			if (page >= scan->rs_nblocks)
+				page = 0;
+			finished = (page == scan->rs_startblock) ||
+				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
+
+			/*
+			 * Report our new scan position for synchronization purposes. We
+			 * don't do that when moving backwards, however. That would just
+			 * mess up any other forward-moving scanners.
+			 *
+			 * Note: we do this before checking for end of scan so that the
+			 * final state of the position hint is back at the start of the
+			 * rel.  That's not strictly necessary, but otherwise when you run
+			 * the same query multiple times the starting position would shift
+			 * a little bit backwards on every invocation, which is confusing.
+			 * We don't guarantee any specific ordering in general, though.
+			 */
+			if (scan->rs_syncscan)
+				ss_report_location(scan->rs_rd, page);
+		}
+
+		/*
+		 * return NULL if we've exhausted all the pages
+		 */
+		if (finished)
+		{
+			if (BufferIsValid(scan->rs_cbuf))
+				ReleaseBuffer(scan->rs_cbuf);
+			scan->rs_cbuf = InvalidBuffer;
+			scan->rs_cblock = InvalidBlockNumber;
+			scan->rs_inited = false;
+			return NULL;
+		}
+
+		zheapgetpage(scan, page);
+
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+
+		dp = BufferGetPage(scan->rs_cbuf);
+		TestForOldSnapshot(snapshot, scan->rs_rd, dp);
+		lines = PageGetMaxOffsetNumber((Page) dp);
+		linesleft = lines;
+		if (backward)
+		{
+			lineoff = lines;
+			lpp = PageGetItemId(dp, lines);
+		}
+		else
+		{
+			lineoff = FirstOffsetNumber;
+			lpp = PageGetItemId(dp, FirstOffsetNumber);
+		}
+	}
+}
 #ifdef ZHEAPDEBUGALL
 #define ZHEAPDEBUG_1 \
 	elog(DEBUG2, "zheap_getnext([%s,nkeys=%d],dir=%d) called", \
@@ -3423,7 +3705,7 @@ zheap_getnext(HeapScanDesc scan, ScanDirection direction)
 		zhtup = zheapgettup_pagemode(scan, direction,
 							scan->rs_nkeys, scan->rs_key);
 	else
-		Assert(false);	/* tuple mode is not supported for zheap */
+		zhtup = zheapgettup(scan, direction, scan->rs_nkeys, scan->rs_key);
 
 	if (zhtup == NULL)
 	{

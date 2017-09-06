@@ -1234,18 +1234,74 @@ ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer)
  */
 HTSV_Result
 ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
-							  Buffer buffer)
+							  Buffer buffer, TransactionId *xid)
 {
 	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	TransactionId	xid;
+	UnpackedUndoRecord	*urec;
+	UndoRecPtr	urec_ptr;
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
-	xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
+	/*
+	 * We need to fetch all the transaction related information from undo
+	 * record for the tuples that point to a slot that gets invalidated for
+	 * reuse at some point of time.  See PageFreezeTransSlots.
+	 */
+	if ((ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
+		&& !TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
+								  RecentGlobalXmin))
+	{
+		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+		{
+			uint8	uur_type;
+
+			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
+
+			do
+			{
+				urec = UndoFetchRecord(urec_ptr,
+									   ItemPointerGetBlockNumber(&zhtup->t_self),
+									   ItemPointerGetOffsetNumber(&zhtup->t_self),
+									   InvalidTransactionId);
+
+				/*
+				 * The undo tuple must be visible, if the undo record containing
+				 * the information of the last transaction that has updated the
+				 * tuple is discarded or the transaction that has last updated the
+				 * undo tuple precedes RecentGlobalXmin.
+				 */
+				if (urec == NULL)
+				{
+					*xid = InvalidTransactionId;
+					break;
+				}
+
+				*xid = urec->uur_prevxid;
+				urec_ptr = urec->uur_blkprev;
+				uur_type = urec->uur_type;
+
+				/*
+				 * transaction slot won't change for such a tuple, so we can rely on
+				 * the same from current undo tuple.
+				 */
+
+				UndoRecordRelease(urec);
+			} while (uur_type != UNDO_INVALID_XACT_SLOT);
+		}
+		else
+		{
+			*xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
+			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
+		}
+	}
+	else if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
+		*xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
+	else
+		*xid = InvalidTransactionId;
 
 	if (tuple->t_infomask & ZHEAP_DELETED)
 	{
@@ -1255,20 +1311,22 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 		 * smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, RecentGlobalXmin))
+			TransactionIdPrecedes(*xid, RecentGlobalXmin))
 			return HEAPTUPLE_DEAD;
 
-		if (TransactionIdIsCurrentTransactionId(xid))
+		if (TransactionIdIsCurrentTransactionId(*xid))
 			return HEAPTUPLE_DELETE_IN_PROGRESS;
-		else if (TransactionIdIsInProgress(xid))
+		else if (TransactionIdIsInProgress(*xid))
+		{
 			return HEAPTUPLE_DELETE_IN_PROGRESS;
-		else if (TransactionIdDidCommit(xid))
+		}
+		else if (TransactionIdDidCommit(*xid))
 		{
 			/*
 			 * Deleter committed, but perhaps it was recent enough that some open
 			 * transactions could still see the tuple.
 			 */
-			if (!TransactionIdPrecedes(xid, OldestXmin))
+			if (!TransactionIdPrecedes(*xid, OldestXmin))
 				return HEAPTUPLE_RECENTLY_DEAD;
 
 			/* Otherwise, it's dead and removable */
@@ -1294,14 +1352,14 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 	 * undo.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(xid, RecentGlobalXmin))
+		TransactionIdPrecedes(*xid, RecentGlobalXmin))
 		return HEAPTUPLE_LIVE;
 
-	if (TransactionIdIsCurrentTransactionId(xid))
+	if (TransactionIdIsCurrentTransactionId(*xid))
 		return HEAPTUPLE_INSERT_IN_PROGRESS;
-	else if (TransactionIdIsInProgress(xid))
+	else if (TransactionIdIsInProgress(*xid))
 		return HEAPTUPLE_INSERT_IN_PROGRESS;		/* in insertion by other */
-	else if (TransactionIdDidCommit(xid))
+	else if (TransactionIdDidCommit(*xid))
 		return HEAPTUPLE_LIVE;
 	else	/* transaction is aborted */
 	{

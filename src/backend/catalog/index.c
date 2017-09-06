@@ -2977,10 +2977,19 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 						void *callback_state,
 						HeapScanDesc scan)
 {
+	bool		is_system_catalog;
 	bool		checking_uniqueness;
+	HeapTuple	heapTuple;
 	ZHeapTuple	zheapTuple;
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
 	double		reltuples;
+	ExprState  *predicate;
+	TupleTableSlot *slot;
+	EState	   *estate;
+	ExprContext *econtext;
 	Snapshot	snapshot;
+	TransactionId OldestXmin;
 
 	/*
 	 * sanity checks
@@ -2988,15 +2997,42 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 	Assert(OidIsValid(indexRelation->rd_rel->relam));
 	Assert(RelationStorageIsZHeap(zheapRelation));
 
+	/* Remember if it's a system catalog */
+	is_system_catalog = IsSystemRelation(zheapRelation);
+
 	/* See whether we're verifying uniqueness/exclusion properties */
 	checking_uniqueness = (indexInfo->ii_Unique ||
 						   indexInfo->ii_ExclusionOps != NULL);
+
+	/*
+	 * FIXME: Implement concurrent index creation for zheap. It needs some
+	 * changes in validate_index_heapscan.
+	 */
+	if (indexInfo->ii_Concurrent)
+		elog(ERROR, "concurrent index creation is not yet implemented for zheap");
 
 	/*
 	 * "Any visible" mode is not compatible with uniqueness checks; make sure
 	 * only one of those is requested.
 	 */
 	Assert(!(anyvisible && checking_uniqueness));
+
+	/*
+	 * Need an EState for evaluation of index expressions and partial-index
+	 * predicates.  Also a slot to hold the current tuple.
+	 */
+	estate = CreateExecutorState();
+	econtext = GetPerTupleExprContext(estate);
+	slot = MakeSingleTupleTableSlot(RelationGetDescr(zheapRelation));
+
+	/* Arrange for econtext's scan tuple to be the tuple under test */
+	econtext->ecxt_scantuple = slot;
+
+	/* Set up execution state for predicate, if any. */
+	predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
+
+
+	heapTuple = (HeapTuple) palloc0(SizeofHeapTupleHeader);
 
 	/*
 	 * Prepare for scan of the base relation.  In a normal index build, we use
@@ -3016,14 +3052,8 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 		}
 		else
 		{
-			/*
-			 * FIXME: We need to support SnapshotAny mode for zheap relations. For now,
-			 * let it be an MVCC snapshot.
-			 */
-			snapshot = RegisterSnapshot(GetTransactionSnapshot());
-
-			/* "any visible" mode is not compatible with this */
-			Assert(!anyvisible);
+			snapshot = SnapshotAny;
+			OldestXmin = GetOldestXmin(zheapRelation, true);
 		}
 
 		scan = zheap_beginscan_strat(zheapRelation,		/* relation */
@@ -3064,21 +3094,228 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 	 */
 	while ((zheapTuple = zheap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
+		bool		tupleIsAlive;
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (snapshot == SnapshotAny)
+		{
+			/* do our own time qual check */
+			bool		indexIt;
+			TransactionId xwait;
+
+	recheck:
+
+			/*
+			 * We could possibly get away with not locking the buffer here,
+			 * since caller should hold ShareLock on the relation, but let's
+			 * be conservative about it.
+			 */
+			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+
+			switch (ZHeapTupleSatisfiesOldestXmin(zheapTuple, OldestXmin,
+												scan->rs_cbuf, &xwait))
+			{
+				case HEAPTUPLE_DEAD:
+					/* Definitely dead, we can ignore it */
+					indexIt = false;
+					tupleIsAlive = false;
+					break;
+				case HEAPTUPLE_LIVE:
+					/* Normal case, index and unique-check it */
+					indexIt = true;
+					tupleIsAlive = true;
+					break;
+				case HEAPTUPLE_RECENTLY_DEAD:
+					/*
+					 * If tuple is recently deleted then we must index it
+					 * anyway to preserve MVCC semantics.  (Pre-existing
+					 * transactions could try to use the index after we finish
+					 * building it, and may need to see such tuples.)
+					 */
+					indexIt = true;
+					tupleIsAlive = false;
+					break;
+				case HEAPTUPLE_INSERT_IN_PROGRESS:
+
+					/*
+					 * In "anyvisible" mode, this tuple is visible and we
+					 * don't need any further checks.
+					 */
+					if (anyvisible)
+					{
+						indexIt = true;
+						tupleIsAlive = true;
+						break;
+					}
+
+					/*
+					 * Since caller should hold ShareLock or better, normally
+					 * the only way to see this is if it was inserted earlier
+					 * in our own transaction.  However, it can happen in
+					 * system catalogs, since we tend to release write lock
+					 * before commit there.  Give a warning if neither case
+					 * applies.
+					 */
+					if (!TransactionIdIsCurrentTransactionId(xwait))
+					{
+						if (!is_system_catalog)
+							elog(WARNING, "concurrent insert in progress within table \"%s\"",
+								 RelationGetRelationName(zheapRelation));
+
+						/*
+						 * If we are performing uniqueness checks, indexing
+						 * such a tuple could lead to a bogus uniqueness
+						 * failure.  In that case we wait for the inserting
+						 * transaction to finish and check again.
+						 */
+						if (checking_uniqueness)
+						{
+							/*
+							 * Must drop the lock on the buffer before we wait
+							 */
+							LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+							XactLockTableWait(xwait, zheapRelation,
+											  &zheapTuple->t_self,
+											  XLTW_InsertIndexUnique);
+							CHECK_FOR_INTERRUPTS();
+							goto recheck;
+						}
+					}
+
+					/*
+					 * We must index such tuples, since if the index build
+					 * commits then they're good.
+					 */
+					indexIt = true;
+					tupleIsAlive = true;
+					break;
+				case HEAPTUPLE_DELETE_IN_PROGRESS:
+
+					/*
+					 * As with INSERT_IN_PROGRESS case, this is unexpected
+					 * unless it's our own deletion or a system catalog; but
+					 * in anyvisible mode, this tuple is visible.
+					 */
+					if (anyvisible)
+					{
+						indexIt = true;
+						tupleIsAlive = false;
+						break;
+					}
+
+					if (!TransactionIdIsCurrentTransactionId(xwait))
+					{
+						if (!is_system_catalog)
+							elog(WARNING, "concurrent insert in progress within table \"%s\"",
+								 RelationGetRelationName(zheapRelation));
+
+						/*
+						 * If we are performing uniqueness checks, indexing
+						 * such a tuple could lead to a bogus uniqueness
+						 * failure.  In that case we wait for the inserting
+						 * transaction to finish and check again.
+						 */
+						if (checking_uniqueness)
+						{
+							/*
+							 * Must drop the lock on the buffer before we wait
+							 */
+							LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+							XactLockTableWait(xwait, zheapRelation,
+											  &zheapTuple->t_self,
+											  XLTW_InsertIndexUnique);
+							CHECK_FOR_INTERRUPTS();
+							goto recheck;
+						}
+
+						/*
+						 * Otherwise index it but don't check for uniqueness,
+						 * the same as a RECENTLY_DEAD tuple.
+						 */
+						indexIt = true;
+					}
+					else
+					{
+						/*
+						 * It's a regular tuple deleted by our own xact. Index
+						 * it but don't check for uniqueness, the same as a
+						 * RECENTLY_DEAD tuple.
+						 */
+						indexIt = true;
+					}
+					/* In any case, exclude the tuple from unique-checking */
+					tupleIsAlive = false;
+					break;
+				default:
+					elog(ERROR, "unexpected ZHeapTupleSatisfiesOldestXmin result");
+					indexIt = tupleIsAlive = false;		/* keep compiler quiet */
+					break;
+			}
+
+			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+
+			if (!indexIt)
+				continue;
+		}
+		else
+		{
+			/* zheap_getnext did the time qual check */
+			tupleIsAlive = true;
+		}
+
+		reltuples += 1;
+
+		MemoryContextReset(econtext->ecxt_per_tuple_memory);
+
+		/* Set up for predicate or expression evaluation */
+		ExecStoreZTuple(zheapTuple, slot, InvalidBuffer, true);
+
 		/*
-		 * FIXME: Index can't be created on non-empty zheap relation.
+		 * In a partial index, discard tuples that don't satisfy the
+		 * predicate.
 		 */
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("cannot create index on non-empty zheap relation")));
+		if (predicate != NULL)
+		{
+			if (!ExecQual(predicate, econtext))
+				continue;
+		}
+
+		/*
+		 * For the current tuple, extract all the attributes we use in this
+		 * index, and note which are null.  This also performs evaluation
+		 * of any expressions needed.
+		 */
+		FormIndexDatum(indexInfo,
+					   slot,
+					   estate,
+					   values,
+					   isnull);
+
+		/*
+		 * FIXME: buildCallback functions accepts heaptuple as an argument. But,
+		 * it needs only the tid. So, we set t_self for the zheap tuple and call
+		 * the AM's callback.
+		 */
+		heapTuple->t_self = zheapTuple->t_self;
+
+		/* Call the AM's callback routine to process the tuple */
+		callback(indexRelation, heapTuple, values, isnull, tupleIsAlive,
+				 callback_state);
 	}
 
 	heap_endscan(scan);
 
-	UnregisterSnapshot(snapshot);
+	if (IsBootstrapProcessingMode() || indexInfo->ii_Concurrent)
+		UnregisterSnapshot(snapshot);
+
+	ExecDropSingleTupleTableSlot(slot);
+
+	pfree(heapTuple);
 
 	/* These may have been pointing to the now-gone estate */
 	indexInfo->ii_ExpressionsState = NIL;
-	indexInfo->ii_PredicateState = NIL;
+	indexInfo->ii_PredicateState = NULL;
 
 	return reltuples;
 }
