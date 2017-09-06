@@ -1216,3 +1216,108 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 
 	return NULL;
 }
+
+/*
+ * ZHeapTupleSatisfiesAny
+ *		Dummy "satisfies" routine: any tuple satisfies SnapshotAny.
+ */
+ZHeapTuple
+ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer)
+{
+	return zhtup;
+}
+
+/*
+ * ZHeapTupleSatisfiesOldestXmin
+ *	The tuple will be considered visible if it is visible to any open
+ *	transaction.
+ */
+HTSV_Result
+ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
+							  Buffer buffer)
+{
+	ZHeapPageOpaque	opaque;
+	ZHeapTupleHeader tuple = zhtup->t_data;
+	TransactionId	xid;
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
+
+	Assert(ItemPointerIsValid(&zhtup->t_self));
+	Assert(zhtup->t_tableOid != InvalidOid);
+
+	xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
+
+	if (tuple->t_infomask & ZHEAP_DELETED)
+	{
+		/*
+		 * The tuple is deleted and must be all visible if the transaction slot
+		 * is cleared or latest xid that has changed the tuple precedes
+		 * smallest xid that has undo.
+		 */
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+			TransactionIdPrecedes(xid, RecentGlobalXmin))
+			return HEAPTUPLE_DEAD;
+
+		if (TransactionIdIsCurrentTransactionId(xid))
+			return HEAPTUPLE_DELETE_IN_PROGRESS;
+		else if (TransactionIdIsInProgress(xid))
+			return HEAPTUPLE_DELETE_IN_PROGRESS;
+		else if (TransactionIdDidCommit(xid))
+		{
+			/*
+			 * Deleter committed, but perhaps it was recent enough that some open
+			 * transactions could still see the tuple.
+			 */
+			if (!TransactionIdPrecedes(xid, OldestXmin))
+				return HEAPTUPLE_RECENTLY_DEAD;
+
+			/* Otherwise, it's dead and removable */
+			return HEAPTUPLE_DEAD;
+		}
+		else	/* transaction is aborted */
+			return HEAPTUPLE_LIVE;
+	}
+	else if (tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
+	{
+		/*
+		 * "Deleting" xact really only locked it, so the tuple is live in any
+		 * case.
+		 */
+		return HEAPTUPLE_LIVE;
+	}
+
+	/* The tuple is either a newly inserted tuple or is in-place updated. */
+
+	/*
+	 * The tuple must be all visible if the transaction slot is cleared or
+	 * latest xid that has changed the tuple precedes smallest xid that has
+	 * undo.
+	 */
+	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+		TransactionIdPrecedes(xid, RecentGlobalXmin))
+		return HEAPTUPLE_LIVE;
+
+	if (TransactionIdIsCurrentTransactionId(xid))
+		return HEAPTUPLE_INSERT_IN_PROGRESS;
+	else if (TransactionIdIsInProgress(xid))
+		return HEAPTUPLE_INSERT_IN_PROGRESS;		/* in insertion by other */
+	else if (TransactionIdDidCommit(xid))
+		return HEAPTUPLE_LIVE;
+	else	/* transaction is aborted */
+	{
+		if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED)
+		{
+			/*
+			 * Fixme - For aborted transactions, either we need to fetch the
+			 * visible tuple from undo chain if the rollback is still not
+			 * performed or we can perform rollback here itself or trigger undo
+			 * worker and wait for rollback to finish and return the status as
+			 * per new tuple.
+			 */
+		}
+
+		return HEAPTUPLE_DEAD;
+	}
+
+	return HEAPTUPLE_LIVE;
+}

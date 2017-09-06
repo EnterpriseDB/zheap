@@ -14,6 +14,7 @@
 #ifndef ZTQUAL_H
 #define ZTQUAL_H
 
+#include "access/genham.h"
 #include "access/xlogdefs.h"
 #include "access/zheap.h"
 
@@ -36,5 +37,9 @@ extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin,
 								   Buffer buffer);
 extern ZHeapTuple ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup,
 						Snapshot snapshot, Buffer buffer);
+extern ZHeapTuple ZHeapTupleSatisfiesAny(ZHeapTuple zhtup,
+					  Snapshot snapshot, Buffer buffer);
+extern HTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup,
+						TransactionId OldestXmin, Buffer buffer);
 
 #endif   /* ZTQUAL_H */

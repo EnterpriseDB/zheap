@@ -79,7 +79,7 @@
 
 /* Static variables representing various special snapshot semantics */
 SnapshotData SnapshotSelfData = {HeapTupleSatisfiesSelf};
-SnapshotData SnapshotAnyData = {HeapTupleSatisfiesAny};
+SnapshotData SnapshotAnyData = {HeapTupleSatisfiesAny, ZHeapTupleSatisfiesAny};
 
 
 /*

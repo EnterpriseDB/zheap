@@ -56,6 +56,16 @@ typedef struct HeapUpdateFailureData
 	bool		in_place_updated_or_locked;
 } HeapUpdateFailureData;
 
+/* Result codes for HeapTupleSatisfiesVacuum */
+typedef enum
+{
+	HEAPTUPLE_DEAD,				/* tuple is dead and deletable */
+	HEAPTUPLE_LIVE,				/* tuple is live (committed, no deleter) */
+	HEAPTUPLE_RECENTLY_DEAD,	/* tuple is dead, but not deletable yet */
+	HEAPTUPLE_INSERT_IN_PROGRESS,		/* inserting xact is still in progress */
+	HEAPTUPLE_DELETE_IN_PROGRESS	/* deleting xact is still in progress */
+} HTSV_Result;
+
 /*
  * Possible lock modes for a tuple.
  */
