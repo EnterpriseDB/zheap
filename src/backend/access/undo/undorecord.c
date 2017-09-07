@@ -476,7 +476,7 @@ ReadUndoBytes(char *destptr, int readlen, char **readptr, char *endptr,
 void
 UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 {
-	Buffer		buffer;
+	Buffer		buffer = InvalidBuffer;
 	BlockNumber	cur_blk;
 	RelFileNode	rnode;
 	Page		page;
