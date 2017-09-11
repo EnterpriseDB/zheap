@@ -1353,18 +1353,26 @@ lreplace:;
 		 * Note: heap_update returns the tid (location) of the new tuple in
 		 * the t_self field.
 		 *
-		 * If it's a HOT update, we mustn't insert new index entries.
+		 * For heap, if it's a HOT update, we mustn't insert new index entries.
 		 *
-		 * FIXME: For a zheap update, we don't update the index entry. It only
-		 * supports in-place updates on non-index columns. We need to decide
-		 * how to do non-in-place updates and deletion marking on the index
-		 * entry for a zheap tuple.
+		 * For zheap, if it's an in-place update, we mustn't insert new index
+		 * entries.
 		 */
-		if (resultRelInfo->ri_NumIndices > 0
-				&& !RelationStorageIsZHeap(resultRelationDesc)
-				&& !HeapTupleIsHeapOnly(tuple))
-			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
+		if (resultRelInfo->ri_NumIndices > 0)
+		{
+			if (RelationStorageIsZHeap(resultRelationDesc) &&
+				!ZHeapTupleIsInPlaceUpdated(ztuple))
+			{
+				recheckIndexes = ExecInsertIndexTuples(slot, &(ztuple->t_self),
 												   estate, false, NULL, NIL);
+			}
+			else if (!RelationStorageIsZHeap(resultRelationDesc) &&
+					 !HeapTupleIsHeapOnly(tuple))
+			{
+					 recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
+														estate, false, NULL, NIL);
+			}
+		}
 	}
 
 	if (canSetTag)

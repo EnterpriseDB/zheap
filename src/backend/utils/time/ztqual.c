@@ -94,8 +94,9 @@ fetch_undo_record:
 	}
 	else
 	{
-		/* we can't further operate on deleted tuple */
-		Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED));
+		/* we can't further operate on deleted or non-inplace-updated tuple */
+		Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED) ||
+			   !(undo_tup->t_data->t_infomask & ZHEAP_UPDATED));
 	}
 
 	UndoRecordRelease(urec);
@@ -292,7 +293,14 @@ fetch_undo_record:
 	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 	prev_urec_ptr = urec->uur_blkprev;
 	xid = urec->uur_prevxid;
-	*ctid = undo_tup->t_self;
+	/*
+	 * For non-inplace-updates, ctid needs to be retrieved from undo
+	 * record.
+	 */
+	if (urec->uur_type == UNDO_UPDATE)
+		*ctid = *((ItemPointer) urec->uur_payload.data);
+	else
+		*ctid = undo_tup->t_self;
 
 	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
 	{
@@ -306,8 +314,9 @@ fetch_undo_record:
 	}
 	else
 	{
-		/* we can't further operate on deleted tuple */
-		Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED));
+		/* we can't further operate on deleted or non-inplace-updated tuple */
+		Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED) ||
+			   !(undo_tup->t_data->t_infomask & ZHEAP_UPDATED));
 	}
 
 	UndoRecordRelease(urec);
@@ -497,7 +506,7 @@ result_available:
  */
 ZHeapTuple
 ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
-						Buffer buffer)
+						Buffer buffer, ItemPointer ctid)
 {
 	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
@@ -567,7 +576,8 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	else
 		xid = InvalidTransactionId;
 
-	if (tuple->t_infomask & ZHEAP_DELETED)
+	if (tuple->t_infomask & ZHEAP_DELETED ||
+		tuple->t_infomask & ZHEAP_UPDATED)
 	{
 		/*
 		 * The tuple is deleted and must be all visible if the transaction slot
@@ -767,16 +777,18 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	else
 		*xid = InvalidTransactionId;
 
-	if (tuple->t_infomask & ZHEAP_DELETED)
+	if (tuple->t_infomask & ZHEAP_DELETED ||
+		tuple->t_infomask & ZHEAP_UPDATED)
 	{
 		/*
-		 * The tuple is deleted and must be all visible if the transaction slot
-		 * is cleared or latest xid that has changed the tuple precedes
-		 * smallest xid that has undo.
+		 * The tuple is deleted or non-inplace-updated and must be all visible
+		 * if the transaction slot is cleared or latest xid that has changed
+		 * the tuple precedes smallest xid that has undo.  However, that is
+		 * not possible at this stage as the tuple has already passed snapshot
+		 * check.
 		 */
-		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(*xid, RecentGlobalXmin))
-			return HeapTupleUpdated;
+		Assert(!(ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN &&
+			   TransactionIdPrecedes(*xid, RecentGlobalXmin)));
 
 		if (TransactionIdIsCurrentTransactionId(*xid))
 		{
@@ -816,7 +828,17 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 				return HeapTupleInvisible;
 		}
 		else if (TransactionIdDidCommit(*xid))
-			return HeapTupleUpdated;	/* tuple is deleted */
+		{
+			/*
+			 * For non-inplace-updates, ctid needs to be retrieved from undo
+			 * record.
+			 */
+			if (tuple->t_infomask & ZHEAP_UPDATED)
+				ZHeapTupleGetCtid(zhtup, buffer, ctid);
+
+			/* tuple is deleted or non-inplace-updated */
+			return HeapTupleUpdated;
+		}
 		else	/* transaction is aborted */
 		{
 			/*
@@ -1021,7 +1043,8 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer
 	else
 		xid = InvalidTransactionId;
 
-	if (tuple->t_infomask & ZHEAP_DELETED)
+	if (tuple->t_infomask & ZHEAP_DELETED ||
+		tuple->t_infomask & ZHEAP_UPDATED)
 	{
 		/*
 		 * The tuple is deleted and must be all visible if the transaction slot
@@ -1047,15 +1070,15 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer
  *		changes made by the current command
  *
  *	The tuple will be considered visible iff:
- *	(a) Latest operation on tuple is Delete and the current transaction is in
- *		progress.
+ *	(a) Latest operation on tuple is Delete or non-inplace-update and the
+ *		current transaction is in progress.
  *	(b) Latest operation on tuple is Insert, In-Place update or tuple is
  *		locked and the transaction that has performed operation is current
  *		transaction or is in-progress or is committed.
  */
 ZHeapTuple
 ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
-						 Buffer buffer)
+						 Buffer buffer, ItemPointer ctid)
 {
 	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
@@ -1123,26 +1146,45 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	else
 		xid = InvalidTransactionId;
 
-	if (tuple->t_infomask & ZHEAP_DELETED)
+	if (tuple->t_infomask & ZHEAP_DELETED ||
+		tuple->t_infomask & ZHEAP_UPDATED)
 	{
 		/*
 		 * The tuple is deleted and must be all visible if the transaction slot
 		 * is cleared or latest xid that has changed the tuple precedes
-		 * smallest xid that has undo.
+		 * smallest xid that has undo.  However, that is not possible at this
+		 * stage as the tuple has already passed snapshot check.
 		 */
-		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, RecentGlobalXmin))
-			return NULL;
+		Assert(!(ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN &&
+			   TransactionIdPrecedes(xid, RecentGlobalXmin)));
 
 		if (TransactionIdIsCurrentTransactionId(xid))
+		{
+			/*
+			 * For non-inplace-updates, ctid needs to be retrieved from undo
+			 * record.
+			 */
+			if (tuple->t_infomask & ZHEAP_UPDATED)
+				ZHeapTupleGetCtid(zhtup, buffer, ctid);
 			return NULL;
+		}
 		else if (TransactionIdIsInProgress(xid))
 		{
 			snapshot->xmax = xid;
 			return zhtup;		/* in deletion by other */
 		}
 		else if (TransactionIdDidCommit(xid))
-			return NULL;	/* tuple is deleted */
+		{
+			/*
+			 * For non-inplace-updates, ctid needs to be retrieved from undo
+			 * record.
+			 */
+			if (tuple->t_infomask & ZHEAP_UPDATED)
+				ZHeapTupleGetCtid(zhtup, buffer, ctid);
+
+			/* tuple is deleted or non-inplace-updated */
+			return NULL;
+		}
 		else	/* transaction is aborted */
 		{
 			/*
@@ -1222,7 +1264,8 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
  *		Dummy "satisfies" routine: any tuple satisfies SnapshotAny.
  */
 ZHeapTuple
-ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer)
+ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer,
+					   ItemPointer ctid)
 {
 	return zhtup;
 }
@@ -1303,7 +1346,8 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 	else
 		*xid = InvalidTransactionId;
 
-	if (tuple->t_infomask & ZHEAP_DELETED)
+	if (tuple->t_infomask & ZHEAP_DELETED ||
+		tuple->t_infomask & ZHEAP_UPDATED)
 	{
 		/*
 		 * The tuple is deleted and must be all visible if the transaction slot

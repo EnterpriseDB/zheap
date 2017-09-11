@@ -79,11 +79,12 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define ZHEAP_HASOID			0x0008	/* has an object-id field */
 #define	ZHEAP_DELETED			0x0010	/* tuple deleted */
 #define	ZHEAP_INPLACE_UPDATED	0x0020	/* tuple is updated inplace */
-#define ZHEAP_XID_LOCK_ONLY		0x0040	/* xid, if valid, is only a locker */
+#define	ZHEAP_UPDATED			0x0040	/* tuple is not updated inplace */
+#define ZHEAP_XID_LOCK_ONLY		0x0080	/* xid, if valid, is only a locker */
 
 #define ZHEAP_INVALID_XACT_SLOT	0x0100	/* transaction slot on tuple got reused */
 
-#define ZHEAP_VIS_STATUS_MASK	0x0170	/* mask for visibility bits (5, 6, 7 and 9) */
+#define ZHEAP_VIS_STATUS_MASK	0x01F0	/* mask for visibility bits (5, 6, 7, 8 and 9) */
 
 /*
  * information stored in t_infomask2:
@@ -94,7 +95,14 @@ typedef ZHeapTupleData *ZHeapTuple;
 
 
 #define ZHEAP_XID_IS_LOCKED_ONLY(infomask) \
-	((infomask) & ZHEAP_XID_LOCK_ONLY)
+( \
+	((infomask) & ZHEAP_XID_LOCK_ONLY) != 0 \
+)
+
+#define ZHeapTupleIsInPlaceUpdated(tup) \
+( \
+  ((tup)->t_data->t_infomask & ZHEAP_INPLACE_UPDATED) != 0 \
+)
 
 #define ZHeapTupleHeaderGetNatts(tup) \
 ( \
@@ -138,7 +146,7 @@ do { \
 		ZHeapTupleHeaderSetOid((tuple)->t_data, (oid))
 
 /*
- * Accessor macros to be used with HeapTuple pointers.
+ * Accessor macros to be used with ZHeapTuple pointers.
  */
 
 #define ZHeapTupleHasNulls(tuple) \
@@ -230,6 +238,9 @@ extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
 
 /* Zheap transaction information related API's */
 extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf);
+extern TransactionId ZHeapTupleGetXid(ZHeapTuple zhtup, Buffer buf);
+extern ItemPointerData ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf,
+										 ItemPointer ctid);
 extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
 					TransactionId priorXmax);
 

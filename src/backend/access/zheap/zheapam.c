@@ -79,6 +79,8 @@ static bool PageFreezeTransSlots(Relation relation, Buffer buf);
 static inline UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
 static inline void PageSetUNDO(UnpackedUndoRecord undorecord, Page page, int trans_slot_id,
 						TransactionId xid, UndoRecPtr urecptr);
+static void RelationPutZHeapTuple(Relation relation, Buffer buffer,
+								  ZHeapTuple tuple);
 
 
 #include "access/bufmask.h"
@@ -573,9 +575,7 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	Buffer		vmbuffer = InvalidBuffer;
 	bool		all_visible_cleared = false;
 	int			trans_slot_id;
-	BlockNumber	blkno;
 	Page		page;
-	OffsetNumber offnum;
 	UndoRecPtr	urecptr, prev_urecptr;
 
 	data_alignment_zheap = data_alignment;
@@ -628,17 +628,7 @@ reacquire_buffer:
 	 */
 	CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
 
-	/* Add the tuple to the page */
-	offnum = ZPageAddItem(page, (Item) zheaptup->t_data,
-						 zheaptup->t_len, InvalidOffsetNumber, false, true);
-
-	if (offnum == InvalidOffsetNumber)
-		elog(PANIC, "failed to add tuple to page");
-
-	blkno = BufferGetBlockNumber(buffer);
-
-	/* Update tuple->t_self to the actual position where it was stored */
-	ItemPointerSet(&(zheaptup->t_self), blkno, offnum);
+	RelationPutZHeapTuple(relation, buffer, zheaptup);
 
 	if (PageIsAllVisible(BufferGetPage(buffer)))
 	{
@@ -664,8 +654,8 @@ reacquire_buffer:
 	undorecord.uur_tsid = relation->rd_node.spcNode;
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
-	undorecord.uur_block = blkno;
-	undorecord.uur_offset = offnum;
+	undorecord.uur_block = ItemPointerGetBlockNumber(&(zheaptup->t_self));
+	undorecord.uur_offset = ItemPointerGetOffsetNumber(&(zheaptup->t_self));
 	undorecord.uur_payload.len = 0;
 	undorecord.uur_tuple.len = 0;
 
@@ -984,7 +974,7 @@ check_tup_satisfies_update:
 	if (crosscheck != InvalidSnapshot && result == HeapTupleMayBeUpdated)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
-		if (!ZHeapTupleSatisfiesVisibility(&zheaptup, crosscheck, buffer))
+		if (!ZHeapTupleSatisfiesVisibility(&zheaptup, crosscheck, buffer, NULL))
 			result = HeapTupleUpdated;
 	}
 
@@ -1160,16 +1150,24 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	ZHeapTupleData oldtup;
 	ZHeapPageOpaque	opaque;
 	UndoRecPtr	urecptr, prev_urecptr;
-	UnpackedUndoRecord	undorecord;
+	UndoRecPtr	new_urecptr = InvalidUndoRecPtr;
+	UnpackedUndoRecord	undorecord, new_undorecord;
 	Page		page;
 	BlockNumber block;
 	ItemPointerData	ctid;
 	Buffer		buffer,
-				vmbuffer = InvalidBuffer;
-	int			trans_slot_id;
+				newbuf,
+				vmbuffer = InvalidBuffer,
+				vmbuffer_new = InvalidBuffer;
+	Size		newtupsize,
+				pagefree;
+	int			trans_slot_id,
+				new_trans_slot_id;
+	uint8		infomask_old_tuple = 0;
+	uint8		infomask_new_tuple = 0;
 	bool		have_tuple_lock = false;
 	bool		inplace_upd_attrs_checked = false;
-	bool		use_inplace_update = false;
+	bool		use_inplace_update;
 	bool		in_place_updated_or_locked = false;
 
 	Assert(ItemPointerIsValid(otid));
@@ -1183,6 +1181,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
 				 errmsg("cannot update tuples during a parallel operation")));
+
+	data_alignment_zheap = data_alignment;
 
 	/*
 	 * Fetch the list of attributes to be checked for in-place update.  This is
@@ -1234,10 +1234,6 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	/* Fill in OID for newtup */
 	if (relation->rd_rel->relhasoids)
 	{
-#ifdef NOT_USED
-		/* this is redundant with an Assert in HeapTupleSetOid */
-		Assert(newtup->t_data->t_infomask & HEAP_HASOID);
-#endif
 		ZHeapTupleSetOid(newtup, ZHeapTupleGetOid(&oldtup));
 	}
 	else
@@ -1258,15 +1254,14 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 
 	/* Determine columns modified by the update. */
 	modified_attrs = ZHeapDetermineModifiedColumns(relation, interesting_attrs,
-												  &oldtup, newtup);
+												   &oldtup, newtup);
 
+	/* check if we can perform in-place updates */
 	if (inplace_upd_attrs_checked &&
 		!bms_overlap(modified_attrs, inplace_upd_attrs))
 		use_inplace_update = true;
 	else
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("non inplace updates are not supported")));
+		use_inplace_update = false;
 
 	/*
 	 * Fixme - Weaker locks can be used for non-key column updates, however
@@ -1344,7 +1339,7 @@ check_tup_satisfies_update:
 	if (crosscheck != InvalidSnapshot && result == HeapTupleMayBeUpdated)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
-		if (!ZHeapTupleSatisfiesVisibility(&oldtup, crosscheck, buffer))
+		if (!ZHeapTupleSatisfiesVisibility(&oldtup, crosscheck, buffer, NULL))
 			result = HeapTupleUpdated;
 	}
 
@@ -1406,6 +1401,104 @@ check_tup_satisfies_update:
 	/* transaction slot must be reserved before adding tuple to page */
 	Assert(trans_slot_id != InvalidXactSlotId);
 
+	pagefree = PageGetZHeapFreeSpace(page);
+
+	if (data_alignment_zheap == 0)
+		newtupsize = newtup->t_len;	/* no alignment */
+	else if (data_alignment_zheap == 4)
+		newtupsize = INTALIGN(newtup->t_len);	/* four byte alignment */
+	else
+		newtupsize = MAXALIGN(newtup->t_len);
+
+	/* updated tuple doesn't fit on current page */
+	if (!use_inplace_update && newtupsize > pagefree)
+	{
+		/*
+		 * To prevent concurrent sessions from updating the tuple, we have to
+		 * temporarily mark it locked, while we release the lock.
+		 */
+		undorecord.uur_type = UNDO_XID_LOCK_ONLY;
+		undorecord.uur_info = 0;
+		undorecord.uur_prevlen = 0;
+		undorecord.uur_relfilenode = relation->rd_node.relNode;
+		undorecord.uur_prevxid = tup_xid;
+		undorecord.uur_xid = xid;
+		undorecord.uur_cid = cid;
+		undorecord.uur_tsid = relation->rd_node.spcNode;
+		undorecord.uur_fork = MAIN_FORKNUM;
+		undorecord.uur_blkprev = PageGetUNDO(page, trans_slot_id);
+		undorecord.uur_block = ItemPointerGetBlockNumber(&(oldtup.t_self));
+		undorecord.uur_offset = ItemPointerGetOffsetNumber(&(oldtup.t_self));
+		undorecord.uur_payload.len = 0;
+
+		initStringInfo(&undorecord.uur_tuple);
+
+		/*
+		 * Here, we are storing old tuple header which is required to
+		 * reconstruct the old copy of tuple.
+		 */
+		appendBinaryStringInfo(&undorecord.uur_tuple,
+							   (char *) oldtup.t_data,
+							   SizeofZHeapTupleHeader);
+
+		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+
+		START_CRIT_SECTION();
+
+		InsertPreparedUndo();
+		PageSetUNDO(undorecord, page, trans_slot_id, xid, urecptr);
+
+		ZHeapTupleHeaderSetXactSlot(oldtup.t_data, trans_slot_id);
+
+		oldtup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
+		oldtup.t_data->t_infomask |= ZHEAP_XID_LOCK_ONLY;
+
+		MarkBufferDirty(buffer);
+
+		/*
+		 * Fixme - Do xlog stuff
+		 */
+		END_CRIT_SECTION();
+
+		pfree(undorecord.uur_tuple.data);
+
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		UnlockReleaseUndoBuffers();
+
+		/* update the value of xid that has last updated the tuple */
+		tup_xid = xid;
+
+reacquire_buffer:
+		/*
+		 * Get a new page for inserting tuple.  We will need to acquire buffer
+		 * locks on both old and new pages.  See heap_update.
+		 */
+		newbuf = RelationGetBufferForTuple(relation, newtup->t_len,
+										   buffer, 0, NULL,
+										   &vmbuffer_new, &vmbuffer);
+
+		/* reserve the transaction slot on a new page */
+		new_trans_slot_id = PageReserveTransactionSlot(relation, newbuf, xid);
+
+		if (new_trans_slot_id == InvalidXactSlotId)
+		{
+			/* release the new bufeer and lock on old buffer */
+			UnlockReleaseBuffer(newbuf);
+			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+			pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
+			pg_usleep(10000L);	/* 10 ms */
+			pgstat_report_wait_end();
+
+			goto reacquire_buffer;
+		}
+	}
+	else
+	{
+		newbuf = buffer;
+		new_trans_slot_id = trans_slot_id;
+	}
+
 	/*
 	 * Fixme: Api's for serializable isolation level that take zheaptuple as
 	 * input needs to be written.
@@ -1415,12 +1508,11 @@ check_tup_satisfies_update:
 	prev_urecptr = PageGetUNDO(page, trans_slot_id);
 
 	/*
-	 * Prepare an undo record.  We need to separately store the latest
-	 * transaction id that has changed the tuple to ensure that we don't
-	 * try to process the tuple in undo chain that is already discarded.
+	 * Prepare an undo record for old tuple.  We need to separately store the
+	 * latest transaction id that has changed the tuple to ensure that we
+	 * don't try to process the tuple in undo chain that is already discarded.
 	 * See GetTupleFromUndo.
 	 */
-	undorecord.uur_type = UNDO_INPLACE_UPDATE;
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;
 	undorecord.uur_relfilenode = relation->rd_node.relNode;
@@ -1439,22 +1531,70 @@ check_tup_satisfies_update:
 	/*
 	 * Copy the entire old tuple including it's header in the undo record.
 	 * We need this to reconstruct the old tuple if current tuple is not
-	 * visible to some other transaction.
+	 * visible to some other transaction.  We choose to write the complete
+	 * tuple in undo record for update operation so that we can reuse the
+	 * space of old tuples for non-inplace-updates after the transaction
+	 * performing the operation commits.
 	 */
 	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &oldtup.t_len,
-						   sizeof(uint32));
+							(char *) &oldtup.t_len,
+							sizeof(uint32));
 	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &oldtup.t_self,
-						   sizeof(ItemPointerData));
+							(char *) &oldtup.t_self,
+							sizeof(ItemPointerData));
 	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &oldtup.t_tableOid,
-						   sizeof(Oid));
+							(char *) &oldtup.t_tableOid,
+							sizeof(Oid));
 	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) oldtup.t_data,
-						   oldtup.t_len);
+							(char *) oldtup.t_data,
+							oldtup.t_len);
 
-	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+	if (use_inplace_update)
+	{
+		undorecord.uur_type = UNDO_INPLACE_UPDATE;
+		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+	}
+	else
+	{
+		undorecord.uur_type = UNDO_UPDATE;
+
+		/*
+		 * we need to initialize the length of payload before actually knowing
+		 * the value to ensure that the required space is reserved in undo.
+		 */
+		undorecord.uur_payload.len = sizeof(ItemPointerData);
+		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+
+		initStringInfo(&undorecord.uur_payload);
+		/* Make more room for tuple location if needed */
+		enlargeStringInfo(&undorecord.uur_payload, sizeof(ItemPointerData));
+
+		if (buffer == newbuf)
+			prev_urecptr = urecptr;
+		else
+			prev_urecptr = PageGetUNDO(BufferGetPage(newbuf), new_trans_slot_id);
+
+		/* prepare an undo record for new tuple */
+		new_undorecord.uur_type = UNDO_INSERT;
+		new_undorecord.uur_info = 0;
+		new_undorecord.uur_prevlen = 0;
+		new_undorecord.uur_relfilenode = relation->rd_node.relNode;
+		new_undorecord.uur_prevxid = xid;
+		new_undorecord.uur_xid = xid;
+		new_undorecord.uur_cid = cid;
+		new_undorecord.uur_tsid = relation->rd_node.spcNode;
+		new_undorecord.uur_fork = MAIN_FORKNUM;
+		new_undorecord.uur_blkprev = prev_urecptr;
+		new_undorecord.uur_payload.len = 0;
+		new_undorecord.uur_tuple.len = 0;
+
+		new_urecptr = PrepareUndoInsert(&new_undorecord, UNDO_PERSISTENT);
+	}
+
+	if (use_inplace_update)
+		infomask_old_tuple = infomask_new_tuple = ZHEAP_INPLACE_UPDATED;
+	else
+		infomask_old_tuple = ZHEAP_UPDATED;
 
 	START_CRIT_SECTION();
 
@@ -1464,27 +1604,68 @@ check_tup_satisfies_update:
 		visibilitymap_clear(relation, BufferGetBlockNumber(buffer),
 							vmbuffer, VISIBILITYMAP_VALID_BITS);
 	}
-
-	InsertPreparedUndo();
-	PageSetUNDO(undorecord, page, trans_slot_id, xid, urecptr);
+	if (newbuf != buffer && PageIsAllVisible(BufferGetPage(newbuf)))
+	{
+		PageClearAllVisible(BufferGetPage(newbuf));
+		visibilitymap_clear(relation, BufferGetBlockNumber(newbuf),
+							vmbuffer_new, VISIBILITYMAP_VALID_BITS);
+	}
 
 	ZHeapTupleHeaderSetXactSlot(oldtup.t_data, trans_slot_id);
 	oldtup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
-	oldtup.t_data->t_infomask |= ZHEAP_INPLACE_UPDATED;
+	oldtup.t_data->t_infomask |= infomask_old_tuple;
 
 	/* keep the new tuple copy updated for the caller */
-	ZHeapTupleHeaderSetXactSlot(newtup->t_data, trans_slot_id);
+	ZHeapTupleHeaderSetXactSlot(newtup->t_data, new_trans_slot_id);
 	newtup->t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
-	newtup->t_data->t_infomask |= ZHEAP_INPLACE_UPDATED;
+	newtup->t_data->t_infomask |= infomask_new_tuple;
 
-	/*
-	 * For inplace updates, we copy the entire data portion including null
-	 * bitmap of new tuple.
-	 */
-	ItemIdChangeLen(lp, newtup->t_len);
-	memcpy((char *) oldtup.t_data + SizeofZHeapTupleHeader,
-		   (char *) newtup->t_data + SizeofZHeapTupleHeader,
-		   newtup->t_len - SizeofZHeapTupleHeader);
+	if (use_inplace_update)
+	{
+		/*
+		 * For inplace updates, we copy the entire data portion including null
+		 * bitmap of new tuple.
+		 */
+		ItemIdChangeLen(lp, newtup->t_len);
+		memcpy((char *) oldtup.t_data + SizeofZHeapTupleHeader,
+			   (char *) newtup->t_data + SizeofZHeapTupleHeader,
+			   newtup->t_len - SizeofZHeapTupleHeader);
+	}
+	else
+	{
+		/* insert tuple at new location */
+		RelationPutZHeapTuple(relation, newbuf, newtup);
+
+		/* update new tuple location in undo record */
+		appendBinaryStringInfoNoExtend(&undorecord.uur_payload,
+									   (char *) &newtup->t_self,
+									   sizeof(ItemPointerData));
+
+		new_undorecord.uur_block = ItemPointerGetBlockNumber(&(newtup->t_self));
+		new_undorecord.uur_offset = ItemPointerGetOffsetNumber(&(newtup->t_self));
+	}
+
+	InsertPreparedUndo();
+	if (use_inplace_update)
+		PageSetUNDO(undorecord, page, trans_slot_id, xid, urecptr);
+	else
+	{
+		if (newbuf == buffer)
+			PageSetUNDO(undorecord, page, trans_slot_id, xid, new_urecptr);
+		else
+		{
+			/* set transaction slot information for old page */
+			PageSetUNDO(undorecord, page, trans_slot_id, xid, urecptr);
+			/* set transaction slot information for new page */
+			PageSetUNDO(new_undorecord,
+						BufferGetPage(newbuf),
+						new_trans_slot_id,
+						xid,
+						new_urecptr);
+
+			MarkBufferDirty(newbuf);
+		}
+	}
 
 	MarkBufferDirty(buffer);
 
@@ -1496,6 +1677,8 @@ check_tup_satisfies_update:
 	/* be tidy */
 	pfree(undorecord.uur_tuple.data);
 
+	if (newbuf != buffer)
+		LockBuffer(newbuf, BUFFER_LOCK_UNLOCK);
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
 	/*
@@ -1503,8 +1686,12 @@ check_tup_satisfies_update:
 	 */
 	/* CacheInvalidateHeapTuple(relation, &oldtup, heaptup); */
 
+	if (BufferIsValid(vmbuffer_new))
+		ReleaseBuffer(vmbuffer_new);
 	if (vmbuffer != InvalidBuffer)
 		ReleaseBuffer(vmbuffer);
+	if (newbuf != buffer)
+		ReleaseBuffer(newbuf);
 	ReleaseBuffer(buffer);
 	UnlockReleaseUndoBuffers();
 
@@ -1515,6 +1702,8 @@ check_tup_satisfies_update:
 		UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 
 	pgstat_count_heap_update(relation, use_inplace_update);
+
+	data_alignment_zheap = 1;
 
 	return HeapTupleMayBeUpdated;
 }
@@ -2645,6 +2834,150 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf)
 }
 
 /*
+ * ZHeapTupleGetCtid - Retrieve tuple id from tuple's undo record.
+ *
+ * It is expected that caller of this function has atleast read lock
+ * on the buffer and we call it only for non-inplace-updated tuples.
+ */
+ItemPointerData
+ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer	ctid)
+{
+	ZHeapPageOpaque	opaque;
+	UnpackedUndoRecord	*urec;
+	UndoRecPtr	urec_ptr;
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
+	urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(zhtup->t_data, opaque);
+
+fetch_undo_record:
+	urec = UndoFetchRecord(urec_ptr,
+						   ItemPointerGetBlockNumber(&zhtup->t_self),
+						   ItemPointerGetOffsetNumber(&zhtup->t_self),
+						   InvalidTransactionId);
+	/*
+	 * Skip the undo record for transaction slot reuse, it is used only for
+	 * the purpose of fetching transaction information for tuples that point
+	 * to such slots.
+	 */
+	if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
+	{
+		urec_ptr = urec->uur_blkprev;
+		UndoRecordRelease(urec);
+
+		goto fetch_undo_record;
+	}
+
+	/*
+	 * We always expect urec here to valid as it try to fetch ctid of tuples
+	 * that are visible to the snapshot, so corresponding undo record can't be
+	 * discarded.
+	 */
+	Assert(urec && urec->uur_type == UNDO_UPDATE);
+
+	*ctid = *(ItemPointer) urec->uur_payload.data;
+
+	UndoRecordRelease(urec);
+
+	return *ctid;
+}
+
+/*
+ * ZHeapTupleGetXid - Retrieve transaction id that has modified the tuple.
+ *
+ * It is expected that caller of this function has atleast read lock
+ * on the buffer.
+ */
+TransactionId
+ZHeapTupleGetXid(ZHeapTuple zhtup, Buffer buf)
+{
+	ZHeapTupleHeader	tuple = zhtup->t_data;
+	ZHeapPageOpaque		opaque;
+	UnpackedUndoRecord	*urec;
+	UndoRecPtr	urec_ptr;
+	TransactionId		xid;
+    ItemId	lp;
+    Page	page;
+    ItemPointer tid = &(zhtup->t_self);
+
+
+	/*
+	 * As we are going to access special space in the page to retrieve the
+	 * transaction information share lock on buffer is required.
+	 */
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+	Assert(ItemIdIsNormal(lp));
+
+	/*
+	 * If the tuple is updated such that its transaction slot has been
+	 * changed, then we will never be able to get the correct tuple from undo.
+	 * To avoid, that we get the latest tuple from page rather than relying on
+	 * it's in-memory copy.
+	 */
+	zhtup->t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+	zhtup->t_len = ItemIdGetLength(lp);
+	tuple = zhtup->t_data;
+
+	/*
+	 * We need to fetch all the transaction related information from undo
+	 * record for the tuples that point to a slot that gets invalidated for
+	 * reuse at some point of time.  See PageFreezeTransSlots.
+	 */
+	if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
+	{
+		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+		{
+			uint8	uur_type;
+
+			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
+
+			do
+			{
+				urec = UndoFetchRecord(urec_ptr,
+									   ItemPointerGetBlockNumber(&zhtup->t_self),
+									   ItemPointerGetOffsetNumber(&zhtup->t_self),
+									   InvalidTransactionId);
+
+				/*
+				 * The undo tuple must be visible, if the undo record containing
+				 * the information of the last transaction that has updated the
+				 * tuple is discarded or the transaction that has last updated the
+				 * undo tuple precedes RecentGlobalXmin.
+				 */
+				if (urec == NULL)
+				{
+					xid = InvalidTransactionId;
+					break;
+				}
+
+				xid = urec->uur_prevxid;
+				urec_ptr = urec->uur_blkprev;
+				uur_type = urec->uur_type;
+
+				/*
+				 * transaction slot won't change for such a tuple, so we can rely on
+				 * the same from current undo tuple.
+				 */
+
+				UndoRecordRelease(urec);
+			} while (uur_type != UNDO_INVALID_XACT_SLOT);
+		}
+		else
+		{
+			xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
+		}
+	}
+	else
+		xid = InvalidTransactionId;
+
+	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+	return xid;
+}
+
+/*
  * ValidateTuplesXact - Check if the tuple is modified by priorXmax.
  *
  *	We need to traverse the undo chain of tuple to see if any of its
@@ -3134,7 +3467,7 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 			}
 			else
 			{
-				resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer);
+				resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer, NULL);
 				valid = resulttup ? true : false;
 			}
 
@@ -3563,7 +3896,7 @@ zheapgettup(HeapScanDesc scan,
 				 */
 				memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lpp)), loctup->t_len);
 
-				tuple = ZHeapTupleSatisfiesVisibility(loctup, snapshot, scan->rs_cbuf);
+				tuple = ZHeapTupleSatisfiesVisibility(loctup, snapshot, scan->rs_cbuf, NULL);
 				valid = tuple ? true : false;
 
 				/* FIXME - Serialization failures needs to be detected for zheap. */
@@ -3781,7 +4114,7 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lp)), loctup->t_len);
 
 	/* If it's visible per the snapshot, we must return it */
-	resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer);
+	resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer, NULL);
 
 	/* Fixme - Serialization failures needs to be detected for zheap. */
 	/* CheckForSerializableConflictOut(valid, relation, zheapTuple,
@@ -3842,12 +4175,14 @@ zheap_fetch(Relation relation,
 			bool keep_buf,
 			Relation stats_relation)
 {
+	ZHeapTuple	resulttup;
 	ItemId		lp;
 	Buffer		buffer;
 	Page		page;
 	Size		tup_len;
 	OffsetNumber offnum;
 	bool		valid;
+	ItemPointerData	ctid;
 
 	/*
 	 * Fetch and pin the appropriate page of the relation.
@@ -3919,11 +4254,20 @@ zheap_fetch(Relation relation,
 	 */
 	memcpy((*tuple)->t_data, ((ZHeapTupleHeader) PageGetItem(page, lp)), tup_len);
 
+	ItemPointerSetInvalid(&ctid);
+
 	/*
 	 * check time qualification of tuple, then release lock
 	 */
-	*tuple = ZHeapTupleSatisfiesVisibility(*tuple, snapshot, buffer);
-	valid = *tuple ? true : false;
+	resulttup = ZHeapTupleSatisfiesVisibility(*tuple, snapshot, buffer, &ctid);
+	valid = resulttup ? true : false;
+
+	if (ItemPointerIsValid(&ctid))
+	{
+		/* ctid must be changed only when current tuple in not visible */
+		Assert(!valid);
+		*tid = ctid;
+	}
 
 	/*
 	 * Fixme - Serializable isolation level is not supportted for zheap tuples
@@ -3942,6 +4286,7 @@ zheap_fetch(Relation relation,
 		 * responsible for releasing the buffer.
 		 */
 		*userbuf = buffer;
+		*tuple = resulttup;
 
 		/* Count the successful fetch against appropriate rel, if any */
 		if (stats_relation != NULL)
@@ -4192,6 +4537,27 @@ PageGetZHeapFreeSpace(Page page)
 }
 
 /*
+ * RelationPutZHeapTuple - Same as RelationPutHeapTuple, but for ZHeapTuple.
+ */
+static void
+RelationPutZHeapTuple(Relation relation,
+					  Buffer buffer,
+					  ZHeapTuple tuple)
+{
+	OffsetNumber offnum;
+
+	/* Add the tuple to the page */
+	offnum = ZPageAddItem(BufferGetPage(buffer), (Item) tuple->t_data,
+						  tuple->t_len, InvalidOffsetNumber, false, true);
+
+	if (offnum == InvalidOffsetNumber)
+		elog(PANIC, "failed to add tuple to page");
+
+	/* Update tuple->t_self to the actual position where it was stored */
+	ItemPointerSet(&(tuple->t_self), BufferGetBlockNumber(buffer), offnum);
+}
+
+/*
  * CopyTupleFromUndoRecord
  *	Extract the tuple from undo record.  Deallocate the previous version
  *	of tuple and form the new version.
@@ -4241,6 +4607,7 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 			}
 			break;
 		case UNDO_DELETE:
+		case UNDO_UPDATE:
 		case UNDO_INPLACE_UPDATE:
 			{
 				Size		offset = 0;

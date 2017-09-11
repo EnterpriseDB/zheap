@@ -25,6 +25,7 @@ typedef enum undorectype
 	UNDO_INSERT,
 	UNDO_DELETE,
 	UNDO_INPLACE_UPDATE,
+	UNDO_UPDATE,
 	UNDO_XID_LOCK_ONLY,
 	UNDO_INVALID_XACT_SLOT
 } undorectype;

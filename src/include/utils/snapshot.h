@@ -34,7 +34,8 @@ typedef struct SnapshotData *Snapshot;
 typedef bool (*SnapshotSatisfiesFunc) (HeapTuple htup,
 									   Snapshot snapshot, Buffer buffer);
 typedef ZHeapTuple (*ZSnapshotSatisfiesFunc) (ZHeapTuple htup,
-										   Snapshot snapshot, Buffer buffer);
+										   Snapshot snapshot, Buffer buffer,
+										   ItemPointer ctid);
 
 /*
  * Struct representing all kind of possible snapshots.

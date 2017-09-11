@@ -3044,12 +3044,43 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 		}
 
 		/*
-		 *  Fixme - We need to handle non in-place updates by refetching the
-		 *	tuple using tid.  We should get back the tid from Zheapvisbility
-		 *	routine.
+		 * If we don't get any tuple, the latest version of the row must have
+		 * been deleted, so we need do nothing.
 		 */
+		if (tuple == NULL)
+		{
+			ReleaseBuffer(buffer);
+			return NULL;
+		}
+
+		/* Ensure that the tuple is same as what we are expecting as above. */
+		if (!ValidateTuplesXact(tuple, buffer, priorXmax))
+		{
+			ReleaseBuffer(buffer);
+			return NULL;
+		}
+
+		if (ItemPointerEquals(&(tuple->t_self), tid))
+		{
+			/* deleted, so forget about it */
+			ReleaseBuffer(buffer);
+			return NULL;
+		}
+
+		/* updated row should have xid matching this xmax */
+		priorXmax = ZHeapTupleGetXid(tuple, buffer);
+
+		/*
+		 * As we still hold a snapshot to which priorXmax is not visible, neither
+		 * the transaction slot on tuple can be marked as frozen nor the
+		 * corresponding undo be discarded.
+		 */
+		Assert(TransactionIdIsValid(priorXmax));
+
+		/* be tidy */
+		zheap_freetuple(tuple);
 		ReleaseBuffer(buffer);
-		return NULL;
+		/* loop back to fetch next in chain */
 	}
 
 	/*

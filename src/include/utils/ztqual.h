@@ -22,12 +22,12 @@
  * ZHeapTupleSatisfiesVisibility
  *		True iff zheap tuple satisfies a time qual.
  */
-#define ZHeapTupleSatisfiesVisibility(tuple, snapshot, buffer) \
-	((*(snapshot)->zsatisfies) (tuple, snapshot, buffer))
+#define ZHeapTupleSatisfiesVisibility(tuple, snapshot, buffer, ctid) \
+	((*(snapshot)->zsatisfies) (tuple, snapshot, buffer, ctid))
 
 /* These are the "satisfies" test routines for the zheap. */
 extern ZHeapTuple ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup,
-					   Snapshot snapshot, Buffer buffer);
+					   Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern HTSU_Result ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup,
 						CommandId curcid, Buffer buffer, ItemPointer ctid,
 						TransactionId *xid, CommandId *cid, bool free_zhtup,
@@ -36,9 +36,9 @@ extern HTSU_Result ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup,
 extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin,
 								   Buffer buffer);
 extern ZHeapTuple ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup,
-						Snapshot snapshot, Buffer buffer);
+						Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern ZHeapTuple ZHeapTupleSatisfiesAny(ZHeapTuple zhtup,
-					  Snapshot snapshot, Buffer buffer);
+					  Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern HTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup,
 						TransactionId OldestXmin, Buffer buffer,
 						TransactionId *xid);
