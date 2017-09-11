@@ -28,7 +28,11 @@
  * FIXME:  Do we want to support undo tuple size which is more than the BLCKSZ
  * if not than undo record can spread across 2 buffers at the max.
  */
-#define MAX_UNDO_BUFFER	2
+#define MAX_BUFFER_PER_UNDO    2
+#define MAX_UNDO_BUFFERS       MAX_PREPARED_UNDO * MAX_BUFFER_PER_UNDO
+
+/* Maximum number of undo record that can be prepared before calling insert. */
+#define MAX_PREPARED_UNDO 2
 
 /* Workspace for InsertUndoRecord and UnpackUndoRecord. */
 static UndoRecordHeader work_hdr;
@@ -36,19 +40,6 @@ static UndoRecordRelationDetails work_rd;
 static UndoRecordBlock work_blk;
 static UndoRecordTransaction work_txn;
 static UndoRecordPayload work_payload;
-static Buffer undobuffers[MAX_UNDO_BUFFER];
-
-/*
- * Unpacked undo record reference passed to PrepareUndoInsert which will be
- * later used by InsertPreparedUndo.
- */
-static UnpackedUndoRecord *undo_rec;
-
-/*
- * undo record pointer allocated for storing the current undo which will be
- * later used by InsertPreparedUndo.
- */
-static UndoRecPtr undo_rec_ptr;
 
 /*
  * Previous top transaction id which inserted the undo.  Whenever a new main
@@ -59,6 +50,42 @@ static UndoRecPtr undo_rec_ptr;
  */
 static TransactionId	prev_txid = InvalidTransactionId;
 static UndoRecPtr		prev_xact_urp = InvalidUndoRecPtr;
+
+/* Undo block number to buffer mapping. */
+typedef struct UndoBuffers
+{
+	BlockNumber		blk;			/* block number */
+	Buffer			buf;			/* buffer allocated for the block */
+} UndoBuffers;
+
+static UndoBuffers def_buffers[MAX_UNDO_BUFFERS];
+static int	buffer_idx;
+
+/*
+ * Structure to hold the prepared undo information.
+ */
+typedef struct PreparedUndoSpace
+{
+	UndoRecPtr urp;						/* undo record pointer */
+	UnpackedUndoRecord *urec;			/* undo record */
+	int undo_buffer_idx[MAX_BUFFER_PER_UNDO]; /* undo_buffer array index */
+} PreparedUndoSpace;
+
+static PreparedUndoSpace  def_prepared[MAX_PREPARED_UNDO];
+static int prepare_idx;
+static int	max_prepare_undo = MAX_PREPARED_UNDO;
+
+/*
+ * By default prepared_undo and undo_buffer points to the static memory.
+ * In case caller wants to support more than default max_prepared undo records
+ * then the limit can be increased by calling UndoSetPrepareSize function.
+ * Therein, dynamic memory will be allocated and prepared_undo and undo_buffer
+ * will start pointing to newly allocated memory, which will be released by
+ * UnlockReleaseUndoBuffers and these variables will again set back to their
+ * default values.
+ */
+static PreparedUndoSpace *prepared_undo = def_prepared;
+static UndoBuffers *undo_buffer = def_buffers;
 
 /* Prototypes for static functions. */
 static void UndoRecordSetInfo(UnpackedUndoRecord *uur);
@@ -584,6 +611,65 @@ UndoRecordSetInfo(UnpackedUndoRecord *uur)
 }
 
 /*
+ * Find the block number in undo buffer array, if it's present then just return
+ * its index otherwise search the buffer and insert an entry.
+ */
+static int
+InsertFindBufferSlot(RelFileNode rnode, BlockNumber blk)
+{
+	int 	i;
+	Buffer 	buffer;
+
+	/* Don't do anything, if we already have a buffer pinned for the block. */
+	for (i = 0; i < buffer_idx; i++)
+	{
+		if (blk == undo_buffer[i].blk)
+			break;
+	}
+
+	/*
+	 * We did not find the block so allocate the buffer and insert into the
+	 * undo buffer array
+	 */
+	if (i == buffer_idx)
+	{
+		/*
+		 * Fetch the buffer in which we want to insert the undo record.
+		 *
+		 * FIXME: This API can't be used for persistence level temporary
+		 * and unlogged.
+		 */
+		buffer = ReadBufferWithoutRelcache(rnode,
+										   UndoLogForkNum,
+										   blk,
+										   RBM_NORMAL,
+										   NULL);
+		undo_buffer[buffer_idx].buf = buffer;
+		undo_buffer[buffer_idx].blk = blk;
+		buffer_idx++;
+	}
+
+	return i;
+}
+
+/*
+ * Call UndoSetPrepareSize to set the value of how many maximum prepared can
+ * be done before inserting the prepared undo.  If size is > MAX_PREPARED_UNDO
+ * then it will allocate extra memory to hold the extra prepared undo.
+ */
+void
+UndoSetPrepareSize(int max_prepare)
+{
+	if (max_prepare <= MAX_PREPARED_UNDO)
+		return;
+
+	prepared_undo = palloc0(max_prepare * sizeof(PreparedUndoSpace));
+	undo_buffer = palloc0(max_prepare * MAX_BUFFER_PER_UNDO *
+						 sizeof(UndoBuffers));
+	max_prepare_undo = max_prepare;
+}
+
+/*
  * Call PrepareUndoInsert to tell the undo subsystem about the undo record you
  * intended to insert.  Upon return, the necessary undo buffers are pinned.
  * This should be done before any critical section is established, since it
@@ -595,12 +681,16 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence)
 	UndoRecordSize	size;
 	UndoRecPtr		urecptr;
 	RelFileNode		rnode;
-	Buffer			buffer;
 	UndoRecordSize  cur_size = 0;
 	BlockNumber		cur_blk;
 	TransactionId	txid;
 	int				starting_byte;
 	int				index = 0;
+	int				bufidx;
+
+	/* Already reached maximum prepared limit. */
+	if (prepare_idx == max_prepare_undo)
+		return InvalidUndoRecPtr;
 
 	/*
 	 * If this is the first undo record for this top transaction add the
@@ -652,45 +742,29 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence)
 
 	do
 	{
-		/*
-		 * FIXME: This API can't be used for persistence level temporary
-		 * and unlogged.
-		 */
-
-		/* Fetch the buffer in which we want to insert the undo record. */
-		buffer = ReadBufferWithoutRelcache(rnode,
-										   UndoLogForkNum,
-										   cur_blk,
-										   RBM_NORMAL,
-										   NULL);
+		bufidx = InsertFindBufferSlot(rnode, cur_blk);
 		if (cur_size == 0)
 			cur_size = BLCKSZ - starting_byte;
 		else
-			cur_size += BLCKSZ;
+			cur_size += BLCKSZ - UndoLogBlockHeaderSize;
 
 		/* FIXME: Should we just report error ? */
-		Assert(index < MAX_UNDO_BUFFER);
+		Assert(index < MAX_BUFFER_PER_UNDO);
 
-		/*
-		 * Keep the track of the buffers we have pinned.  InsertPreparedUndo
-		 * will release the pins and free the memory after inserting the undo
-		 * record.
-		 */
-		undobuffers[index++] = buffer;
+		/* Keep the track of the buffers we have pinned. */
+		prepared_undo[prepare_idx].undo_buffer_idx[index++] = bufidx;
 
 		/* Undo record can not fit into this block so go to the next block. */
 		cur_blk++;
 	} while (cur_size < size);
 
-	if (index < MAX_UNDO_BUFFER)
-		undobuffers[index] = InvalidBuffer;
-
 	/*
 	 * Save referenced of undo record pointer as well as undo record.
 	 * InsertPreparedUndo will use these to insert the prepared record.
 	 */
-	undo_rec = urec;
-	undo_rec_ptr = urecptr;
+	prepared_undo[prepare_idx].urec = urec;
+	prepared_undo[prepare_idx].urp = urecptr;
+	prepare_idx++;
 
 	return urecptr;
 }
@@ -706,42 +780,59 @@ InsertPreparedUndo(void)
 {
 	Page	page;
 	int		starting_byte;
-	int		already_written = 0;
-	int		i;
+	int		already_written;
+	int		bufidx = 0;
+	int		idx;
+	UndoRecPtr	urp;
+	UnpackedUndoRecord	*uur;
 
-	starting_byte = UndoRecPtrGetPageOffset(undo_rec_ptr);
+	Assert(prepare_idx > 0);
 
-	for(i = 0; i < MAX_UNDO_BUFFER; i++)
+	/* Lock all the buffers and mark them dirty. */
+	for (idx = 0; idx < buffer_idx; idx++)
+		LockBuffer(undo_buffer[idx].buf, BUFFER_LOCK_EXCLUSIVE);
+
+	for (idx = 0; idx < prepare_idx; idx++)
 	{
-		Buffer	buffer = undobuffers[i];
+		uur = prepared_undo[idx].urec;
+		urp = prepared_undo[idx].urp;
 
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		already_written = 0;
+		bufidx = 0;
+		starting_byte = UndoRecPtrGetPageOffset(urp);
 
-		page = BufferGetPage(buffer);
-
-		/*
-		 * Initialize the page whenever we try to write the first record in page.
-		 */
-		if (starting_byte == UndoLogBlockHeaderSize)
-			PageInit(page, BLCKSZ, 0);
-
-		/*
-		 * Try to insert the record into the current page. If it doesn't
-		 * succeed then recall the routine with the next page.
-		 */
-		if (InsertUndoRecord(undo_rec, page, starting_byte, &already_written))
+		do
 		{
+			PreparedUndoSpace undospace = prepared_undo[idx];
+			Buffer  buffer;
+
+			buffer = undo_buffer[undospace.undo_buffer_idx[bufidx]].buf;
+			page = BufferGetPage(buffer);
+
+			/*
+			 * Initialize the page whenever we try to write the first record
+			 * in page.
+			 */
+			if (starting_byte == UndoLogBlockHeaderSize)
+				PageInit(page, BLCKSZ, 0);
+
+			/*
+			 * Try to insert the record into the current page. If it doesn't
+			 * succeed then recall the routine with the next page.
+			 */
+			if (InsertUndoRecord(uur, page, starting_byte, &already_written))
+			{
+				MarkBufferDirty(buffer);
+				break;
+			}
+
 			MarkBufferDirty(buffer);
-			break;
-		}
+			starting_byte = UndoLogBlockHeaderSize;
+			bufidx++;
 
-		MarkBufferDirty(buffer);
-
-		/* For new page, start writing after block header. */
-		starting_byte = UndoLogBlockHeaderSize;
+			Assert(bufidx < MAX_BUFFER_PER_UNDO);
+		} while(true);
 	}
-
-	return;
 }
 
 /*
@@ -760,18 +851,30 @@ SetUndoPageLSNs(XLogRecPtr lsn)
 void
 UnlockReleaseUndoBuffers(void)
 {
-	int i;
-
-	for(i = 0; i < MAX_UNDO_BUFFER; i++)
+	int	i;
+	for (i = 0; i < buffer_idx; i++)
 	{
-		if (!BufferIsValid(undobuffers[i]))
-			break;
-
-		UnlockReleaseBuffer(undobuffers[i]);
-		undobuffers[i] = InvalidBuffer;
+		UnlockReleaseBuffer(undo_buffer[i].buf);
+		undo_buffer[i].blk = InvalidBlockNumber;
+		undo_buffer[i].buf = InvalidBlockNumber;
 	}
 
-	return;
+	/* Reset the prepared index. */
+	prepare_idx = 0;
+	buffer_idx = 0;
+
+	/*
+	 * max_prepare_undo limit is changed so free the allocated memory and reset
+	 * all the variable back to its default value.
+	 */
+	if (max_prepare_undo > MAX_PREPARED_UNDO)
+	{
+		pfree(undo_buffer);
+		pfree(prepared_undo);
+		undo_buffer = def_buffers;
+		prepared_undo = def_prepared;
+		max_prepare_undo = MAX_PREPARED_UNDO;
+	}
 }
 
 /*

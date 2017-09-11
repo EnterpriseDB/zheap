@@ -69,5 +69,12 @@ extern UnpackedUndoRecord* UndoFetchRecord(UndoRecPtr urp,
  */
 extern void UndoRecordRelease(UnpackedUndoRecord *urec);
 
+/*
+ * Call UndoSetPrepareSize to set the value of how many maximum prepared can
+ * be done before inserting the prepared undo.  If size is > MAX_PREPARED_UNDO
+ * then it will allocate extra memory to hold the extra prepared undo.
+ */
+extern void UndoSetPrepareSize(int max_prepare);
+
 
 #endif   /* UNDOINSERT_H */
