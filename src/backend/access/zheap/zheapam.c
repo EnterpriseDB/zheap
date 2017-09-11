@@ -4079,6 +4079,7 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	ItemId		lp;
 	OffsetNumber offnum;
 	ZHeapTuple	loctup;
+	ZHeapTupleData	loctup_tmp;
 	ZHeapTuple	resulttup = NULL;
 	Size		loctup_len;
 
@@ -4120,16 +4121,31 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	/* CheckForSerializableConflictOut(valid, relation, zheapTuple,
 									buffer, snapshot); */
 
-	/* set the tid */
 	if (resulttup)
+	{
+		/* set the tid */
 		*tid = resulttup->t_self;
+	}
+	else
+	{
+		/*
+		 * Temporarily get the copy of tuple from page to check if tuple is
+		 * surely dead.  We can't rely on the copy of local tuple (loctup)
+		 * that is prepared for the visibility test as that would have been
+		 * freed.
+		 */
+		loctup_tmp.t_tableOid = RelationGetRelid(relation);
+		loctup_tmp.t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lp);
+		loctup_tmp.t_len = ItemIdGetLength(lp);
+		loctup_tmp.t_self = *tid;
+	}
 
 	/*
 	 * If we can't see it, maybe no one else can either.  At caller
 	 * request, check whether tuple is dead to all transactions.
 	 */
 	if (!resulttup && all_dead &&
-		ZHeapTupleIsSurelyDead(loctup, RecentGlobalXmin, buffer))
+		ZHeapTupleIsSurelyDead(&loctup_tmp, RecentGlobalXmin, buffer))
 		*all_dead = true;
 
 	return resulttup;
