@@ -189,3 +189,35 @@ SELECT * FROM pkey_test_zheap;
 (2 rows)
 
 DROP TABLE pkey_test_zheap;
+--
+-- 5.1. Test of non-inlace-update where new update goes to new page.
+--
+CREATE TABLE update_test_zheap(c1 int,c2 char(1000),c3 varchar(10));
+INSERT INTO update_test_zheap VALUES(generate_series(1,7), 'aaa', 'aaa');
+UPDATE update_test_zheap SET c3 = 'bbbb' WHERE c1=1;
+-- verify the update
+SELECT c3 FROM update_test_zheap WHERE c1=1;
+  c3  
+------
+ bbbb
+(1 row)
+
+DROP TABLE update_test_zheap;
+--
+-- 5.2. Test of non-inlace-update on same page and for index key updates.
+--
+set enable_indexonlyscan to false;
+set enable_bitmapscan to false;
+CREATE TABLE update_test_zheap(c1 int PRIMARY KEY, c2 int);
+INSERT INTO update_test_zheap VALUES(generate_series(1,7), 1);
+UPDATE update_test_zheap SET c2 = 100 WHERE c1 = 1;
+UPDATE update_test_zheap SET c2 = 101 WHERE c1 = 2;
+-- verify the update
+SELECT c2 FROM update_test_zheap WHERE c1 IN (1,2);
+ c2  
+-----
+ 100
+ 101
+(2 rows)
+
+DROP TABLE update_test_zheap;
