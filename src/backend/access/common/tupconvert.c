@@ -21,6 +21,7 @@
 #include "access/htup_details.h"
 #include "access/tupconvert.h"
 #include "executor/tuptable.h"
+#include "access/zheap.h"
 #include "utils/builtins.h"
 
 

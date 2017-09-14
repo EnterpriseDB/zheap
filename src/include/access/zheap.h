@@ -17,6 +17,7 @@
 #include "postgres.h"
 
 #include "access/genham.h"
+#include "access/hio.h"
 #include "access/undoinsert.h"
 #include "access/zhtup.h"
 #include "utils/rel.h"
@@ -40,6 +41,7 @@ typedef struct ZHeapPageOpaqueData
 } ZHeapPageOpaqueData;
 
 typedef ZHeapPageOpaqueData *ZHeapPageOpaque;
+typedef struct BulkInsertStateData *BulkInsertState;
 
 extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options);
@@ -54,6 +56,9 @@ extern HTSU_Result zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 					bool follow_updates, bool eval, Snapshot snapshot,
 					Buffer *buffer, HeapUpdateFailureData *hufd);
 extern void ZheapInitPage(Page page, Size pageSize);
+extern void zheap_multi_insert(Relation relation, ZHeapTuple *tuples,
+								int ntuples, CommandId cid, int options,
+								BulkInsertState bistate);
 
 /* Zheap scan related API's */
 extern HeapScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,
@@ -82,14 +87,16 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 /*
  * WAL record definitions for zheapam.c's WAL operations
  */
-#define XLOG_ZHEAP_INSERT		0x00
-#define XLOG_ZHEAP_DELETE		0x10
-#define XLOG_ZHEAP_UPDATE		0x20
+#define XLOG_ZHEAP_INSERT			0x00
+#define XLOG_ZHEAP_DELETE			0x10
+#define XLOG_ZHEAP_UPDATE			0x20
+#define XLOG_ZHEAP2_MULTI_INSERT	0x30
+
 /*
  * When we insert 1st item on new page in INSERT, UPDATE, HOT_UPDATE,
  * or MULTI_INSERT, we can (and we do) restore entire page in redo
  */
-#define XLOG_ZHEAP_INIT_PAGE		0x30
+#define XLOG_ZHEAP_INIT_PAGE		0x40
 
 /*
  * xl_zheap_insert/xl_zheap_multi_insert flag values, 8 bits are available.
@@ -127,5 +134,18 @@ typedef struct xl_zheap_insert
 } xl_zheap_insert;
 
 #define SizeOfZHeapInsert	(offsetof(xl_zheap_insert, flags) + sizeof(uint8))
+
+/*
+ * Given a page, it stores contiguous ranges of free offsets that can be
+ * used/reused in the same page. This is used in zheap_multi_insert to decide
+ * the number of undo records needs to be prepared before entering into critical
+ * section.
+ */
+typedef struct ZHeapFreeOffsetRanges
+{
+	OffsetNumber startOffset[MaxOffsetNumber];
+	OffsetNumber endOffset[MaxOffsetNumber];
+	int nranges;
+} ZHeapFreeOffsetRanges;
 
 #endif   /* ZHEAP_H */

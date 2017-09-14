@@ -82,6 +82,9 @@ static inline void PageSetUNDO(UnpackedUndoRecord undorecord, Page page, int tra
 						TransactionId xid, UndoRecPtr urecptr);
 static void RelationPutZHeapTuple(Relation relation, Buffer buffer,
 								  ZHeapTuple tuple);
+static ZHeapFreeOffsetRanges *
+ZHeapGetUsableOffsetRanges(Buffer buffer, ZHeapTuple *tuples, int ntuples,
+						   Size saveFreeSpace);
 
 
 #include "access/bufmask.h"
@@ -4668,4 +4671,390 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 	}
 
 	return undo_tup;
+}
+
+/*
+ * ZHeapGetUsableOffsetRanges
+ *
+ * Given a page and a set of tuples, it calculates how many tuples can fit in
+ * the page and the contiguous ranges of free offsets that can be used/reused
+ * in the same page to store those tuples.
+ */
+ZHeapFreeOffsetRanges *
+ZHeapGetUsableOffsetRanges(Buffer buffer,
+						   ZHeapTuple *tuples,
+						   int ntuples,
+						   Size saveFreeSpace)
+{
+	Page			page;
+	PageHeader		phdr;
+	int				nthispage;
+	Size			used_space;
+	Size			avail_space;
+	OffsetNumber 	limit, offsetNumber;
+	ZHeapFreeOffsetRanges	*zfree_offset_ranges;
+
+	page = BufferGetPage(buffer);
+	phdr = (PageHeader) page;
+
+	zfree_offset_ranges = (ZHeapFreeOffsetRanges *)
+							palloc0(sizeof(ZHeapFreeOffsetRanges));
+
+	zfree_offset_ranges->nranges = 0;
+	limit = OffsetNumberNext(PageGetMaxOffsetNumber(page));
+	avail_space = PageGetExactFreeSpace(page);
+	nthispage = 0;
+	used_space = 0;
+
+	if (PageHasFreeLinePointers(phdr))
+	{
+		bool in_range = false;
+		/*
+		 * Look for "recyclable" (unused) ItemId.  We check for no storage
+		 * as well, just to be paranoid --- unused items should never have
+		 * storage.
+		 */
+		for (offsetNumber = 1; offsetNumber < limit; offsetNumber++)
+		{
+			ItemId itemId = PageGetItemId(phdr, offsetNumber);
+
+			if (nthispage >= ntuples)
+			{
+				/* No more tuples to insert */
+				break;
+			}
+			if (!ItemIdIsUsed(itemId) && !ItemIdHasStorage(itemId))
+			{
+				ZHeapTuple zheaptup = tuples[nthispage];
+				Size needed_space = used_space + MAXALIGN(zheaptup->t_len) + saveFreeSpace;
+
+				/* Check if we can fit this tuple in the page */
+				if (avail_space < needed_space)
+				{
+					/* No more space to insert tuples in this page */
+					break;
+				}
+
+				used_space += MAXALIGN(zheaptup->t_len);
+				nthispage++;
+
+				if (!in_range)
+				{
+					/* Start of a new range */
+					zfree_offset_ranges->nranges++;
+					zfree_offset_ranges->startOffset[zfree_offset_ranges->nranges - 1] = offsetNumber;
+					in_range = true;
+				}
+				zfree_offset_ranges->endOffset[zfree_offset_ranges->nranges - 1] = offsetNumber;
+			}
+			else
+			{
+				in_range = false;
+			}
+		}
+	}
+
+	/*
+	 * Now, there are no free line pointers. Check whether we can insert another
+	 * tuple in the page, then we'll insert another range starting from limit to
+	 * max offset number. We can decide the actual end offset for this range while
+	 * inserting tuples in the buffer.
+	 */
+	if ((limit <= MaxZHeapTuplesPerPage) && (nthispage < ntuples))
+	{
+		ZHeapTuple zheaptup = tuples[nthispage];
+		Size needed_space = used_space + sizeof(ItemIdData) +
+			MAXALIGN(zheaptup->t_len) + saveFreeSpace;
+
+		/* Check if we can fit this tuple + a new offset in the page */
+		if (avail_space >= needed_space)
+		{
+			zfree_offset_ranges->nranges++;
+			zfree_offset_ranges->startOffset[zfree_offset_ranges->nranges - 1] = limit;
+			zfree_offset_ranges->endOffset[zfree_offset_ranges->nranges - 1] = MaxOffsetNumber;
+		}
+	}
+
+	return zfree_offset_ranges;
+}
+
+/*
+ *	zheap_multi_insert	- insert multiple tuple into a zheap
+ *
+ * Similar to heap_multi_insert(), but inserts zheap tuples.
+ */
+void
+zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
+				  CommandId cid, int options, BulkInsertState bistate)
+{
+	ZHeapTuple	*zheaptuples;
+	int			i;
+	int			ndone;
+	Page		page;
+	bool		needwal;
+	bool		need_cids = RelationIsAccessibleInLogicalDecoding(relation);
+	Size		saveFreeSpace;
+	TransactionId	xid = GetCurrentTransactionId();
+
+	needwal = !(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation);
+	saveFreeSpace = RelationGetTargetPageFreeSpace(relation,
+												   HEAP_DEFAULT_FILLFACTOR);
+
+	/* Toast and set header data in all the tuples */
+	zheaptuples = palloc(ntuples * sizeof(ZHeapTuple));
+	for (i = 0; i < ntuples; i++)
+		zheaptuples[i] = zheap_prepare_insert(relation, tuples[i], options);
+
+	/*
+	 * See heap_multi_insert to know why checking conflicts is important
+	 * before actually inserting the tuple.
+	 */
+	CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
+
+	ndone = 0;
+	while (ndone < ntuples)
+	{
+		Buffer	buffer;
+		Buffer	vmbuffer = InvalidBuffer;
+		int		nthispage = 0;
+		int		trans_slot_id;
+		UndoRecPtr		urecptr,
+								prev_urecptr;
+		UnpackedUndoRecord		*undorecord;
+		ZHeapFreeOffsetRanges	*zfree_offset_ranges;
+
+		CHECK_FOR_INTERRUPTS();
+
+reacquire_buffer:
+		/*
+		 * Find buffer where at least the next tuple will fit.  If the page is
+		 * all-visible, this will also pin the requisite visibility map page.
+		 */
+		buffer = RelationGetBufferForTuple(relation, zheaptuples[ndone]->t_len,
+										   InvalidBuffer, options, bistate,
+										   &vmbuffer, NULL);
+		page = BufferGetPage(buffer);
+
+		/*
+		 * The transaction information of tuple needs to be set in transaction
+		 * slot, so needs to reserve the slot before proceeding with the actual
+		 * operation.  It will be costly to wait for getting the slot, but we do
+		 * that by releasing the buffer lock.
+		 */
+		trans_slot_id = PageReserveTransactionSlot(relation, buffer, xid);
+
+		if (trans_slot_id == InvalidXactSlotId)
+		{
+			UnlockReleaseBuffer(buffer);
+
+			pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
+			pg_usleep(10000L);	/* 10 ms */
+			pgstat_report_wait_end();
+
+			goto reacquire_buffer;
+		}
+
+		/* transaction slot must be reserved before adding tuple to page */
+		Assert(trans_slot_id != InvalidXactSlotId);
+
+		/*
+		 * RelationGetBufferForTuple has ensured that the first tuple fits.
+		 * Keep calm and put that on the page, and then as many other tuples
+		 * as fit.
+		 */
+		if (!(options & ZHTUP_SLOT_FROZEN))
+			ZHeapTupleHeaderSetXactSlot(zheaptuples[ndone]->t_data, trans_slot_id);
+
+		/*
+		 * Get the unused offset ranges in the page. This is required for
+		 * deciding the number of undo records to be prepared later.
+		 */
+		zfree_offset_ranges = ZHeapGetUsableOffsetRanges(buffer,
+													  &zheaptuples[ndone],
+													  ntuples - ndone,
+													  saveFreeSpace);
+
+		/*
+		 * We've ensured at least one tuple fits in the page. So, there'll be
+		 * at least one offset range.
+		 */
+		Assert(zfree_offset_ranges->nranges > 0);
+
+		/*
+		 * For every contiguous free or new offsets, we insert an undo record.
+		 * In the payload data of each undo record, we store the start and end
+		 * available offset for a contiguous range.
+		 */
+		undorecord = (UnpackedUndoRecord *) palloc(zfree_offset_ranges->nranges
+												   * sizeof(UnpackedUndoRecord));
+		/* Start UNDO prepare Stuff */
+		prev_urecptr = PageGetUNDO(page, trans_slot_id);
+		urecptr = InvalidUndoRecPtr;
+
+		UndoSetPrepareSize(zfree_offset_ranges->nranges);
+
+		for (i = 0; i < zfree_offset_ranges->nranges; i++)
+		{
+			/* prepare an undo record */
+			undorecord[i].uur_info = 0;
+			undorecord[i].uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
+			undorecord[i].uur_relfilenode = relation->rd_node.relNode;
+			undorecord[i].uur_cid = cid;
+			undorecord[i].uur_tsid = relation->rd_node.spcNode;
+			undorecord[i].uur_fork = MAIN_FORKNUM;
+			undorecord[i].uur_blkprev = prev_urecptr;
+			undorecord[i].uur_block = BufferGetBlockNumber(buffer);
+			undorecord[i].uur_tuple.len = 0;
+			undorecord[i].uur_type = UNDO_INSERT;
+			undorecord[i].uur_offset = 0;
+			undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
+			undorecord[i].uur_payload.data = (char *)palloc(2 * sizeof(OffsetNumber));
+
+			urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERSISTENT);
+			prev_urecptr = urecptr;
+		}
+		Assert(UndoRecPtrIsValid(urecptr));
+		elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
+			 zfree_offset_ranges->nranges, BufferGetBlockNumber(buffer));
+		/* End UNDO prepare Stuff */
+
+		/* NO EREPORT(ERROR) from here till changes are logged */
+		START_CRIT_SECTION();
+
+		nthispage = 0;
+		for (i = 0; i < zfree_offset_ranges->nranges; i++)
+		{
+			OffsetNumber offnum;
+			for (offnum = zfree_offset_ranges->startOffset[i];
+				 offnum <= zfree_offset_ranges->endOffset[i]; offnum++)
+			{
+				ZHeapTuple	zheaptup;
+
+				if (ndone + nthispage == ntuples)
+					break;
+
+				zheaptup = zheaptuples[ndone + nthispage];
+
+				/* Make sure that the tuple fits in the page. */
+				if (PageGetZHeapFreeSpace(page) < MAXALIGN(zheaptup->t_len) + saveFreeSpace)
+					break;
+
+				if (!(options & ZHTUP_SLOT_FROZEN))
+					ZHeapTupleHeaderSetXactSlot(zheaptup->t_data, trans_slot_id);
+
+				RelationPutZHeapTuple(relation, buffer, zheaptup);
+
+				/*
+				 * Let's make sure that we've decided the offset ranges
+				 * correctly.
+				 */
+				Assert(offnum == ItemPointerGetOffsetNumber(&(zheaptup->t_self)));
+
+				/*
+				 * We don't use heap_multi_insert for catalog tuples yet, but
+				 * better be prepared...
+				 * Fixme: This won't work as it needs to access cmin/cmax which
+				 * we probably needs to retrieve from TPD or UNDO.
+				 */
+				 if (needwal && need_cids)
+				 {
+					/* log_heap_new_cid(relation, heaptup); */
+				 }
+				 nthispage++;
+			}
+
+			/*
+			 * Store the offset ranges in undo payload. We've not calculated the
+			 * end offset for the last range previously. Hence, we set it to
+			 * offnum - 1. There is no harm in doing the same for previous undo
+			 * records as well.
+			 */
+			((OffsetNumber *)undorecord[i].uur_payload.data)[0] = zfree_offset_ranges->startOffset[i];
+			((OffsetNumber *)undorecord[i].uur_payload.data)[1] = offnum - 1;
+			elog(DEBUG1, "start offset: %d, end offset: %d",
+				 zfree_offset_ranges->startOffset[i], offnum - 1);
+		}
+
+		if (PageIsAllVisible(page))
+		{
+			PageClearAllVisible(page);
+			visibilitymap_clear(relation,
+								BufferGetBlockNumber(buffer),
+								vmbuffer, VISIBILITYMAP_VALID_BITS);
+		}
+
+		/*
+		 * XXX Should we set PageSetPrunable on this page ? See heap_insert()
+		 */
+
+		MarkBufferDirty(buffer);
+
+		/* Revisit UNDO stuff for insertion and clean up */
+		InsertPreparedUndo();
+		/*
+		 * We're sending the undo record for debugging purpose. So, just send
+		 * the last one.
+		 */
+		PageSetUNDO(undorecord[zfree_offset_ranges->nranges - 1], page,
+													trans_slot_id, xid, urecptr);
+
+		/* be tidy */
+		for (i = 0; i < zfree_offset_ranges->nranges; i++)
+			pfree(undorecord[i].uur_payload.data);
+		pfree(zfree_offset_ranges);
+		/* End the UNDO stuff */
+
+		/* XLOG stuff */
+		if (needwal)
+		{
+			/* FIXME: Not yet implemented. */
+		}
+
+		END_CRIT_SECTION();
+
+		UnlockReleaseBuffer(buffer);
+		if (vmbuffer != InvalidBuffer)
+			ReleaseBuffer(vmbuffer);
+		UnlockReleaseUndoBuffers();
+
+		ndone += nthispage;
+	}
+
+	/*
+	 * We're done with the actual inserts.  Check for conflicts again, to
+	 * ensure that all rw-conflicts in to these inserts are detected.  Without
+	 * this final check, a sequential scan of the heap may have locked the
+	 * table after the "before" check, missing one opportunity to detect the
+	 * conflict, and then scanned the table before the new tuples were there,
+	 * missing the other chance to detect the conflict.
+	 *
+	 * For heap inserts, we only need to check for table-level SSI locks. Our
+	 * new tuples can't possibly conflict with existing tuple locks, and heap
+	 * page locks are only consolidated versions of tuple locks; they do not
+	 * lock "gaps" as index page locks do.  So we don't need to specify a
+	 * buffer when making the call.
+	 */
+	CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
+
+	/*
+	 * If tuples are cachable, mark them for invalidation from the caches in
+	 * case we abort.  Note it is OK to do this after releasing the buffer,
+	 * because the heaptuples data structure is all in local memory, not in
+	 * the shared buffer.
+	 */
+	if (IsCatalogRelation(relation))
+	{
+		//for (i = 0; i < ntuples; i++)
+		//	CacheInvalidateHeapTuple(relation, zheaptuples[i], NULL);
+	}
+
+	/*
+	 * Copy t_self fields back to the caller's original tuples. This does
+	 * nothing for untoasted tuples (tuples[i] == heaptuples[i)], but it's
+	 * probably faster to always copy than check.
+	 */
+	for (i = 0; i < ntuples; i++)
+		tuples[i]->t_self = zheaptuples[i]->t_self;
+
+	pgstat_count_heap_insert(relation, ntuples);
 }

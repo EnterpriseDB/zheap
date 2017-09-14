@@ -23,6 +23,7 @@
 typedef enum undorectype
 {
 	UNDO_INSERT,
+	UNDO_MULTI_INSERT,
 	UNDO_DELETE,
 	UNDO_INPLACE_UPDATE,
 	UNDO_UPDATE,

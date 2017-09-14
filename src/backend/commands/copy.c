@@ -316,7 +316,7 @@ static void CopyFromInsertBatch(CopyState cstate, EState *estate,
 					CommandId mycid, int hi_options,
 					ResultRelInfo *resultRelInfo, TupleTableSlot *myslot,
 					BulkInsertState bistate,
-					int nBufferedTuples, HeapTuple *bufferedTuples,
+					int nBufferedTuples, void *bufferedTuples,
 					uint64 firstBufferedLineNo);
 static bool CopyReadLine(CopyState cstate);
 static bool CopyReadLineText(CopyState cstate);
@@ -2310,7 +2310,8 @@ limit_printout_length(const char *str)
 uint64
 CopyFrom(CopyState cstate)
 {
-	HeapTuple	tuple;
+	HeapTuple	tuple = NULL;
+	ZHeapTuple	ztuple = NULL;
 	TupleDesc	tupDesc;
 	Datum	   *values;
 	bool	   *nulls;
@@ -2338,7 +2339,7 @@ CopyFrom(CopyState cstate)
 
 #define MAX_BUFFERED_TUPLES 1000
 #define RECHECK_MULTI_INSERT_THRESHOLD 1000
-	HeapTuple  *bufferedTuples = NULL;	/* initialize to silence warning */
+	void 	 *bufferedTuples = NULL;	/* initialize to silence warning */
 	Size		bufferedTuplesSize = 0;
 	uint64		firstBufferedLineNo = 0;
 	uint64		lastPartitionSampleLineNo = 0;
@@ -2460,7 +2461,10 @@ CopyFrom(CopyState cstate)
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("cannot perform FREEZE because the table was not created or truncated in the current subtransaction")));
 
-		hi_options |= HEAP_INSERT_FROZEN;
+		if (RelationStorageIsZHeap(cstate->rel))
+			hi_options |= ZHTUP_SLOT_FROZEN;
+		else
+			hi_options |= HEAP_INSERT_FROZEN;
 	}
 
 	/*
@@ -2617,7 +2621,10 @@ CopyFrom(CopyState cstate)
 		else
 			insertMethod = CIM_MULTI;
 
-		bufferedTuples = palloc(MAX_BUFFERED_TUPLES * sizeof(HeapTuple));
+		if (RelationStorageIsZHeap(cstate->rel))
+			bufferedTuples = palloc(MAX_BUFFERED_TUPLES * sizeof(ZHeapTuple));
+		else
+			bufferedTuples = palloc(MAX_BUFFERED_TUPLES * sizeof(HeapTuple));
 	}
 
 	has_before_insert_row_trig = (resultRelInfo->ri_TrigDesc &&
@@ -2671,23 +2678,42 @@ CopyFrom(CopyState cstate)
 			break;
 
 		/* And now we can form the input tuple. */
-		tuple = heap_form_tuple(tupDesc, values, nulls);
+		if (RelationStorageIsZHeap(cstate->rel))
+		{
+			ztuple = zheap_form_tuple(tupDesc, values, nulls);
 
-		if (loaded_oid != InvalidOid)
-			HeapTupleSetOid(tuple, loaded_oid);
+			if (loaded_oid != InvalidOid)
+				ZHeapTupleSetOid(ztuple, loaded_oid);
 
-		/*
-		 * Constraints might reference the tableoid column, so initialize
-		 * t_tableOid before evaluating them.
-		 */
-		tuple->t_tableOid = RelationGetRelid(target_resultRelInfo->ri_RelationDesc);
+			/*
+			 * Constraints might reference the tableoid column, so initialize
+			 * t_tableOid before evaluating them.
+			 */
+			ztuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
+		}
+		else
+		{
+			tuple = heap_form_tuple(tupDesc, values, nulls);
+
+			if (loaded_oid != InvalidOid)
+				HeapTupleSetOid(tuple, loaded_oid);
+
+			/*
+			 * Constraints might reference the tableoid column, so initialize
+			 * t_tableOid before evaluating them.
+			 */
+			tuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
+		}
 
 		/* Triggers and stuff need to be invoked in query context. */
 		MemoryContextSwitchTo(oldcontext);
 
 		/* Place tuple in tuple slot --- but slot shouldn't free it */
 		slot = myslot;
-		ExecStoreHeapTuple(tuple, slot, false);
+		if (RelationStorageIsZHeap(cstate->rel))
+			ExecStoreZTuple(ztuple, slot, InvalidBuffer, false);
+		else
+			ExecStoreHeapTuple(tuple, slot, false);
 
 		/* Determine the partition to heap_insert the tuple into */
 		if (proute)
@@ -2898,8 +2924,13 @@ CopyFrom(CopyState cstate)
 
 			if (slot == NULL)	/* "do nothing" */
 				skip_tuple = true;
-			else				/* trigger might have changed tuple */
-				tuple = ExecMaterializeSlot(slot);
+			else	/* trigger might have changed tuple */
+			{
+				if (RelationStorageIsZHeap(cstate->rel))
+					ztuple = ExecMaterializeZSlot(slot);
+				else
+					tuple = ExecMaterializeSlot(slot);
+			}
 		}
 
 		if (!skip_tuple)
@@ -2939,8 +2970,16 @@ CopyFrom(CopyState cstate)
 					/* Add this tuple to the tuple buffer */
 					if (nBufferedTuples == 0)
 						firstBufferedLineNo = cstate->cur_lineno;
-					bufferedTuples[nBufferedTuples++] = tuple;
-					bufferedTuplesSize += tuple->t_len;
+					if (RelationStorageIsZHeap(cstate->rel))
+					{
+						((ZHeapTuple *)bufferedTuples)[nBufferedTuples++] = ztuple;
+						bufferedTuplesSize += ztuple->t_len;
+					}
+					else
+					{
+						((HeapTuple *)bufferedTuples)[nBufferedTuples++] = tuple;
+						bufferedTuplesSize += tuple->t_len;
+					}
 
 					/*
 					 * If the buffer filled up, flush it.  Also flush if the
@@ -3096,7 +3135,7 @@ static void
 CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 					int hi_options, ResultRelInfo *resultRelInfo,
 					TupleTableSlot *myslot, BulkInsertState bistate,
-					int nBufferedTuples, HeapTuple *bufferedTuples,
+					int nBufferedTuples, void *bufferedTuples,
 					uint64 firstBufferedLineNo)
 {
 	MemoryContext oldcontext;
@@ -3116,12 +3155,20 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 	 * before calling it.
 	 */
 	oldcontext = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-	heap_multi_insert(resultRelInfo->ri_RelationDesc,
-					  bufferedTuples,
-					  nBufferedTuples,
-					  mycid,
-					  hi_options,
-					  bistate);
+	if (RelationStorageIsZHeap(resultRelInfo->ri_RelationDesc))
+		zheap_multi_insert(resultRelInfo->ri_RelationDesc,
+						  (ZHeapTuple *) bufferedTuples,
+						  nBufferedTuples,
+						  mycid,
+						  hi_options,
+						  bistate);
+	else
+		heap_multi_insert(resultRelInfo->ri_RelationDesc,
+						  (HeapTuple *) bufferedTuples,
+						  nBufferedTuples,
+						  mycid,
+						  hi_options,
+						  bistate);
 	MemoryContextSwitchTo(oldcontext);
 
 	/*
@@ -3135,13 +3182,26 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 			List	   *recheckIndexes;
 
 			cstate->cur_lineno = firstBufferedLineNo + i;
-			ExecStoreHeapTuple(bufferedTuples[i], myslot, false);
-			recheckIndexes =
-				ExecInsertIndexTuples(myslot, &(bufferedTuples[i]->t_self),
-									  estate, false, NULL, NIL);
-			ExecARInsertTriggers(estate, resultRelInfo,
-								 bufferedTuples[i],
-								 recheckIndexes, cstate->transition_capture);
+
+			if (RelationStorageIsZHeap(cstate->rel))
+			{
+				ExecStoreZTuple(((ZHeapTuple *) bufferedTuples)[i], myslot, InvalidBuffer, false);
+				recheckIndexes =
+					ExecInsertIndexTuples(myslot, &(((ZHeapTuple *) bufferedTuples)[i]->t_self),
+										  estate, false, NULL, NIL);
+				/*FIXME: Implement ExecARInsertTriggers for zheap tuples */
+			}
+			else
+			{
+				ExecStoreHeapTuple(bufferedTuples[i], myslot, false);
+				recheckIndexes =
+					ExecInsertIndexTuples(myslot, &(((HeapTuple *) bufferedTuples)[i]->t_self),
+										  estate, false, NULL, NIL);
+				ExecARInsertTriggers(estate, resultRelInfo,
+									 ((HeapTuple *) bufferedTuples)[i],
+									 recheckIndexes,
+									 cstate->transition_capture);
+			}
 			list_free(recheckIndexes);
 		}
 	}
@@ -3158,7 +3218,7 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 		{
 			cstate->cur_lineno = firstBufferedLineNo + i;
 			ExecARInsertTriggers(estate, resultRelInfo,
-								 bufferedTuples[i],
+								 ((HeapTuple *) bufferedTuples)[i],
 								 NIL, cstate->transition_capture);
 		}
 	}
