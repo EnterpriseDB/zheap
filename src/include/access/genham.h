@@ -24,6 +24,7 @@
 
 extern int	data_alignment;
 extern PGDLLIMPORT int	data_alignment_zheap;
+typedef struct BulkInsertStateData *BulkInsertState;
 
 /* struct definitions appear in relscan.h */
 typedef struct HeapScanDescData *HeapScanDesc;

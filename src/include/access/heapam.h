@@ -30,7 +30,6 @@
 #define HEAP_INSERT_SPECULATIVE 0x0008
 #define HEAP_INSERT_NO_LOGICAL	0x0010
 
-typedef struct BulkInsertStateData *BulkInsertState;
 
 
 /* ----------------

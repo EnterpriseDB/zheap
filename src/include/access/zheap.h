@@ -41,7 +41,6 @@ typedef struct ZHeapPageOpaqueData
 } ZHeapPageOpaqueData;
 
 typedef ZHeapPageOpaqueData *ZHeapPageOpaque;
-typedef struct BulkInsertStateData *BulkInsertState;
 
 extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options);
