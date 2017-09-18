@@ -295,12 +295,15 @@ fetch_undo_record:
 	xid = urec->uur_prevxid;
 	/*
 	 * For non-inplace-updates, ctid needs to be retrieved from undo
-	 * record.
+	 * record if required.
 	 */
-	if (urec->uur_type == UNDO_UPDATE)
-		*ctid = *((ItemPointer) urec->uur_payload.data);
-	else
-		*ctid = undo_tup->t_self;
+	if (ctid)
+	{
+		if (urec->uur_type == UNDO_UPDATE)
+			*ctid = *((ItemPointer) urec->uur_payload.data);
+		else
+			*ctid = undo_tup->t_self;
+	}
 
 	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
 	{
@@ -831,9 +834,9 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 		{
 			/*
 			 * For non-inplace-updates, ctid needs to be retrieved from undo
-			 * record.
+			 * record if required.
 			 */
-			if (tuple->t_infomask & ZHEAP_UPDATED)
+			if (tuple->t_infomask & ZHEAP_UPDATED && ctid)
 				ZHeapTupleGetCtid(zhtup, buffer, ctid);
 
 			/* tuple is deleted or non-inplace-updated */
@@ -1162,9 +1165,9 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		{
 			/*
 			 * For non-inplace-updates, ctid needs to be retrieved from undo
-			 * record.
+			 * record if required.
 			 */
-			if (tuple->t_infomask & ZHEAP_UPDATED)
+			if (tuple->t_infomask & ZHEAP_UPDATED && ctid)
 				ZHeapTupleGetCtid(zhtup, buffer, ctid);
 			return NULL;
 		}
@@ -1177,9 +1180,9 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		{
 			/*
 			 * For non-inplace-updates, ctid needs to be retrieved from undo
-			 * record.
+			 * record if required.
 			 */
-			if (tuple->t_infomask & ZHEAP_UPDATED)
+			if (tuple->t_infomask & ZHEAP_UPDATED && ctid)
 				ZHeapTupleGetCtid(zhtup, buffer, ctid);
 
 			/* tuple is deleted or non-inplace-updated */

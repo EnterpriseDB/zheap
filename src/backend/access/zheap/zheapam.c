@@ -2845,7 +2845,7 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf)
  * It is expected that caller of this function has atleast read lock
  * on the buffer and we call it only for non-inplace-updated tuples.
  */
-ItemPointerData
+void
 ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer	ctid)
 {
 	ZHeapPageOpaque	opaque;
@@ -2883,8 +2883,6 @@ fetch_undo_record:
 	*ctid = *(ItemPointer) urec->uur_payload.data;
 
 	UndoRecordRelease(urec);
-
-	return *ctid;
 }
 
 /*

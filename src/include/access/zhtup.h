@@ -239,8 +239,7 @@ extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
 /* Zheap transaction information related API's */
 extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf);
 extern TransactionId ZHeapTupleGetXid(ZHeapTuple zhtup, Buffer buf);
-extern ItemPointerData ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf,
-										 ItemPointer ctid);
+extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer ctid);
 extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
 					TransactionId priorXmax);
 
