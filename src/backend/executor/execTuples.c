@@ -409,6 +409,7 @@ ExecStoreBufferHeapTuple(HeapTuple tuple,
 	 */
 	slot->tts_flags &= ~TTS_FLAG_EMPTY;
 	slot->tts_tuple = tuple;
+	slot->tts_ztuple = NULL;
 	slot->tts_mintuple = NULL;
 
 	/* Mark extracted state invalid */
@@ -473,6 +474,7 @@ ExecStoreZTuple(ZHeapTuple tuple,
 	slot->tts_shouldFree = shouldFree;
 	slot->tts_shouldFreeMin = false;
 	slot->tts_ztuple = tuple;
+	slot->tts_tuple = NULL;
 	slot->tts_mintuple = NULL;
 
 	/* Mark extracted state invalid */
@@ -700,7 +702,7 @@ ExecCopySlotTuple(TupleTableSlot *slot)
 		return heap_tuple_from_minimal_tuple(slot->tts_mintuple);
 
 	/*
-	 * FIXME: Aggregate nodes don't recognize zheap tuples as of now. If it's
+	 * FIXME: Executor nodes don't recognize zheap tuples as of now. If it's
 	 * a zheap tuple, deform it.
 	 */
 	if (slot->tts_ztuple != NULL)
@@ -710,6 +712,40 @@ ExecCopySlotTuple(TupleTableSlot *slot)
 	 * Otherwise we need to build a tuple from the Datum array.
 	 */
 	return heap_form_tuple(slot->tts_tupleDescriptor,
+						   slot->tts_values,
+						   slot->tts_isnull);
+}
+
+/* --------------------------------
+ *		ExecCopySlotZTuple
+ *
+ *		Similar to ExecCopySlotTuple. Notice that physical tuple and minimal
+ *		tuple only works with heap tuple. Hence, we convert this to heap tuple
+ *		and subsequently convert this to zheap tuple.
+ * --------------------------------
+ */
+ZHeapTuple
+ExecCopySlotZTuple(TupleTableSlot *slot)
+{
+	/*
+	 * sanity checks
+	 */
+	Assert(slot != NULL);
+	Assert(!slot->tts_isempty);
+
+	/*
+	 * If we have a physical tuple (either format) then just copy it.
+	 */
+	if (TTS_HAS_PHYSICAL_TUPLE(slot))
+		slot->tts_tuple = heap_copytuple(slot->tts_tuple);
+	else if (slot->tts_mintuple)
+		slot->tts_tuple = heap_tuple_from_minimal_tuple(slot->tts_mintuple);
+
+	if (slot->tts_tuple != NULL)
+		heap_deform_tuple(slot->tts_tuple, slot->tts_tupleDescriptor,
+						  slot->tts_values, slot->tts_isnull);
+
+	return zheap_form_tuple(slot->tts_tupleDescriptor,
 						   slot->tts_values,
 						   slot->tts_isnull);
 }
@@ -745,6 +781,14 @@ ExecCopySlotMinimalTuple(TupleTableSlot *slot)
 		else
 			return minimal_tuple_from_heap_tuple(slot->tts_tuple);
 	}
+
+	/*
+	 * FIXME: Executor nodes don't recognize zheap tuples as of now. If it's
+	 * a zheap tuple, deform it.
+	 */
+	if (slot->tts_ztuple != NULL)
+		zheap_deform_tuple(slot->tts_ztuple, slot->tts_tupleDescriptor,
+						  slot->tts_values, slot->tts_isnull);
 
 	/*
 	 * Otherwise we need to build a tuple from the Datum array.
@@ -981,9 +1025,7 @@ ExecMaterializeZSlot(TupleTableSlot *slot)
 	 * anyway.
 	 */
 	oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
-	slot->tts_ztuple = zheap_form_tuple(slot->tts_tupleDescriptor,
-						   slot->tts_values,
-						   slot->tts_isnull);
+	slot->tts_ztuple = ExecCopySlotZTuple(slot);
 	slot->tts_shouldFree = true;
 	MemoryContextSwitchTo(oldContext);
 

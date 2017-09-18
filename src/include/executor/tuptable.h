@@ -191,6 +191,7 @@ extern TupleTableSlot *ExecClearTuple(TupleTableSlot *slot);
 extern TupleTableSlot *ExecStoreVirtualTuple(TupleTableSlot *slot);
 extern TupleTableSlot *ExecStoreAllNullTuple(TupleTableSlot *slot);
 extern HeapTuple ExecCopySlotTuple(TupleTableSlot *slot);
+extern ZHeapTuple ExecCopySlotZTuple(TupleTableSlot *slot);
 extern MinimalTuple ExecCopySlotMinimalTuple(TupleTableSlot *slot);
 extern HeapTuple ExecFetchSlotTuple(TupleTableSlot *slot);
 extern MinimalTuple ExecFetchSlotMinimalTuple(TupleTableSlot *slot);
