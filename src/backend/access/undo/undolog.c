@@ -358,7 +358,7 @@ UndoLogSetLastXactStartPoint(UndoRecPtr point)
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
-		XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_DISCARD);
+		XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_XACTSTART);
 	}
 }
 
