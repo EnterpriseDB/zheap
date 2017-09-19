@@ -2057,6 +2057,7 @@ CopyTo(CopyState cstate)
 		bool	   *nulls;
 		HeapScanDesc scandesc;
 		HeapTuple	tuple;
+		ZHeapTuple	ztuple;
 
 		values = (Datum *) palloc(num_phys_attrs * sizeof(Datum));
 		nulls = (bool *) palloc(num_phys_attrs * sizeof(bool));
@@ -2064,16 +2065,33 @@ CopyTo(CopyState cstate)
 		scandesc = heap_beginscan(cstate->rel, GetActiveSnapshot(), 0, NULL);
 
 		processed = 0;
-		while ((tuple = heap_getnext(scandesc, ForwardScanDirection)) != NULL)
+		if (RelationStorageIsZHeap(cstate->rel))
 		{
-			CHECK_FOR_INTERRUPTS();
+			while ((ztuple = zheap_getnext(scandesc, ForwardScanDirection)) != NULL)
+			{
+				CHECK_FOR_INTERRUPTS();
 
-			/* Deconstruct the tuple ... faster than repeated heap_getattr */
-			heap_deform_tuple(tuple, tupDesc, values, nulls);
+				/* Deconstruct the tuple ... faster than repeated heap_getattr */
+				zheap_deform_tuple(ztuple, tupDesc, values, nulls);
 
-			/* Format and send the data */
-			CopyOneRowTo(cstate, HeapTupleGetOid(tuple), values, nulls);
-			processed++;
+				/* Format and send the data */
+				CopyOneRowTo(cstate, ZHeapTupleGetOid(ztuple), values, nulls);
+				processed++;
+			}
+		}
+		else
+		{
+			while ((tuple = heap_getnext(scandesc, ForwardScanDirection)) != NULL)
+			{
+				CHECK_FOR_INTERRUPTS();
+
+				/* Deconstruct the tuple ... faster than repeated heap_getattr */
+				heap_deform_tuple(tuple, tupDesc, values, nulls);
+
+				/* Format and send the data */
+				CopyOneRowTo(cstate, HeapTupleGetOid(tuple), values, nulls);
+				processed++;
+			}
 		}
 
 		heap_endscan(scandesc);
