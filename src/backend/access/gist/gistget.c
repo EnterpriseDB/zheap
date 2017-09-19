@@ -650,7 +650,10 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 							so->pageData[so->curPageData - 1].offnum;
 				}
 				/* continuing to return tuples from a leaf page */
-				scan->xs_ctup.t_self = so->pageData[so->curPageData].heapPtr;
+				if (RelationStorageIsZHeap(scan->heapRelation))
+					scan->cur_tid = so->pageData[so->curPageData].heapPtr;
+				else
+					scan->xs_ctup.t_self = so->pageData[so->curPageData].heapPtr;
 				scan->xs_recheck = so->pageData[so->curPageData].recheck;
 
 				/* in an index-only scan, also return the reconstructed tuple */
