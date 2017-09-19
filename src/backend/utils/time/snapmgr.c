@@ -2145,6 +2145,7 @@ RestoreSnapshot(char *start_address)
 	/* Copy all required fields */
 	snapshot = (Snapshot) MemoryContextAlloc(TopTransactionContext, size);
 	snapshot->satisfies = HeapTupleSatisfiesMVCC;
+	snapshot->zsatisfies = ZHeapTupleSatisfiesMVCC;
 	snapshot->xmin = serialized_snapshot.xmin;
 	snapshot->xmax = serialized_snapshot.xmax;
 	snapshot->xip = NULL;
