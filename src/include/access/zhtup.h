@@ -18,6 +18,7 @@
 #include "access/tupdesc.h"
 #include "access/tupmacs.h"
 #include "access/transam.h"
+#include "access/undolog.h"
 #include "storage/bufpage.h"
 #include "storage/buf.h"
 #include "storage/itemptr.h"
@@ -238,7 +239,9 @@ extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
 
 /* Zheap transaction information related API's */
 extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf);
-extern TransactionId ZHeapTupleGetXid(ZHeapTuple zhtup, Buffer buf);
+extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
+                               TransactionId *xid_out, CommandId *cid_out,
+                               UndoRecPtr *urec_ptr_out, bool nobuflock);
 extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer ctid);
 extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
 					TransactionId priorXmax);

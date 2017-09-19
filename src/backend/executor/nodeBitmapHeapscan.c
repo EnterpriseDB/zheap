@@ -64,6 +64,7 @@ static inline void BitmapPrefetch(BitmapHeapScanState *node,
 			   HeapScanDesc scan);
 static bool BitmapShouldInitializeSharedState(
 								  ParallelBitmapHeapState *pstate);
+static void bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres);
 
 
 /* ----------------------------------------------------------------
@@ -249,7 +250,10 @@ BitmapHeapNext(BitmapHeapScanState *node)
 				/*
 				 * Fetch the current heap page and identify candidate tuples.
 				 */
-				bitgetpage(scan, tbmres);
+				if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
+					bitgetzpage(scan, tbmres);
+				else
+					bitgetpage(scan, tbmres);
 			}
 
 			if (tbmres->ntuples >= 0)
@@ -324,25 +328,43 @@ BitmapHeapNext(BitmapHeapScanState *node)
 			/*
 			 * Okay to fetch the tuple.
 			 */
-			targoffset = scan->rs_vistuples[scan->rs_cindex];
-			dp = (Page) BufferGetPage(scan->rs_cbuf);
-			lp = PageGetItemId(dp, targoffset);
-			Assert(ItemIdIsNormal(lp));
+			if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
+			{
+				scan->rs_cztup = scan->rs_visztuples[scan->rs_cindex];
 
-			scan->rs_ctup.t_data = (HeapTupleHeader) PageGetItem((Page) dp, lp);
-			scan->rs_ctup.t_len = ItemIdGetLength(lp);
-			scan->rs_ctup.t_tableOid = scan->rs_rd->rd_id;
-			ItemPointerSet(&scan->rs_ctup.t_self, tbmres->blockno, targoffset);
+				pgstat_count_heap_fetch(scan->rs_rd);
 
-			pgstat_count_heap_fetch(scan->rs_rd);
+				/*
+				 * Set up the result slot to point to this tuple. Note that the slot
+				 * acquires a pin on the buffer.
+				 */
+				ExecStoreZTuple(scan->rs_cztup,
+							   slot,
+							   scan->rs_cbuf,
+							   true);
+			}
+			else
+			{
+				targoffset = scan->rs_vistuples[scan->rs_cindex];
+				dp = (Page) BufferGetPage(scan->rs_cbuf);
+				lp = PageGetItemId(dp, targoffset);
+				Assert(ItemIdIsNormal(lp));
 
-			/*
-			 * Set up the result slot to point to this tuple.  Note that the
-			 * slot acquires a pin on the buffer.
-			 */
-			ExecStoreBufferHeapTuple(&scan->rs_ctup,
-									 slot,
-									 scan->rs_cbuf);
+				scan->rs_ctup.t_data = (HeapTupleHeader) PageGetItem((Page) dp, lp);
+				scan->rs_ctup.t_len = ItemIdGetLength(lp);
+				scan->rs_ctup.t_tableOid = scan->rs_rd->rd_id;
+				ItemPointerSet(&scan->rs_ctup.t_self, tbmres->blockno, targoffset);
+
+				pgstat_count_heap_fetch(scan->rs_rd);
+
+				/*
+				 * Set up the result slot to point to this tuple.  Note that the
+				 * slot acquires a pin on the buffer.
+				 */
+				ExecStoreBufferHeapTuple(&scan->rs_ctup,
+										 slot,
+										 scan->rs_cbuf);
+			}
 
 			/*
 			 * If we are using lossy info, we have to recheck the qual
@@ -697,6 +719,116 @@ BitmapPrefetch(BitmapHeapScanState *node, HeapScanDesc scan)
 		}
 	}
 #endif							/* USE_PREFETCH */
+}
+
+/*
+ * bitgetzpage - subroutine for BitmapHeapNext()
+ *
+ * Similar to bitgetpage, but for zheap relations.
+ */
+static void
+bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres)
+{
+	BlockNumber page = tbmres->blockno;
+	Buffer		buffer;
+	Snapshot	snapshot;
+	int			ntup;
+
+	/*
+	 * Acquire pin on the target zheap page, trading in any pin we held before.
+	 */
+	Assert(page < scan->rs_nblocks);
+
+	scan->rs_cbuf = ReleaseAndReadBuffer(scan->rs_cbuf,
+										 scan->rs_rd,
+										 page);
+	buffer = scan->rs_cbuf;
+	snapshot = scan->rs_snapshot;
+
+	ntup = 0;
+
+	/*
+	 * We must hold share lock on the buffer content while examining tuple
+	 * visibility.  Afterwards, however, the tuples we have found to be
+	 * visible are guaranteed good as long as we hold the buffer pin.
+	 */
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
+	/*
+	 * We need two separate strategies for lossy and non-lossy cases.
+	 */
+	if (tbmres->ntuples >= 0)
+	{
+		/*
+		 * Bitmap is non-lossy, so we just look through the offsets listed in
+		 * tbmres;
+		 */
+		int			curslot;
+
+		for (curslot = 0; curslot < tbmres->ntuples; curslot++)
+		{
+			OffsetNumber offnum = tbmres->offsets[curslot];
+			ItemPointerData tid;
+			ZHeapTuple ztuple;
+
+			ItemPointerSet(&tid, page, offnum);
+			ztuple = zheap_search_buffer(&tid, scan->rs_rd, buffer, snapshot, NULL);
+			if (ztuple != NULL)
+				scan->rs_visztuples[ntup++] = ztuple;
+		}
+	}
+	else
+	{
+		/*
+		 * Bitmap is lossy, so we must examine each item pointer on the page.
+		 */
+		Page		dp = (Page) BufferGetPage(buffer);
+		OffsetNumber maxoff = PageGetMaxOffsetNumber(dp);
+		OffsetNumber offnum;
+
+		for (offnum = FirstOffsetNumber; offnum <= maxoff; offnum = OffsetNumberNext(offnum))
+		{
+			ItemId		lpp;
+			ZHeapTuple	loctup;
+			ZHeapTuple	resulttup;
+			Size		loctup_len;
+			bool		valid = false;
+
+			lpp = PageGetItemId(dp, offnum);
+			if (!ItemIdIsNormal(lpp))
+				continue;
+
+			loctup_len = ItemIdGetLength(lpp);
+
+			loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
+			loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
+
+			loctup->t_tableOid = RelationGetRelid(scan->rs_rd);
+			loctup->t_len = loctup_len;
+			ItemPointerSet(&(loctup->t_self), page, offnum);
+
+			/*
+			 * We always need to make a copy of zheap tuple as once we release
+			 * the buffer an in-place update can change the tuple.
+			 */
+			memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lpp)), loctup->t_len);
+
+			resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer, NULL);
+			valid = resulttup ? true : false;
+
+			/* Fixme - Serialization failures needs to be detected for zheap. */
+			/* CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
+											buffer, snapshot); */
+
+			if (valid)
+				scan->rs_visztuples[ntup++] = resulttup;
+		}
+	}
+
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+	Assert(ntup <= MaxHeapTuplesPerPage);
+	scan->rs_ntuples = ntup;
 }
 
 /*

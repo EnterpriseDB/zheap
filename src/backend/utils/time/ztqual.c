@@ -24,6 +24,66 @@
 #include "utils/ztqual.h"
 #include "storage/proc.h"
 
+
+/*
+ * FetchTransInfoFromUndo - Retrieve transaction information of transaction
+ *			that has modified the undo tuple.
+ */
+static void
+FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId *xid,
+					   CommandId *cid, UndoRecPtr *urec_ptr)
+{
+	UnpackedUndoRecord	*urec;
+	TransactionId	undo_tup_xid;
+	uint8	uur_type;
+
+	undo_tup_xid = *xid;
+
+	/*
+	 * The transaction slot referred by the undo tuple could have been reused
+	 * multiple times, so to ensure that we have fetched the right undo record
+	 * we need to verify that the undo record contains prevxid same as the xid
+	 * that has modified the undo tuple.
+	 */
+	do
+	{
+		urec = UndoFetchRecord(*urec_ptr,
+							   ItemPointerGetBlockNumber(&undo_tup->t_self),
+							   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+							   InvalidTransactionId);
+
+		/*
+		 * The undo tuple must be visible, if the undo record containing
+		 * the information of the last transaction that has updated the
+		 * tuple is discarded or the transaction that has last updated the
+		 * undo tuple precedes RecentGlobalXmin.
+		 */
+		if (urec == NULL ||
+			TransactionIdPrecedes(urec->uur_prevxid, RecentGlobalXmin))
+		{
+			*xid = InvalidTransactionId;
+			*cid = InvalidCommandId;
+			*urec_ptr = InvalidUndoRecPtr;
+
+			if (urec)
+				UndoRecordRelease(urec);
+			break;
+		}
+
+		*xid = urec->uur_prevxid;
+		*cid = urec->uur_cid;
+		*urec_ptr = urec->uur_blkprev;
+		uur_type = urec->uur_type;
+
+		/*
+		 * transaction slot won't change for such a tuple, so we can rely on
+		 * the same from current undo tuple.
+		 */
+
+		UndoRecordRelease(urec);
+	} while (uur_type != UNDO_INVALID_XACT_SLOT || undo_tup_xid != *xid);
+}
+
 /*
  * GetTupleFromUndo
  *
@@ -119,47 +179,7 @@ fetch_undo_record:
 	{
 		if (undo_tup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
 		{
-			uint8	uur_type;
-			TransactionId	undo_tup_xid;
-
-			undo_tup_xid = xid;
-
-			do
-			{
-				urec = UndoFetchRecord(prev_urec_ptr,
-									   ItemPointerGetBlockNumber(&undo_tup->t_self),
-									   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-									   InvalidTransactionId);
-
-				/*
-				 * The undo tuple must be visible, if the undo record containing
-				 * the information of the last transaction that has updated the
-				 * tuple is discarded or the transaction that has last updated the
-				 * undo tuple precedes RecentGlobalXmin.
-				 */
-				if (urec == NULL ||
-					TransactionIdPrecedes(urec->uur_prevxid, RecentGlobalXmin))
-				{
-					xid = InvalidTransactionId;
-					cid = InvalidCommandId;
-
-					if (urec)
-						UndoRecordRelease(urec);
-					break;
-				}
-
-				xid = urec->uur_prevxid;
-				cid = urec->uur_cid;
-				prev_urec_ptr = urec->uur_blkprev;
-				uur_type = urec->uur_type;
-
-				/*
-				 * transaction slot won't change for such a tuple, so we can rely on
-				 * the same from current undo tuple.
-				 */
-
-				UndoRecordRelease(urec);
-			} while (uur_type != UNDO_INVALID_XACT_SLOT || undo_tup_xid != xid);
+			FetchTransInfoFromUndo(undo_tup, &xid, &cid, &prev_urec_ptr);
 		}
 		else
 		{
@@ -342,47 +362,7 @@ fetch_undo_record:
 	{
 		if (undo_tup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
 		{
-			uint8	uur_type;
-			TransactionId	undo_tup_xid;
-
-			undo_tup_xid = xid;
-
-			do
-			{
-				urec = UndoFetchRecord(prev_urec_ptr,
-									   ItemPointerGetBlockNumber(&undo_tup->t_self),
-									   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-									   InvalidTransactionId);
-
-				/*
-				 * The undo tuple must be visible, if the undo record containing
-				 * the information of the last transaction that has updated the
-				 * tuple is discarded or the transaction that has last updated the
-				 * undo tuple precedes RecentGlobalXmin.
-				 */
-				if (urec == NULL ||
-					TransactionIdPrecedes(urec->uur_prevxid, RecentGlobalXmin))
-				{
-					xid = InvalidTransactionId;
-					cid = InvalidCommandId;
-
-					if (urec)
-						UndoRecordRelease(urec);
-					break;
-				}
-
-				xid = urec->uur_prevxid;
-				cid = urec->uur_cid;
-				prev_urec_ptr = urec->uur_blkprev;
-				uur_type = urec->uur_type;
-
-				/*
-				 * transaction slot won't change for such a tuple, so we can rely on
-				 * the same from current undo tuple.
-				 */
-
-				UndoRecordRelease(urec);
-			} while (uur_type != UNDO_INVALID_XACT_SLOT || undo_tup_xid != xid);
+			FetchTransInfoFromUndo(undo_tup, &xid, &cid, &prev_urec_ptr);
 		}
 		else
 		{
@@ -511,73 +491,16 @@ ZHeapTuple
 ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 						Buffer buffer, ItemPointer ctid)
 {
-	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	UnpackedUndoRecord	*urec;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	TransactionId	xid;
 	CommandId		cid = InvalidCommandId;
 
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
-
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
-	/*
-	 * We need to fetch all the transaction related information from undo
-	 * record for the tuples that point to a slot that gets invalidated for
-	 * reuse at some point of time.  See PageFreezeTransSlots.
-	 */
-	if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-	{
-		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
-		{
-			uint8	uur_type;
-
-			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
-
-			do
-			{
-				urec = UndoFetchRecord(urec_ptr,
-									   ItemPointerGetBlockNumber(&zhtup->t_self),
-									   ItemPointerGetOffsetNumber(&zhtup->t_self),
-									   InvalidTransactionId);
-
-				/*
-				 * The undo tuple must be visible, if the undo record containing
-				 * the information of the last transaction that has updated the
-				 * tuple is discarded or the transaction that has last updated the
-				 * undo tuple precedes RecentGlobalXmin.
-				 */
-				if (urec == NULL)
-				{
-					xid = InvalidTransactionId;
-					cid = InvalidCommandId;
-					break;
-				}
-
-				xid = urec->uur_prevxid;
-				cid = urec->uur_cid;
-				urec_ptr = urec->uur_blkprev;
-				uur_type = urec->uur_type;
-
-				/*
-				 * transaction slot won't change for such a tuple, so we can rely on
-				 * the same from current undo tuple.
-				 */
-
-				UndoRecordRelease(urec);
-			} while (uur_type != UNDO_INVALID_XACT_SLOT);
-		}
-		else
-		{
-			xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
-			cid = ZHeapTupleGetCid(zhtup, buffer);
-			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
-		}
-	}
-	else
-		xid = InvalidTransactionId;
+	/* Get transaction info */
+	ZHeapTupleGetTransInfo(zhtup, buffer, &xid, &cid, &urec_ptr, false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -714,7 +637,6 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 {
 	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	UnpackedUndoRecord	*urec;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	bool	visible;
 
@@ -724,61 +646,8 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
-	/*
-	 * We need to fetch all the transaction related information from undo
-	 * record for the tuples that point to a slot that gets invalidated for
-	 * reuse at some point of time.  See PageFreezeTransSlots.
-	 */
-	if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-	{
-		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
-		{
-			uint8	uur_type;
-
-			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
-
-			do
-			{
-				urec = UndoFetchRecord(urec_ptr,
-									   ItemPointerGetBlockNumber(&zhtup->t_self),
-									   ItemPointerGetOffsetNumber(&zhtup->t_self),
-									   InvalidTransactionId);
-
-				/*
-				 * The undo tuple must be visible, if the undo record containing
-				 * the information of the last transaction that has updated the
-				 * tuple is discarded or the transaction that has last updated the
-				 * undo tuple precedes RecentGlobalXmin.
-				 */
-				if (urec == NULL)
-				{
-					*xid = InvalidTransactionId;
-					*cid = InvalidCommandId;
-					break;
-				}
-
-				*xid = urec->uur_prevxid;
-				*cid = urec->uur_cid;
-				urec_ptr = urec->uur_blkprev;
-				uur_type = urec->uur_type;
-
-				/*
-				 * transaction slot won't change for such a tuple, so we can rely on
-				 * the same from current undo tuple.
-				 */
-
-				UndoRecordRelease(urec);
-			} while (uur_type != UNDO_INVALID_XACT_SLOT);
-		}
-		else
-		{
-			*xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
-			*cid = ZHeapTupleGetCid(zhtup, buffer);
-			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
-		}
-	}
-	else
-		*xid = InvalidTransactionId;
+	/* Get transaction info */
+	ZHeapTupleGetTransInfo(zhtup, buffer, xid, cid, &urec_ptr, false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -983,68 +852,14 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 bool
 ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer)
 {
-	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	UnpackedUndoRecord	*urec;
-	UndoRecPtr	urec_ptr;
 	TransactionId	xid;
-
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
-	/*
-	 * We need to fetch all the transaction related information from undo
-	 * record for the tuples that point to a slot that gets invalidated for
-	 * reuse at some point of time.  See PageFreezeTransSlots.
-	 */
-	if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-	{
-		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
-		{
-			uint8	uur_type;
-
-			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
-
-			do
-			{
-				urec = UndoFetchRecord(urec_ptr,
-									   ItemPointerGetBlockNumber(&zhtup->t_self),
-									   ItemPointerGetOffsetNumber(&zhtup->t_self),
-									   InvalidTransactionId);
-
-				/*
-				 * The undo tuple must be visible, if the undo record containing
-				 * the information of the last transaction that has updated the
-				 * tuple is discarded or the transaction that has last updated the
-				 * undo tuple precedes RecentGlobalXmin.
-				 */
-				if (urec == NULL)
-				{
-					xid = InvalidTransactionId;
-					break;
-				}
-
-				xid = urec->uur_prevxid;
-				urec_ptr = urec->uur_blkprev;
-				uur_type = urec->uur_type;
-
-				/*
-				 * transaction slot won't change for such a tuple, so we can rely on
-				 * the same from current undo tuple.
-				 */
-
-				UndoRecordRelease(urec);
-			} while (uur_type != UNDO_INVALID_XACT_SLOT);
-		}
-		else
-		{
-			xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
-		}
-	}
-	else
-		xid = InvalidTransactionId;
+	/* Get transaction id */
+	ZHeapTupleGetTransInfo(zhtup, buffer, &xid, NULL, NULL, false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -1083,13 +898,8 @@ ZHeapTuple
 ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 						 Buffer buffer, ItemPointer ctid)
 {
-	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	UnpackedUndoRecord	*urec;
-	UndoRecPtr	urec_ptr;
 	TransactionId	xid;
-
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
@@ -1097,57 +907,8 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	snapshot->xmin = snapshot->xmax = InvalidTransactionId;
 	snapshot->speculativeToken = 0;
 
-	/*
-	 * We need to fetch all the transaction related information from undo
-	 * record for the tuples that point to a slot that gets invalidated for
-	 * reuse at some point of time.  See PageFreezeTransSlots.
-	 */
-	if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-	{
-		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
-		{
-			uint8	uur_type;
-
-			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
-
-			do
-			{
-				urec = UndoFetchRecord(urec_ptr,
-									   ItemPointerGetBlockNumber(&zhtup->t_self),
-									   ItemPointerGetOffsetNumber(&zhtup->t_self),
-									   InvalidTransactionId);
-
-				/*
-				 * The undo tuple must be visible, if the undo record containing
-				 * the information of the last transaction that has updated the
-				 * tuple is discarded or the transaction that has last updated the
-				 * undo tuple precedes RecentGlobalXmin.
-				 */
-				if (urec == NULL)
-				{
-					xid = InvalidTransactionId;
-					break;
-				}
-
-				xid = urec->uur_prevxid;
-				urec_ptr = urec->uur_blkprev;
-				uur_type = urec->uur_type;
-
-				/*
-				 * transaction slot won't change for such a tuple, so we can rely on
-				 * the same from current undo tuple.
-				 */
-
-				UndoRecordRelease(urec);
-			} while (uur_type != UNDO_INVALID_XACT_SLOT);
-		}
-		else
-		{
-			xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
-		}
-	}
-	else
-		xid = InvalidTransactionId;
+	/* Get transaction id */
+	ZHeapTupleGetTransInfo(zhtup, buffer, &xid, NULL, NULL, false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -1282,72 +1043,13 @@ HTSV_Result
 ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 							  Buffer buffer, TransactionId *xid)
 {
-	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	UnpackedUndoRecord	*urec;
-	UndoRecPtr	urec_ptr;
-
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
-	/*
-	 * We need to fetch all the transaction related information from undo
-	 * record for the tuples that point to a slot that gets invalidated for
-	 * reuse at some point of time.  See PageFreezeTransSlots.
-	 */
-	if ((ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-		&& !TransactionIdPrecedes(ZHeapTupleHeaderGetRawXid(tuple, opaque),
-								  RecentGlobalXmin))
-	{
-		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
-		{
-			uint8	uur_type;
-
-			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
-
-			do
-			{
-				urec = UndoFetchRecord(urec_ptr,
-									   ItemPointerGetBlockNumber(&zhtup->t_self),
-									   ItemPointerGetOffsetNumber(&zhtup->t_self),
-									   InvalidTransactionId);
-
-				/*
-				 * The undo tuple must be visible, if the undo record containing
-				 * the information of the last transaction that has updated the
-				 * tuple is discarded or the transaction that has last updated the
-				 * undo tuple precedes RecentGlobalXmin.
-				 */
-				if (urec == NULL)
-				{
-					*xid = InvalidTransactionId;
-					break;
-				}
-
-				*xid = urec->uur_prevxid;
-				urec_ptr = urec->uur_blkprev;
-				uur_type = urec->uur_type;
-
-				/*
-				 * transaction slot won't change for such a tuple, so we can rely on
-				 * the same from current undo tuple.
-				 */
-
-				UndoRecordRelease(urec);
-			} while (uur_type != UNDO_INVALID_XACT_SLOT);
-		}
-		else
-		{
-			*xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
-			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
-		}
-	}
-	else if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
-		*xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
-	else
-		*xid = InvalidTransactionId;
+	/* Get transaction id */
+	ZHeapTupleGetTransInfo(zhtup, buffer, xid, NULL, NULL, false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)

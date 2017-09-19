@@ -2886,43 +2886,54 @@ fetch_undo_record:
 }
 
 /*
- * ZHeapTupleGetXid - Retrieve transaction id that has modified the tuple.
+ * ZHeapTupleGetTransInfo - Retrieve transaction information of transaction
+ *			that has modified the tuple.
  *
- * It is expected that caller of this function has atleast read lock
- * on the buffer.
+ * nobuflock indicates whether caller has lock on the buffer 'buf'.
  */
-TransactionId
-ZHeapTupleGetXid(ZHeapTuple zhtup, Buffer buf)
+void
+ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, TransactionId *xid_out,
+					   CommandId *cid_out, UndoRecPtr *urec_ptr_out,
+					   bool nobuflock)
 {
 	ZHeapTupleHeader	tuple = zhtup->t_data;
 	ZHeapPageOpaque		opaque;
 	UnpackedUndoRecord	*urec;
 	UndoRecPtr	urec_ptr;
 	TransactionId		xid;
+	CommandId	cid;
     ItemId	lp;
     Page	page;
     ItemPointer tid = &(zhtup->t_self);
 
 
-	/*
-	 * As we are going to access special space in the page to retrieve the
-	 * transaction information share lock on buffer is required.
-	 */
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	page = BufferGetPage(buf);
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
-	Assert(ItemIdIsNormal(lp));
+	if (nobuflock)
+	{
+		/*
+		 * We are going to access special space in the page to retrieve the
+		 * transaction information and that requires share lock on buffer.
+		 */
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+		lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+		Assert(ItemIdIsNormal(lp));
 
-	/*
-	 * If the tuple is updated such that its transaction slot has been
-	 * changed, then we will never be able to get the correct tuple from undo.
-	 * To avoid, that we get the latest tuple from page rather than relying on
-	 * it's in-memory copy.
-	 */
-	zhtup->t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-	zhtup->t_len = ItemIdGetLength(lp);
-	tuple = zhtup->t_data;
+		/*
+		 * If the tuple is updated such that its transaction slot has been
+		 * changed, then we will never be able to get the correct tuple from undo.
+		 * To avoid, that we get the latest tuple from page rather than relying on
+		 * it's in-memory copy.
+		 */
+		zhtup->t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+		zhtup->t_len = ItemIdGetLength(lp);
+		tuple = zhtup->t_data;
+	}
+	else
+	{
+		page = BufferGetPage(buf);
+		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+	}
 
 	/*
 	 * We need to fetch all the transaction related information from undo
@@ -2953,10 +2964,16 @@ ZHeapTupleGetXid(ZHeapTuple zhtup, Buffer buf)
 				if (urec == NULL)
 				{
 					xid = InvalidTransactionId;
+					cid = InvalidCommandId;
+					urec_ptr = InvalidUndoRecPtr;
+
+					if (urec)
+						UndoRecordRelease(urec);
 					break;
 				}
 
 				xid = urec->uur_prevxid;
+				cid = urec->uur_cid;
 				urec_ptr = urec->uur_blkprev;
 				uur_type = urec->uur_type;
 
@@ -2971,14 +2988,29 @@ ZHeapTupleGetXid(ZHeapTuple zhtup, Buffer buf)
 		else
 		{
 			xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
+			cid = ZHeapTupleGetCid(zhtup, buf);
+			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
 		}
 	}
 	else
+	{
 		xid = InvalidTransactionId;
+		cid = InvalidCommandId;
+		urec_ptr = InvalidUndoRecPtr;
+	}
 
-	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	/* Set the value of required parameters. */
+	if (xid_out)
+		*xid_out = xid;
+	if (cid_out)
+		*cid_out = cid;
+	if (urec_ptr_out)
+		*urec_ptr_out = urec_ptr;
 
-	return xid;
+	if (nobuflock)
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+	return;
 }
 
 /*

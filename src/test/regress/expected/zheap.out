@@ -221,3 +221,34 @@ SELECT c2 FROM update_test_zheap WHERE c1 IN (1,2);
 (2 rows)
 
 DROP TABLE update_test_zheap;
+--
+-- 6. Test for bitmap heap scan - taken from bitmapops.sql
+--
+CREATE TABLE bmscantest (a int, b int, t text) WITH (storage_engine='zheap');
+INSERT INTO bmscantest
+  SELECT (r%53), (r%59), 'foooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo'
+  FROM generate_series(1,70000) r;
+CREATE INDEX i_bmtest_a ON bmscantest(a);
+CREATE INDEX i_bmtest_b ON bmscantest(b);
+-- We want to use bitmapscans. With default settings, the planner currently
+-- chooses a bitmap scan for the queries below anyway, but let's make sure.
+set enable_indexscan=false;
+set enable_seqscan=false;
+-- Lower work_mem to trigger use of lossy bitmaps
+set work_mem = 64;
+-- Test bitmap-and.
+SELECT count(*) FROM bmscantest WHERE a = 1 AND b = 1;
+ count 
+-------
+    23
+(1 row)
+
+-- Test bitmap-or.
+SELECT count(*) FROM bmscantest WHERE a = 1 OR b = 1;
+ count 
+-------
+  2485
+(1 row)
+
+-- clean up
+DROP TABLE bmscantest;
