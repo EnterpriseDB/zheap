@@ -2739,6 +2739,13 @@ extract_autovac_opts(HeapTuple tup, TupleDesc pg_class_desc)
 
 	av = palloc(sizeof(AutoVacOpts));
 	memcpy(av, &(((StdRdOptions *) relopts)->autovacuum), sizeof(AutoVacOpts));
+
+	/*
+	 * Skip autovacuum for zheap relations.
+	 */
+	av->enabled = av->enabled && !(((StdRdOptions *) relopts)->relstorage_offset != 0 ?
+		pg_strcasecmp((char *) relopts + ((StdRdOptions *) relopts)->relstorage_offset,
+		RELSTORAGE_ZHEAP) == 0 : false);
 	pfree(relopts);
 
 	return av;

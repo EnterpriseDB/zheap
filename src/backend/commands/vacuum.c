@@ -1660,6 +1660,20 @@ vacuum_rel(Oid relid, RangeVar *relation, int options, VacuumParams *params)
 	}
 
 	/*
+	 * Check if it's a zheap relation. We don't support vacuum for zheap
+	 * relations.
+	 */
+	if (RelationStorageIsZHeap(onerel))
+	{
+		relation_close(onerel, lmode);
+		PopActiveSnapshot();
+		CommitTransactionCommand();
+		ereport(WARNING,
+				(errmsg("skipping \"%s\" --- cannot vacuum zheap tables",
+						RelationGetRelationName(onerel))));
+		return false;
+	}
+	/*
 	 * Get a session-level lock too. This will protect our access to the
 	 * relation across multiple transactions, so that we can vacuum the
 	 * relation's TOAST table (if any) secure in the knowledge that no one is
