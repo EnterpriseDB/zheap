@@ -1636,6 +1636,10 @@ reacquire_buffer:
 		memcpy((char *) oldtup.t_data + SizeofZHeapTupleHeader,
 			   (char *) newtup->t_data + SizeofZHeapTupleHeader,
 			   newtup->t_len - SizeofZHeapTupleHeader);
+
+		/* copy everything in infomask apart from visibility flags */
+		oldtup.t_data->t_infomask |= (newtup->t_data->t_infomask
+									  & ~ZHEAP_VIS_STATUS_MASK);
 	}
 	else
 	{
