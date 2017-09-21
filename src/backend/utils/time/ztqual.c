@@ -917,11 +917,11 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		/*
 		 * The tuple is deleted and must be all visible if the transaction slot
 		 * is cleared or latest xid that has changed the tuple precedes
-		 * smallest xid that has undo.  However, that is not possible at this
-		 * stage as the tuple has already passed snapshot check.
+		 * smallest xid that has undo.
 		 */
-		Assert(!(ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN &&
-			   TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo))));
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			return NULL;
 
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
