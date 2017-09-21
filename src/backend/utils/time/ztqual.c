@@ -56,10 +56,11 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId *xid,
 		 * The undo tuple must be visible, if the undo record containing
 		 * the information of the last transaction that has updated the
 		 * tuple is discarded or the transaction that has last updated the
-		 * undo tuple precedes RecentGlobalXmin.
+		 * undo tuple precedes smallest xid that has undo.
 		 */
 		if (urec == NULL ||
-			TransactionIdPrecedes(urec->uur_prevxid, RecentGlobalXmin))
+			TransactionIdPrecedes(urec->uur_prevxid,
+								  pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 		{
 			*xid = InvalidTransactionId;
 			*cid = InvalidCommandId;
@@ -175,7 +176,7 @@ fetch_undo_record:
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
 	if ((ZHeapTupleHeaderGetXactSlot(undo_tup->t_data) != ZHTUP_SLOT_FROZEN)
-		&& !TransactionIdPrecedes(xid, RecentGlobalXmin))
+		&& !TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 	{
 		if (undo_tup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
 		{
@@ -200,7 +201,7 @@ fetch_undo_record:
 	 * undo.
 	 */
 	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(xid, RecentGlobalXmin))
+		TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 		return undo_tup;
 
 	if (undo_oper == ZHEAP_INPLACE_UPDATED ||
@@ -358,7 +359,7 @@ fetch_undo_record:
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
 	if ((ZHeapTupleHeaderGetXactSlot(undo_tup->t_data) != ZHTUP_SLOT_FROZEN)
-		&& !TransactionIdPrecedes(xid, RecentGlobalXmin))
+		&& !TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 	{
 		if (undo_tup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
 		{
@@ -383,7 +384,7 @@ fetch_undo_record:
 	 * undo.
 	 */
 	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(xid, RecentGlobalXmin))
+		TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 	{
 		result = true;
 		goto result_available;
@@ -511,7 +512,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 		 * smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, RecentGlobalXmin))
+			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 			return NULL;
 
 		if (TransactionIdIsCurrentTransactionId(xid))
@@ -552,7 +553,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 		 * tuple precedes smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, RecentGlobalXmin))
+			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 			return zhtup;	/* tuple is updated */
 
 		if (TransactionIdIsCurrentTransactionId(xid))
@@ -593,7 +594,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	 * smallest xid that has undo.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(xid, RecentGlobalXmin))
+		TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 		return zhtup;
 
 	if (TransactionIdIsCurrentTransactionId(xid))
@@ -660,7 +661,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 		 * check.
 		 */
 		Assert(!(ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN &&
-			   TransactionIdPrecedes(*xid, RecentGlobalXmin)));
+			   TransactionIdPrecedes(*xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo))));
 
 		if (TransactionIdIsCurrentTransactionId(*xid))
 		{
@@ -744,7 +745,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 		 * tuple precedes smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(*xid, RecentGlobalXmin))
+			TransactionIdPrecedes(*xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 			return HeapTupleMayBeUpdated;
 
 		if (TransactionIdIsCurrentTransactionId(*xid))
@@ -824,7 +825,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	 * smallest xid that has undo.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(*xid, RecentGlobalXmin))
+		TransactionIdPrecedes(*xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 		return HeapTupleMayBeUpdated;
 
 	if (TransactionIdIsCurrentTransactionId(*xid))
@@ -870,7 +871,7 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer
 		 * smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, RecentGlobalXmin))
+			TransactionIdPrecedes(xid, OldestXmin))
 			return true;
 	}
 
@@ -920,7 +921,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		 * stage as the tuple has already passed snapshot check.
 		 */
 		Assert(!(ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN &&
-			   TransactionIdPrecedes(xid, RecentGlobalXmin)));
+			   TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo))));
 
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
@@ -968,7 +969,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		 * tuple precedes smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, RecentGlobalXmin))
+			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 			return zhtup;	/* tuple is updated */
 
 		if (TransactionIdIsCurrentTransactionId(xid))
@@ -998,7 +999,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	 * undo.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(xid, RecentGlobalXmin))
+		TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 		return zhtup;
 
 	if (TransactionIdIsCurrentTransactionId(xid))
@@ -1060,7 +1061,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 		 * smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(*xid, RecentGlobalXmin))
+			TransactionIdPrecedes(*xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 			return HEAPTUPLE_DEAD;
 
 		if (TransactionIdIsCurrentTransactionId(*xid))
@@ -1101,7 +1102,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 	 * undo.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(*xid, RecentGlobalXmin))
+		TransactionIdPrecedes(*xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
 		return HEAPTUPLE_LIVE;
 
 	if (TransactionIdIsCurrentTransactionId(*xid))

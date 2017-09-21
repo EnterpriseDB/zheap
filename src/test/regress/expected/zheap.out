@@ -185,8 +185,7 @@ SELECT * FROM pkey_test_zheap;
  a  | b  
 ----+----
  10 | 30
- 10 | 30
-(2 rows)
+(1 row)
 
 DROP TABLE pkey_test_zheap;
 --
