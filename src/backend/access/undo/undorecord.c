@@ -520,11 +520,10 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 	 * log and we have nothing to update.
 	 */
 	if (!UndoRecPtrIsValid(prev_xact_urp))
-	{
 		prev_xact_urp = UndoLogGetLastXactStartPoint();
-		if (!UndoRecPtrIsValid(prev_xact_urp))
-			return;
-	}
+
+	if (!UndoRecPtrIsValid(prev_xact_urp) || UndoLogIsDiscarded(prev_xact_urp))
+		return;
 
 	UndoRecPtrAssignRelFileNode(rnode, prev_xact_urp);
 	cur_blk = UndoRecPtrGetBlockNum(prev_xact_urp);

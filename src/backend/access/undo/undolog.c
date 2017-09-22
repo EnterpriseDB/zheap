@@ -994,6 +994,29 @@ UndoLogGetFirstValidRecord(UndoLogNumber logno)
 }
 
 /*
+ * Return the Next insert location.  This will also validate the input xid
+ * if latest insert point is not for the same transaction id then this will
+ * return Invalid Undo pointer.
+ */
+UndoRecPtr
+UndoLogGetNextInsertPtr(UndoLogNumber logno, TransactionId xid)
+{
+	UndoLogControl *log = get_undo_log_by_number(logno);
+	TransactionId	logxid;
+	UndoRecPtr	insert;
+
+	LWLockAcquire(&log->mutex, LW_SHARED);
+	insert = log->meta.insert;
+	logxid = log->xid;
+	LWLockRelease(&log->mutex);
+
+	if (log == NULL || !TransactionIdEquals(logxid, xid))
+		return InvalidUndoRecPtr;
+
+	return MakeUndoRecPtr(logno, insert);
+}
+
+/*
  * Delete unreachable files under pg_undo.  Any files corresponding to LSN
  * positions before the previous checkpoint are no longer needed.
  */

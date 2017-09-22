@@ -73,7 +73,7 @@ UndoDiscardShmemInit(void)
 static void 
 UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin)
 {
-	UndoRecPtr		undo_recptr = discard->undo_recptr;
+	UndoRecPtr	undo_recptr = discard->undo_recptr;
 	UnpackedUndoRecord	*uur;
 	bool	need_discard = false;
 
@@ -86,17 +86,45 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin)
 		Assert(uur != NULL);
 
 		/* we can discard upto this point. */
-		if (uur->uur_xid >= xmin || uur->uur_next == SpecialUndoRecPtr ||
+		if (TransactionIdFollowsOrEquals(uur->uur_xid, xmin) ||
+			uur->uur_next == SpecialUndoRecPtr ||
 			uur->uur_next == InvalidUndoRecPtr)
 		{
+			TransactionId	undoxid = uur->uur_xid;
+
+			UndoRecordRelease(uur);
+
+			/*
+			 * If Transaction id is smaller than the xmin that means this must
+			 * be the last transaction in this undo log, so we need to get the
+			 * last insert point in this undo log and discard till that point.
+			 */
+			if (TransactionIdPrecedes(undoxid, xmin))
+			{
+				UndoLogNumber logno = UndoRecPtrGetLogNo(discard->undo_recptr);
+				UndoRecPtr	next_insert = InvalidUndoRecPtr;
+
+				/*
+				 * Get the last insert location for this transaction Id, if it
+				 * returns invalid pointer that means there is new transaction
+				 * has started for this undolog.
+				 */
+				next_insert = UndoLogGetNextInsertPtr(logno, undoxid);
+
+				if (!UndoRecPtrIsValid(next_insert))
+					continue;
+
+				undo_recptr = next_insert;
+				need_discard = true;
+				undoxid = InvalidTransactionId;
+			}
+
 			LWLockAcquire(&discard->mutex, LW_EXCLUSIVE);
 
-			discard->xid = uur->uur_xid;
+			discard->xid = undoxid;
 			discard->undo_recptr = undo_recptr;
 
 			LWLockRelease(&discard->mutex);
-
-			UndoRecordRelease(uur);
 
 			if (need_discard)
 				UndoLogDiscard(undo_recptr);
@@ -126,7 +154,7 @@ void
 UndoDiscard(TransactionId oldestXid)
 {
 	int		i;
-	TransactionId	oldestXidHavingUndo = InvalidTransactionId;
+	TransactionId	oldestXidHavingUndo = oldestXid;
 
 	for (i = 0; i < MaxBackends; i++)
 	{
@@ -142,7 +170,7 @@ UndoDiscard(TransactionId oldestXid)
 			 * If the XID in the discard entry is invalid then start scanning from
 			 * the first valid undorecord in the log.
 			 */
-			if (UndoDiscardInfo[i].xid == InvalidTransactionId)
+			if (!TransactionIdIsValid(UndoDiscardInfo[i].xid))
 			{
 				urp = UndoLogGetFirstValidRecord(i);
 
@@ -156,8 +184,8 @@ UndoDiscard(TransactionId oldestXid)
 			UndoDiscardOneLog(&UndoDiscardInfo[i], oldestXid);
 		}
 
-		/* Update the correct value for oldestXid. */
-		if (!TransactionIdIsValid(oldestXidHavingUndo) ||
+		/* Update the correct value for oldestXidHavingUndo. */
+		if (TransactionIdIsValid(UndoDiscardInfo[i].xid) &&
 			TransactionIdPrecedes(UndoDiscardInfo[i].xid, oldestXidHavingUndo))
 			oldestXidHavingUndo = UndoDiscardInfo[i].xid;
 	}
@@ -168,7 +196,6 @@ UndoDiscard(TransactionId oldestXid)
 	 * XXX In future if multiple worker can perform discard then we may need
 	 * to use compare and swap for updating the shared memory value.
 	 */
-	if (TransactionIdIsValid(oldestXidHavingUndo))
-		pg_atomic_write_u32(&ProcGlobal->oldestXidHavingUndo,
-							oldestXidHavingUndo);
+	pg_atomic_write_u32(&ProcGlobal->oldestXidHavingUndo,
+						oldestXidHavingUndo);
 }
