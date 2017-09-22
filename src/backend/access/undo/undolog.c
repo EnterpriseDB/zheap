@@ -1010,7 +1010,7 @@ UndoLogGetNextInsertPtr(UndoLogNumber logno, TransactionId xid)
 	logxid = log->xid;
 	LWLockRelease(&log->mutex);
 
-	if (log == NULL || !TransactionIdEquals(logxid, xid))
+	if (TransactionIdIsValid(logxid) && !TransactionIdEquals(logxid, xid))
 		return InvalidUndoRecPtr;
 
 	return MakeUndoRecPtr(logno, insert);
