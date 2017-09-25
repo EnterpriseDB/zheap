@@ -12,6 +12,6 @@ subdir = src/backend/access/zheap
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = zheapam.o
+OBJS = zheapam.o zheapamutils.o
 
 include $(top_srcdir)/src/backend/common.mk
