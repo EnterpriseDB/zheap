@@ -328,8 +328,12 @@ typedef struct StdRdOptions
  * 	TRUE if relation stored in a zheap format
  */
 #define RelationStorageIsZHeap(relation) \
-	(relation && (relation)->rd_options && \
-	((StdRdOptions *) (relation)->rd_options)->relstorage_offset != 0 ? \
+	(relation && (relation)->rd_options &&	\
+	((relation)->rd_rel->relkind == RELKIND_RELATION ||	\
+	 (relation)->rd_rel->relkind == RELKIND_MATVIEW ||	\
+	 (relation)->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||	\
+	 (relation)->rd_rel->relkind == RELKIND_TOASTVALUE) &&	\
+	((StdRdOptions *) (relation)->rd_options)->relstorage_offset != 0 ?	\
 		 pg_strcasecmp((char *) (relation)->rd_options +								\
 			((StdRdOptions *) (relation)->rd_options)->relstorage_offset, \
 			RELSTORAGE_ZHEAP) == 0 : false) \
