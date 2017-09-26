@@ -94,6 +94,9 @@ typedef int UndoLogNumber;
 /* The pseudo-database OID used for undo logs. */
 #define UndoLogDatabaseOid 9
 
+/* Length of undo checkpoint filename */
+#define UNDO_CHECKPOINT_FILENAME_LENGTH	16
+
 /*
  * UndoRecPtrIsValid
  *		True iff undoRecPtr is valid.
@@ -115,6 +118,10 @@ typedef int UndoLogNumber;
 /* Compute the offset of a given UndoRecPtr in the page that holds it. */
 #define UndoRecPtrGetPageOffset(urp)			\
 	(UndoRecPtrGetOffset(urp) % BLCKSZ)
+
+/* Compare two undo checkpoint files to find the oldest file. */
+#define UndoCheckPointFilenamePrecedes(file1, file2)	\
+	(strcmp(file1, file2) < 0)
 
 /* Find out which tablespace the given undo log location is backed by. */
 extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);

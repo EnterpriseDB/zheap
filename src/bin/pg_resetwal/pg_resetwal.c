@@ -1354,7 +1354,10 @@ FindLatestUndoCheckPointFile(char *latest_undo_checkpoint_file)
 	 */
 	for (filename = filenames; *filename; filename++)
 	{
-		if (strlen(*filename) == 16 && memcmp(*filename, latest, 16) > 0)
+		if (!(strlen(*filename) == UNDO_CHECKPOINT_FILENAME_LENGTH))
+			continue;
+
+		if (UndoCheckPointFilenamePrecedes(latest, *filename))
 		{
 			if (latest[0] != '\0')
 			{

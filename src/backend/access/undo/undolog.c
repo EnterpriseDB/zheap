@@ -1044,12 +1044,14 @@ CleanUpUndoCheckPointFiles(XLogRecPtr checkPointRedo)
 	{
 		/*
 		 * Assume that fixed width uppercase hex strings sort the same way as
-		 * the values they represent, so we can use memcmp to identify undo
+		 * the values they represent, so we can use strcmp to identify undo
 		 * log snapshot files corresponding to checkpoints that we don't need
 		 * anymore.  This assumption holds for ASCII.
 		 */
-		if (strlen(de->d_name) == 16 &&
-			memcmp(de->d_name, oldest_path, 16) < 0)
+		if (!(strlen(de->d_name) == UNDO_CHECKPOINT_FILENAME_LENGTH))
+			continue;
+
+		if (UndoCheckPointFilenamePrecedes(de->d_name, oldest_path))
 		{
 			snprintf(path, MAXPGPATH, "pg_undo/%s", de->d_name);
 			if (unlink(path) != 0)
