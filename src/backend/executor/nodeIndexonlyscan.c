@@ -516,6 +516,12 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	 */
 	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 
+	/*
+	 * FIXME: We are yet to support index-only scan for zheap tables.
+	 */
+	if (RelationStorageIsZHeap(currentRelation))
+		elog(ERROR, "index-only scans are not supported for zheap tables");
+
 	indexstate->ss.ss_currentRelation = currentRelation;
 	indexstate->ss.ss_currentScanDesc = NULL;	/* no heap scan here */
 
