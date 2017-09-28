@@ -22,7 +22,6 @@
 #define XLOG_UNDOLOG_EXTEND		0x10
 #define XLOG_UNDOLOG_ATTACH		0x20
 #define XLOG_UNDOLOG_DISCARD	0x30
-#define XLOG_UNDOLOG_XACTSTART	0x40
 
 /* Create a new undo log. */
 typedef struct xl_undolog_create
@@ -44,6 +43,8 @@ typedef struct xl_undolog_attach
 	TransactionId xid;
 	UndoLogNumber logno;
 	UndoLogOffset insert;
+	UndoLogOffset last_xact_start;
+	bool		  is_first_rec;
 } xl_undolog_attach;
 
 /* Discard space, and possibly destroy or recycle undo log segments. */
@@ -53,13 +54,6 @@ typedef struct xl_undolog_discard
 	UndoLogOffset discard;
 	UndoLogOffset end;
 } xl_undolog_discard;
-
-/* latest xact information. */
-typedef struct xl_undolog_xactstart
-{
-	UndoLogNumber logno;
-	UndoLogOffset last_xact_start;
-} xl_undolog_xactstart;
 
 extern void undolog_desc(StringInfo buf,XLogReaderState *record);
 extern const char *undolog_identify(uint8 info);

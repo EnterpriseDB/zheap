@@ -40,9 +40,10 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 	{
 		xl_undolog_attach *xlrec = (xl_undolog_attach *) rec;
 
-		appendStringInfo(buf, "logno %u xid %u insert %zu last_size %lu",
+		appendStringInfo(buf, "logno %u xid %u insert %zu last_size %lu last_xact_start %lu is_first_record=%d",
 						 xlrec->logno, xlrec->xid, xlrec->insert,
-						 xlrec->insert);
+						 xlrec->insert, xlrec->last_xact_start,
+						 xlrec->is_first_rec);
 	}
 	else if (info == XLOG_UNDOLOG_DISCARD)
 	{
@@ -50,13 +51,6 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, "logno %u discard %zu end %zu",
 						 xlrec->logno, xlrec->discard, xlrec->end);
-	}
-	else if (info == XLOG_UNDOLOG_XACTSTART)
-	{
-		xl_undolog_xactstart *xlrec = (xl_undolog_xactstart *) rec;
-
-		appendStringInfo(buf, "logno %u last xact start point %zu",
-						 xlrec->logno, xlrec->last_xact_start);
 	}
 }
 

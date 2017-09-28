@@ -146,6 +146,7 @@ typedef struct UndoLogMetaData
 	UndoLogOffset end;				/* one past end of highest segment */
 	UndoLogOffset discard;			/* oldest data needed (tail) */
 	UndoLogOffset last_xact_start;	/* last transactions start undo offset */
+	bool		  is_first_rec;		/* is this the fisrt record of the xid */
 } UndoLogMetaData;
 
 /* Space management. */
@@ -176,6 +177,7 @@ extern UndoRecPtr UndoLogGetLastXactStartPoint(void);
 extern UndoRecPtr UndoLogGetFirstValidRecord(UndoLogNumber logno);
 extern UndoRecPtr UndoLogGetNextInsertPtr(UndoLogNumber logno,
 										  TransactionId xid);
+extern bool IsTransactionFirstRec(TransactionId xid);
 /* Redo interface. */
 extern void undolog_redo(XLogReaderState *record);
 

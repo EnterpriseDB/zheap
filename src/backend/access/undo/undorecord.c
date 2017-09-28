@@ -13,6 +13,7 @@
 
 #include "postgres.h"
 
+#include "access/subtrans.h"
 #include "access/xact.h"
 #include "access/undodiscard.h"
 #include "access/undolog.h"
@@ -687,6 +688,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	int				starting_byte;
 	int				index = 0;
 	int				bufidx;
+	bool			need_start_undo = false;
 
 	/* Already reached maximum prepared limit. */
 	if (prepare_idx == max_prepare_undo)
@@ -708,7 +710,11 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	}
 	else
 	{
-		txid = xid;
+		/*
+		 * Get the top transaction id because undo log only stores mapping for
+		 * the top most transactions.
+		 */
+		txid = SubTransGetTopmostTransaction(xid);
 	}
 
 
@@ -719,7 +725,10 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	 * will be updated while preparing the first undo record of the next
 	 * transaction.
 	 */
-	if (prev_txid != txid)
+	if (prev_txid != txid && (!InRecovery || IsTransactionFirstRec(txid)))
+		need_start_undo = true;
+
+	if (need_start_undo)
 		urec->uur_next = SpecialUndoRecPtr;
 	else
 		urec->uur_next = InvalidUndoRecPtr;
@@ -733,16 +742,10 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 		urecptr = UndoLogAllocate(size, upersistence);
 
 	/*
-	 * If transaction id is swithed then update the previous transaction's
+	 * If transaction id is switched then update the previous transaction's
 	 * start undo record.
-	 *
-	 * Fixme - we need to update the position in previous transaction header
-	 * during recovery as well, but right now don't know how to do that reliably
-	 * as the value of last_xact_start will be always last transaction for which
-	 * we are replaying the recovery record.  We ideally need to update one xid
-	 * previous to last_xact_start.
 	 */
-	if (prev_txid != txid && !InRecovery)
+	if (need_start_undo)
 	{
 		UndoRecordUpdateTransactionInfo(urecptr);
 

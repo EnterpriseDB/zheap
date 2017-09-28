@@ -108,6 +108,8 @@ typedef struct UndoLogControl
 
 	pid_t		pid;				/* InvalidPid for unattached */
 	TransactionId xid;
+	bool		is_first_rec;		/* is this the first record of the xid */
+
 
 	UndoLogNumber next_free;		/* protected by UndoLogLock */
 
@@ -348,19 +350,6 @@ UndoLogSetLastXactStartPoint(UndoRecPtr point)
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->meta.last_xact_start = UndoRecPtrGetOffset(point);
 	LWLockRelease(&log->mutex);
-
-	/* WAL log. */
-	if (!InRecovery)
-	{
-		xl_undolog_xactstart xlrec;
-
-		xlrec.logno = logno;
-		xlrec.last_xact_start = UndoRecPtrGetOffset(point);
-
-		XLogBeginInsert();
-		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
-		XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_XACTSTART);
-	}
 }
 
 /*
@@ -384,6 +373,27 @@ UndoLogGetLastXactStartPoint()
 		return InvalidUndoRecPtr;
 
 	return MakeUndoRecPtr(MyUndoLogState.logno, last_xact_start);
+}
+
+/*
+ * Is this record is the first record for any transaction.
+ */
+bool
+IsTransactionFirstRec(TransactionId xid)
+{
+	uint16		high_bits = UndoLogGetXidHigh(xid);
+	uint16		low_bits = UndoLogGetXidLow(xid);
+	UndoLogNumber logno;
+	UndoLogControl *log;
+
+	Assert(InRecovery);
+
+	logno = MyUndoLogState.xidToLogNumber[high_bits][low_bits];
+	log = get_undo_log_by_number(logno);
+	if (log == NULL)
+		elog(ERROR, "cannot find undo log number %d for xid %u", logno, xid);
+
+	return log->is_first_rec;
 }
 
 /*
@@ -609,6 +619,7 @@ UndoLogAllocate(size_t size, UndoPersistence level)
 {
 	UndoLogControl *log = MyUndoLogState.log;
 	bool	need_attach_wal_record = false;
+	bool	is_xid_change = false;
 	UndoLogOffset new_insert;
 
  retry:
@@ -664,8 +675,11 @@ UndoLogAllocate(size_t size, UndoPersistence level)
 	 * UndoLogAllocateInRecovery knows how to replay this undo space
 	 * allocation.
 	 */
+	if (log->xid != GetTopTransactionId())
+		is_xid_change = true;
+
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	if (log->need_attach_wal_record || log->xid != GetTopTransactionId())
+	if (log->need_attach_wal_record || is_xid_change)
 	{
 		need_attach_wal_record = true;
 		log->xid = GetTopTransactionId();
@@ -680,6 +694,8 @@ UndoLogAllocate(size_t size, UndoPersistence level)
 		xlrec.xid = GetTopTransactionId();
 		xlrec.logno = MyUndoLogState.logno;
 		xlrec.insert = log->meta.insert;
+		xlrec.last_xact_start = log->meta.last_xact_start;
+		xlrec.is_first_rec = is_xid_change;
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
@@ -1566,7 +1582,9 @@ undolog_xlog_attach(XLogReaderState *record)
 	 */
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->meta.insert = xlrec->insert;
+	log->meta.last_xact_start = xlrec->last_xact_start;
 	log->xid = xlrec->xid;
+	log->is_first_rec = xlrec->is_first_rec;
 	log->pid = MyProcPid; /* show as recovery process */
 	LWLockRelease(&log->mutex);
 
@@ -1662,25 +1680,6 @@ undolog_xlog_discard(XLogReaderState *record)
 	LWLockRelease(&log->mutex);
 }
 
-/*
- * replay an undo last xact start record
- */
-static void
-undolog_xlog_xactstart(XLogReaderState *record)
-{
-	xl_undolog_xactstart *xlrec = (xl_undolog_xactstart *) XLogRecGetData(record);
-	UndoLogControl *log;
-
-	log = get_undo_log_by_number(xlrec->logno);
-	if (log == NULL)
-		elog(ERROR, "unknown undo log %d", xlrec->logno);
-
-	/* Update shmem. */
-	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	log->meta.last_xact_start = xlrec->last_xact_start;
-	LWLockRelease(&log->mutex);
-}
-
 void
 undolog_redo(XLogReaderState *record)
 {
@@ -1699,9 +1698,6 @@ undolog_redo(XLogReaderState *record)
 			break;
 		case XLOG_UNDOLOG_DISCARD:
 			undolog_xlog_discard(record);
-			break;
-		case XLOG_UNDOLOG_XACTSTART:
-			undolog_xlog_xactstart(record);
 			break;
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);
