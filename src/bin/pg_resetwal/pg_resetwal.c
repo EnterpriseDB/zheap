@@ -1340,7 +1340,7 @@ FindLatestUndoCheckPointFile(char *latest_undo_checkpoint_file)
 {
 	char **filenames;
 	char **filename;
-	char latest[16];
+	char latest[UNDO_CHECKPOINT_FILENAME_LENGTH + 1];
 	bool result = false;
 
 	memset(latest, 0, sizeof(latest));
@@ -1367,7 +1367,8 @@ FindLatestUndoCheckPointFile(char *latest_undo_checkpoint_file)
 					fprintf(stderr, _("could not unlink file \"%s\": %s\n"),
 							*filename, strerror(errno));
 			}
-			memcpy(latest, *filename, 16);
+			memcpy(latest, *filename, UNDO_CHECKPOINT_FILENAME_LENGTH);
+			latest[UNDO_CHECKPOINT_FILENAME_LENGTH] = '\0';
 			result = true;
 		}
 	}
