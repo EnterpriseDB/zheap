@@ -21,6 +21,7 @@
 #include "access/undolog_xlog.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
+#include "access/zheapam_xlog.h"
 #include "catalog/storage_xlog.h"
 #include "commands/dbcommands_xlog.h"
 #include "commands/sequence.h"

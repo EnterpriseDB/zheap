@@ -276,6 +276,9 @@ extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
 	((int) ((MaxZHeapPageFixedSpace) / \
 			(MaxZHeapTupFixedSize)))
 
+#define MaxZHeapTupleSize  (BLCKSZ - MAXALIGN(SizeOfPageHeaderData + sizeof(ZHeapPageOpaqueData) + sizeof(ItemIdData)))
+#define MinZHeapTupleSize  MAXALIGN(SizeofHeapTupleHeader)
+
 #define ZPageAddItem(page, item, size, offsetNumber, overwrite, is_heap) \
 	ZPageAddItemExtended(page, item, size, offsetNumber, \
 						 ((overwrite) ? PAI_OVERWRITE : 0) | \

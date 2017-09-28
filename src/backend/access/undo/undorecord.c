@@ -675,7 +675,8 @@ UndoSetPrepareSize(int max_prepare)
  * can fail.
  */
 UndoRecPtr
-PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence)
+PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
+				  TransactionId xid)
 {
 	UndoRecordSize	size;
 	UndoRecPtr		urecptr;
@@ -699,7 +700,17 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence)
 	 * this record we can prepare a new record which only contain transaction
 	 * informations.
 	 */
-	txid = GetTopTransactionId();
+	if (xid == InvalidTransactionId)
+	{
+		/* we expect during recovery, we always have a valid transaction id. */
+		Assert (!InRecovery);
+		txid = GetTopTransactionId();
+	}
+	else
+	{
+		txid = xid;
+	}
+
 
 	/*
 	 * If this is the first undo record for this transaction then set the
@@ -716,13 +727,22 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence)
 	/* calculate the size of the undo record. */
 	size = UndoRecordExpectedSize(urec);
 
-	urecptr = UndoLogAllocate(size, upersistence);
+	if (InRecovery)
+		urecptr = UndoLogAllocateInRecovery(xid, size, upersistence);
+	else
+		urecptr = UndoLogAllocate(size, upersistence);
 
 	/*
 	 * If transaction id is swithed then update the previous transaction's
 	 * start undo record.
+	 *
+	 * Fixme - we need to update the position in previous transaction header
+	 * during recovery as well, but right now don't know how to do that reliably
+	 * as the value of last_xact_start will be always last transaction for which
+	 * we are replaying the recovery record.  We ideally need to update one xid
+	 * previous to last_xact_start.
 	 */
-	if (prev_txid != txid)
+	if (prev_txid != txid && !InRecovery)
 	{
 		UndoRecordUpdateTransactionInfo(urecptr);
 

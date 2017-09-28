@@ -36,6 +36,7 @@
 #include "access/visibilitymap.h"
 #include "access/zheap.h"
 #include "access/zhtup.h"
+#include "access/zheapam_xlog.h"
 #include "catalog/catalog.h"
 #include "executor/tuptable.h"
 #include "miscadmin.h"
@@ -78,8 +79,6 @@ zheap_beginscan_internal(Relation relation, Snapshot snapshot,
 static int PageReserveTransactionSlot(Relation relation, Buffer buf, TransactionId xid);
 static bool PageFreezeTransSlots(Relation relation, Buffer buf);
 static inline UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
-static inline void PageSetUNDO(UnpackedUndoRecord undorecord, Page page, int trans_slot_id,
-						TransactionId xid, UndoRecPtr urecptr);
 static void RelationPutZHeapTuple(Relation relation, Buffer buffer,
 								  ZHeapTuple tuple);
 static ZHeapFreeOffsetRanges *
@@ -665,7 +664,7 @@ reacquire_buffer:
 	undorecord.uur_payload.len = 0;
 	undorecord.uur_tuple.len = 0;
 
-	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, InvalidTransactionId);
 
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
@@ -708,10 +707,25 @@ reacquire_buffer:
 			bufflags |= REGBUF_WILL_INIT;
 		}
 
+		/*
+		 * Store the information required to generate undo record during
+		 * replay.
+		 */
+		xlrec.relfilenode = undorecord.uur_relfilenode;
+		xlrec.cid = undorecord.uur_cid;
+		xlrec.tsid = undorecord.uur_tsid;
 		xlrec.urec_ptr = urecptr;
-		xlrec.uur_blkprev = prev_urecptr;
+		xlrec.blkprev = prev_urecptr;
+
+		/* Heap related part. */
 		xlrec.offnum = ItemPointerGetOffsetNumber(&zheaptup->t_self);
 		xlrec.flags = 0;
+
+		/*
+		 * Fixme - Below code is to support visibility maps and speculative
+		 * insertion in future. We need to test this code once those features
+		 * are supported and remove this comment.
+		 */
 		if (all_visible_cleared)
 			xlrec.flags |= XLZ_INSERT_ALL_VISIBLE_CLEARED;
 		if (options & HEAP_INSERT_SPECULATIVE)
@@ -722,6 +736,9 @@ reacquire_buffer:
 		 * For logical decoding, we need the tuple even if we're doing a full
 		 * page write, so make sure it's included even if we take a full-page
 		 * image. (XXX We could alternatively store a pointer into the FPW).
+		 *
+		 * Fixme - Current zheap doesn't support logical decoding, once it is
+		 * supported, we need to test and remove this Fixme.
 		 */
 		if (RelationIsLogicallyLogged(relation))
 		{
@@ -751,7 +768,7 @@ reacquire_buffer:
 		/* filtering by origin on a row level is much more efficient */
 		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
-		recptr = XLogInsert(RM_HEAP_ID, info);
+		recptr = XLogInsert(RM_ZHEAP_ID, info);
 
 		PageSetLSN(page, recptr);
 		SetUndoPageLSNs(recptr);
@@ -1080,7 +1097,7 @@ check_tup_satisfies_update:
 						   (char *) zheaptup.t_data,
 						   zheaptup.t_len);
 
-	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, InvalidTransactionId);
 
 	START_CRIT_SECTION();
 
@@ -1447,7 +1464,7 @@ check_tup_satisfies_update:
 							   (char *) oldtup.t_data,
 							   SizeofZHeapTupleHeader);
 
-		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, InvalidTransactionId);
 
 		START_CRIT_SECTION();
 
@@ -1558,7 +1575,7 @@ reacquire_buffer:
 	if (use_inplace_update)
 	{
 		undorecord.uur_type = UNDO_INPLACE_UPDATE;
-		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, InvalidTransactionId);
 	}
 	else
 	{
@@ -1569,7 +1586,7 @@ reacquire_buffer:
 		 * the value to ensure that the required space is reserved in undo.
 		 */
 		undorecord.uur_payload.len = sizeof(ItemPointerData);
-		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, InvalidTransactionId);
 
 		initStringInfo(&undorecord.uur_payload);
 		/* Make more room for tuple location if needed */
@@ -1594,7 +1611,7 @@ reacquire_buffer:
 		new_undorecord.uur_payload.len = 0;
 		new_undorecord.uur_tuple.len = 0;
 
-		new_urecptr = PrepareUndoInsert(&new_undorecord, UNDO_PERSISTENT);
+		new_urecptr = PrepareUndoInsert(&new_undorecord, UNDO_PERSISTENT, InvalidTransactionId);
 	}
 
 	if (use_inplace_update)
@@ -1952,7 +1969,7 @@ failed:
 						   (char *) zhtup.t_data,
 						   SizeofZHeapTupleHeader);
 
-	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, InvalidTransactionId);
 
 	START_CRIT_SECTION();
 
@@ -2448,7 +2465,7 @@ PageGetUNDO(Page page, int trans_slot_id)
  * PageSetUNDO - Set the transaction information pointer for a given
  *		transaction slot.
  */
-static inline void
+void
 PageSetUNDO(UnpackedUndoRecord undorecord, Page page, int trans_slot_id,
 			TransactionId xid, UndoRecPtr urecptr)
 {
@@ -2760,7 +2777,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 			undorecord.uur_payload.len = 0;
 			undorecord.uur_tuple.len = 0;
 
-			urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT);
+			urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, InvalidTransactionId);
 
 			/* NO EREPORT(ERROR) from here till changes are logged */
 			START_CRIT_SECTION();
@@ -4946,7 +4963,7 @@ reacquire_buffer:
 			undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
 			undorecord[i].uur_payload.data = (char *)palloc(2 * sizeof(OffsetNumber));
 
-			urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERSISTENT);
+			urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERSISTENT, InvalidTransactionId);
 			prev_urecptr = urecptr;
 		}
 		Assert(UndoRecPtrIsValid(urecptr));

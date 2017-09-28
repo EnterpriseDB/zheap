@@ -350,6 +350,7 @@ UndoLogSetLastXactStartPoint(UndoRecPtr point)
 	LWLockRelease(&log->mutex);
 
 	/* WAL log. */
+	if (!InRecovery)
 	{
 		xl_undolog_xactstart xlrec;
 
@@ -1568,6 +1569,8 @@ undolog_xlog_attach(XLogReaderState *record)
 	log->xid = xlrec->xid;
 	log->pid = MyProcPid; /* show as recovery process */
 	LWLockRelease(&log->mutex);
+
+	MyUndoLogState.log = log;
 }
 
 /*

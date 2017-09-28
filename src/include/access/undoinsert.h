@@ -24,7 +24,7 @@
  * This should be done before any critical section is established, since it
  * can fail.
  */
-extern UndoRecPtr PrepareUndoInsert(UnpackedUndoRecord *, UndoPersistence);
+extern UndoRecPtr PrepareUndoInsert(UnpackedUndoRecord *, UndoPersistence, TransactionId);
 
 /*
  * Insert a previously-prepared undo record.  This will lock the buffers
