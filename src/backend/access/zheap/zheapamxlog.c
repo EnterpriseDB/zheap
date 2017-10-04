@@ -37,7 +37,6 @@ zheap_xlog_insert(XLogReaderState *record)
 	UndoRecPtr	urecptr;
 	xl_zheap_header xlhdr;
 	uint32		newlen;
-	Size		freespace = 0;
 	RelFileNode target_node;
 	BlockNumber blkno;
 	ItemPointerData target_tid;
@@ -138,7 +137,6 @@ zheap_xlog_insert(XLogReaderState *record)
 						 true, true) == InvalidOffsetNumber)
 			elog(PANIC, "failed to add tuple");
 
-		freespace = PageGetZHeapFreeSpace(page); /* needed to update FSM below */
 		trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup);
 		
 		PageSetUNDO(undorecord, page, trans_slot_id, XLogRecGetXid(record), urecptr);
