@@ -621,17 +621,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	if (!OidIsValid(ownerId))
 		ownerId = GetUserId();
 
-	/*
-	 * Parse and validate reloptions, if any.
-	 */
-	reloptions = transformRelOptions((Datum) 0, stmt->options, NULL, validnsps,
-									 true, false);
-
-	if (relkind == RELKIND_VIEW)
-		(void) view_reloptions(reloptions, true);
-	else
-		(void) heap_reloptions(relkind, reloptions, true);
-
 	if (stmt->ofTypename)
 	{
 		AclResult	aclresult;
@@ -655,6 +644,44 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 						stmt->relation->relpersistence,
 						stmt->partbound != NULL,
 						&inheritOids, &old_constraints, &parentOidCount);
+
+	/*
+	 * Relation will have same storage_engine as its ancestors.
+	 *
+	 * NOTE: We don't do any sanity checks here whether all parents have
+	 * same storage engine or not. We just check one ancestor and enforce
+	 * its storage_engine. This is done in this way to minimize the code
+	 * changes for storage access method.
+	 */
+	if (stmt->inhRelations)
+	{
+		ListCell   *cell;
+
+		foreach(cell, stmt->inhRelations)
+		{
+			RangeVar   *parent = (RangeVar *) lfirst(cell);
+			Relation	relation;
+			relation = heap_openrv(parent, AccessShareLock);
+			if (RelationStorageIsZHeap(relation))
+				stmt->options = lcons(makeDefElem("storage_engine",
+									(Node *) makeString("zheap"), -1),
+									stmt->options);
+			heap_close(relation, AccessShareLock);
+			break;
+		}
+
+	}
+
+	/*
+	 * Parse and validate reloptions, if any.
+	 */
+	reloptions = transformRelOptions((Datum) 0, stmt->options, NULL, validnsps,
+									 true, false);
+
+	if (relkind == RELKIND_VIEW)
+		(void) view_reloptions(reloptions, true);
+	else
+		(void) heap_reloptions(relkind, reloptions, true);
 
 	/*
 	 * Create a tuple descriptor from the relation schema.  Note that this
