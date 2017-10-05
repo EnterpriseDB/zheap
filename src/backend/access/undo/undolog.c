@@ -629,6 +629,8 @@ UndoLogAllocate(size_t size, UndoPersistence level)
 	{
 		attach_undo_log();
 		log = MyUndoLogState.log;
+		/* Start of a new transaction */
+		is_xid_change = true;
 	}
 
 	/*
