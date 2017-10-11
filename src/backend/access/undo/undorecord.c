@@ -513,6 +513,7 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 	int			my_bytes_decoded = 0;
 	int			already_decoded = 0;
 	int			starting_byte;
+	int			logno;
 
 	/*
 	 * If previous transaction's urp is not valid means this backend is
@@ -523,12 +524,28 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 	if (!UndoRecPtrIsValid(prev_xact_urp))
 		prev_xact_urp = UndoLogGetLastXactStartPoint();
 
-	if (!UndoRecPtrIsValid(prev_xact_urp) || UndoLogIsDiscarded(prev_xact_urp))
+	if (!UndoRecPtrIsValid(prev_xact_urp))
 		return;
+
+	logno = UndoRecPtrGetLogNo(prev_xact_urp);
+
+	/*
+	 * Acquire the discard lock before accessing the undo record so that
+	 * discard worker doen't remove the record while we are in process of
+	 * reading it.
+	 */
+	LWLockAcquire(&UndoDiscardInfo[logno].mutex, LW_SHARED);
 
 	UndoRecPtrAssignRelFileNode(rnode, prev_xact_urp);
 	cur_blk = UndoRecPtrGetBlockNum(prev_xact_urp);
 	starting_byte = UndoRecPtrGetPageOffset(prev_xact_urp);
+
+	/* If it's already discarded then we have nothing to do. */
+	if (prev_xact_urp < UndoDiscardInfo[logno].undo_recptr)
+	{
+		LWLockRelease(&UndoDiscardInfo[logno].mutex);
+		return;
+	}
 
 	while (true)
 	{
@@ -590,6 +607,8 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 
 		break;
 	}
+
+	LWLockRelease(&UndoDiscardInfo[logno].mutex);
 }
 
 /*
