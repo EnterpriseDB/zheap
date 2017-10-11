@@ -225,9 +225,9 @@ void undofile_sync(void)
 	spcNode = InvalidOid;
 	while (UndoLogNextActiveLog(&logno, &spcNode))
 	{
-		int		low_segno,
-				high_segno,
-				segno;
+		int		low_segno = 0,
+				high_segno = 0,
+				segno = 0;
 
 		UndoLogGetDirtySegmentRange(logno, &low_segno, &high_segno);
 		for (segno = low_segno; segno < high_segno; ++segno)

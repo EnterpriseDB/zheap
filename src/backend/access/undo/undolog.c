@@ -271,14 +271,38 @@ UndoLogSegmentPath(UndoLogNumber logno, int segno, Oid tablespace, char *path)
  * Iterate through the set of currently active logs.  That is, logs that have
  * not yet been entirely discarded.
  *
- * Intially, *logno should contain -1.  Then it should be called repeatedly
- * until it returns false.  When it returns true, the next log number and its
- * tablespace OID have been written to *logno and *spcNode.
+ * Intially, *logno should contain InvalidLogNumber.  The function should be
+ * called repeatedly until it returns false.  When it returns true, the next
+ * log number and its tablespace OID have been written to *logno and *spcNode.
  */
 bool
 UndoLogNextActiveLog(UndoLogNumber *logno, Oid *spcNode)
 {
-	/* TODO write me */
+	UndoLogSharedData *shared = MyUndoLogState.shared;
+
+	/* if the logno received is invalid then start from low_logno */
+	if (*logno == InvalidUndoLogNumber)
+		*logno = shared->low_logno;
+	else
+		(*logno)++;
+
+	for (;*logno < shared->high_logno; (*logno)++)
+	{
+		UndoLogControl *log;
+		log = get_undo_log_by_number(*logno);
+
+		if (log == NULL)
+			continue;
+
+		LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+		*spcNode = log->meta.tablespace;
+		if(log->meta.insert > log->meta.discard)
+		{
+			LWLockRelease(&log->mutex);
+			return true;
+		}
+		LWLockRelease(&log->mutex);
+	}
 	return false;
 }
 
