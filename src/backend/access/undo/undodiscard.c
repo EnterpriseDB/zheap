@@ -79,16 +79,21 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin)
 
 	do
 	{
+		bool isAborted;
+
 		/* Fetch the undo record for given undo_recptr. */
 		uur = UndoFetchRecord(undo_recptr, InvalidBlockNumber,
 							  InvalidOffsetNumber, InvalidTransactionId);
 
 		Assert(uur != NULL);
 
+		isAborted = TransactionIdDidAbort(uur->uur_xid);
+
 		/* we can discard upto this point. */
 		if (TransactionIdFollowsOrEquals(uur->uur_xid, xmin) ||
 			uur->uur_next == SpecialUndoRecPtr ||
-			uur->uur_next == InvalidUndoRecPtr)
+			uur->uur_next == InvalidUndoRecPtr ||
+			isAborted)
 		{
 			TransactionId	undoxid = uur->uur_xid;
 
@@ -98,8 +103,14 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin)
 			 * If Transaction id is smaller than the xmin that means this must
 			 * be the last transaction in this undo log, so we need to get the
 			 * last insert point in this undo log and discard till that point.
+			 * Also, if a transation is aborted, we stop discarding undo from the
+			 * same location.
+			 *
+			 * FIXME: We should rollback the transaction here and continue
+			 * discarding undo. We should revisit this after implementing ROLLBACK
+			 * for zheap.
 			 */
-			if (TransactionIdPrecedes(undoxid, xmin))
+			if (TransactionIdPrecedes(undoxid, xmin) && !isAborted)
 			{
 				UndoLogNumber logno = UndoRecPtrGetLogNo(discard->undo_recptr);
 				UndoRecPtr	next_insert = InvalidUndoRecPtr;
