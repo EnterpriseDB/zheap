@@ -507,13 +507,13 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 	Buffer		buffer = InvalidBuffer;
 	BlockNumber	cur_blk;
 	RelFileNode	rnode;
+	UndoLogNumber logno = UndoRecPtrGetLogNo(urecptr);
 	Page		page;
 	char	   *readptr;
 	char	   *endptr;
 	int			my_bytes_decoded = 0;
 	int			already_decoded = 0;
 	int			starting_byte;
-	int			logno;
 
 	/*
 	 * If previous transaction's urp is not valid means this backend is
@@ -521,13 +521,11 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 	 * if it's still invalid urp means this is the first undo record for this
 	 * log and we have nothing to update.
 	 */
-	if (!UndoRecPtrIsValid(prev_xact_urp))
-		prev_xact_urp = UndoLogGetLastXactStartPoint();
+	if (!UndoRecPtrIsValid(prev_xact_urp) || InRecovery)
+		prev_xact_urp = UndoLogGetLastXactStartPoint(logno);
 
 	if (!UndoRecPtrIsValid(prev_xact_urp))
 		return;
-
-	logno = UndoRecPtrGetLogNo(prev_xact_urp);
 
 	/*
 	 * Acquire the discard lock before accessing the undo record so that

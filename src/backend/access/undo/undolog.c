@@ -381,9 +381,9 @@ UndoLogSetLastXactStartPoint(UndoRecPtr point)
  * undo pointer if backend is not attached to any log.
  */
 UndoRecPtr
-UndoLogGetLastXactStartPoint()
+UndoLogGetLastXactStartPoint(UndoLogNumber logno)
 {
-	UndoLogControl *log = MyUndoLogState.log;
+	UndoLogControl *log = get_undo_log_by_number(logno);
 	uint64 last_xact_start = 0;
 
 	if (unlikely(log == NULL))
@@ -396,7 +396,7 @@ UndoLogGetLastXactStartPoint()
 	if (last_xact_start == 0)
 		return InvalidUndoRecPtr;
 
-	return MakeUndoRecPtr(MyUndoLogState.logno, last_xact_start);
+	return MakeUndoRecPtr(logno, last_xact_start);
 }
 
 /*
