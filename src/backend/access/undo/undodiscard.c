@@ -68,10 +68,12 @@ UndoDiscardShmemInit(void)
  * Search the undo log, get the start record for each transaction until we get
  * the transaction with xid >= xmin or an invalid xid.  Then call undolog
  * routine to discard upto that point and update the memory structure for the
- * log slot.
+ * log slot. We set the hibernate flag if we do not have any undo logs, this
+ * flag is passed to the undo worker wherein it determines if system is idle
+ * and it should sleep for sometime.
  */
-static void 
-UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin)
+static void
+UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 {
 	UndoRecPtr	undo_recptr = discard->undo_recptr;
 	UnpackedUndoRecord	*uur;
@@ -89,6 +91,9 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin)
 
 		isAborted = TransactionIdDidAbort(uur->uur_xid);
 
+		/* There might not be any undo log and hibernation might be needed. */
+		*hibernate = true;
+
 		/* we can discard upto this point. */
 		if (TransactionIdFollowsOrEquals(uur->uur_xid, xmin) ||
 			uur->uur_next == SpecialUndoRecPtr ||
@@ -96,6 +101,9 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin)
 			isAborted)
 		{
 			TransactionId	undoxid = uur->uur_xid;
+
+			/* Hey, I got some undo log to discard, can not hibernate now. */
+			*hibernate = false;
 
 			UndoRecordRelease(uur);
 
@@ -161,8 +169,8 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin)
  *	xid. Fetch the record from the undo log transaction by transaction until we
  *	find the xid which is not smaller than xmin.
  */
-void 
-UndoDiscard(TransactionId oldestXid)
+void
+UndoDiscard(TransactionId oldestXid, bool *hibernate)
 {
 	TransactionId	oldestXidHavingUndo = oldestXid;
 	UndoLogNumber logno = -1;
@@ -193,7 +201,7 @@ UndoDiscard(TransactionId oldestXid)
 			}
 
 			/* Process the undo log. */
-			UndoDiscardOneLog(&UndoDiscardInfo[logno], oldestXid);
+			UndoDiscardOneLog(&UndoDiscardInfo[logno], oldestXid, hibernate);
 		}
 
 		/* Update the correct value for oldestXidHavingUndo. */

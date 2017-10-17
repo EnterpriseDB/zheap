@@ -42,7 +42,7 @@ extern DiscardXact	*UndoDiscardInfo;
  *	xid. Fetch the record from the undo log transaction by transaction until we
  *	find the xid which is not smaller than xmin.
  */
-extern void UndoDiscard(TransactionId xmin);
+extern void UndoDiscard(TransactionId xmin, bool *hibernate);
 
 /* Compute shared memory space needed for undolog discard information. */
 extern Size UndoDiscardShmemSize(void);
