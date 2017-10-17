@@ -164,10 +164,11 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin)
 void 
 UndoDiscard(TransactionId oldestXid)
 {
-	int		i;
 	TransactionId	oldestXidHavingUndo = oldestXid;
+	UndoLogNumber logno = -1;
+	Oid spcNode = InvalidOid;
 
-	for (i = 0; i < MaxBackends; i++)
+	while (UndoLogNextActiveLog (&logno, &spcNode))
 	{
 		UndoRecPtr	urp;
 
@@ -175,30 +176,30 @@ UndoDiscard(TransactionId oldestXid)
 		 * If the first xid of the undo log is smaller than the xmin the try
 		 * to discard the undo log.
 		 */
-		if (TransactionIdPrecedes(UndoDiscardInfo[i].xid, oldestXid))
+		if (TransactionIdPrecedes(UndoDiscardInfo[logno].xid, oldestXid))
 		{
 			/*
 			 * If the XID in the discard entry is invalid then start scanning from
 			 * the first valid undorecord in the log.
 			 */
-			if (!TransactionIdIsValid(UndoDiscardInfo[i].xid))
+			if (!TransactionIdIsValid(UndoDiscardInfo[logno].xid))
 			{
-				urp = UndoLogGetFirstValidRecord(i);
+				urp = UndoLogGetFirstValidRecord(logno);
 
 				if (!UndoRecPtrIsValid(urp))
 					continue;
 
-				UndoDiscardInfo[i].undo_recptr = urp;
+				UndoDiscardInfo[logno].undo_recptr = urp;
 			}
 
 			/* Process the undo log. */
-			UndoDiscardOneLog(&UndoDiscardInfo[i], oldestXid);
+			UndoDiscardOneLog(&UndoDiscardInfo[logno], oldestXid);
 		}
 
 		/* Update the correct value for oldestXidHavingUndo. */
-		if (TransactionIdIsValid(UndoDiscardInfo[i].xid) &&
-			TransactionIdPrecedes(UndoDiscardInfo[i].xid, oldestXidHavingUndo))
-			oldestXidHavingUndo = UndoDiscardInfo[i].xid;
+		if (TransactionIdIsValid(UndoDiscardInfo[logno].xid) &&
+			TransactionIdPrecedes(UndoDiscardInfo[logno].xid, oldestXidHavingUndo))
+			oldestXidHavingUndo = UndoDiscardInfo[logno].xid;
 	}
 
 	/*
