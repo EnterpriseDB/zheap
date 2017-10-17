@@ -33,23 +33,26 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 	{
 		xl_undolog_extend *xlrec = (xl_undolog_extend *) rec;
 
-		appendStringInfo(buf, "logno %u end %zu", xlrec->logno,
-						 xlrec->end);
+		appendStringInfo(buf, "logno %u end " UndoLogOffsetFormat,
+						 xlrec->logno, xlrec->end);
 	}
 	else if (info == XLOG_UNDOLOG_ATTACH)
 	{
 		xl_undolog_attach *xlrec = (xl_undolog_attach *) rec;
 
-		appendStringInfo(buf, "logno %u xid %u insert %zu last_size %lu last_xact_start %lu is_first_record=%d",
+		appendStringInfo(buf, "logno %u xid %u insert " UndoLogOffsetFormat
+						 " last_xact_start " UndoLogOffsetFormat
+						 " is_first_record=%d",
 						 xlrec->logno, xlrec->xid, xlrec->insert,
-						 xlrec->insert, xlrec->last_xact_start,
+						 xlrec->last_xact_start,
 						 xlrec->is_first_rec);
 	}
 	else if (info == XLOG_UNDOLOG_DISCARD)
 	{
 		xl_undolog_discard *xlrec = (xl_undolog_discard *) rec;
 
-		appendStringInfo(buf, "logno %u discard %zu end %zu",
+		appendStringInfo(buf, "logno %u discard " UndoLogOffsetFormat " end "
+						 UndoLogOffsetFormat,
 						 xlrec->logno, xlrec->discard, xlrec->end);
 	}
 }

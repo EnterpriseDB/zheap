@@ -607,10 +607,17 @@ ExecInsert(ModifyTableState *mtstate,
 
 	/* AFTER ROW INSERT Triggers */
 	if (RelationStorageIsZHeap(resultRelationDesc))
-		ExecARInsertTriggers(estate, resultRelInfo,
-							 zheap_to_heap(ztuple, resultRelationDesc->rd_att),
-							 recheckIndexes,
-							 ar_insert_trig_tcs);
+	{
+		if (resultRelInfo->ri_TrigDesc)
+		{
+			HeapTuple	tuple;
+
+			tuple = zheap_to_heap(ztuple, resultRelationDesc->rd_att);
+			ExecARInsertTriggers(estate, resultRelInfo, tuple, recheckIndexes,
+								 ar_insert_trig_tcs);
+			heap_freetuple(tuple);
+		}
+	}
 	else
 		ExecARInsertTriggers(estate, resultRelInfo, tuple, recheckIndexes,
 							 ar_insert_trig_tcs);
@@ -1415,12 +1422,20 @@ lreplace:;
 
 	/* AFTER ROW UPDATE Triggers */
 	if (RelationStorageIsZHeap(resultRelationDesc))
-		ExecARUpdateTriggers(estate, resultRelInfo, tupleid, oldtuple,
-							 zheap_to_heap(ztuple, resultRelationDesc->rd_att),
-							 recheckIndexes,
-							 mtstate->operation == CMD_INSERT ?
-							 mtstate->mt_oc_transition_capture :
-							 mtstate->mt_transition_capture);
+	{
+		if (resultRelInfo->ri_TrigDesc)
+		{
+			HeapTuple	tuple;
+
+			tuple = zheap_to_heap(ztuple, resultRelationDesc->rd_att);
+			ExecARUpdateTriggers(estate, resultRelInfo, tupleid, oldtuple,
+								 tuple, recheckIndexes,
+								 mtstate->operation == CMD_INSERT ?
+								 mtstate->mt_oc_transition_capture :
+								 mtstate->mt_transition_capture);
+			heap_freetuple(tuple);
+		}
+	}
 	else
 		ExecARUpdateTriggers(estate, resultRelInfo, tupleid, oldtuple, tuple,
 							 recheckIndexes,

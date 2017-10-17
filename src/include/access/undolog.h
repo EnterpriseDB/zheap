@@ -39,7 +39,10 @@ typedef enum
 typedef uint64 UndoLogOffset;
 
 /* printf-family format string for UndoRecPtr. */
-#define UndoRecPtrFormat "%016zX"
+#define UndoRecPtrFormat "%016" INT64_MODIFIER "X"
+
+/* printf-family format string for UndoLogOffset. */
+#define UndoLogOffsetFormat UINT64_FORMAT
 
 /* Number of blocks of BLCKSZ in an undo log segment file.  512 = 4MB. */
 #define UNDOSEG_SIZE 512
@@ -68,7 +71,7 @@ typedef uint64 UndoLogOffset;
  * The maximum amount of data that can be stored in an undo log.  Can be set
  * artificially low to test full log behavior.
  */
-#define UndoLogMaxSize ((size_t) 1 << UndoLogOffsetBits)
+#define UndoLogMaxSize ((UndoLogOffset) 1 << UndoLogOffsetBits)
 
 /* Type for numbering undo logs. */
 typedef int UndoLogNumber;
