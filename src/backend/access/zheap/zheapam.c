@@ -4952,6 +4952,7 @@ reacquire_buffer:
 			undorecord[i].uur_info = 0;
 			undorecord[i].uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
 			undorecord[i].uur_relfilenode = relation->rd_node.relNode;
+			undorecord[i].uur_xid = xid;
 			undorecord[i].uur_cid = cid;
 			undorecord[i].uur_tsid = relation->rd_node.spcNode;
 			undorecord[i].uur_fork = MAIN_FORKNUM;
