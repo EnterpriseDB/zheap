@@ -4789,13 +4789,32 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		 * checking all the constraints.
 		 */
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
-		scan = heap_beginscan(oldrel, snapshot, 0, NULL);
+		if (RelationStorageIsZHeap(oldrel))
+			scan = zheap_beginscan(oldrel, snapshot, 0, NULL);
+		else
+			scan = heap_beginscan(oldrel, snapshot, 0, NULL);
 
 		/*
 		 * Switch to per-tuple memory context and reset it for each tuple
 		 * produced, so we don't leak memory.
 		 */
 		oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+
+		/*
+		 * FIXME: We need to write the mechanism for scanning and rewritting
+		 * zheap tables here.For now, we throw error in case a zheap table
+		 * has any tuple.
+		 */
+		if (RelationStorageIsZHeap(oldrel))
+		{
+			if (zheap_getnext(scan, ForwardScanDirection) != NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("can't verify/rewrite zheap tables"),
+						 errhint("Truncate the table.")));
+
+			goto exit;
+		}
 
 		while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
@@ -4909,6 +4928,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 			CHECK_FOR_INTERRUPTS();
 		}
 
+exit:
 		MemoryContextSwitchTo(oldCxt);
 		heap_endscan(scan);
 		UnregisterSnapshot(snapshot);
