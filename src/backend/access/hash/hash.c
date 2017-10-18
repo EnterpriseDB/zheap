@@ -310,12 +310,6 @@ hashgettuple(IndexScanDesc scan, ScanDirection dir)
 		res = _hash_next(scan, dir);
 	}
 
-	/* Return current heap TID on success */
-	if (RelationStorageIsZHeap(scan->heapRelation))
-		scan->cur_tid = so->hashso_heappos;
-	else
-		scan->xs_ctup.t_self = so->hashso_heappos;
-
 	return res;
 }
 

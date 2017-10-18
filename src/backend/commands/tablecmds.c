@@ -11603,6 +11603,20 @@ ATExecAddInherit(Relation child_rel, RangeVar *parent, LOCKMODE lockmode)
 						trigger_name, RelationGetRelationName(child_rel)),
 				 errdetail("ROW triggers with transition tables are not supported in inheritance hierarchies")));
 
+	/* Relation should have same storage_engine as its ancestors */
+	if (RelationStorageIsZHeap(parent_rel) && !RelationStorageIsZHeap(child_rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("heap table \"%s\" cannot inherit from zheap table \"%s\"",
+						RelationGetRelationName(child_rel),
+						RelationGetRelationName(parent_rel))));
+	else if (!RelationStorageIsZHeap(parent_rel) && RelationStorageIsZHeap(child_rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("zheap table \"%s\" cannot inherit from heap table \"%s\"",
+						RelationGetRelationName(child_rel),
+						RelationGetRelationName(parent_rel))));
+
 	/* OK to create inheritance */
 	CreateInheritance(child_rel, parent_rel);
 
@@ -14354,8 +14368,23 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd)
 						" \"%s\" without OIDs", RelationGetRelationName(attachrel),
 						RelationGetRelationName(rel))));
 
-	/* Check if there are any columns in attachrel that aren't in the parent */
+	/* Relation should have same storage_engine as its ancestors */
+	if (RelationStorageIsZHeap(rel) && !RelationStorageIsZHeap(attachrel))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+		  errmsg("cannot attach heap table \"%s\" as partition of zheap table"
+				 " \"%s\"", RelationGetRelationName(attachrel),
+				 RelationGetRelationName(rel))));
+	else if (!RelationStorageIsZHeap(rel) && RelationStorageIsZHeap(attachrel))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+		  errmsg("cannot attach zheap table \"%s\" as partition of heap table"
+				 " \"%s\"", RelationGetRelationName(attachrel),
+				 RelationGetRelationName(rel))));
+
+	/* Check if there are any columns in attachRel that aren't in the parent */
 	tupleDesc = RelationGetDescr(attachrel);
+	
 	natts = tupleDesc->natts;
 	for (attno = 1; attno <= natts; attno++)
 	{
