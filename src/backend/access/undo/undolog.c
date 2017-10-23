@@ -800,10 +800,18 @@ UndoLogAllocateInRecovery(TransactionId xid, size_t size,
 void
 UndoLogAdvance(UndoRecPtr insertion_point, size_t size)
 {
-	UndoLogControl *log = MyUndoLogState.log;
+	UndoLogControl *log = NULL;
+	UndoLogNumber	logno = UndoRecPtrGetLogNo(insertion_point) ;
+
+	/*
+	 * During recovery, MyUndoLogState is uninitialized. Hence, we need to work
+	 * more.
+	 */
+	log = (InRecovery) ? get_undo_log_by_number(logno)
+						: MyUndoLogState.log;
 
 	Assert(log != NULL);
-	Assert(UndoRecPtrGetLogNo(insertion_point) == MyUndoLogState.logno);
+	Assert(InRecovery || logno == MyUndoLogState.logno);
 	Assert(UndoRecPtrGetOffset(insertion_point) == log->meta.insert);
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
