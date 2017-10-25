@@ -888,6 +888,12 @@ InsertPreparedUndo(void)
 		} while(true);
 
 		prev_undolen = undo_len;
+
+		/*
+		 * Set the current undo location for a transaction.  This is required
+		 * to perform rollback during abort of transaction.
+		 */
+		SetCurrentUndoLocation(urp);
 	}
 }
 

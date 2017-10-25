@@ -177,6 +177,7 @@ extern void UndoLogGetDirtySegmentRange(UndoLogNumber logno,
 extern void UndoLogSetHighestSyncedSegment(UndoLogNumber logno, int segno);
 extern void UndoLogSetLastXactStartPoint(UndoRecPtr point);
 extern UndoRecPtr UndoLogGetLastXactStartPoint(UndoLogNumber logno);
+extern UndoRecPtr UndoLogGetCurrentLocation(void);
 extern UndoRecPtr UndoLogGetFirstValidRecord(UndoLogNumber logno);
 extern UndoRecPtr UndoLogGetNextInsertPtr(UndoLogNumber logno,
 										  TransactionId xid);

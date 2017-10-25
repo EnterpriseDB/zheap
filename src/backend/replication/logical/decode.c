@@ -163,6 +163,10 @@ LogicalDecodingProcessRecord(LogicalDecodingContext *ctx, XLogReaderState *recor
 			/* Logical decoding is not yet implemented for zheap. */
 			Assert(0);
 			break;
+		case RM_UNDOACTION_ID:
+			/* Logical decoding is not yet implemented for undoactions. */
+			Assert(0);
+			break;
 		case RM_NEXT_ID:
 			elog(ERROR, "unexpected RM_NEXT_ID rmgr_id: %u", (RmgrIds) XLogRecGetRmid(buf.record));
 	}

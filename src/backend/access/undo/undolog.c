@@ -421,6 +421,31 @@ IsTransactionFirstRec(TransactionId xid)
 }
 
 /*
+ * Fetch the current undo record location.  We need to ensure that undo log
+ * is attached as the caller of this function can call it at the very begining
+ * of a transaction.
+ */
+UndoRecPtr
+UndoLogGetCurrentLocation(void)
+{
+	UndoLogControl *log = MyUndoLogState.log;
+	uint64 current_insert_loc = 0;
+
+	/* Ensure that we are attached to an undo log. */
+	if (unlikely(log == NULL))
+	{
+		attach_undo_log();
+		log = MyUndoLogState.log;
+	}
+
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	current_insert_loc = log->meta.insert;
+	LWLockRelease(&log->mutex);
+
+	return MakeUndoRecPtr(MyUndoLogState.logno, current_insert_loc);
+}
+
+/*
  * Detach from the undo log we are currently attached to, returning it to the
  * free list if it still has space.
  */
