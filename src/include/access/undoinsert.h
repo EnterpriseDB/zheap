@@ -76,5 +76,9 @@ extern void UndoRecordRelease(UnpackedUndoRecord *urec);
  */
 extern void UndoSetPrepareSize(int max_prepare);
 
+/*
+ * return the previous undo record pointer.
+ */
+extern UndoRecPtr UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen);
 
 #endif   /* UNDOINSERT_H */

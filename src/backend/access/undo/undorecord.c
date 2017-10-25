@@ -51,6 +51,7 @@ static UndoRecordPayload work_payload;
  */
 static TransactionId	prev_txid = InvalidTransactionId;
 static UndoRecPtr		prev_xact_urp = InvalidUndoRecPtr;
+static uint16			prev_undolen = 0;
 
 /* Undo block number to buffer mapping. */
 typedef struct UndoBuffers
@@ -822,6 +823,7 @@ InsertPreparedUndo(void)
 	int		already_written;
 	int		bufidx = 0;
 	int		idx;
+	uint16	undo_len = 0;
 	UndoRecPtr	urp;
 	UnpackedUndoRecord	*uur;
 
@@ -839,6 +841,10 @@ InsertPreparedUndo(void)
 		already_written = 0;
 		bufidx = 0;
 		starting_byte = UndoRecPtrGetPageOffset(urp);
+
+		/* store the previous undo record length in the header */
+		uur->uur_prevlen = prev_undolen;
+		undo_len = 0;
 
 		do
 		{
@@ -861,16 +867,27 @@ InsertPreparedUndo(void)
 			 */
 			if (InsertUndoRecord(uur, page, starting_byte, &already_written))
 			{
+				undo_len = already_written;
 				MarkBufferDirty(buffer);
 				break;
 			}
+
+			undo_len = already_written;
 
 			MarkBufferDirty(buffer);
 			starting_byte = UndoLogBlockHeaderSize;
 			bufidx++;
 
+			/*
+			 * If we are swithing to the next block then consider the header
+			 * in total undo length.
+			 */
+			undo_len += UndoLogBlockHeaderSize;
+
 			Assert(bufidx < MAX_BUFFER_PER_UNDO);
 		} while(true);
+
+		prev_undolen = undo_len;
 	}
 }
 
@@ -1085,6 +1102,19 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 	}
 
 	return urec;
+}
+
+/*
+ * Return the previous undo record pointer.
+ */
+UndoRecPtr
+UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen)
+{
+	UndoLogNumber logno = UndoRecPtrGetLogNo(urp);
+	UndoLogOffset offset = UndoRecPtrGetOffset(urp);
+
+	/* calculate the previous undo record pointer */
+	return MakeUndoRecPtr (logno, offset - prevlen);
 }
 
 /*
