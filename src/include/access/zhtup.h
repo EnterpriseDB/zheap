@@ -174,6 +174,14 @@ do { \
 	opaque->transinfo[slot].xid \
 )
 
+#define IsZHeapTupleModified(tup) \
+( \
+	(((tup)->t_infomask & ZHEAP_DELETED || \
+	 (tup)->t_infomask & ZHEAP_UPDATED || \
+	 (tup)->t_infomask & ZHEAP_INPLACE_UPDATED || \
+	 (tup)->t_infomask & ZHEAP_XID_LOCK_ONLY) != 0) \
+)
+
 extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
 				Datum *values, bool *isnull);
 extern void zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,

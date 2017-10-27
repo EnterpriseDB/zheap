@@ -2224,6 +2224,98 @@ znocachegetattr(ZHeapTuple tuple,
 	return fetchatt(TupleDescAttr(tupleDesc, attnum), tp + off);
 }
 
+static TransactionId
+zheap_fetchinsertxid(ZHeapTuple zhtup, ZHeapPageOpaque opaque)
+{
+	UndoRecPtr urec_ptr;
+	TransactionId xid = InvalidTransactionId;
+	int	trans_slot_id = InvalidXactSlotId;
+	int	prev_trans_slot_id;
+	TransactionId result;
+	BlockNumber blk;
+	OffsetNumber offnum;
+	UnpackedUndoRecord	*urec;
+	ZHeapTuple	undo_tup;
+
+	urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(zhtup->t_data, opaque);
+	prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
+	blk = ItemPointerGetBlockNumber(&zhtup->t_self);
+	offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
+	undo_tup = zhtup;
+
+	while(true)
+	{
+		urec = UndoFetchRecord(urec_ptr, blk, offnum, xid);
+		if (urec != NULL)
+		{
+			/*
+			 * Skip the undo record for transaction slot reuse, it
+			 * is used only for the purpose of fetching transaction
+			 * information for tuples that point to such slots.
+			 */
+			if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
+			{
+				urec_ptr = urec->uur_blkprev;
+				UndoRecordRelease(urec);
+				continue;
+			}
+
+			/*
+			 * If we have valid undo record, then check if we have
+			 * reached the insert log and return the corresponding
+			 * transaction id.
+			 */
+			else if (urec->uur_type == UNDO_INSERT)
+			{
+				result = urec->uur_xid;
+				UndoRecordRelease(urec);
+				break;
+			}
+
+			undo_tup = CopyTupleFromUndoRecord(urec, undo_tup,
+						 (undo_tup) == (zhtup) ? false : true);
+			trans_slot_id =
+					ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
+
+			xid = urec->uur_prevxid;
+			urec_ptr = urec->uur_blkprev;
+			UndoRecordRelease(urec);
+			if (!UndoRecPtrIsValid(urec_ptr))
+			{
+				zheap_freetuple(undo_tup);
+				result = FrozenTransactionId;
+				break;
+			}
+
+
+			/*
+			 * Change the undo chain if the undo tuple is stamped
+			 * with the different transaction slot.
+			 */
+			if (trans_slot_id != prev_trans_slot_id)
+			{
+				urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(undo_tup->t_data, opaque);
+				prev_trans_slot_id = trans_slot_id;
+			}
+			zhtup = undo_tup;
+		}
+		else
+		{
+			/*
+			 * Undo record could be null only when it's undo log
+			 * is/about to be discarded. We cannot use any assert
+			 * for checking is the log is actually discarded, since
+			 * UndoFetchRecord can return NULL for the records which
+			 * are not yet discarded but are about to be discarded.
+			 */
+			result = FrozenTransactionId;
+			break;
+		}
+	}
+
+	return result;
+}
+
 /* ----------------
  *		zheap_getsysattr
  *
@@ -2237,22 +2329,31 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 TupleDesc tupleDesc, bool *isnull)
 {
 	Datum		result;
-	ZHeapPageOpaque	opaque = NULL;
-
-	if (BufferIsValid(buf))
-		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
+	CommandId cid;
+	TransactionId xid = InvalidTransactionId;
+	bool	release_buf = false;
 
 	Assert(zhtup);
+
+	/*
+	 * For xmin,xmax,cmin and cmax we may need to fetch the information from
+	 * the undo record, so ensure we have the valid buffer.
+	 */
+	if (!BufferIsValid(buf) &&
+		((attnum == MinTransactionIdAttributeNumber) ||
+		(attnum == MaxTransactionIdAttributeNumber) ||
+		(attnum == MinCommandIdAttributeNumber) ||
+		(attnum == MaxCommandIdAttributeNumber)))
+	{
+		Relation rel = relation_open(zhtup->t_tableOid, NoLock);
+		buf = ReadBuffer(rel, ItemPointerGetBlockNumber(&(zhtup->t_self)));
+		relation_close(rel, NoLock);
+		release_buf = true;
+	}
 
 	/* Currently, no sys attribute ever reads as NULL. */
 	*isnull = false;
 
-	/*
-	 * Fixme - Attributes related to transaction information won't give
-	 * correct information for all cases.  As of now, they will always
-	 * return the latest xid, cid information on tuple, we need to fetch
-	 * exact information using undo.
-	 */
 	switch (attnum)
 	{
 		case SelfItemPointerAttributeNumber:
@@ -2263,20 +2364,44 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 			result = ObjectIdGetDatum(ZHeapTupleGetOid(zhtup));
 			break;
 		case MinTransactionIdAttributeNumber:
-			Assert (BufferIsValid(buf));
-			result = TransactionIdGetDatum(ZHeapTupleHeaderGetRawXid(zhtup->t_data, opaque));
-			Assert (false);
+		{
+			ZHeapPageOpaque opaque;
+
+			opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
+
+			if(ZHeapTupleHeaderGetXactSlot(zhtup->t_data) == ZHTUP_SLOT_FROZEN)
+				result = TransactionIdGetDatum(FrozenTransactionId);
+			else if (IsZHeapTupleModified(zhtup->t_data) ||
+					 zhtup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+				result = TransactionIdGetDatum(zheap_fetchinsertxid(zhtup, opaque));
+			else
+				result = TransactionIdGetDatum(
+						ZHeapTupleHeaderGetRawXid(zhtup->t_data, opaque));
+		}
 			break;
 		case MaxTransactionIdAttributeNumber:
-			Assert (BufferIsValid(buf));
-			result = TransactionIdGetDatum(ZHeapTupleHeaderGetRawXid(zhtup->t_data, opaque));
-			Assert (false);
+			if (IsZHeapTupleModified(zhtup->t_data))
+			{
+				ZHeapTupleGetTransInfo(zhtup, buf, &xid, NULL, NULL, false);
+				result = TransactionIdGetDatum(xid);
+			}
+			else
+				result = TransactionIdGetDatum(InvalidTransactionId);
+
 			break;
 		case MinCommandIdAttributeNumber:
 		case MaxCommandIdAttributeNumber:
 			Assert (BufferIsValid(buf));
-			result = CommandIdGetDatum(ZHeapTupleGetCid(zhtup, buf));
-			Assert (false);
+			cid = ZHeapTupleGetCid(zhtup, buf);
+			/*
+			 * To maintain the compatibility of cid with that of heap,
+			 * return the FirstCommandId if it comes to be InvalidCommandId
+			 * otherwise the command id as returned by ZHeapTupleGetCid.
+			 */
+			if (cid == InvalidCommandId)
+				result = CommandIdGetDatum(FirstCommandId);
+			else
+				result = CommandIdGetDatum(cid);
 			break;
 		case TableOidAttributeNumber:
 			result = ObjectIdGetDatum(zhtup->t_tableOid);
@@ -2286,6 +2411,10 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 			result = 0;			/* keep compiler quiet */
 			break;
 	}
+
+	if (release_buf)
+		ReleaseBuffer(buf);
+
 	return result;
 }
 
