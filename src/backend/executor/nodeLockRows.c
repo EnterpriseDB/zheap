@@ -84,6 +84,15 @@ lnext:
 		HTSU_Result test;
 		HeapTuple	copyTuple;
 
+		/*
+		 * FIXME: ExecLockRows is not yet implemented for zheap.
+		 */
+		if (RelationStorageIsZHeap(erm->relation))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot lock rows in zheap table \"%s\"",
+							RelationGetRelationName(erm->relation))));
+
 		/* clear any leftover test tuple for this rel */
 		testTuple = &(node->lr_curtuples[erm->rti - 1]);
 		if (*testTuple != NULL)
