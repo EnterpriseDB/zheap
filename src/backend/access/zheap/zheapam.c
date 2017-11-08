@@ -1886,6 +1886,20 @@ check_tup_satisfies_update:
 
 		LockBuffer(*buffer, BUFFER_LOCK_UNLOCK);
 
+		if (TransactionIdIsCurrentTransactionId(xwait))
+		{
+			if (ZHEAP_XID_IS_LOCKED_ONLY(infomask))
+			{
+				result = HeapTupleMayBeUpdated;
+				tuple->t_tableOid = RelationGetRelid(relation);
+				tuple->t_len = zhtup.t_len;
+				tuple->t_self = zhtup.t_self;
+
+				memcpy(tuple->t_data, zhtup.t_data, zhtup.t_len);
+
+				goto out_unlocked;
+			}
+		}
 		if (result == HeapTupleUpdated)
 		{
 			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
@@ -2071,6 +2085,7 @@ failed:
 
 out_locked:
 	LockBuffer(*buffer, BUFFER_LOCK_UNLOCK);
+out_unlocked:
 	UnlockReleaseUndoBuffers();
 
 	/*
