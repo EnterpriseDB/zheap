@@ -43,6 +43,17 @@
  */
 #define XLOG_ZHEAP_INIT_PAGE		0x80
 
+/* common undo record related info */
+typedef struct xl_undo_header
+{
+	Oid			relfilenode;	/* relfilenode for relation */
+	Oid			tsid;	/* tablespace OID */
+	uint64		blkprev;	/* byte offset of previous undo for block */
+	UndoRecPtr	urec_ptr;	/* undo location for undo tuple */
+} xl_undo_header;
+
+#define SizeOfUndoHeader	(offsetof(xl_undo_header, urec_ptr) + sizeof(UndoRecPtr))
+
 /*
  * xl_zheap_insert/xl_zheap_multi_insert flag values, 8 bits are available.
  */
@@ -67,14 +78,6 @@ typedef struct xl_zheap_header
 /* This is what we need to know about insert */
 typedef struct xl_zheap_insert
 {
-	/* undo record related info */
-	Oid			relfilenode;	/* relfilenode for relation */
-	CommandId	cid;	/* command id */
-	Oid			tsid;	/* tablespace OID */
-	uint64		blkprev;	/* byte offset of previous undo for block */
-	UndoRecPtr	urec_ptr;	/* undo location for undo tuple */
-
-
 	/* heap record related info */
 	OffsetNumber offnum;		/* inserted tuple's offset */
 	uint8		flags;
@@ -83,6 +86,29 @@ typedef struct xl_zheap_insert
 } xl_zheap_insert;
 
 #define SizeOfZHeapInsert	(offsetof(xl_zheap_insert, flags) + sizeof(uint8))
+
+/*
+ * xl_zheap_delete flag values, 8 bits are available.
+ */
+/* PD_ALL_VISIBLE was cleared */
+#define XLZ_DELETE_ALL_VISIBLE_CLEARED			(1<<0)
+/* undo tuple is present in xlog record? */
+#define XLZ_HAS_DELETE_UNDOTUPLE				(1<<1)
+
+/* This is what we need to know about delete */
+typedef struct xl_zheap_delete
+{
+	/* info related to undo record */
+	TransactionId prevxid;			/* transaction id that has modified the tuple
+									 * written in undo record for delete operation */
+
+	/* zheap related info */
+	OffsetNumber offnum;		/* deleted tuple's offset */
+	uint8		trans_slot_id;	/* transaction slot id */
+	uint8		flags;
+} xl_zheap_delete;
+
+#define SizeOfZHeapDelete	(offsetof(xl_zheap_delete, flags) + sizeof(uint8))
 
 extern void zheap_redo(XLogReaderState *record);
 extern void zheap_desc(StringInfo buf, XLogReaderState *record);

@@ -675,6 +675,7 @@ reacquire_buffer:
 	/* XLOG stuff */
 	if (!(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation))
 	{
+		xl_undo_header	xlundohdr;
 		xl_zheap_insert xlrec;
 		xl_zheap_header xlhdr;
 		XLogRecPtr	recptr;
@@ -711,11 +712,10 @@ reacquire_buffer:
 		 * Store the information required to generate undo record during
 		 * replay.
 		 */
-		xlrec.relfilenode = undorecord.uur_relfilenode;
-		xlrec.cid = undorecord.uur_cid;
-		xlrec.tsid = undorecord.uur_tsid;
-		xlrec.urec_ptr = urecptr;
-		xlrec.blkprev = prev_urecptr;
+		xlundohdr.relfilenode = undorecord.uur_relfilenode;
+		xlundohdr.tsid = undorecord.uur_tsid;
+		xlundohdr.urec_ptr = urecptr;
+		xlundohdr.blkprev = prev_urecptr;
 
 		/* Heap related part. */
 		xlrec.offnum = ItemPointerGetOffsetNumber(&zheaptup->t_self);
@@ -747,6 +747,7 @@ reacquire_buffer:
 		}
 
 		XLogBeginInsert();
+		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
 		XLogRegisterData((char *) &xlrec, SizeOfZHeapInsert);
 
 		xlhdr.t_infomask2 = zheaptup->t_data->t_infomask2;
@@ -871,6 +872,7 @@ zheap_delete(Relation relation, ItemPointer tid,
 	int			trans_slot_id;
 	bool		have_tuple_lock = false;
 	bool		in_place_updated_or_locked = false;
+	bool		all_visible_cleared = false;
 
 	Assert(ItemPointerIsValid(tid));
 
@@ -1103,6 +1105,7 @@ check_tup_satisfies_update:
 
 	if (PageIsAllVisible(page))
 	{
+		all_visible_cleared = true;
 		PageClearAllVisible(page);
 		visibilitymap_clear(relation, BufferGetBlockNumber(buffer),
 							vmbuffer, VISIBILITYMAP_VALID_BITS);
@@ -1118,8 +1121,76 @@ check_tup_satisfies_update:
 	MarkBufferDirty(buffer);
 
 	/*
-	 * Fixme - Do xlog stuff
+	 * Do xlog stuff
 	 */
+	if (RelationNeedsWAL(relation))
+	{
+		xl_undo_header	xlundohdr;
+		xl_zheap_delete xlrec;
+		xl_zheap_header	xlhdr;
+		XLogRecPtr	recptr;
+		XLogRecPtr	RedoRecPtr;
+		bool		doPageWrites;
+
+		/*
+		 * Store the information required to generate undo record during
+		 * replay.
+		 */
+		xlundohdr.relfilenode = undorecord.uur_relfilenode;
+		xlundohdr.tsid = undorecord.uur_tsid;
+		xlundohdr.urec_ptr = urecptr;
+		xlundohdr.blkprev = prev_urecptr;
+
+		xlrec.prevxid = tup_xid;
+		xlrec.offnum = ItemPointerGetOffsetNumber(&zheaptup.t_self);
+		xlrec.trans_slot_id = ZHeapTupleHeaderGetXactSlot(zheaptup.t_data);
+		xlrec.flags = all_visible_cleared ? XLZ_DELETE_ALL_VISIBLE_CLEARED : 0;
+
+		/*
+		 * If full_page_writes is enabled, then we can rely on the tuple in
+		 * the page to regenerate the undo tuple during recovery as the tuple
+		 * state must be same as now, otherwise we need to store it
+		 * explicitly.
+		 *
+		 * Since we don't yet have the insert lock, doPageWrites could change
+		 * later, but that won't be a problem.  As, if the value of doPageWrites
+		 * is true while forming and assembling the WAL record, then we will
+		 * include the copy of page even if the value later changes in
+		 * XLogInsertRecord.  OTOH, if it is false while forming and assembling
+		 * the WAL records, then we would have to anyway include undo tuple in the
+		 * WAL record which will avoid the dependency on full_page_image, so even
+		 * if doPageWrites changes to true later in XLogInsertRecord, we don't
+		 * need to worry.
+		 */
+		GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
+		if (!doPageWrites)
+		{
+			xlrec.flags |= XLZ_HAS_DELETE_UNDOTUPLE;
+			xlhdr.t_infomask2 = zheaptup.t_data->t_infomask2;
+			xlhdr.t_infomask = zheaptup.t_data->t_infomask;
+			xlhdr.t_hoff = zheaptup.t_data->t_hoff;
+		}
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
+		XLogRegisterData((char *) &xlrec, SizeOfZHeapDelete);
+		if (!doPageWrites)
+		{
+			XLogRegisterData((char *) &xlhdr, SizeOfZHeapHeader);
+			/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
+			XLogRegisterData((char *) zheaptup.t_data + SizeofZHeapTupleHeader,
+							zheaptup.t_len - SizeofZHeapTupleHeader);
+		}
+
+		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+
+		/* filtering by origin on a row level is much more efficient */
+		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
+
+		recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_DELETE);
+
+		PageSetLSN(page, recptr);
+	}
 
 	END_CRIT_SECTION();
 

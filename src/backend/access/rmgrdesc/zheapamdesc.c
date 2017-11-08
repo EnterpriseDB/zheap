@@ -25,11 +25,21 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 	info &= XLOG_ZHEAP_OPMASK;
 	if (info == XLOG_ZHEAP_INSERT)
 	{
-		xl_zheap_insert *xlrec = (xl_zheap_insert *) rec;
+		xl_undo_header *xlundohdr = (xl_undo_header *) rec;
+		xl_zheap_insert *xlrec = (xl_zheap_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
 
-		appendStringInfo(buf, "off %u, cid %u, blkprev %lu", xlrec->offnum, xlrec->cid, xlrec->blkprev);
+		appendStringInfo(buf, "off %u, blkprev %lu", xlrec->offnum, xlundohdr->blkprev);
 	}
-	
+	else if (info == XLOG_ZHEAP_DELETE)
+	{
+		xl_undo_header *xlundohdr = (xl_undo_header *) rec;
+		xl_zheap_delete *xlrec = (xl_zheap_delete *) ((char *) xlundohdr + SizeOfUndoHeader);
+
+		appendStringInfo(buf, "off %u, trans_slot %u, hasUndoTuple: %c, blkprev %lu",
+						 xlrec->offnum, xlrec->trans_slot_id,
+						 (xlrec->flags & XLZ_HAS_DELETE_UNDOTUPLE) ? 'T' : 'F',
+						 xlundohdr->blkprev);
+	}
 }
 
 const char *
@@ -44,6 +54,9 @@ zheap_identify(uint8 info)
 			break;
 		case XLOG_ZHEAP_INSERT | XLOG_ZHEAP_INIT_PAGE:
 			id = "INSERT+INIT";
+			break;
+		case XLOG_ZHEAP_DELETE:
+			id = "DELETE";
 			break;
 	}
 
