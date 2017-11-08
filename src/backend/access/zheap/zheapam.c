@@ -1728,6 +1728,7 @@ reacquire_buffer:
 		/* copy everything in infomask apart from visibility flags */
 		oldtup.t_data->t_infomask |= (newtup->t_data->t_infomask
 									  & ~ZHEAP_VIS_STATUS_MASK);
+		ItemPointerCopy(&oldtup.t_self, &newtup->t_self);
 	}
 	else
 	{
@@ -4581,6 +4582,74 @@ zheap_fetch(Relation relation,
 	}
 
 	return false;
+}
+
+/*
+ * zheap_fetch_undo_guts
+ *
+ * Main function for fetching the previous version of the tuple from the undo
+ * storage.
+ */
+ZHeapTuple
+zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer, ItemPointer tid)
+{
+	UnpackedUndoRecord	*urec;
+	ZHeapPageOpaque	opaque;
+	UndoRecPtr	urec_ptr;
+	ZHeapTuple	undo_tup;
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
+	urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(ztuple->t_data, opaque);
+
+	urec = UndoFetchRecord(urec_ptr,
+						   ItemPointerGetBlockNumber(tid),
+						   ItemPointerGetOffsetNumber(tid),
+						   InvalidTransactionId);
+
+	/*
+	 * This function is used for trigger to retrieve previous version of the
+	 * tuple from undolog. Since, the transaction that is updating the tuple
+	 * is still in progress, neither undo record can be discarded nor it's
+	 * transaction slot can be reused.
+	 */
+	Assert(urec != NULL);
+	Assert(urec->uur_type != UNDO_INVALID_XACT_SLOT);
+
+	undo_tup = CopyTupleFromUndoRecord(urec, NULL, false);
+	UndoRecordRelease(urec);
+
+	return undo_tup;
+}
+
+/*
+ * zheap_fetch_undo
+ *
+ * Fetch the previous version of the tuple from the undo. In case of IN_PLACE
+ * update old tuple and new tuple has the same TID. And, trigger just
+ * stores the tid for fetching the old and new tuple so for fetching the older
+ * tuple this function should be called.
+ */
+bool
+zheap_fetch_undo(Relation relation,
+				 Snapshot snapshot,
+				 ItemPointer tid,
+				 ZHeapTuple *tuple,
+				 Buffer *userbuf,
+				 Relation stats_relation)
+{
+	ZHeapTuple	undo_tup;
+	Buffer		buffer;
+
+	if (!zheap_fetch(relation, snapshot, tid, tuple, &buffer, true, NULL))
+		return false;
+
+	undo_tup = zheap_fetch_undo_guts(*tuple, buffer, tid);
+	zheap_freetuple(*tuple);
+	*tuple = undo_tup;
+
+	ReleaseBuffer(buffer);
+
+	return true;
 }
 
 /*

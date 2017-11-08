@@ -32,7 +32,8 @@ extern HeapTuple GetZTupleForTrigger(EState *estate,
 				   ResultRelInfo *relinfo,
 				   ItemPointer tid,
 				   LockTupleMode lockmode,
-				   TupleTableSlot **newSlot);
+				   TupleTableSlot **newSlot,
+				   ItemPointer newtid);
 
 
 #endif   /* ZHEAPUTILS_H */

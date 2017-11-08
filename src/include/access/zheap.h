@@ -77,6 +77,11 @@ extern bool zheap_search(ItemPointer tid, Relation relation, Snapshot snapshot,
 extern bool zheap_fetch(Relation relation, Snapshot snapshot,
 				ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
 				bool keep_buf, Relation stats_relation);
+extern bool zheap_fetch_undo(Relation relation, Snapshot snapshot,
+				ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
+				Relation stats_relation);
+extern ZHeapTuple zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer,
+										ItemPointer tid);
 
 /* Zheap and undo record interaction related API's */
 extern ZHeapTuple

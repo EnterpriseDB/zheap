@@ -81,7 +81,8 @@ GetZTupleForTrigger(EState *estate,
 				   ResultRelInfo *relinfo,
 				   ItemPointer tid,
 				   LockTupleMode lockmode,
-				   TupleTableSlot **newSlot)
+				   TupleTableSlot **newSlot,
+				   ItemPointer newtid)
 {
 	Relation	relation = relinfo->ri_RelationDesc;
 	ZHeapTupleData ztuple = {0};
@@ -222,14 +223,26 @@ ltrmark:;
 
 		page = BufferGetPage(buffer);
 		lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
-
 		Assert(ItemIdIsNormal(lp));
-
 		ztuple.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-		ztuple.t_len = ItemIdGetLength(lp);
-		ztuple.t_self = *tid;
-		ztuple.t_tableOid = RelationGetRelid(relation);
-		result = zheap_to_heap(&ztuple, relation->rd_att);
+
+		/* If tid is same as newtid then fetch the oldtuple from the undo. */
+		if (ItemPointerIsValid(newtid) && ItemPointerEquals(newtid, tid))
+		{
+			ZHeapTuple	undo_tup;
+
+			undo_tup = zheap_fetch_undo_guts(&ztuple, buffer, newtid);
+			result = zheap_to_heap(undo_tup, relation->rd_att);
+			zheap_freetuple(undo_tup);
+		}
+		else
+		{
+			ztuple.t_len = ItemIdGetLength(lp);
+			ztuple.t_self = *tid;
+			ztuple.t_tableOid = RelationGetRelid(relation);
+			result = zheap_to_heap(&ztuple, relation->rd_att);
+		}
+
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 	}
 
