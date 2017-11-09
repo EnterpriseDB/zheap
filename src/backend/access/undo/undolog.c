@@ -1476,8 +1476,6 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 	Tuplestorestate *tupstore;
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
-	bool nulls[PG_STAT_GET_UNDO_LOGS_COLS] = { false };
-	Datum values[PG_STAT_GET_UNDO_LOGS_COLS];
 	UndoLogNumber low_logno;
 	UndoLogNumber high_logno;
 	UndoLogNumber logno;
@@ -1519,6 +1517,8 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 	{
 		UndoLogControl *log = get_undo_log_by_number(logno);
 		char buffer[17];
+		Datum values[PG_STAT_GET_UNDO_LOGS_COLS];
+		bool nulls[PG_STAT_GET_UNDO_LOGS_COLS] = { false };
 
 		if (log == NULL)
 			continue;
@@ -1540,8 +1540,14 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
 				 MakeUndoRecPtr(logno, log->meta.end));
 		values[4] = CStringGetTextDatum(buffer);
-		values[5] = TransactionIdGetDatum(log->xid);
-		values[6] = Int32GetDatum((int64) log->pid);
+		if (log->xid == InvalidTransactionId)
+			nulls[5] = true;
+		else
+			values[5] = TransactionIdGetDatum(log->xid);
+		if (log->pid == InvalidPid)
+			nulls[6] = true;
+		else
+			values[6] = Int32GetDatum((int64) log->pid);
 		LWLockRelease(&log->mutex);
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
