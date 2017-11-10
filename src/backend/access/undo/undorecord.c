@@ -867,12 +867,10 @@ InsertPreparedUndo(void)
 			 */
 			if (InsertUndoRecord(uur, page, starting_byte, &already_written))
 			{
-				undo_len = already_written;
+				undo_len += already_written;
 				MarkBufferDirty(buffer);
 				break;
 			}
-
-			undo_len = already_written;
 
 			MarkBufferDirty(buffer);
 			starting_byte = UndoLogBlockHeaderSize;
