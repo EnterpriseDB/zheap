@@ -40,6 +40,17 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 						 (xlrec->flags & XLZ_HAS_DELETE_UNDOTUPLE) ? 'T' : 'F',
 						 xlundohdr->blkprev);
 	}
+	else if (info == XLOG_ZHEAP_UPDATE)
+	{
+		xl_undo_header *xlundohdr = (xl_undo_header *) rec;
+		xl_zheap_update *xlrec = (xl_zheap_update *) ((char *) xlundohdr + SizeOfUndoHeader);
+
+		appendStringInfo(buf, "oldoff %u, trans_slot %u, hasUndoTuple: %c, newoff: %u, blkprev %lu",
+						 xlrec->old_offnum, xlrec->old_trans_slot_id,
+						 (xlrec->flags & XLZ_HAS_UPDATE_UNDOTUPLE) ? 'T' : 'F',
+						 xlrec->new_offnum,
+						 xlundohdr->blkprev);
+	}
 }
 
 const char *
@@ -57,6 +68,12 @@ zheap_identify(uint8 info)
 			break;
 		case XLOG_ZHEAP_DELETE:
 			id = "DELETE";
+			break;
+		case XLOG_ZHEAP_UPDATE:
+			id = "UPDATE";
+			break;
+		case XLOG_ZHEAP_UPDATE | XLOG_ZHEAP_INIT_PAGE:
+			id = "UPDATE+INIT";
 			break;
 	}
 

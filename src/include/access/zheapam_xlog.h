@@ -63,6 +63,19 @@ typedef struct xl_undo_header
 #define XLZ_INSERT_CONTAINS_NEW_TUPLE			(1<<3)
 
 /*
+ * xl_zheap_update flag values, 8 bits are available.
+ */
+/* PD_ALL_VISIBLE was cleared */
+#define XLZ_UPDATE_OLD_ALL_VISIBLE_CLEARED		(1<<0)
+/* PD_ALL_VISIBLE was cleared in the 2nd page */
+#define XLZ_UPDATE_NEW_ALL_VISIBLE_CLEARED		(1<<1)
+#define XLZ_UPDATE_PREFIX_FROM_OLD				(1<<2)
+#define XLZ_UPDATE_SUFFIX_FROM_OLD				(1<<3)
+#define	XLZ_NON_INPLACE_UPDATE					(1<<4)
+#define	XLZ_HAS_UPDATE_UNDOTUPLE				(1<<5)
+
+
+/*
  * NOTE: t_hoff could be recomputed, but we may as well store it because
  * it will come for free due to alignment considerations.
  */
@@ -109,6 +122,34 @@ typedef struct xl_zheap_delete
 } xl_zheap_delete;
 
 #define SizeOfZHeapDelete	(offsetof(xl_zheap_delete, flags) + sizeof(uint8))
+
+/*
+ * This is what we need to know about update|inplace_update
+ *
+ * Backup blk 0: new page
+ *
+ * If XLOG_ZHEAP_PREFIX_FROM_OLD or XLOG_ZHEAP_SUFFIX_FROM_OLD flags are set,
+ * the prefix and/or suffix come first, as one or two uint16s.
+ *
+ * After that, xl_zheap_header and new tuple data follow.  The new tuple
+ * data doesn't include the prefix and suffix, which are copied from the
+ * old tuple on replay.
+ *
+ * Backup blk 1: old page, if different. (no data, just a reference to the blk)
+ */
+typedef struct xl_zheap_update
+{
+	/* info related to undo record */
+	TransactionId prevxid;			/* transaction id that has modified the tuple
+									 * written in undo record for delete operation */
+	/* zheap related info */
+	OffsetNumber old_offnum;	/* old tuple's offset */
+	uint8		old_trans_slot_id;	/* old tuple's transaction slot id */
+	uint8		flags;
+	OffsetNumber new_offnum;	/* new tuple's offset */
+} xl_zheap_update;
+
+#define SizeOfZHeapUpdate	(offsetof(xl_zheap_update, new_offnum) + sizeof(OffsetNumber))
 
 extern void zheap_redo(XLogReaderState *record);
 extern void zheap_desc(StringInfo buf, XLogReaderState *record);
