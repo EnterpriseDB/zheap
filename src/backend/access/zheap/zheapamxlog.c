@@ -371,10 +371,8 @@ zheap_xlog_update(XLogReaderState *record)
 	else
 		oldblk = newblk;
 
-	ItemPointerSetBlockNumber(&oldtid, oldblk);
-	ItemPointerSetOffsetNumber(&oldtid, xlrec->old_offnum);
-	ItemPointerSetBlockNumber(&newtid, newblk);
-	ItemPointerSetOffsetNumber(&newtid, xlrec->new_offnum);
+	ItemPointerSet(&oldtid, oldblk, xlrec->old_offnum);
+	ItemPointerSet(&newtid, newblk, xlrec->new_offnum);
 
 	reln = CreateFakeRelcacheEntry(rnode);
 
