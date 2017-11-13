@@ -543,7 +543,6 @@ btree_xlog_delete_get_latestRemovedXid(XLogReaderState *record)
 	ItemId		iitemid,
 				hitemid;
 	IndexTuple	itup;
-	HeapTupleHeader htuphdr;
 	BlockNumber hblkno;
 	OffsetNumber hoffnum;
 	TransactionId latestRemovedXid = InvalidTransactionId;
@@ -640,9 +639,30 @@ btree_xlog_delete_get_latestRemovedXid(XLogReaderState *record)
 		 */
 		if (ItemIdHasStorage(hitemid))
 		{
-			htuphdr = (HeapTupleHeader) PageGetItem(hpage, hitemid);
+			if ((xlrec->flags & XLOG_BTREE_DELETE_RELATION_STORAGE_ZHEAP) != 0)
+			{
+				ZHeapTupleHeader ztuphdr;
 
-			HeapTupleHeaderAdvanceLatestRemovedXid(htuphdr, &latestRemovedXid);
+				ztuphdr = (ZHeapTupleHeader) PageGetItem(hpage, hitemid);
+
+				if (ztuphdr->t_infomask & ZHEAP_DELETED
+										|| ztuphdr->t_infomask & ZHEAP_UPDATED)
+				{
+					TransactionId	xid;
+					ZHeapPageOpaque	opaque;
+
+					opaque = (ZHeapPageOpaque) PageGetSpecialPointer(hpage);
+					xid = ZHeapTupleHeaderGetRawXid(ztuphdr, opaque);
+					ZHeapTupleHeaderAdvanceLatestRemovedXid(ztuphdr, xid, &latestRemovedXid);
+				}
+			}
+			else
+			{
+				HeapTupleHeader htuphdr;
+				htuphdr = (HeapTupleHeader) PageGetItem(hpage, hitemid);
+
+				HeapTupleHeaderAdvanceLatestRemovedXid(htuphdr, &latestRemovedXid);
+			}
 		}
 		else if (ItemIdIsDead(hitemid))
 		{

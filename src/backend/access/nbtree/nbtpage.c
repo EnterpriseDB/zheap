@@ -1067,6 +1067,8 @@ _bt_delitems_delete(Relation rel, Buffer buf,
 
 		xlrec_delete.hnode = heapRel->rd_node;
 		xlrec_delete.nitems = nitems;
+		xlrec_delete.flags = RelationStorageIsZHeap(rel) ?
+								XLOG_BTREE_DELETE_RELATION_STORAGE_ZHEAP : 0;
 
 		XLogBeginInsert();
 		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);

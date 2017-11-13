@@ -120,12 +120,19 @@ typedef struct xl_btree_split
  * single index page when *not* executed by VACUUM.
  *
  * Backup Blk 0: index page
+ *
+ * In Hot Standby, we need to scan the entire relation to verify whether any
+ * btree delete record conflicts with any standby query. For that, we need to
+ * know the relation type which is stored in xlog record.
  */
+#define	XLOG_BTREE_DELETE_RELATION_STORAGE_ZHEAP	0x0001
+
 typedef struct xl_btree_delete
 {
 	RelFileNode hnode;			/* RelFileNode of the heap the index currently
 								 * points at */
 	int			nitems;
+	uint8		flags;			/* See XLOG_BTREE_DELETE_* flags for details */
 
 	/* TARGET OFFSET NUMBERS FOLLOW AT THE END */
 } xl_btree_delete;
