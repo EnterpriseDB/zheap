@@ -646,6 +646,16 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 						&inheritOids, &old_constraints, &parentOidCount);
 
 	/*
+	 * The statement option for storage_engine is retrieved from the
+	 * corresponding GUC variable.
+	 */
+	if (strcmp(storage_engine, "zheap") == 0)
+	{
+		stmt->options = lcons(makeDefElem("storage_engine",
+							(Node *) makeString("zheap"), -1),
+							stmt->options);
+	}
+	/*
 	 * Relation will have same storage_engine as its ancestors.
 	 *
 	 * NOTE: We don't do any sanity checks here whether all parents have

@@ -584,24 +584,35 @@ intorel_receive(TupleTableSlot *slot, DestReceiver *self)
 {
 	DR_intorel *myState = (DR_intorel *) self;
 	HeapTuple	tuple;
+	ZHeapTuple	ztuple;
 
 	/*
 	 * get the heap tuple out of the tuple table slot, making sure we have a
 	 * writable copy
 	 */
-	tuple = ExecMaterializeSlot(slot);
-
-	/*
-	 * force assignment of new OID (see comments in ExecInsert)
-	 */
-	if (myState->rel->rd_rel->relhasoids)
-		HeapTupleSetOid(tuple, InvalidOid);
-
-	heap_insert(myState->rel,
-				tuple,
-				myState->output_cid,
-				myState->hi_options,
-				myState->bistate);
+	if (RelationStorageIsZHeap(myState->rel))
+	{
+		ztuple = ExecMaterializeZSlot(slot);
+		/* force assignment of new OID (see comments in ExecInsert) */
+		if (myState->rel->rd_rel->relhasoids)
+			ZHeapTupleSetOid(ztuple, InvalidOid);
+		zheap_insert(myState->rel,
+					ztuple,
+					myState->output_cid,
+					myState->hi_options);
+	}
+	else
+	{
+		tuple = ExecMaterializeSlot(slot);
+		/* force assignment of new OID (see comments in ExecInsert) */
+		if (myState->rel->rd_rel->relhasoids)
+			HeapTupleSetOid(tuple, InvalidOid);
+		heap_insert(myState->rel,
+					tuple,
+					myState->output_cid,
+					myState->hi_options,
+					myState->bistate);
+	}
 
 	/* We know this is a newly created relation, so there are no indexes */
 
