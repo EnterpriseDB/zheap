@@ -480,6 +480,7 @@ char	   *pgstat_temp_directory;
 
 char	   *application_name;
 
+char		*storage_engine = "heap";
 int			tcp_keepalives_idle;
 int			tcp_keepalives_interval;
 int			tcp_keepalives_count;
@@ -3284,6 +3285,16 @@ static struct config_real ConfigureNamesReal[] =
 
 static struct config_string ConfigureNamesString[] =
 {
+	{
+		{"storage_engine", PGC_POSTMASTER, CUSTOM_OPTIONS,
+			gettext_noop("Sets the storage engine used by the server."),
+			NULL,
+			GUC_IS_NAME
+		},
+		&storage_engine,
+		"heap",
+		NULL, NULL, NULL
+	},
 	{
 		{"archive_command", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Sets the shell command that will be called to archive a WAL file."),
