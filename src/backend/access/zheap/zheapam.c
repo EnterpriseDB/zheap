@@ -1130,11 +1130,14 @@ check_tup_satisfies_update:
 	 */
 	if (RelationNeedsWAL(relation))
 	{
+		ZHeapTupleHeader	zhtuphdr = NULL;
 		xl_undo_header	xlundohdr;
 		xl_zheap_delete xlrec;
 		xl_zheap_header	xlhdr;
 		XLogRecPtr	recptr;
 		XLogRecPtr	RedoRecPtr;
+		uint32		totalundotuplen = 0;
+		Size		dataoff;
 		bool		doPageWrites;
 
 		/*
@@ -1171,9 +1174,14 @@ check_tup_satisfies_update:
 		if (!doPageWrites)
 		{
 			xlrec.flags |= XLZ_HAS_DELETE_UNDOTUPLE;
-			xlhdr.t_infomask2 = zheaptup.t_data->t_infomask2;
-			xlhdr.t_infomask = zheaptup.t_data->t_infomask;
-			xlhdr.t_hoff = zheaptup.t_data->t_hoff;
+
+			totalundotuplen = *((uint32 *) &undorecord.uur_tuple.data[0]);
+			dataoff = sizeof(uint32) + sizeof(ItemPointerData) + sizeof(Oid);
+			zhtuphdr = (ZHeapTupleHeader) &undorecord.uur_tuple.data[dataoff];
+
+			xlhdr.t_infomask2 = zhtuphdr->t_infomask2;
+			xlhdr.t_infomask = zhtuphdr->t_infomask;
+			xlhdr.t_hoff = zhtuphdr->t_hoff;
 		}
 
 		XLogBeginInsert();
@@ -1183,8 +1191,8 @@ check_tup_satisfies_update:
 		{
 			XLogRegisterData((char *) &xlhdr, SizeOfZHeapHeader);
 			/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
-			XLogRegisterData((char *) zheaptup.t_data + SizeofZHeapTupleHeader,
-							zheaptup.t_len - SizeofZHeapTupleHeader);
+			XLogRegisterData((char *) zhtuphdr + SizeofZHeapTupleHeader,
+							totalundotuplen - SizeofZHeapTupleHeader);
 		}
 
 		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
