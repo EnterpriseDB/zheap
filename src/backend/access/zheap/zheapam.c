@@ -3044,6 +3044,47 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, TransactionId xid)
 }
 
 /*
+ * MarkTupleFrozen - Clear the slot information on the tuples
+ *
+ * 	Process all the tuples on the page and match their trasaction slot with
+ *	the input frozen slot array, if tuple is pointing to the frozen slot then
+ *	set the tuple slot as ZHTUP_SLOT_FROZEN.
+ */
+void
+MarkTupleFrozen(Page page, int nFrozenSlots, int *frozen_slots)
+{
+	OffsetNumber offnum, maxoff;
+	int	i;
+
+	/* clear the slot info from tuples */
+	maxoff = PageGetMaxOffsetNumber(page);
+
+	for (offnum = FirstOffsetNumber;
+		 offnum <= maxoff;
+		 offnum = OffsetNumberNext(offnum))
+	{
+		ZHeapTupleHeader	tup_hdr;
+		ItemId		itemid;
+
+		itemid = PageGetItemId(page, offnum);
+
+		if (!ItemIdIsUsed(itemid) || ItemIdIsDead(itemid))
+			continue;
+
+		tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
+
+		for (i = 0; i < nFrozenSlots; i++)
+		{
+			if (ZHeapTupleHeaderGetXactSlot(tup_hdr) == frozen_slots[i])
+			{
+				ZHeapTupleHeaderSetXactSlot(tup_hdr, ZHTUP_SLOT_FROZEN);
+				break;
+			}
+		}
+	}
+}
+
+/*
  * PageFreezeTransSlots - Make the transaction slots available for reuse.
  *
  *	This function tries to free up some existing transaction slots so that
@@ -3122,48 +3163,23 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 
 	if (nFrozenSlots)
 	{
-		OffsetNumber	*offset_frozen_slots;
-		OffsetNumber offnum,
-					 maxoff;
-		int		noffsets = 0;
+		TransactionId	latestxid = InvalidTransactionId;
 		int		i;
 
-		offset_frozen_slots = palloc(sizeof(OffsetNumber) * MaxZHeapTuplesPerPage);
 
 		START_CRIT_SECTION();
 
-		/* clear the slot info from tuples */
-		maxoff = PageGetMaxOffsetNumber(page);
-
-		for (offnum = FirstOffsetNumber;
-			 offnum <= maxoff;
-			 offnum = OffsetNumberNext(offnum))
-		{
-			ZHeapTupleHeader	tup_hdr;
-			ItemId		itemid;
-
-			itemid = PageGetItemId(page, offnum);
-
-			if (!ItemIdIsUsed(itemid) || ItemIdIsDead(itemid))
-				continue;
-
-			tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
-
-			for (i = 0; i < nFrozenSlots; i++)
-			{
-				if (ZHeapTupleHeaderGetXactSlot(tup_hdr) == frozen_slots[i])
-				{
-					ZHeapTupleHeaderSetXactSlot(tup_hdr, ZHTUP_SLOT_FROZEN);
-					offset_frozen_slots[noffsets++] = offnum;
-					break;
-				}
-			}
-		}
+		/* clear the transaction slot info on tuples */
+		MarkTupleFrozen(page, nFrozenSlots, frozen_slots);
 
 		/* Initialize the frozen slots. */
 		for (i = 0; i < nFrozenSlots; i++)
 		{
 			slot_no = frozen_slots[i];
+
+			/* Remember the latest xid. */
+			if (TransactionIdFollows(opaque->transinfo[slot_no].xid, latestxid))
+				latestxid = opaque->transinfo[slot_no].xid;
 
 			opaque->transinfo[slot_no].xid = InvalidTransactionId;
 			opaque->transinfo[slot_no].urec_ptr = InvalidUndoRecPtr;
@@ -3171,18 +3187,34 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 
 		MarkBufferDirty(buf);
 
-		/* Xlog Stuff */
 		/*
-		 * Log all the offsets offset_frozen_slots for which we need to clear
-		 * the transaction slot information.  Also note down the Xid for which
-		 * we are clearing the slot as that will be required to ensure that
-		 * there is no running query on standby that can't see such a xid. See
-		 * heap_xlog_freeze_page.
+		 * Xlog Stuff
+		 *
+		 * Log all the frozen_slots number for which we need to clear the
+		 * transaction slot information.  Also, note down the latest xid
+		 * corresponding to the frozen slots. This is required to ensure that
+		 * no standby query conflicts with the frozen xids.
 		 */
+		if (RelationNeedsWAL(relation))
+		{
+			xl_zheap_freeze_xact_slot xlrec;
+			XLogRecPtr	recptr;
+
+			XLogBeginInsert();
+
+			xlrec.nFrozen = nFrozenSlots;
+			xlrec.lastestFrozenXid = latestxid;
+
+			XLogRegisterData((char *) &xlrec, SizeOfZHeapFreezeXactSlot);
+
+			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+			XLogRegisterBufData(0, (char *) &frozen_slots, nFrozenSlots * sizeof(int));
+
+			recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_FREEZE_XACT_SLOT);
+			PageSetLSN(page, recptr);
+		}
 
 		END_CRIT_SECTION();
-
-		pfree(offset_frozen_slots);
 
 		return true;
 	}

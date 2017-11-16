@@ -82,6 +82,7 @@ extern bool zheap_fetch_undo(Relation relation, Snapshot snapshot,
 				Relation stats_relation);
 extern ZHeapTuple zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer,
 										ItemPointer tid);
+extern void MarkTupleFrozen(Page page, int nFrozenSlots, int *frozen_slots);
 
 /* Zheap and undo record interaction related API's */
 extern ZHeapTuple

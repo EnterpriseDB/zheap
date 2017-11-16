@@ -51,6 +51,13 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 						 xlrec->new_offnum,
 						 xlundohdr->blkprev);
 	}
+	else if (info == XLOG_ZHEAP_FREEZE_XACT_SLOT)
+	{
+		xl_zheap_freeze_xact_slot *xlrec = (xl_zheap_freeze_xact_slot *) rec;
+
+		appendStringInfo(buf, "latest frozen xid %u nfrozen %u",
+						 xlrec->lastestFrozenXid, xlrec->nFrozen);
+	}
 }
 
 const char *
@@ -74,6 +81,9 @@ zheap_identify(uint8 info)
 			break;
 		case XLOG_ZHEAP_UPDATE | XLOG_ZHEAP_INIT_PAGE:
 			id = "UPDATE+INIT";
+			break;
+		case XLOG_ZHEAP_FREEZE_XACT_SLOT:
+			id = "FREEZE_XACT_SLOT";
 			break;
 	}
 

@@ -19,6 +19,7 @@
 #include "access/xlogutils.h"
 #include "access/zheap.h"
 #include "access/zheapam_xlog.h"
+#include "storage/standby.h"
 #include "storage/freespace.h"
 
 static void
@@ -707,6 +708,68 @@ zheap_xlog_update(XLogReaderState *record)
 		XLogRecordPageWithFreeSpace(rnode, newblk, freespace);
 }
 
+static void
+zheap_xlog_freeze_xact_slot(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer		buffer;
+	xl_zheap_freeze_xact_slot *xlrec =
+			(xl_zheap_freeze_xact_slot *) XLogRecGetData(record);
+	XLogRedoAction action;
+
+	/* There must be some frozen slots.*/
+	Assert(xlrec->nFrozen > 0);
+
+	/*
+	 * In Hot Standby mode, ensure that no running query conflicts with the
+	 * frozen xids.
+	 */
+	if (InHotStandby)
+	{
+		RelFileNode rnode;
+
+		/*
+		 * FIXME: We need some handling for transaction wraparound.
+		 */
+		TransactionId lastestFrozenXid = xlrec->lastestFrozenXid;
+
+		XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
+		ResolveRecoveryConflictWithSnapshot(lastestFrozenXid, rnode);
+	}
+
+	action = XLogReadBufferForRedo(record, 0, &buffer);
+	if (action == BLK_NEEDS_REDO)
+	{
+		Page	page;
+		ZHeapPageOpaque	opaque;
+		int		slot_no;
+		int	   *frozen;
+		int		i;
+
+		frozen = (int *) XLogRecGetBlockData(record, 0, NULL);
+
+		page = BufferGetPage(buffer);
+		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+		/* clear the transaction slot info on tuples */
+		MarkTupleFrozen(page, xlrec->nFrozen, frozen);
+
+		/* Initialize the frozen slots. */
+		for (i = 0; i < xlrec->nFrozen; i++)
+		{
+			slot_no = frozen[i];
+			opaque->transinfo[slot_no].xid = InvalidTransactionId;
+			opaque->transinfo[slot_no].urec_ptr = InvalidUndoRecPtr;
+		}
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
 void
 zheap_redo(XLogReaderState *record)
 {
@@ -722,6 +785,9 @@ zheap_redo(XLogReaderState *record)
 			break;
 		case XLOG_ZHEAP_UPDATE:
 			zheap_xlog_update(record);
+			break;
+		case XLOG_ZHEAP_FREEZE_XACT_SLOT:
+			zheap_xlog_freeze_xact_slot(record);
 			break;
 		default:
 			elog(PANIC, "zheap_redo: unknown op code %u", info);

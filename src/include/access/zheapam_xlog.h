@@ -30,12 +30,13 @@
  * XLOG allows to store some information in high 4 bits of log
  * record xl_info field.  We use 3 for opcode and one for init bit.
  */
-#define XLOG_ZHEAP_INSERT			0x00
-#define XLOG_ZHEAP_DELETE			0x10
-#define XLOG_ZHEAP_UPDATE			0x20
-#define XLOG_ZHEAP_MULTI_INSERT		0x30
+#define XLOG_ZHEAP_INSERT				0x00
+#define XLOG_ZHEAP_DELETE				0x10
+#define XLOG_ZHEAP_UPDATE				0x20
+#define XLOG_ZHEAP_MULTI_INSERT			0x30
+#define XLOG_ZHEAP_FREEZE_XACT_SLOT		0x40
 
-#define	XLOG_ZHEAP_OPMASK			0x70
+#define	XLOG_ZHEAP_OPMASK				0x70
 
 /*
  * When we insert 1st item on new page in INSERT, NON-INPLACE-UPDATE,
@@ -150,6 +151,15 @@ typedef struct xl_zheap_update
 } xl_zheap_update;
 
 #define SizeOfZHeapUpdate	(offsetof(xl_zheap_update, new_offnum) + sizeof(OffsetNumber))
+
+/* This is what we need to know for freezing transaction slots */
+typedef struct xl_zheap_freeze_xact_slot
+{
+	TransactionId	lastestFrozenXid;	/* latest frozen xid */
+	uint16			nFrozen;	/* number of transaction slots to freeze */
+} xl_zheap_freeze_xact_slot;
+
+#define SizeOfZHeapFreezeXactSlot	(offsetof(xl_zheap_freeze_xact_slot, nFrozen) + sizeof(uint16))
 
 extern void zheap_redo(XLogReaderState *record);
 extern void zheap_desc(StringInfo buf, XLogReaderState *record);
