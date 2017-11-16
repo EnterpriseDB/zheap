@@ -35,6 +35,7 @@
 #define XLOG_ZHEAP_UPDATE				0x20
 #define XLOG_ZHEAP_MULTI_INSERT			0x30
 #define XLOG_ZHEAP_FREEZE_XACT_SLOT		0x40
+#define XLOG_ZHEAP_INVALID_XACT_SLOT	0x50
 
 #define	XLOG_ZHEAP_OPMASK				0x70
 
@@ -160,6 +161,37 @@ typedef struct xl_zheap_freeze_xact_slot
 } xl_zheap_freeze_xact_slot;
 
 #define SizeOfZHeapFreezeXactSlot	(offsetof(xl_zheap_freeze_xact_slot, nFrozen) + sizeof(uint16))
+
+/*
+ * xl_zheap_invalid_xact_slot flag values, 8 bits are available.
+ */
+/* tuple information is present in xlog record? */
+#define XLZ_HAS_TUPLE_INFO			(1<<0)
+
+/* tuple info of completed slot */
+typedef struct xl_zheap_tuple_info
+{
+	OffsetNumber	offnum;
+	int				slotno;
+} xl_zheap_tuple_info;
+
+/* completed slot information */
+typedef struct xl_zheap_completed_slot
+{
+	int				slotno;
+	UndoRecPtr		urp;
+	TransactionId	xid;
+} xl_zheap_completed_slot;
+
+/* This is what we need to know for invalidating xact slot */
+typedef struct xl_zheap_invalid_xact_slot
+{
+	uint16			nOffsets;		/* number of tuple offsets */
+	uint16			nCompletedSlots;	/* number of completed slots */
+	uint8			flags;
+} xl_zheap_invalid_xact_slot;
+
+#define SizeOfZHeapInvalidXactSlot (offsetof(xl_zheap_invalid_xact_slot, flags) + sizeof(uint16))
 
 extern void zheap_redo(XLogReaderState *record);
 extern void zheap_desc(StringInfo buf, XLogReaderState *record);

@@ -770,6 +770,197 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 		UnlockReleaseBuffer(buffer);
 }
 
+static void
+zheap_xlog_invalid_xact_slot(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_undo_header	*xlundohdr;
+	xl_zheap_invalid_xact_slot *xlrec;
+	xl_zheap_completed_slot	*completed_slots;
+	xl_zheap_completed_slot all_slots[MAX_PAGE_TRANS_INFO_SLOTS];
+	xl_zheap_tuple_info *tuples;
+	XLogRedoAction action;
+	UnpackedUndoRecord	*undorecord;
+	UnpackedUndoRecord	*slot_urec[MAX_PAGE_TRANS_INFO_SLOTS];
+	Buffer	buffer;
+	int	   *completed_xact_slots;
+	char   *data;
+	int		slot_no;
+	Page	page;
+	int		i;
+	int		noffsets;
+	int 	nCompletedXactSlots;
+	ZHeapPageOpaque	 opaque;
+	OffsetNumber	*offsets;
+
+	data = XLogRecGetData(record);
+	xlundohdr = (xl_undo_header *) data;
+	data += SizeOfUndoHeader;
+
+	xlrec = (xl_zheap_invalid_xact_slot *) data;
+	data += SizeOfZHeapInvalidXactSlot;
+
+	action = XLogReadBufferForRedo(record, 0, &buffer);
+	page = BufferGetPage(buffer);
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+	if (xlrec->flags & XLZ_HAS_TUPLE_INFO)
+	{
+		completed_slots = (xl_zheap_completed_slot *) data;
+		data += xlrec->nCompletedSlots * sizeof(xl_zheap_completed_slot);
+		tuples = (xl_zheap_tuple_info *) data;
+
+		/*
+		 * Initialize the all_slots array this will avoid seraching in the
+		 * completed_slot array and we can directly index by slotno.
+		 */
+		for (i = 0; i < xlrec->nCompletedSlots; i++)
+		{
+			slot_no = completed_slots[i].slotno;
+			all_slots[slot_no] = completed_slots[i];
+		}
+
+		noffsets = xlrec->nOffsets;
+	}
+	else
+	{
+		nCompletedXactSlots = xlrec->nCompletedSlots;
+		completed_xact_slots = (int *) data;
+
+		if (xlrec->nOffsets)
+		{
+			offsets = palloc(sizeof(OffsetNumber) * xlrec->nOffsets);
+
+			/*
+			 * find all the tuples pointing to the transaction slots for
+			 * committed transactions.
+			 */
+			GetCompletedSlotOffsets(page, nCompletedXactSlots,
+									completed_xact_slots, offsets,
+									&noffsets);
+
+			Assert(noffsets == xlrec->nOffsets);
+		}
+
+		for (i = 0; i < xlrec->nCompletedSlots; i++)
+		{
+			slot_no = completed_xact_slots[i];
+			all_slots[slot_no].urp = opaque->transinfo[slot_no].urec_ptr;
+			all_slots[slot_no].xid = opaque->transinfo[slot_no].xid;
+		}
+	}
+
+	/* Set the prepared undo size */
+	if (noffsets > 0)
+	{
+		UndoSetPrepareSize(noffsets);
+		undorecord = (UnpackedUndoRecord *) palloc(noffsets *
+											sizeof(UnpackedUndoRecord));
+	}
+
+	/*
+	 * Write separate undo record for each of the tuple in page that points
+	 * to transaction slot which we are going to mark for reuse.
+	 */
+	for (i = 0; i < noffsets; i++)
+	{
+		UndoRecPtr	urecptr, prev_urecptr;
+		OffsetNumber	offnum;
+
+
+		if (xlrec->flags & XLZ_HAS_TUPLE_INFO)
+		{
+			offnum = tuples[i].offnum;
+			slot_no = tuples[i].slotno;
+		}
+		else
+		{
+			offnum = offsets[i];
+			slot_no = completed_xact_slots[i];
+		}
+
+		prev_urecptr = all_slots[slot_no].urp;
+
+		/* prepare an undo record */
+		undorecord[i].uur_type = UNDO_INVALID_XACT_SLOT;
+		undorecord[i].uur_info = 0;
+		undorecord[i].uur_prevlen = 0;
+		undorecord[i].uur_relfilenode = xlundohdr->relfilenode;
+		undorecord[i].uur_prevxid = all_slots[slot_no].xid;
+		undorecord[i].uur_xid = XLogRecGetXid(record);
+		undorecord[i].uur_cid = FirstCommandId;
+		undorecord[i].uur_tsid = xlundohdr->tsid;
+		undorecord[i].uur_fork = MAIN_FORKNUM;
+		undorecord[i].uur_blkprev = prev_urecptr;
+		undorecord[i].uur_block = BufferGetBlockNumber(buffer);
+		undorecord[i].uur_offset = offnum;
+		undorecord[i].uur_payload.len = 0;
+		undorecord[i].uur_tuple.len = 0;
+
+		urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERSISTENT,
+									XLogRecGetXid(record));
+		all_slots[slot_no].urp = urecptr;
+
+		/* Stores latest undorec for slot for debug log */
+		slot_urec[slot_no] = &undorecord[i];
+	}
+
+	if (noffsets > 0)
+	{
+		InsertPreparedUndo();
+		SetUndoPageLSNs(lsn);
+	}
+
+	if (action == BLK_NEEDS_REDO)
+	{
+		ZHeapTupleData	tup;
+		ItemId		itemid;
+		OffsetNumber offnum;
+
+		/* mark all the tuple that their slot is reused */
+		for (i = 0; i < noffsets; i++)
+		{
+			if (xlrec->flags & XLZ_HAS_TUPLE_INFO)
+				offnum = tuples[i].offnum;
+			else
+				offnum = offsets[i];
+
+			itemid = PageGetItemId(page, offnum);
+			Assert(ItemIdIsUsed(itemid));
+
+			page = BufferGetPage(buffer);
+			tup.t_data = (ZHeapTupleHeader) PageGetItem(page, itemid);
+			tup.t_data->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+		}
+
+		/* Initialize the completed slots. */
+		for (i = 0; i < xlrec->nCompletedSlots; i++)
+		{
+			UnpackedUndoRecord	undorec;
+
+			if (xlrec->flags & XLZ_HAS_TUPLE_INFO)
+				slot_no = completed_slots[i].slotno;
+			else
+				slot_no = completed_xact_slots[i];
+
+			if (slot_urec[slot_no] != NULL)
+				undorec = *(slot_urec[slot_no]);
+
+			PageSetUNDO(undorec, page, slot_no, InvalidTransactionId,
+						all_slots[slot_no].urp);
+		}
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+
+	/* perform cleanup */
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+
+	UnlockReleaseUndoBuffers();
+}
+
 void
 zheap_redo(XLogReaderState *record)
 {
@@ -788,6 +979,9 @@ zheap_redo(XLogReaderState *record)
 			break;
 		case XLOG_ZHEAP_FREEZE_XACT_SLOT:
 			zheap_xlog_freeze_xact_slot(record);
+			break;
+		case XLOG_ZHEAP_INVALID_XACT_SLOT:
+			zheap_xlog_invalid_xact_slot(record);
 			break;
 		default:
 			elog(PANIC, "zheap_redo: unknown op code %u", info);

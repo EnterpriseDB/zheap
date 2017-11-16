@@ -84,6 +84,11 @@ extern ZHeapTuple zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer,
 										ItemPointer tid);
 extern void MarkTupleFrozen(Page page, int nFrozenSlots, int *frozen_slots);
 
+extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
+									int *completed_slots,
+									OffsetNumber *offset_completed_slots,
+									int	*numOffsets);
+
 /* Zheap and undo record interaction related API's */
 extern ZHeapTuple
 CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
