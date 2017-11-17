@@ -844,6 +844,11 @@ InsertPreparedUndo(void)
 
 		/* store the previous undo record length in the header */
 		uur->uur_prevlen = prev_undolen;
+
+		/* if starting from a new page then include header in prevlen */
+		if (starting_byte == UndoLogBlockHeaderSize)
+				uur->uur_prevlen += UndoLogBlockHeaderSize;
+
 		undo_len = 0;
 
 		do
