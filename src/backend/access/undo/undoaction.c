@@ -25,6 +25,7 @@
 #include "miscadmin.h"
 
 static void execute_undo_actions_page(List *luur, Oid reloid, BlockNumber blkno);
+static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off);
 
 /*
  * execute_undo_actions - Execute the undo actions
@@ -140,6 +141,40 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr)
 }
 
 /*
+ * undo_action_insert - perform the undo action for insert
+ *
+ *	This will mark the tuple as dead so that the future access to it can't see
+ *	this tuple.  We mark it as unused if there is no other index pointing to
+ *	it, otherwise mark it as dead.
+ */
+static inline void
+undo_action_insert(Relation rel, Page page, OffsetNumber off)
+{
+	ItemId		lp;
+	bool		relhasindex;
+
+	/*
+	 * This will mark the tuple as dead so that the future
+	 * access to it can't see this tuple.  We mark it as
+	 * unused if there is no other index pointing to it,
+	 * otherwise mark it as dead.
+	*/
+	relhasindex = RelationGetForm(rel)->relhasindex;
+	lp = PageGetItemId(page, off);
+	Assert(ItemIdIsNormal(lp));
+	if (relhasindex)
+	{
+		ItemIdSetDead(lp);
+	}
+	else
+	{
+		ItemIdSetUnused(lp);
+		/* Set hint bit for ZPageAddItem */
+		PageSetHasFreeLinePointers(page);
+	}
+}
+
+/*
  * execute_undo_actions - Execute the undo actions for a page
  */
 static void
@@ -170,28 +205,67 @@ execute_undo_actions_page(List *luur, Oid reloid, BlockNumber blkno)
 		{
 			case UNDO_INSERT:
 				{
-					ItemId		lp;
-					bool		relhasindex;
+					undo_action_insert(rel, page, uur->uur_offset);
+				}
+				break;
+			case UNDO_MULTI_INSERT:
+				{
+					OffsetNumber	start_offset;
+					OffsetNumber	end_offset;
+					OffsetNumber	iter_offset;
 
-					/*
-					 * This will mark the tuple as dead so that the future
-					 * access to it can't see this tuple.  We mark it as
-					 * unused if there is no other index pointing to it,
-					 * otherwise mark it as dead.
-					 */
-					relhasindex = RelationGetForm(rel)->relhasindex;
+					start_offset = ((OffsetNumber *) uur->uur_payload.data)[0];
+					end_offset = ((OffsetNumber *) uur->uur_payload.data)[1];
+
+					for (iter_offset = start_offset;
+						 iter_offset <= end_offset;
+						 iter_offset++)
+					{
+						undo_action_insert(rel, page, iter_offset);
+					}
+				}
+				break;
+			case UNDO_DELETE:
+			case UNDO_UPDATE:
+			case UNDO_INPLACE_UPDATE:
+				{
+					ItemId		lp;
+					ZHeapTupleHeader zhtup;
+					Size		offset = 0;
+					uint32		undo_tup_len;
+
+					/* Copy the entire tuple from undo. */
 					lp = PageGetItemId(page, uur->uur_offset);
 					Assert(ItemIdIsNormal(lp));
-					if (relhasindex)
-					{
-						ItemIdSetDead(lp);
-					}
-					else
-					{
-						ItemIdSetUnused(lp);
-						/* Set hint bit for ZPageAddItem */
-						PageSetHasFreeLinePointers(page);
-					}
+					zhtup = (ZHeapTupleHeader) PageGetItem(page, lp);
+
+					undo_tup_len = *((uint32 *) &uur->uur_tuple.data[offset]);
+					ItemIdChangeLen(lp, undo_tup_len);
+					/* skip ctid and tableoid stored in undo tuple */
+					offset += sizeof(uint32) + sizeof(ItemPointerData) + sizeof(Oid);
+					memcpy(zhtup,
+						   (ZHeapTupleHeader) &uur->uur_tuple.data[offset],
+						   undo_tup_len);
+				}
+				break;
+			case UNDO_XID_LOCK_ONLY:
+				{
+					ItemId		lp;
+					ZHeapTupleHeader zhtup, undo_tup_hdr;
+
+					/* Copy the entire tuple from undo. */
+					lp = PageGetItemId(page, uur->uur_offset);
+					Assert(ItemIdIsNormal(lp));
+					zhtup = (ZHeapTupleHeader) PageGetItem(page, lp);
+
+					/*
+					 * Override the tuple header values with values retrieved
+					 * from undo record.
+					 */
+					undo_tup_hdr = (ZHeapTupleHeader) uur->uur_tuple.data;
+					zhtup->t_infomask2 = undo_tup_hdr->t_infomask2;
+					zhtup->t_infomask = undo_tup_hdr->t_infomask;
+					zhtup->t_hoff = undo_tup_hdr->t_hoff;
 				}
 				break;
 			case UNDO_INVALID_XACT_SLOT:
