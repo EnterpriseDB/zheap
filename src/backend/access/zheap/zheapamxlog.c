@@ -961,6 +961,102 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 	UnlockReleaseUndoBuffers();
 }
 
+static void
+zheap_xlog_lock(XLogReaderState *record)
+{
+	XLogRecPtr  lsn = record->EndRecPtr;
+	xl_undo_header  *xlundohdr = (xl_undo_header *) XLogRecGetData(record);
+	xl_zheap_lock *xlrec;
+	Buffer      buffer;
+	Page        page;
+	ZHeapTupleData  zheaptup;
+	char		*tup_hdr;
+	UnpackedUndoRecord  undorecord;
+	UndoRecPtr  urecptr;
+	RelFileNode target_node;
+	BlockNumber blkno;
+	ItemPointerData target_tid;
+	XLogRedoAction action;
+	Relation    reln;
+	ItemId  lp = NULL;
+
+	xlrec = (xl_zheap_lock *) ((char *) xlundohdr + SizeOfUndoHeader);
+
+	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
+	ItemPointerSet(&target_tid, blkno, xlrec->offnum);
+
+	reln = CreateFakeRelcacheEntry(target_node);
+	action = XLogReadBufferForRedo(record, 0, &buffer);
+	page = BufferGetPage(buffer);
+
+	if (PageGetMaxOffsetNumber(page) >= xlrec->offnum)
+		lp = PageGetItemId(page, xlrec->offnum);
+
+	if (PageGetMaxOffsetNumber(page) < xlrec->offnum || !ItemIdIsNormal(lp))
+		elog(PANIC, "invalid lp");
+
+	zheaptup.t_tableOid = RelationGetRelid(reln);
+	zheaptup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+	zheaptup.t_len = ItemIdGetLength(lp);
+	zheaptup.t_self = target_tid;
+
+	/*
+	 * WAL stream contains undo tuple header, replace it with the explicitly
+	 * stored tuple header.
+	 */
+	tup_hdr = (char *) xlrec + SizeOfZHeapLock;
+
+	/* prepare an undo record */
+	undorecord.uur_type = UNDO_XID_LOCK_ONLY;
+	undorecord.uur_info = 0;
+	undorecord.uur_prevlen = 0;
+	undorecord.uur_relfilenode = xlundohdr->relfilenode;
+	undorecord.uur_prevxid = xlrec->prev_xid;
+	undorecord.uur_xid = XLogRecGetXid(record);
+	undorecord.uur_cid = FirstCommandId;
+	undorecord.uur_tsid = xlundohdr->tsid;
+	undorecord.uur_fork = MAIN_FORKNUM;
+	undorecord.uur_blkprev = xlundohdr->blkprev;
+	undorecord.uur_block = ItemPointerGetBlockNumber(&target_tid);
+	undorecord.uur_offset = ItemPointerGetOffsetNumber(&target_tid);
+	undorecord.uur_payload.len = 0;
+
+	initStringInfo(&undorecord.uur_tuple);
+	appendBinaryStringInfo(&undorecord.uur_tuple,
+						   tup_hdr,
+						   SizeofZHeapTupleHeader);
+
+	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT,
+								XLogRecGetXid(record));
+	InsertPreparedUndo();
+	SetUndoPageLSNs(lsn);
+
+	/*
+	 * undo should be inserted at same location as it was during the actual
+	 * insert (DO operation).
+	 */
+	Assert (urecptr == xlundohdr->urec_ptr);
+
+	if (action == BLK_NEEDS_REDO)
+	{
+		zheaptup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+		zheaptup.t_len = ItemIdGetLength(lp);
+		ZHeapTupleHeaderSetXactSlot(zheaptup.t_data, xlrec->trans_slot_id);
+		zheaptup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
+		zheaptup.t_data->t_infomask |= ZHEAP_XID_LOCK_ONLY;
+
+		PageSetUNDO(undorecord, page, xlrec->trans_slot_id, XLogRecGetXid(record), urecptr);
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+
+	UnlockReleaseUndoBuffers();
+	FreeFakeRelcacheEntry(reln);
+}
+
 void
 zheap_redo(XLogReaderState *record)
 {
@@ -982,6 +1078,9 @@ zheap_redo(XLogReaderState *record)
 			break;
 		case XLOG_ZHEAP_INVALID_XACT_SLOT:
 			zheap_xlog_invalid_xact_slot(record);
+			break;
+		case XLOG_ZHEAP_LOCK:
+			zheap_xlog_lock(record);
 			break;
 		default:
 			elog(PANIC, "zheap_redo: unknown op code %u", info);

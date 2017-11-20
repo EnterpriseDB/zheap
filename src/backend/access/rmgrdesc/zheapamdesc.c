@@ -67,6 +67,14 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 		appendStringInfo(buf, "noffsets %u nslots %u",
 						 xlrec->nOffsets, xlrec->nCompletedSlots);
 	}
+	else if (info == XLOG_ZHEAP_LOCK)
+	{
+		xl_undo_header *xlundohdr = (xl_undo_header *) rec;
+		xl_zheap_lock *xlrec = (xl_zheap_lock *) ((char *) xlundohdr + SizeOfUndoHeader);
+
+		appendStringInfo(buf, "off %u, xid %u, trans_slot_id %u ",
+						 xlrec->offnum, xlrec->prev_xid, xlrec->trans_slot_id);
+	}
 }
 
 const char *
@@ -96,6 +104,9 @@ zheap_identify(uint8 info)
 			break;
 		case XLOG_ZHEAP_INVALID_XACT_SLOT:
 			id = "INVALID_XACT_SLOT";
+			break;
+		case XLOG_ZHEAP_LOCK:
+			id = "LOCK";
 			break;
 	}
 

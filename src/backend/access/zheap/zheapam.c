@@ -1565,8 +1565,46 @@ check_tup_satisfies_update:
 		MarkBufferDirty(buffer);
 
 		/*
-		 * Fixme - Do xlog stuff
+		 * Do xlog stuff
 		 */
+		if (RelationNeedsWAL(relation))
+		{
+			xl_zheap_lock	xlrec;
+			xl_undo_header  xlundohdr;
+			XLogRecPtr      recptr;
+
+			/*
+			 * Store the information required to generate undo record during
+			 * replay.
+			 */
+			xlundohdr.relfilenode = undorecord.uur_relfilenode;
+			xlundohdr.tsid = undorecord.uur_tsid;
+			xlundohdr.urec_ptr = urecptr;
+			xlundohdr.blkprev = undorecord.uur_blkprev;
+
+			xlrec.prev_xid = tup_xid;
+			xlrec.offnum = ItemPointerGetOffsetNumber(&(oldtup.t_self));
+			xlrec.trans_slot_id = trans_slot_id;
+
+			XLogBeginInsert();
+			XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+			XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
+			XLogRegisterData((char *) &xlrec, SizeOfZHeapLock);
+
+			/*
+			 * We always include old tuple header for undo in WAL record
+			 * irrespective of full page image is taken or not. This is done
+			 * since savings for not including a zheap tuple header are less
+			 * compared to code complexity. However in future, if required we
+			 * can do it similar to what we have done in zheap_update or
+			 * zheap_delete.
+			 */
+			XLogRegisterData((char *) undorecord.uur_tuple.data,
+							 SizeofZHeapTupleHeader);
+
+			recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK);
+			PageSetLSN(page, recptr);
+		}
 		END_CRIT_SECTION();
 
 		pfree(undorecord.uur_tuple.data);
@@ -2373,8 +2411,46 @@ failed:
 	memcpy(tuple->t_data, zhtup.t_data, zhtup.t_len);
 
 	/*
-	 * Fixme - Do xlog stuff
+	 * Do xlog stuff
 	 */
+	if (RelationNeedsWAL(relation))
+	{
+		xl_zheap_lock	xlrec;
+		xl_undo_header  xlundohdr;
+		XLogRecPtr      recptr;
+
+		/*
+		 * Store the information required to generate undo record during
+		 * replay.
+		 */
+		xlundohdr.relfilenode = undorecord.uur_relfilenode;
+		xlundohdr.tsid = undorecord.uur_tsid;
+		xlundohdr.urec_ptr = urecptr;
+		xlundohdr.blkprev = prev_urecptr;
+
+		xlrec.prev_xid = tup_xid;
+		xlrec.offnum = ItemPointerGetOffsetNumber(&tuple->t_self);
+		xlrec.trans_slot_id = trans_slot_id;
+
+		XLogBeginInsert();
+		XLogRegisterBuffer(0, *buffer, REGBUF_STANDARD);
+		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
+		XLogRegisterData((char *) &xlrec, SizeOfZHeapLock);
+
+		/*
+		 * We always include old tuple header for undo in WAL record
+		 * irrespective of full page image is taken or not. This is done
+		 * since savings for not including a zheap tuple header are less
+		 * compared to code complexity. However in future, if required we
+		 * can do it similar to what we have done in zheap_update or
+		 * zheap_delete.
+		 */
+		XLogRegisterData((char *) undorecord.uur_tuple.data,
+						 SizeofZHeapTupleHeader);
+
+		recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK);
+		PageSetLSN(page, recptr);
+	}
 	END_CRIT_SECTION();
 
 	pfree(undorecord.uur_tuple.data);

@@ -36,6 +36,7 @@
 #define XLOG_ZHEAP_MULTI_INSERT			0x30
 #define XLOG_ZHEAP_FREEZE_XACT_SLOT		0x40
 #define XLOG_ZHEAP_INVALID_XACT_SLOT	0x50
+#define XLOG_ZHEAP_LOCK					0x60
 
 #define	XLOG_ZHEAP_OPMASK				0x70
 
@@ -192,6 +193,18 @@ typedef struct xl_zheap_invalid_xact_slot
 } xl_zheap_invalid_xact_slot;
 
 #define SizeOfZHeapInvalidXactSlot (offsetof(xl_zheap_invalid_xact_slot, flags) + sizeof(uint16))
+
+/* This is what we need to know about zheap lock tuple. */
+typedef struct xl_zheap_lock
+{
+	/* info related to undo record */
+	TransactionId   prev_xid;
+	/* zheap related info */
+	OffsetNumber    offnum;		/* locked tuple's offset */
+	uint8   trans_slot_id;		/* transaction slot id */
+} xl_zheap_lock;
+
+#define SizeOfZHeapLock    (offsetof(xl_zheap_lock, trans_slot_id) + sizeof(uint8))
 
 extern void zheap_redo(XLogReaderState *record);
 extern void zheap_desc(StringInfo buf, XLogReaderState *record);
