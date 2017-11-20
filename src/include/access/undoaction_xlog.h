@@ -20,22 +20,10 @@
 /*
  * WAL record definitions for undoactions.c's WAL operations
  */
-#define XLOG_UNDO_INSERT			0x00
-#define XLOG_UNDO_DELETE			0x10
-
-/* This is what we need to know about undo insert */
-typedef struct xl_undo_insert
-{
-	/* undo record related info */
-	OffsetNumber offnum;		/* deleted tuple's offset */
-	bool		relhasindex;
-} xl_undo_insert;
-
-#define SizeOfUndoInsert	(offsetof(xl_undo_insert, relhasindex) + sizeof(bool))
+#define XLOG_UNDO_PAGE			0x00
 
 extern void undoaction_redo(XLogReaderState *record);
 extern void undoaction_desc(StringInfo buf, XLogReaderState *record);
 extern const char *undoaction_identify(uint8 info);
 
 #endif   /* UNDOACTION_XLOG_H */
-

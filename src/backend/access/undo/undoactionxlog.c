@@ -19,7 +19,7 @@
 #include "access/xlogutils.h"
 #include "access/zheap.h"
 
-static void
+/*static void
 undo_xlog_insert(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
@@ -43,7 +43,7 @@ undo_xlog_insert(XLogReaderState *record)
 		{
 			ItemIdSetUnused(lp);
 			/* Set hint bit for ZPageAddItem */
-			PageSetHasFreeLinePointers(page);
+			/*PageSetHasFreeLinePointers(page);
 		}
 
 		PageSetLSN(BufferGetPage(buffer), lsn);
@@ -51,6 +51,20 @@ undo_xlog_insert(XLogReaderState *record)
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
+}*/
+
+/*
+ * replay of undo page operation
+ */
+static void
+undo_xlog_page(XLogReaderState *record)
+{
+	Buffer		buf;
+
+	if (XLogReadBufferForRedo(record, 0, &buf) != BLK_RESTORED)
+		elog(ERROR, "Undo page record did not contain a full-page image");
+
+	UnlockReleaseBuffer(buf);
 }
 
 void
@@ -60,8 +74,8 @@ undoaction_redo(XLogReaderState *record)
 
 	switch (info)
 	{
-		case XLOG_UNDO_INSERT:
-			undo_xlog_insert(record);
+		case XLOG_UNDO_PAGE:
+			undo_xlog_page(record);
 			break;
 		default:
 			elog(PANIC, "undoaction_redo: unknown op code %u", info);

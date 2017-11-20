@@ -19,15 +19,6 @@
 void
 undoaction_desc(StringInfo buf, XLogReaderState *record)
 {
-	char	   *rec = XLogRecGetData(record);
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
-
-	if (info == XLOG_UNDO_INSERT)
-	{
-		xl_undo_insert *xlrec = (xl_undo_insert *) rec;
-
-		appendStringInfo(buf, "off %u", xlrec->offnum);
-	}
 }
 
 const char *
@@ -37,8 +28,8 @@ undoaction_identify(uint8 info)
 
 	switch (info & ~XLR_INFO_MASK)
 	{
-		case XLOG_UNDO_INSERT:
-			id = "UNDO INSERT";
+		case XLOG_UNDO_PAGE:
+			id = "UNDO PAGE";
 			break;
 	}
 
