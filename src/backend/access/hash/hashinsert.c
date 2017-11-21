@@ -396,6 +396,8 @@ _hash_vacuum_one_page(Relation rel, Buffer metabuf, Buffer buf,
 
 			xlrec.hnode = hnode;
 			xlrec.ntuples = ndeletable;
+			xlrec.flags = RelationStorageIsZHeap(rel) ?
+								XLOG_HASH_VACUUM_RELATION_STORAGE_ZHEAP : 0;
 
 			XLogBeginInsert();
 			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);

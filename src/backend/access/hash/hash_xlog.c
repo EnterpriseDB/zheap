@@ -1088,8 +1088,28 @@ hash_xlog_vacuum_get_latestRemovedXid(XLogReaderState *record)
 		 */
 		if (ItemIdHasStorage(hitemid))
 		{
-			htuphdr = (HeapTupleHeader) PageGetItem(hpage, hitemid);
-			HeapTupleHeaderAdvanceLatestRemovedXid(htuphdr, &latestRemovedXid);
+			if ((xlrec->flags & XLOG_HASH_VACUUM_RELATION_STORAGE_ZHEAP) != 0)
+			{
+				ZHeapTupleHeader ztuphdr;
+
+				ztuphdr = (ZHeapTupleHeader) PageGetItem(hpage, hitemid);
+
+				if (ztuphdr->t_infomask & ZHEAP_DELETED
+										|| ztuphdr->t_infomask & ZHEAP_UPDATED)
+				{
+					TransactionId	xid;
+					ZHeapPageOpaque	opaque;
+
+					opaque = (ZHeapPageOpaque) PageGetSpecialPointer(hpage);
+					xid = ZHeapTupleHeaderGetRawXid(ztuphdr, opaque);
+					ZHeapTupleHeaderAdvanceLatestRemovedXid(ztuphdr, xid, &latestRemovedXid);
+				}
+			}
+			else
+			{
+				htuphdr = (HeapTupleHeader) PageGetItem(hpage, hitemid);
+				HeapTupleHeaderAdvanceLatestRemovedXid(htuphdr, &latestRemovedXid);
+			}
 		}
 		else if (ItemIdIsDead(hitemid))
 		{
