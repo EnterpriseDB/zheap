@@ -5238,6 +5238,37 @@ zheap_fetch_undo(Relation relation,
 
 	return true;
 }
+ 
+/*
+ * ZHeapTupleHeaderAdvanceLatestRemovedXid - Advance the latestremovexid, if
+ * tuple is deleted by a transaction greater than latestremovexid.  This is
+ * required to generate conflicts on Hot Standby
+ *
+ * This is quite similar to HeapTupleHeaderAdvanceLatestRemovedXid.
+ */
+void
+ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
+										TransactionId xid,
+										TransactionId *latestRemovedXid)
+{
+	Assert (tuple->t_infomask & ZHEAP_DELETED ||
+		tuple->t_infomask & ZHEAP_UPDATED);
+
+	/*
+	 * Ignore tuples inserted by an aborted transaction.
+	 *
+	 * XXX we can ignore the tuple if it was non-in-place updated/deleted
+	 * by the inserting transaction, but for that we need to traverse the
+	 * complete undo chain to find the root tuple, is it really worth?
+	 */
+	if (TransactionIdDidCommit(xid))
+	{
+		if (TransactionIdFollows(xid, *latestRemovedXid))
+			*latestRemovedXid = xid;
+	}
+
+	/* *latestRemovedXid may still be invalid at end */
+}
 
 /*
  * ----------

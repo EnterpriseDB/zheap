@@ -82,6 +82,9 @@ extern bool zheap_fetch_undo(Relation relation, Snapshot snapshot,
 				Relation stats_relation);
 extern ZHeapTuple zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer,
 										ItemPointer tid);
+extern void
+ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
+                                               TransactionId xid, TransactionId *latestRemovedXid);
 extern void MarkTupleFrozen(Page page, int nFrozenSlots, int *frozen_slots);
 
 extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
