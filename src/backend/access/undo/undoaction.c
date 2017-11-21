@@ -43,7 +43,17 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr)
 	bool		more_undo;
 
 	Assert(from_urecptr != InvalidUndoRecPtr);
-	Assert(to_urecptr != InvalidUndoRecPtr);
+	/*
+	 * If the location upto which rollback need to be done is not provided,
+	 * then rollback the complete transaction.
+	 * FIXME: this won't work if undolog crossed the limit of 1TB, because
+	 * then from_urecptr and to_urecptr will be from different lognos.
+	 */
+	if (to_urecptr == InvalidUndoRecPtr)
+	{
+		UndoLogNumber logno = UndoRecPtrGetLogNo(from_urecptr);
+		to_urecptr = UndoLogGetLastXactStartPoint(logno);
+	}
 
 	urec_ptr = from_urecptr;
 
