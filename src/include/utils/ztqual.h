@@ -35,6 +35,8 @@ extern HTSU_Result ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup,
 						bool *in_place_updated_or_locked);
 extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin,
 								   Buffer buffer);
+extern ZHeapTuple ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
+						Buffer buffer, ItemPointer ctid);
 extern ZHeapTuple ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup,
 						Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern ZHeapTuple ZHeapTupleSatisfiesAny(ZHeapTuple zhtup,

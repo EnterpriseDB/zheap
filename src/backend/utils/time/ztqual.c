@@ -100,6 +100,10 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId *xid,
  *
  *	Also we don't need to process the chain if the latest xid that has changed
  *  the tuple precedes smallest xid that has undo.
+ *
+ *	This function has some ugly hacks for MVCC and non-MVCC snapshots, but the
+ *	alternative is to write a very similar new function which seems like a lot
+ *	of code duplication.
  */
 static ZHeapTuple
 GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
@@ -211,7 +215,7 @@ fetch_undo_record:
 		{
 			if (undo_oper == ZHEAP_XID_LOCK_ONLY)
 				return undo_tup;
-			if (cid >= snapshot->curcid)
+			if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
 			{
 				/* updated after scan started */
 				return GetTupleFromUndo(prev_urec_ptr,
@@ -223,7 +227,13 @@ fetch_undo_record:
 			else
 				return undo_tup;	/* updated before scan started */
 		}
-		else if (XidInMVCCSnapshot(xid, snapshot))
+		else if (IsMVCCSnapshot(snapshot) && XidInMVCCSnapshot(xid, snapshot))
+			return GetTupleFromUndo(prev_urec_ptr,
+									undo_tup,
+									snapshot,
+									buffer,
+									xid);
+		else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(xid))
 			return GetTupleFromUndo(prev_urec_ptr,
 									undo_tup,
 									snapshot,
@@ -242,12 +252,14 @@ fetch_undo_record:
 	{
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
-			if (cid >= snapshot->curcid)
+			if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
 				return NULL;	/* inserted after scan started */
 			else
 				return undo_tup;	/* inserted before scan started */
 		}
-		else if (XidInMVCCSnapshot(xid, snapshot))
+		else if (IsMVCCSnapshot(snapshot) && XidInMVCCSnapshot(xid, snapshot))
+			return NULL;
+		else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(xid))
 			return NULL;
 		else if (TransactionIdDidCommit(xid))
 			return undo_tup;
@@ -879,6 +891,141 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer
 }
 
 /*
+ * ZHeapTupleSatisfiesSelf
+ *		Returns the visible version of tuple (including effects of previous
+ *		commands in current transactions) if any, NULL otherwise.
+ *
+ *	Here, we consider the effects of:
+ *		all committed transactions (as of the current instant)
+ *		previous commands of this transaction
+ *		changes made by the current command
+ *
+ *	The tuple will be considered visible iff:
+ *		Latest operation on tuple is Insert, In-Place update or tuple is
+ *		locked and the transaction that has performed operation is current
+ *		transaction or is committed.
+ *
+ *	If the transaction is in progress, then we fetch the tuple from undo.
+ */
+ZHeapTuple
+ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
+						Buffer buffer, ItemPointer ctid)
+{
+	ZHeapTupleHeader tuple = zhtup->t_data;
+	TransactionId	xid;
+	UndoRecPtr  urec_ptr = InvalidUndoRecPtr;
+
+	Assert(ItemPointerIsValid(&zhtup->t_self));
+	Assert(zhtup->t_tableOid != InvalidOid);
+
+	/* Get transaction id */
+	ZHeapTupleGetTransInfo(zhtup, buffer, &xid, NULL, &urec_ptr, false);
+
+	if (tuple->t_infomask & ZHEAP_DELETED ||
+		tuple->t_infomask & ZHEAP_UPDATED)
+	{
+		/*
+		 * The tuple is deleted and must be all visible if the transaction slot
+		 * is cleared or latest xid that has changed the tuple precedes
+		 * smallest xid that has undo.
+		 */
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			return NULL;
+
+		if (TransactionIdIsCurrentTransactionId(xid))
+			return NULL;
+		else if (TransactionIdIsInProgress(xid))
+			return GetTupleFromUndo(urec_ptr,
+									zhtup,
+									snapshot,
+									buffer,
+									InvalidTransactionId);
+		else if (TransactionIdDidCommit(xid))
+		{
+			/* tuple is deleted or non-inplace-updated */
+			return NULL;
+		}
+		else	/* transaction is aborted */
+		{
+			/*
+			 * Fixme - Here we need to fetch the tuple from undo, something similar
+			 * to GetTupleFromUndo but for SelfSnapshots.
+			 */
+			Assert(false);
+			return NULL;
+		}
+	}
+	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
+			 tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
+	{
+		/*
+		 * The tuple is updated/locked and must be all visible if the
+		 * transaction slot is cleared or latest xid that has changed the
+		 * tuple precedes smallest xid that has undo.
+		 */
+		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			return zhtup;
+
+		if (TransactionIdIsCurrentTransactionId(xid))
+		{
+			return zhtup;
+		}
+		else if (TransactionIdIsInProgress(xid))
+		{
+			return GetTupleFromUndo(urec_ptr,
+									zhtup,
+									snapshot,
+									buffer,
+									InvalidTransactionId);
+		}
+		else if (TransactionIdDidCommit(xid))
+		{
+			return zhtup;
+		}
+		else	/* transaction is aborted */
+		{
+			/*
+			 * Fixme - Here we need to fetch the tuple from undo, something similar
+			 * to GetTupleFromUndo but for SelfSnapshots.
+			 */
+			Assert(false);
+			return NULL;
+		}
+	}
+
+	/*
+	 * The tuple must be all visible if the transaction slot is cleared or
+	 * latest xid that has changed the tuple precedes smallest xid that has
+	 * undo.
+	 */
+	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
+		TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+		return zhtup;
+
+	if (TransactionIdIsCurrentTransactionId(xid))
+		return zhtup;
+	else if (TransactionIdIsInProgress(xid))
+	{
+		return NULL;
+	}
+	else if (TransactionIdDidCommit(xid))
+		return zhtup;
+	else
+	{
+		/*
+		 * Fixme - Here we need to fetch the tuple from undo, something similar
+		 * to GetTupleFromUndo but for SelfSnapshots.
+		 */
+		Assert(false);
+		return NULL;
+	}
+
+	return NULL;
+}
+
+/*
  * ZHeapTupleSatisfiesDirty
  *		Returns the visible version of tuple (including effects of open
  *		transactions) if any, NULL otherwise.
@@ -887,6 +1034,10 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer
  *		all committed and in-progress transactions (as of the current instant)
  *		previous commands of this transaction
  *		changes made by the current command
+ *
+ *	This is essentially like ZHeapTupleSatisfiesSelf as far as effects of
+ *	the current transaction and committed/aborted xacts are concerned.
+ *	However, we also include the effects of other xacts still in progress.
  *
  *	The tuple will be considered visible iff:
  *	(a) Latest operation on tuple is Delete or non-inplace-update and the
