@@ -73,6 +73,7 @@
 #include "access/relscan.h"
 #include "access/transam.h"
 #include "access/xlog.h"
+#include "access/zheaputils.h"
 #include "catalog/index.h"
 #include "catalog/pg_type.h"
 #include "pgstat.h"
@@ -663,6 +664,7 @@ HeapTuple
 index_getnext(IndexScanDesc scan, ScanDirection direction)
 {
 	HeapTuple	heapTuple;
+	ZHeapTuple	zheapTuple;
 	ItemPointer tid;
 
 	for (;;)
@@ -692,7 +694,17 @@ index_getnext(IndexScanDesc scan, ScanDirection direction)
 		 * If we don't find anything, loop around and grab the next TID from
 		 * the index.
 		 */
-		heapTuple = index_fetch_heap(scan);
+		if (RelationStorageIsZHeap(scan->heapRelation))
+		{
+			zheapTuple = index_fetch_zheap(scan);
+			if (zheapTuple != NULL)
+				heapTuple = zheap_to_heap(zheapTuple,
+										  scan->heapRelation->rd_att);
+			else
+				heapTuple = NULL;
+		}
+		else
+			heapTuple = index_fetch_heap(scan);
 		if (heapTuple != NULL)
 			return heapTuple;
 	}

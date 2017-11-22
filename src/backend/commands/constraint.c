@@ -13,6 +13,7 @@
  */
 #include "postgres.h"
 
+#include "access/zheaputils.h"
 #include "catalog/index.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
@@ -40,6 +41,7 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	TriggerData *trigdata = castNode(TriggerData, fcinfo->context);
 	const char *funcname = "unique_key_recheck";
 	HeapTuple	new_row;
+	ZHeapTuple	znew_row;
 	ItemPointerData tmptid;
 	Relation	indexRel;
 	IndexInfo  *indexInfo;
@@ -102,7 +104,9 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	 * removed.
 	 */
 	tmptid = new_row->t_self;
-	if (!heap_hot_search(&tmptid, trigdata->tg_relation, SnapshotSelf, NULL))
+	if (RelationStorageIsZHeap(trigdata->tg_relation) ?
+		!zheap_search(&tmptid, trigdata->tg_relation, SnapshotSelf, NULL) :
+		!heap_hot_search(&tmptid, trigdata->tg_relation, SnapshotSelf, NULL))
 	{
 		/*
 		 * All rows in the HOT chain are dead, so skip the check.
@@ -124,7 +128,13 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	 */
 	slot = MakeSingleTupleTableSlot(RelationGetDescr(trigdata->tg_relation));
 
-	ExecStoreHeapTuple(new_row, slot, false);
+	if (RelationStorageIsZHeap(trigdata->tg_relation))
+	{
+		znew_row = heap_to_zheap(new_row, trigdata->tg_relation->rd_att);
+		ExecStoreZTuple(znew_row, slot, InvalidBuffer, true);
+	}
+	else
+		ExecStoreHeapTuple(new_row, slot, false);
 
 	/*
 	 * Typically the index won't have expressions, but if it does we need an
@@ -164,9 +174,14 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 		 * correct even if t_self is now dead, because that is the TID the
 		 * index will know about.
 		 */
-		index_insert(indexRel, values, isnull, &(new_row->t_self),
-					 trigdata->tg_relation, UNIQUE_CHECK_EXISTING,
-					 indexInfo);
+		if (RelationStorageIsZHeap(trigdata->tg_relation))
+			index_insert(indexRel, values, isnull, &(znew_row->t_self),
+						 trigdata->tg_relation, UNIQUE_CHECK_EXISTING,
+						 indexInfo);
+		else
+			index_insert(indexRel, values, isnull, &(new_row->t_self),
+						 trigdata->tg_relation, UNIQUE_CHECK_EXISTING,
+						 indexInfo);
 	}
 	else
 	{
