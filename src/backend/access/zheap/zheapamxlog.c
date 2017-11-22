@@ -1057,6 +1057,205 @@ zheap_xlog_lock(XLogReaderState *record)
 	FreeFakeRelcacheEntry(reln);
 }
 
+static void
+zheap_xlog_multi_insert(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_undo_header	*xlundohdr;
+	xl_zheap_multi_insert *xlrec;
+	RelFileNode rnode;
+	BlockNumber blkno;
+	Buffer		buffer;
+	Page		page;
+	union
+	{
+		ZHeapTupleHeaderData hdr;
+		char		data[MaxZHeapTupleSize];
+	}			tbuf;
+	ZHeapTupleHeader zhtup;
+	uint32		newlen;
+	UnpackedUndoRecord	*undorecord;
+	UndoRecPtr	urecptr,
+						prev_urecptr;
+	int			i;
+	int			nranges;
+	bool		isinit = (XLogRecGetInfo(record) & XLOG_ZHEAP_INIT_PAGE) != 0;
+	XLogRedoAction action;
+	char	   *data;
+
+	xlundohdr = (xl_undo_header *) XLogRecGetData(record);
+	xlrec = (xl_zheap_multi_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+
+	/*
+	 * The visibility map may need to be fixed even if the heap page is
+	 * already up-to-date.
+	 *
+	 * Fixme - This is just for future support of visibility maps with zheap.
+	 * Once that is supported, we can test if this code works and remove this
+	 * comment after it works.
+	 */
+	if (xlrec->flags & XLZ_INSERT_ALL_VISIBLE_CLEARED)
+	{
+		Relation	reln = CreateFakeRelcacheEntry(rnode);
+		Buffer		vmbuffer = InvalidBuffer;
+
+		visibilitymap_pin(reln, blkno, &vmbuffer);
+		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		ReleaseBuffer(vmbuffer);
+		FreeFakeRelcacheEntry(reln);
+	}
+
+	if (isinit)
+	{
+		buffer = XLogInitBufferForRedo(record, 0);
+		page = BufferGetPage(buffer);
+		ZheapInitPage(page, BufferGetPageSize(buffer));
+		action = BLK_NEEDS_REDO;
+	}
+	else
+		action = XLogReadBufferForRedo(record, 0, &buffer);
+
+	/* allocate the information related to offset ranges */
+	data = (char *)xlrec + SizeOfZHeapMultiInsert;
+
+	/* fetch number of distinct ranges */
+	nranges = *(int *) data;
+	data += sizeof(int);
+
+	Assert(nranges > 0);
+	undorecord = (UnpackedUndoRecord *) palloc(nranges * sizeof(UnpackedUndoRecord));
+
+	/* Start UNDO prepare Stuff */
+	prev_urecptr = xlundohdr->blkprev;
+	urecptr = prev_urecptr;
+
+	UndoSetPrepareSize(nranges);
+
+	for (i = 0; i < nranges; i++)
+	{
+		/* prepare an undo record */
+		undorecord[i].uur_type = UNDO_MULTI_INSERT;
+		undorecord[i].uur_info = 0;
+		undorecord[i].uur_prevlen = 0;
+		undorecord[i].uur_relfilenode = xlundohdr->relfilenode;
+		undorecord[i].uur_prevxid = XLogRecGetXid(record);
+		undorecord[i].uur_xid = XLogRecGetXid(record);
+		undorecord[i].uur_cid = FirstCommandId;
+		undorecord[i].uur_tsid = xlundohdr->tsid;
+		undorecord[i].uur_fork = MAIN_FORKNUM;
+		undorecord[i].uur_blkprev = urecptr;
+		undorecord[i].uur_block = blkno;
+		undorecord[i].uur_offset = 0;
+		undorecord[i].uur_tuple.len = 0;
+		undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
+		undorecord[i].uur_payload.data = (char *)palloc(2 * sizeof(OffsetNumber));
+		urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERSISTENT, XLogRecGetXid(record));
+
+		memcpy(undorecord[i].uur_payload.data,
+			   (char *) data,
+			   undorecord[i].uur_payload.len);
+		data += undorecord[i].uur_payload.len;
+
+	}
+	elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
+		 nranges, blkno);
+
+	/*
+	 * undo should be inserted at same location as it was during the actual
+	 * insert (DO operation).
+	 */
+	Assert (urecptr == xlundohdr->urec_ptr);
+
+	InsertPreparedUndo();
+	SetUndoPageLSNs(lsn);
+	UnlockReleaseUndoBuffers();
+
+	/* Apply the wal for data */
+	if (action == BLK_NEEDS_REDO)
+	{
+		char	   *tupdata;
+		char	   *endptr;
+		int			trans_slot_id;
+		Size		len;
+		OffsetNumber offnum;
+		int			j = 0;
+		page = BufferGetPage(buffer);
+
+		/* Tuples are stored as block data */
+		tupdata = XLogRecGetBlockData(record, 0, &len);
+		endptr = tupdata + len;
+
+		offnum = (OffsetNumber)undorecord[j].uur_payload.data[0];
+		for (i = 0; i < xlrec->ntuples; i++)
+		{
+			xl_multi_insert_ztuple *xlhdr;
+
+			/*
+			 * If we're reinitializing the page, the tuples are stored in
+			 * order from FirstOffsetNumber. Otherwise there's an array of
+			 * offsets in the WAL record, and the tuples come after that.
+			 */
+			if (isinit)
+				offnum = FirstOffsetNumber + i;
+			else
+			{
+				/*
+				 * Change the offset range if we've reached the end of current
+				 * range.
+				 */
+				if (offnum == (OffsetNumber)undorecord[j].uur_payload.data[1])
+				{
+					j++;
+					offnum = (OffsetNumber)undorecord[j].uur_payload.data[0];
+				}
+			}
+			if (PageGetMaxOffsetNumber(page) + 1 < offnum)
+				elog(PANIC, "invalid max offset number");
+
+			xlhdr = (xl_multi_insert_ztuple *) SHORTALIGN(tupdata);
+			tupdata = ((char *) xlhdr) + SizeOfMultiInsertZTuple;
+
+			newlen = xlhdr->datalen;
+			Assert(newlen <= MaxZHeapTupleSize);
+			zhtup = &tbuf.hdr;
+			MemSet((char *) zhtup, 0, SizeofZHeapTupleHeader);
+			/* PG73FORMAT: get bitmap [+ padding] [+ oid] + data */
+			memcpy((char *) zhtup + SizeofZHeapTupleHeader,
+				   (char *) tupdata,
+				   newlen);
+			tupdata += newlen;
+
+			newlen += SizeofZHeapTupleHeader;
+			zhtup->t_infomask2 = xlhdr->t_infomask2;
+			zhtup->t_infomask = xlhdr->t_infomask;
+			zhtup->t_hoff = xlhdr->t_hoff;
+
+			if (ZPageAddItem(page, (Item) zhtup, newlen, offnum,
+							 true, true) == InvalidOffsetNumber)
+				elog(PANIC, "failed to add tuple");
+
+			/* increase the offset to store next tuple */
+			offnum++;
+
+			trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup);
+			PageSetUNDO(undorecord[nranges-1], page, trans_slot_id, XLogRecGetXid(record), urecptr);
+		}
+
+		PageSetLSN(page, lsn);
+		if (xlrec->flags & XLZ_INSERT_ALL_VISIBLE_CLEARED)
+			PageClearAllVisible(page);
+		MarkBufferDirty(buffer);
+
+		if (BufferIsValid(buffer))
+			UnlockReleaseBuffer(buffer);
+
+		if (tupdata != endptr)
+			elog(ERROR, "total tuple length mismatch");
+	}
+}
+
 void
 zheap_redo(XLogReaderState *record)
 {
@@ -1081,6 +1280,9 @@ zheap_redo(XLogReaderState *record)
 			break;
 		case XLOG_ZHEAP_LOCK:
 			zheap_xlog_lock(record);
+			break;
+		case XLOG_ZHEAP_MULTI_INSERT:
+			zheap_xlog_multi_insert(record);
 			break;
 		default:
 			elog(PANIC, "zheap_redo: unknown op code %u", info);

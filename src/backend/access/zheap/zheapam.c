@@ -5731,8 +5731,10 @@ zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
 	ZHeapTuple	*zheaptuples;
 	int			i;
 	int			ndone;
+	char	   *scratch = NULL;
 	Page		page;
 	bool		needwal;
+	bool		need_tuple_data = RelationIsLogicallyLogged(relation);
 	bool		need_cids = RelationIsAccessibleInLogicalDecoding(relation);
 	Size		saveFreeSpace;
 	TransactionId	xid = GetCurrentTransactionId();
@@ -5747,6 +5749,19 @@ zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
 		zheaptuples[i] = zheap_prepare_insert(relation, tuples[i], options);
 
 	/*
+	 * Allocate some memory to use for constructing the WAL record. Using
+	 * palloc() within a critical section is not safe, so we allocate this
+	 * beforehand. This has consideration that offset ranges and tuples to be
+	 * stored in page will have size lesser than BLCKSZ. This is true since a
+	 * zheap page contains page header and transaction slots in special area
+	 * which are not stored in scratch area. In future, if we reduce the number
+	 * of transaction slots to one, we may need to allocate twice the BLCKSZ of
+	 * scratch area.
+	 */
+	if (needwal)
+		scratch = palloc(BLCKSZ);
+
+	/*
 	 * See heap_multi_insert to know why checking conflicts is important
 	 * before actually inserting the tuple.
 	 */
@@ -5757,10 +5772,11 @@ zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
 	{
 		Buffer	buffer;
 		Buffer	vmbuffer = InvalidBuffer;
+		bool	all_visible_cleared = false;
 		int		nthispage = 0;
 		int		trans_slot_id;
 		UndoRecPtr		urecptr,
-								prev_urecptr;
+						prev_urecptr;
 		UnpackedUndoRecord		*undorecord;
 		ZHeapFreeOffsetRanges	*zfree_offset_ranges;
 
@@ -5830,7 +5846,7 @@ reacquire_buffer:
 												   * sizeof(UnpackedUndoRecord));
 		/* Start UNDO prepare Stuff */
 		prev_urecptr = PageGetUNDO(page, trans_slot_id);
-		urecptr = InvalidUndoRecPtr;
+		urecptr = prev_urecptr;
 
 		UndoSetPrepareSize(zfree_offset_ranges->nranges);
 
@@ -5845,7 +5861,7 @@ reacquire_buffer:
 			undorecord[i].uur_cid = cid;
 			undorecord[i].uur_tsid = relation->rd_node.spcNode;
 			undorecord[i].uur_fork = MAIN_FORKNUM;
-			undorecord[i].uur_blkprev = prev_urecptr;
+			undorecord[i].uur_blkprev = urecptr;
 			undorecord[i].uur_block = BufferGetBlockNumber(buffer);
 			undorecord[i].uur_tuple.len = 0;
 			undorecord[i].uur_offset = 0;
@@ -5853,7 +5869,6 @@ reacquire_buffer:
 			undorecord[i].uur_payload.data = (char *)palloc(2 * sizeof(OffsetNumber));
 
 			urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERSISTENT, InvalidTransactionId);
-			prev_urecptr = urecptr;
 		}
 		Assert(UndoRecPtrIsValid(urecptr));
 		elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
@@ -5919,6 +5934,7 @@ reacquire_buffer:
 
 		if (PageIsAllVisible(page))
 		{
+			all_visible_cleared = true;
 			PageClearAllVisible(page);
 			visibilitymap_clear(relation,
 								BufferGetBlockNumber(buffer),
@@ -5931,8 +5947,9 @@ reacquire_buffer:
 
 		MarkBufferDirty(buffer);
 
-		/* Revisit UNDO stuff for insertion and clean up */
+		/* Insert the undo */
 		InsertPreparedUndo();
+
 		/*
 		 * We're sending the undo record for debugging purpose. So, just send
 		 * the last one.
@@ -5940,19 +5957,134 @@ reacquire_buffer:
 		PageSetUNDO(undorecord[zfree_offset_ranges->nranges - 1], page,
 													trans_slot_id, xid, urecptr);
 
+		/*
+		 * XLOG stuff
+		 *
+		 */
+		if (needwal)
+		{
+			xl_undo_header	xlundohdr;
+			XLogRecPtr	recptr;
+			xl_zheap_multi_insert *xlrec;
+			uint8		info = XLOG_ZHEAP_MULTI_INSERT;
+			char	   *tupledata;
+			int			totaldatalen;
+			char	   *scratchptr = scratch;
+			bool		init;
+			int			bufflags = 0;
+
+			/*
+			 * Store the information required to generate undo record during
+			 * replay. All undo records have same information apart from the
+			 * payload data. Hence, we can copy the same from the last record.
+			 */
+			xlundohdr.relfilenode = undorecord[zfree_offset_ranges->nranges - 1].uur_relfilenode;
+			xlundohdr.tsid = undorecord[zfree_offset_ranges->nranges - 1].uur_tsid;
+			xlundohdr.urec_ptr = urecptr;
+			xlundohdr.blkprev = prev_urecptr;
+
+			/* allocate xl_zheap_multi_insert struct from the scratch area */
+			xlrec = (xl_zheap_multi_insert *) scratchptr;
+			xlrec->flags = all_visible_cleared ? XLZ_INSERT_ALL_VISIBLE_CLEARED : 0;
+			xlrec->ntuples = nthispage;
+			scratchptr += SizeOfZHeapMultiInsert;
+
+			/* copy the offset ranges as well */
+			memcpy((char *)scratchptr, (char *)&zfree_offset_ranges->nranges, sizeof(int));
+			scratchptr += sizeof(int);
+			for (i = 0; i < zfree_offset_ranges->nranges; i++)
+			{
+				memcpy((char *)scratchptr, (char *)undorecord[i].uur_payload.data, undorecord[i].uur_payload.len);
+				scratchptr += undorecord[i].uur_payload.len;
+			}
+
+			/* the rest of the scratch space is used for tuple data */
+			tupledata = scratchptr;
+
+			/*
+			 * Write out an xl_multi_insert_tuple and the tuple data itself
+			 * for each tuple.
+			 */
+			for (i = 0; i < nthispage; i++)
+			{
+				ZHeapTuple	zheaptup = zheaptuples[ndone + i];
+				xl_multi_insert_ztuple *tuphdr;
+				int			datalen;
+
+				/* xl_multi_insert_tuple needs two-byte alignment. */
+				tuphdr = (xl_multi_insert_ztuple *) SHORTALIGN(scratchptr);
+				scratchptr = ((char *) tuphdr) + SizeOfMultiInsertZTuple;
+
+				tuphdr->t_infomask2 = zheaptup->t_data->t_infomask2;
+				tuphdr->t_infomask = zheaptup->t_data->t_infomask;
+				tuphdr->t_hoff = zheaptup->t_data->t_hoff;
+
+				/* write bitmap [+ padding] [+ oid] + data */
+				datalen = zheaptup->t_len - SizeofZHeapTupleHeader;
+				memcpy(scratchptr,
+					   (char *) zheaptup->t_data + SizeofZHeapTupleHeader,
+					   datalen);
+				tuphdr->datalen = datalen;
+				scratchptr += datalen;
+			}
+			totaldatalen = scratchptr - tupledata;
+			Assert((scratchptr - scratch) < BLCKSZ);
+
+			if (need_tuple_data)
+				xlrec->flags |= XLZ_INSERT_CONTAINS_NEW_TUPLE;
+
+			/*
+			 * Signal that this is the last xl_zheap_multi_insert record
+			 * emitted by this call to zheap_multi_insert(). Needed for logical
+			 * decoding so it knows when to cleanup temporary data.
+			 */
+			if (ndone + nthispage == ntuples)
+				xlrec->flags |= XLZ_INSERT_LAST_IN_MULTI;
+
+			/*
+			 * If the page was previously empty, we can reinit the page
+			 * instead of restoring the whole thing.
+			 */
+			init = (ItemPointerGetOffsetNumber(&(zheaptuples[ndone]->t_self)) == FirstOffsetNumber &&
+					PageGetMaxOffsetNumber(page) == FirstOffsetNumber + nthispage - 1);
+
+			if (init)
+			{
+				info |= XLOG_ZHEAP_INIT_PAGE;
+				bufflags |= REGBUF_WILL_INIT;
+			}
+
+			/*
+			 * If we're doing logical decoding, include the new tuple data
+			 * even if we take a full-page image of the page.
+			 */
+			if (need_tuple_data)
+				bufflags |= REGBUF_KEEP_DATA;
+
+			XLogBeginInsert();
+			/* copy undo related info in maindata */
+			XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
+			/* copy xl_multi_insert_tuple in maindata */
+			XLogRegisterData((char *) xlrec, tupledata - scratch);
+			XLogRegisterBuffer(0, buffer, REGBUF_STANDARD | bufflags);
+
+			/* copy tuples in block data */
+			XLogRegisterBufData(0, tupledata, totaldatalen);
+
+			/* filtering by origin on a row level is much more efficient */
+			XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
+
+			recptr = XLogInsert(RM_ZHEAP_ID, info);
+
+			PageSetLSN(page, recptr);
+		}
+
+		END_CRIT_SECTION();
+
 		/* be tidy */
 		for (i = 0; i < zfree_offset_ranges->nranges; i++)
 			pfree(undorecord[i].uur_payload.data);
 		pfree(zfree_offset_ranges);
-		/* End the UNDO stuff */
-
-		/* XLOG stuff */
-		if (needwal)
-		{
-			/* FIXME: Not yet implemented. */
-		}
-
-		END_CRIT_SECTION();
 
 		UnlockReleaseBuffer(buffer);
 		if (vmbuffer != InvalidBuffer)

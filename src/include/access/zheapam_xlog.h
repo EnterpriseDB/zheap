@@ -206,6 +206,37 @@ typedef struct xl_zheap_lock
 
 #define SizeOfZHeapLock    (offsetof(xl_zheap_lock, trans_slot_id) + sizeof(uint8))
 
+/*
+ * This is what we need to know about a multi-insert.
+ *
+ * The main data of the record consists of this xl_zheap_multi_insert header.
+ * 'offsets' array is omitted if the whole page is reinitialized
+ * (XLOG_ZHEAP_INIT_PAGE).
+ *
+ * In block 0's data portion, there is an xl_multi_insert_ztuple struct,
+ * followed by the tuple data for each tuple. There is padding to align
+ * each xl_zheap_multi_insert struct.
+ */
+typedef struct xl_zheap_multi_insert
+{
+	/* zheap record related info */
+	uint8		flags;
+	uint16		ntuples;
+} xl_zheap_multi_insert;
+
+#define SizeOfZHeapMultiInsert	sizeof(xl_zheap_multi_insert)
+
+typedef struct xl_multi_insert_ztuple
+{
+	uint16		datalen;		/* size of tuple data that follows */
+	uint16		t_infomask2;
+	uint16		t_infomask;
+	uint8		t_hoff;
+	/* TUPLE DATA FOLLOWS AT END OF STRUCT */
+} xl_multi_insert_ztuple;
+
+#define SizeOfMultiInsertZTuple	(offsetof(xl_multi_insert_ztuple, t_hoff) + sizeof(uint8))
+
 extern void zheap_redo(XLogReaderState *record);
 extern void zheap_desc(StringInfo buf, XLogReaderState *record);
 extern const char *zheap_identify(uint8 info);

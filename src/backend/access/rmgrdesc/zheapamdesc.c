@@ -30,6 +30,13 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, "off %u, blkprev %lu", xlrec->offnum, xlundohdr->blkprev);
 	}
+	else if(info == XLOG_ZHEAP_MULTI_INSERT)
+	{
+		xl_undo_header *xlundohdr = (xl_undo_header *) rec;
+		xl_zheap_multi_insert *xlrec = (xl_zheap_multi_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
+
+		appendStringInfo(buf, "%d tuples", xlrec->ntuples);
+	}
 	else if (info == XLOG_ZHEAP_DELETE)
 	{
 		xl_undo_header *xlundohdr = (xl_undo_header *) rec;
@@ -107,6 +114,12 @@ zheap_identify(uint8 info)
 			break;
 		case XLOG_ZHEAP_LOCK:
 			id = "LOCK";
+			break;
+		case XLOG_ZHEAP_MULTI_INSERT:
+			id = "MULTI_INSERT";
+			break;
+		case XLOG_ZHEAP_MULTI_INSERT | XLOG_ZHEAP_INIT_PAGE:
+			id = "MULTI_INSERT+INIT";
 			break;
 	}
 
