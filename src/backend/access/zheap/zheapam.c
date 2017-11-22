@@ -5837,6 +5837,7 @@ reacquire_buffer:
 		for (i = 0; i < zfree_offset_ranges->nranges; i++)
 		{
 			/* prepare an undo record */
+			undorecord[i].uur_type = UNDO_MULTI_INSERT;
 			undorecord[i].uur_info = 0;
 			undorecord[i].uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
 			undorecord[i].uur_relfilenode = relation->rd_node.relNode;
@@ -5847,7 +5848,6 @@ reacquire_buffer:
 			undorecord[i].uur_blkprev = prev_urecptr;
 			undorecord[i].uur_block = BufferGetBlockNumber(buffer);
 			undorecord[i].uur_tuple.len = 0;
-			undorecord[i].uur_type = UNDO_MULTI_INSERT;
 			undorecord[i].uur_offset = 0;
 			undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
 			undorecord[i].uur_payload.data = (char *)palloc(2 * sizeof(OffsetNumber));
