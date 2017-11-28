@@ -42,9 +42,11 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, "logno %u xid %u insert " UndoLogOffsetFormat
 						 " last_xact_start " UndoLogOffsetFormat
+						 " prevlen=%d"
 						 " is_first_record=%d",
 						 xlrec->logno, xlrec->xid, xlrec->insert,
 						 xlrec->last_xact_start,
+						 xlrec->prevlen,
 						 xlrec->is_first_rec);
 	}
 	else if (info == XLOG_UNDOLOG_DISCARD)

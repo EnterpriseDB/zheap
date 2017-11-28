@@ -842,6 +842,13 @@ InsertPreparedUndo(void)
 		bufidx = 0;
 		starting_byte = UndoRecPtrGetPageOffset(urp);
 
+		/*
+		 * If we don't have prevlen locally then it may be the case of undo
+		 * insert during Recovery so fetch the value from the meta.
+		 */
+		if (prev_undolen == 0 && InRecovery)
+			prev_undolen = UndoLogGetPrevLen(UndoRecPtrGetLogNo(urp));
+
 		/* store the previous undo record length in the header */
 		uur->uur_prevlen = prev_undolen;
 
@@ -891,6 +898,8 @@ InsertPreparedUndo(void)
 		} while(true);
 
 		prev_undolen = undo_len;
+
+		UndoLogSetPrevLen(UndoRecPtrGetLogNo(urp), prev_undolen);
 
 		/*
 		 * Set the current undo location for a transaction.  This is required

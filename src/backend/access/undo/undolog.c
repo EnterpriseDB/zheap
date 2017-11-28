@@ -400,6 +400,38 @@ UndoLogGetLastXactStartPoint(UndoLogNumber logno)
 }
 
 /*
+ * Store last undo record's length on undo meta so that it can be persistent
+ * across restart.
+ */
+void
+UndoLogSetPrevLen(UndoLogNumber logno, uint16 prevlen)
+{
+	UndoLogControl *log = get_undo_log_by_number(logno);
+
+	Assert(log != NULL);
+
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	log->meta.prevlen = prevlen;
+	LWLockRelease(&log->mutex);
+}
+
+/*
+ * Get the last undo record's length.
+ */
+uint16
+UndoLogGetPrevLen(UndoLogNumber logno)
+{
+	UndoLogControl *log = get_undo_log_by_number(logno);
+
+	Assert(log != NULL);
+
+	LWLockAcquire(&log->mutex, LW_SHARED);
+	return log->meta.prevlen;
+	LWLockRelease(&log->mutex);
+}
+
+
+/*
  * Is this record is the first record for any transaction.
  */
 bool
@@ -747,6 +779,7 @@ UndoLogAllocate(size_t size, UndoPersistence level)
 		xlrec.insert = log->meta.insert;
 		xlrec.last_xact_start = log->meta.last_xact_start;
 		xlrec.is_first_rec = is_xid_change;
+		xlrec.prevlen = log->meta.prevlen;
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
@@ -1648,6 +1681,7 @@ undolog_xlog_attach(XLogReaderState *record)
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->meta.insert = xlrec->insert;
 	log->meta.last_xact_start = xlrec->last_xact_start;
+	log->meta.prevlen = xlrec->prevlen;
 	log->xid = xlrec->xid;
 	log->is_first_rec = xlrec->is_first_rec;
 	log->pid = MyProcPid; /* show as recovery process */
