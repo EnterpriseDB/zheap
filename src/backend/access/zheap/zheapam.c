@@ -578,7 +578,7 @@ Oid
 zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options)
 {
-	TransactionId xid = GetCurrentTransactionId();
+	TransactionId xid = GetTopTransactionId();
 	ZHeapTuple	zheaptup;
 	UnpackedUndoRecord	undorecord;
 	Buffer		buffer;
@@ -860,7 +860,7 @@ zheap_delete(Relation relation, ItemPointer tid,
 			 HeapUpdateFailureData *hufd)
 {
 	HTSU_Result result;
-	TransactionId xid = GetCurrentTransactionId();
+	TransactionId xid = GetTopTransactionId();
 	TransactionId	tup_xid;
 	CommandId		tup_cid;
 	ItemId		lp;
@@ -1248,7 +1248,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 			 HeapUpdateFailureData *hufd, LockTupleMode *lockmode)
 {
 	HTSU_Result result;
-	TransactionId xid = GetCurrentTransactionId();
+	TransactionId xid = GetTopTransactionId();
 	TransactionId tup_xid;
 	CommandId	tup_cid;
 	Bitmapset  *inplace_upd_attrs;
@@ -2334,7 +2334,7 @@ failed:
 		goto out_locked;
 	}
 
-	xid = GetCurrentTransactionId();
+	xid = GetTopTransactionId();
 
 	/*
 	 * The transaction information of tuple needs to be set in transaction
@@ -3470,7 +3470,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 			undorecord[i].uur_prevlen = 0;
 			undorecord[i].uur_relfilenode = relation->rd_node.relNode;
 			undorecord[i].uur_prevxid = xid;
-			undorecord[i].uur_xid = GetCurrentTransactionId();
+			undorecord[i].uur_xid = GetTopTransactionId();
 			undorecord[i].uur_cid = ZHeapTupleGetCid(&tup, buf);
 			undorecord[i].uur_tsid = relation->rd_node.spcNode;
 			undorecord[i].uur_fork = MAIN_FORKNUM;
@@ -5737,7 +5737,7 @@ zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
 	bool		need_tuple_data = RelationIsLogicallyLogged(relation);
 	bool		need_cids = RelationIsAccessibleInLogicalDecoding(relation);
 	Size		saveFreeSpace;
-	TransactionId	xid = GetCurrentTransactionId();
+	TransactionId	xid = GetTopTransactionId();
 
 	needwal = !(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation);
 	saveFreeSpace = RelationGetTargetPageFreeSpace(relation,
@@ -5955,7 +5955,7 @@ reacquire_buffer:
 		 * the last one.
 		 */
 		PageSetUNDO(undorecord[zfree_offset_ranges->nranges - 1], page,
-													trans_slot_id, xid, urecptr);
+					trans_slot_id, xid, urecptr);
 
 		/*
 		 * XLOG stuff
