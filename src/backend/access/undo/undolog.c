@@ -422,12 +422,15 @@ uint16
 UndoLogGetPrevLen(UndoLogNumber logno)
 {
 	UndoLogControl *log = get_undo_log_by_number(logno);
+	uint16	prevlen;
 
 	Assert(log != NULL);
 
 	LWLockAcquire(&log->mutex, LW_SHARED);
-	return log->meta.prevlen;
+	prevlen = log->meta.prevlen;
 	LWLockRelease(&log->mutex);
+
+	return prevlen;
 }
 
 
