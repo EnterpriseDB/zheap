@@ -539,7 +539,20 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 	cur_blk = UndoRecPtrGetBlockNum(prev_xact_urp);
 	starting_byte = UndoRecPtrGetPageOffset(prev_xact_urp);
 
-	/* If it's already discarded then we have nothing to do. */
+	if (UndoDiscardInfo[logno].undo_recptr == InvalidUndoRecPtr)
+	{
+		/*
+		 * UndoDiscardInfo is not yet initialized. Hence, we've to check
+		 * UndoLogIsDiscarded and if it's already discarded then we have
+		 * nothing to do.
+		 */
+		LWLockRelease(&UndoDiscardInfo[logno].mutex);
+		if (UndoLogIsDiscarded(prev_xact_urp))
+			return;
+		LWLockAcquire(&UndoDiscardInfo[logno].mutex, LW_SHARED);
+	}
+
+	/* Check again if it's already discarded. */
 	if (prev_xact_urp < UndoDiscardInfo[logno].undo_recptr)
 	{
 		LWLockRelease(&UndoDiscardInfo[logno].mutex);
