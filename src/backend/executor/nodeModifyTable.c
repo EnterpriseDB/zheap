@@ -953,7 +953,7 @@ ldelete:;
 			if (slot->tts_tupleDescriptor != RelationGetDescr(resultRelationDesc))
 				ExecSetSlotDescriptor(slot, RelationGetDescr(resultRelationDesc));
 			if (RelationStorageIsZHeap(resultRelationDesc))
-				ExecStoreZTuple(zdeltuple, slot, InvalidBuffer, false);
+				ExecStoreZTuple(zdeltuple, slot, InvalidBuffer, true);
 			else
 				ExecStoreHeapTuple(&deltuple, slot, false);
 		}
