@@ -324,7 +324,7 @@ zheap_xlog_update(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_undo_header	*xlundohdr;
-	xl_undo_header	*xlnewundohdr;
+	xl_undo_header	*xlnewundohdr = NULL;
 	xl_zheap_header xlhdr;
 	Size	recordlen;
 	Size		freespace = 0;
@@ -339,7 +339,8 @@ zheap_xlog_update(XLogReaderState *record)
 		char		data[MaxZHeapTupleSize];
 	} tbuf;
 	UnpackedUndoRecord	undorecord, newundorecord;
-	UndoRecPtr	urecptr, newurecptr;
+	UndoRecPtr	urecptr = InvalidUndoRecPtr;
+	UndoRecPtr	newurecptr = InvalidUndoRecPtr;
 	RelFileNode rnode;
 	BlockNumber oldblk, newblk;
 	ItemPointerData oldtid, newtid;
@@ -776,14 +777,14 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_undo_header	*xlundohdr;
 	xl_zheap_invalid_xact_slot *xlrec;
-	xl_zheap_completed_slot	*completed_slots;
+	xl_zheap_completed_slot	*completed_slots = NULL;
 	xl_zheap_completed_slot all_slots[MAX_PAGE_TRANS_INFO_SLOTS];
-	xl_zheap_tuple_info *tuples;
+	xl_zheap_tuple_info *tuples = NULL;
 	XLogRedoAction action;
 	UnpackedUndoRecord	*undorecord;
 	UnpackedUndoRecord	*slot_urec[MAX_PAGE_TRANS_INFO_SLOTS];
 	Buffer	buffer;
-	int	   *completed_xact_slots;
+	int	   *completed_xact_slots = NULL;
 	char   *data;
 	int		slot_no;
 	Page	page;
@@ -791,7 +792,7 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 	int		noffsets;
 	int 	nCompletedXactSlots;
 	ZHeapPageOpaque	 opaque;
-	OffsetNumber	*offsets;
+	OffsetNumber	*offsets = NULL;
 
 	data = XLogRecGetData(record);
 	xlundohdr = (xl_undo_header *) data;

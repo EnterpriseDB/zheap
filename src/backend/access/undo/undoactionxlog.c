@@ -19,7 +19,8 @@
 #include "access/xlogutils.h"
 #include "access/zheap.h"
 
-/*static void
+#if 0
+static void
 undo_xlog_insert(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
@@ -43,7 +44,7 @@ undo_xlog_insert(XLogReaderState *record)
 		{
 			ItemIdSetUnused(lp);
 			/* Set hint bit for ZPageAddItem */
-			/*PageSetHasFreeLinePointers(page);
+			/*PageSetHasFreeLinePointers(page);*/
 		}
 
 		PageSetLSN(BufferGetPage(buffer), lsn);
@@ -51,7 +52,8 @@ undo_xlog_insert(XLogReaderState *record)
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
-}*/
+}
+#endif
 
 /*
  * replay of undo page operation

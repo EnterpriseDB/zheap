@@ -3264,7 +3264,8 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 {
 	Page	page;
 	ZHeapPageOpaque	opaque;
-	UndoRecPtr	urecptr, prev_urecptr;
+	UndoRecPtr	urecptr = InvalidUndoRecPtr;
+	UndoRecPtr	prev_urecptr = InvalidUndoRecPtr;
 	TransactionId	oldestXidHavingUndo;
 	UndoRecPtr	slot_latest_urp[MAX_PAGE_TRANS_INFO_SLOTS];
 	UnpackedUndoRecord	*slot_urec[MAX_PAGE_TRANS_INFO_SLOTS] = {0};
@@ -3372,11 +3373,11 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 		TransactionId	xid;
 		OffsetNumber	*offset_completed_xact_slots;
 		xl_zheap_completed_slot	*slot_info = NULL;
-		xl_zheap_tuple_info	*tuples;
-		char   *scratch;
+		xl_zheap_tuple_info	*tuples = NULL;
+		char   *scratch = NULL;
 		int		noffsets = 0;
 		int		i;
-		int		size;
+		int		size = 0;
 
 		offset_completed_xact_slots =
 						palloc(sizeof(OffsetNumber) * MaxZHeapTuplesPerPage);
