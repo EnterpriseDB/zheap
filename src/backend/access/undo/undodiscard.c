@@ -197,7 +197,9 @@ UndoDiscard(TransactionId oldestXid, bool *hibernate)
 				if (!UndoRecPtrIsValid(urp))
 					continue;
 
+				LWLockAcquire(&UndoDiscardInfo[logno].mutex, LW_SHARED);
 				UndoDiscardInfo[logno].undo_recptr = urp;
+				LWLockRelease(&UndoDiscardInfo[logno].mutex);
 			}
 
 			/* Process the undo log. */
