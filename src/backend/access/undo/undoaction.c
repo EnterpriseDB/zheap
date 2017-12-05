@@ -16,6 +16,7 @@
 #include "access/undoaction_xlog.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
+#include "access/xact.h"
 #include "nodes/pg_list.h"
 #include "postmaster/undoloop.h"
 #include "storage/block.h"
@@ -24,17 +25,20 @@
 #include "utils/relfilenodemap.h"
 #include "miscadmin.h"
 
-static void execute_undo_actions_page(List *luur, Oid reloid, BlockNumber blkno);
+static void execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr,
+					Oid reloid, BlockNumber blkno, bool blk_chain_complete);
 static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off);
 
 /*
  * execute_undo_actions - Execute the undo actions
  */
 void
-execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr)
+execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
+					 bool nopartial)
 {
 	UnpackedUndoRecord *uur = NULL;
 	UndoRecPtr	urec_ptr;
+	UndoRecPtr	save_urec_ptr;
 	Oid			reloid;
 	Oid			prev_reloid = InvalidOid;
 	ForkNumber	prev_fork = InvalidForkNumber;
@@ -55,7 +59,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr)
 		to_urecptr = UndoLogGetLastXactStartPoint(logno);
 	}
 
-	urec_ptr = from_urecptr;
+	save_urec_ptr = urec_ptr = from_urecptr;
 
 	while (urec_ptr >= to_urecptr)
 	{
@@ -82,6 +86,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr)
 
 			luur = lappend(luur, uur);
 			urec_prevlen = uur->uur_prevlen;
+			save_urec_ptr = uur->uur_blkprev;
 
 			/* The undo chain must continue till we reach to_urecptr */
 			if (urec_prevlen)
@@ -100,7 +105,21 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr)
 			more_undo = true;
 		}
 
-		execute_undo_actions_page(luur, prev_reloid, prev_block);
+		/*
+		 * If no more undo is left to be processed and we are rolling back the
+		 * complete transaction, then we can consider that the undo chain for a
+		 * block is complete.
+		 */
+		if (!more_undo && nopartial)
+		{
+			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
+									  prev_block, true);
+		}
+		else
+		{
+			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
+									  prev_block, false);
+		}
 
 		/* release the undo records for which action has been replayed */
 		while (luur)
@@ -120,6 +139,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr)
 			prev_reloid = reloid;
 			prev_fork = uur->uur_fork;
 			prev_block = uur->uur_block;
+			save_urec_ptr = uur->uur_blkprev;
 
 			/*
 			 * Continue to process the records if this is not the last undo
@@ -138,7 +158,8 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr)
 	/* Apply the undo actions for the remaining records. */
 	if (list_length(luur))
 	{
-		execute_undo_actions_page(luur, prev_reloid, prev_block);
+		execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
+								  prev_block, nopartial ? true : false);
 
 		/* release the undo records for which action has been replayed */
 		while (luur)
@@ -186,14 +207,31 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off)
 
 /*
  * execute_undo_actions - Execute the undo actions for a page
+ *
+ *	After applying all the undo actions for a page, we clear the transaction
+ *	slot on a page if the undo chain for block is complete, otherwise rewind
+ *	the undo pointer to the last record for that block that precedes the last
+ *	undo record for which action is replayed.
+ *
+ *	luur - list of unpacked undo records for which undo action needs to be
+ *		   replayed.
+ *	urec_ptr - undo record pointer to which we need to rewind.
+ *	reloid	- OID of relation on which undo actions needs to be applied.
+ *	blkno	- block number on which undo actions needs to be applied.
+ *	blk_chain_complete - indicates whether the undo chain for block is
+ *						 complete.
  */
 static void
-execute_undo_actions_page(List *luur, Oid reloid, BlockNumber blkno)
+execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
+						  BlockNumber blkno, bool blk_chain_complete)
 {
 	ListCell   *l_iter;
 	Relation	rel;
 	Buffer		buffer;
 	Page		page;
+	ZHeapPageOpaque	opaque;
+	int			slot_no;
+	TransactionId	xid = GetTopTransactionId();
 
 	/*
 	 * If the action is executed by backend as a result of rollback, we must
@@ -202,8 +240,9 @@ execute_undo_actions_page(List *luur, Oid reloid, BlockNumber blkno)
 	rel = heap_open(reloid, NoLock);
 
 	buffer = ReadBuffer(rel, blkno);
-	page = BufferGetPage(buffer);
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+	page = BufferGetPage(buffer);
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 
 	START_CRIT_SECTION();
 
@@ -282,6 +321,24 @@ execute_undo_actions_page(List *luur, Oid reloid, BlockNumber blkno)
 				break;
 			default:
 				elog(ERROR, "unsupported undo record type");
+		}
+	}
+
+	/* update the transaction slots */
+	for (slot_no = 0; slot_no < MAX_PAGE_TRANS_INFO_SLOTS; slot_no++)
+	{
+		if (TransactionIdEquals(xid, opaque->transinfo[slot_no].xid))
+		{
+			if (blk_chain_complete)
+			{
+				opaque->transinfo[slot_no].xid = InvalidTransactionId;
+				opaque->transinfo[slot_no].urec_ptr = InvalidUndoRecPtr;
+			}
+			else
+			{
+				opaque->transinfo[slot_no].urec_ptr = urec_ptr;
+			}
+			break;
 		}
 	}
 

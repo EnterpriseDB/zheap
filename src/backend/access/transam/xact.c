@@ -3814,7 +3814,7 @@ UserAbortTransactionBlock(void)
 
 	/* execute the undo actions */
 	if (latest_urec_ptr)
-		execute_undo_actions(latest_urec_ptr, s->start_urec_ptr);
+		execute_undo_actions(latest_urec_ptr, s->start_urec_ptr, true);
 }
 
 /*
@@ -4193,7 +4193,7 @@ RollbackToSavepoint(const char *name)
 
 	/* execute the undo actions */
 	if (latest_urec_ptr)
-		execute_undo_actions(latest_urec_ptr, xact->start_urec_ptr);
+		execute_undo_actions(latest_urec_ptr, xact->start_urec_ptr, false);
 }
 
 /*
