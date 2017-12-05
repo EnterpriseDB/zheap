@@ -1118,10 +1118,10 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 			return NULL;
 		}
 
-		LWLockRelease(&UndoDiscardInfo[logno].mutex);
-
 		/* Fetch the current undo record. */
 		urec = UndoGetOneRecord(urec, urp, rnode);
+		LWLockRelease(&UndoDiscardInfo[logno].mutex);
+
 		if (blkno == InvalidBlockNumber)
 			break;
 
