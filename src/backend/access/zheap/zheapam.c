@@ -1785,6 +1785,8 @@ reacquire_buffer:
 		/* copy everything in infomask apart from visibility flags */
 		oldtup.t_data->t_infomask |= (newtup->t_data->t_infomask
 									  & ~ZHEAP_VIS_STATUS_MASK);
+		/* also update the tuple length and self pointer */
+		oldtup.t_len = newtup->t_len;
 		ItemPointerCopy(&oldtup.t_self, &newtup->t_self);
 	}
 	else
