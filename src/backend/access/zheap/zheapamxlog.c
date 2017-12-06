@@ -812,7 +812,7 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 		tuples = (xl_zheap_tuple_info *) data;
 
 		/*
-		 * Initialize the all_slots array this will avoid seraching in the
+		 * Initialize the all_slots array this will avoid searching in the
 		 * completed_slot array and we can directly index by slotno.
 		 */
 		for (i = 0; i < xlrec->nCompletedSlots; i++)
