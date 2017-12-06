@@ -667,13 +667,11 @@ zheap_xlog_update(XLogReaderState *record)
 		if (inplace_update)
 		{
 			/*
-			 * For inplace updates, we copy the entire data portion including null
-			 * bitmap of new tuple.
+			 * For inplace updates, we copy the entire data portion including the
+			 * tuple header.
 			 */
 			ItemIdChangeLen(lp, newlen);
-			memcpy((char *) oldtup.t_data + SizeofZHeapTupleHeader,
-				   (char *) newtup + SizeofZHeapTupleHeader,
-				   newlen - SizeofZHeapTupleHeader);
+			memcpy((char *) oldtup.t_data, (char *) newtup, newlen);
 			PageSetUNDO(undorecord, newpage, trans_slot_id, XLogRecGetXid(record), urecptr);
 		}
 		else
