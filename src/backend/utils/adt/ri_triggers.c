@@ -2163,6 +2163,13 @@ ri_FetchConstraintInfo(Trigger *trigger, Relation trig_rel, bool rel_is_pk)
 						trigger->tgname, RelationGetRelationName(trig_rel)),
 				 errhint("Remove this referential integrity trigger and its mates, then do ALTER TABLE ADD CONSTRAINT.")));
 
+	if (RelationStorageIsZHeap(trig_rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("foreign key not supported on zheap table \"%s\"",
+						RelationGetRelationName(trig_rel)),
+				 errhint("Remove the foreign constraint and re-create the table..")));
+
 	/* Find or create a hashtable entry for the constraint */
 	riinfo = ri_LoadConstraintInfo(constraintOid);
 
