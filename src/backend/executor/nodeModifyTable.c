@@ -452,6 +452,11 @@ ExecInsert(ModifyTableState *mtstate,
 			 * the pre-check, or when we re-check after inserting the tuple
 			 * speculatively.
 			 */
+			if (RelationStorageIsZHeap(resultRelationDesc))
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("INSERT ON CONFLICT not supported on zheap table \"%s\"",
+								RelationGetRelationName(resultRelationDesc))));
 	vlock:
 			specConflict = false;
 			if (!ExecCheckIndexConstraints(slot, estate, &conflictTid,
