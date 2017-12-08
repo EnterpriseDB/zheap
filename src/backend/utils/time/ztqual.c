@@ -1107,7 +1107,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 			 * Fixme - Here we need to fetch the tuple from undo, something similar
 			 * to GetTupleFromUndo but for DirtySnapshots.
 			 */
-			Assert(false);
+			elog(ERROR, "ROLLBACK pending in zheap table");
 			return NULL;
 		}
 	}
@@ -1139,7 +1139,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 			 * Fixme - Here we need to fetch the tuple from undo, something similar
 			 * to GetTupleFromUndo but for DirtySnapshots.
 			 */
-			Assert(false);
+			elog(ERROR, "ROLLBACK pending in zheap table");
 			return NULL;
 		}
 	}
@@ -1165,10 +1165,9 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	else
 	{
 		/*
-		 * Fixme - Here we need to fetch the tuple from undo, something similar
-		 * to GetTupleFromUndo but for DirtySnapshots.
+		 * Since the transaction that inserted the tuple is aborted. So, it's
+		 * not visible to any transaction.
 		 */
-		Assert(false);
 		return NULL;
 	}
 
