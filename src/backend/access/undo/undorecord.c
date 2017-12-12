@@ -839,6 +839,7 @@ InsertPreparedUndo(void)
 	uint16	undo_len = 0;
 	UndoRecPtr	urp;
 	UnpackedUndoRecord	*uur;
+	UndoLogOffset offset;
 
 	Assert(prepare_idx > 0);
 
@@ -854,6 +855,7 @@ InsertPreparedUndo(void)
 		already_written = 0;
 		bufidx = 0;
 		starting_byte = UndoRecPtrGetPageOffset(urp);
+		offset = UndoRecPtrGetOffset(urp);
 
 		/*
 		 * If we don't have prevlen locally then it may be the case of undo
@@ -865,8 +867,12 @@ InsertPreparedUndo(void)
 		/* store the previous undo record length in the header */
 		uur->uur_prevlen = prev_undolen;
 
+		/* if starting a new log then there is no prevlen to store */
+		if (offset == UndoLogBlockHeaderSize)
+			uur->uur_prevlen = 0;
+
 		/* if starting from a new page then include header in prevlen */
-		if (starting_byte == UndoLogBlockHeaderSize)
+		else if (starting_byte == UndoLogBlockHeaderSize)
 				uur->uur_prevlen += UndoLogBlockHeaderSize;
 
 		undo_len = 0;
