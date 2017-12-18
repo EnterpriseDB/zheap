@@ -41,7 +41,7 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	TriggerData *trigdata = castNode(TriggerData, fcinfo->context);
 	const char *funcname = "unique_key_recheck";
 	HeapTuple	new_row;
-	ZHeapTuple	znew_row;
+	ZHeapTuple	znew_row = NULL;
 	ItemPointerData tmptid;
 	Relation	indexRel;
 	IndexInfo  *indexInfo;

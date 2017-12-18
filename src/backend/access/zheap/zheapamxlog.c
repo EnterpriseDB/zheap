@@ -941,7 +941,7 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 		/* Initialize the completed slots. */
 		for (i = 0; i < xlrec->nCompletedSlots; i++)
 		{
-			UnpackedUndoRecord	undorec;
+			UnpackedUndoRecord	undorec = {0};
 
 			if (xlrec->flags & XLZ_HAS_TUPLE_INFO)
 				slot_no = completed_slots[i].slotno;
