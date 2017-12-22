@@ -23,7 +23,13 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	info &= XLOG_ZHEAP_OPMASK;
-	if (info == XLOG_ZHEAP_INSERT)
+	if (info == XLOG_ZHEAP_CLEAN)
+	{
+		xl_zheap_clean *xlrec = (xl_zheap_clean *) rec;
+
+		appendStringInfo(buf, "remxid %u", xlrec->latestRemovedXid);
+	}
+	else if (info == XLOG_ZHEAP_INSERT)
 	{
 		xl_undo_header *xlundohdr = (xl_undo_header *) rec;
 		xl_zheap_insert *xlrec = (xl_zheap_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
@@ -91,6 +97,9 @@ zheap_identify(uint8 info)
 
 	switch (info & ~XLR_INFO_MASK)
 	{
+		case XLOG_ZHEAP_CLEAN:
+			id = "CLEAN";
+			break;
 		case XLOG_ZHEAP_INSERT:
 			id = "INSERT";
 			break;

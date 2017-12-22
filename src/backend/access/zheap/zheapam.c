@@ -1120,6 +1120,13 @@ check_tup_satisfies_update:
 	InsertPreparedUndo();
 	PageSetUNDO(undorecord, page, trans_slot_id, xid, urecptr);
 
+	/*
+	 * If this transaction commits, the tuple will become DEAD sooner or
+	 * later.  If the transaction finally aborts, the subsequent page pruning
+	 * will be a no-op and the hint will be cleared.
+	 */
+	ZPageSetPrunable(page, xid);
+
 	ZHeapTupleHeaderSetXactSlot(zheaptup.t_data, trans_slot_id);
 	zheaptup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
 	zheaptup.t_data->t_infomask |= ZHEAP_DELETED;
@@ -1276,7 +1283,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	bool		all_visible_cleared = false;
 	bool		new_all_visible_cleared = false;
 	bool		have_tuple_lock = false;
-	bool		inplace_upd_attrs_checked = false;
+	bool		is_index_updated = false;
 	bool		use_inplace_update;
 	bool		in_place_updated_or_locked = false;
 
@@ -1352,23 +1359,19 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 		Assert(!(newtup->t_data->t_infomask & ZHEAP_HASOID));
 	}
 
-	/*
-	 * inplace updates can be done only if the length of new tuple is lesser
-	 * than or equal to old tuple and there are no index column updates.
-	 */
-	if (newtup->t_len <= oldtup.t_len)
-	{
-		interesting_attrs = bms_add_members(interesting_attrs, inplace_upd_attrs);
-		inplace_upd_attrs_checked = true;
-	}
+	interesting_attrs = bms_add_members(interesting_attrs, inplace_upd_attrs);
 
 	/* Determine columns modified by the update. */
 	modified_attrs = ZHeapDetermineModifiedColumns(relation, interesting_attrs,
 												   &oldtup, newtup);
 
-	/* check if we can perform in-place updates */
-	if (inplace_upd_attrs_checked &&
-		!bms_overlap(modified_attrs, inplace_upd_attrs))
+	is_index_updated = bms_overlap(modified_attrs, inplace_upd_attrs);
+
+	/*
+	 * inplace updates can be done only if the length of new tuple is lesser
+	 * than or equal to old tuple and there are no index column updates.
+	 */
+	if ((newtup->t_len <= oldtup.t_len) && !is_index_updated)
 		use_inplace_update = true;
 	else
 		use_inplace_update = false;
@@ -1519,6 +1522,28 @@ check_tup_satisfies_update:
 		newtupsize = INTALIGN(newtup->t_len);	/* four byte alignment */
 	else
 		newtupsize = MAXALIGN(newtup->t_len);
+
+	/*
+	 * If it is a non inplace update then check we have sufficient free space
+	 * to insert in same page. If not try defragmentation and recheck the
+	 * freespace again.
+	 */
+	if (!use_inplace_update && newtupsize > pagefree)
+	{
+		zheap_page_prune_opt(relation, buffer);
+		pagefree = PageGetZHeapFreeSpace(page);
+		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+
+		/*
+		 * In one special case if we are updating the last tuple of page,
+		 * we can combine free space immediately next to that tuple with
+		 * the orignal tuple space and try to do inplace update there!
+		 */
+		if (ItemIdGetOffset(lp) == ((PageHeader) page)->pd_upper &&
+			(pagefree + oldtup.t_len) >= newtupsize &&
+			!is_index_updated)
+			use_inplace_update = true;
+	}
 
 	/* updated tuple doesn't fit on current page */
 	if (!use_inplace_update && newtupsize > pagefree)
@@ -1762,6 +1787,13 @@ reacquire_buffer:
 							vmbuffer_new, VISIBILITYMAP_VALID_BITS);
 	}
 
+	/*
+	 * Non in-place update will delete the old record so set this xid as
+	 * prunable
+	 */
+	if (!use_inplace_update)
+		ZPageSetPrunable(page, xid);
+
 	ZHeapTupleHeaderSetXactSlot(oldtup.t_data, trans_slot_id);
 	oldtup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
 	oldtup.t_data->t_infomask |= infomask_old_tuple;
@@ -1776,8 +1808,25 @@ reacquire_buffer:
 		/*
 		 * For inplace updates, we copy the entire data portion including null
 		 * bitmap of new tuple.
+		 *
+		 * For the special case where we are doing inplace updates even when
+		 * the new tuple is bigger, we need to adjust the old tuple's location
+		 * so that new tuple can be copied at that location as it is.
 		 */
 		ItemIdChangeLen(lp, newtup->t_len);
+		if (newtup->t_len > oldtup.t_len)
+		{
+			ZHeapTupleHeader new_pos;
+
+			((PageHeader) page)->pd_upper =
+								(((PageHeader) page)->pd_upper + oldtup.t_len) -
+								newtupsize;
+			ItemIdChangeOff(lp, ((PageHeader) page)->pd_upper);
+			new_pos= (ZHeapTupleHeader) PageGetItem(page, lp);
+			memcpy((char *) new_pos, (char *) oldtup.t_data, SizeofZHeapTupleHeader);
+			oldtup.t_data = new_pos;
+		}
+
 		memcpy((char *) oldtup.t_data + SizeofZHeapTupleHeader,
 			   (char *) newtup->t_data + SizeofZHeapTupleHeader,
 			   newtup->t_len - SizeofZHeapTupleHeader);
@@ -3144,19 +3193,33 @@ MarkTupleFrozen(Page page, int nFrozenSlots, int *frozen_slots)
 	{
 		ZHeapTupleHeader	tup_hdr;
 		ItemId		itemid;
+		int		trans_slot;
 
 		itemid = PageGetItemId(page, offnum);
 
 		if (!ItemIdIsUsed(itemid) || ItemIdIsDead(itemid))
 			continue;
 
-		tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
+		if (ItemIdIsDeleted(itemid))
+			trans_slot = ItemIdGetTransactionSlot(itemid);
+		else
+		{
+			tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
+			trans_slot = ZHeapTupleHeaderGetXactSlot(tup_hdr);
+		}
 
 		for (i = 0; i < nFrozenSlots; i++)
 		{
-			if (ZHeapTupleHeaderGetXactSlot(tup_hdr) == frozen_slots[i])
+			/*
+			 * Set transaction slots of tuple as frozen to indicate tuple
+			 * is all visible and mark the deleted itemids as dead.
+			 */
+			if (trans_slot == frozen_slots[i])
 			{
-				ZHeapTupleHeaderSetXactSlot(tup_hdr, ZHTUP_SLOT_FROZEN);
+				if (ItemIdIsDeleted(itemid))
+					ItemIdSetDead(itemid);
+				else
+					ZHeapTupleHeaderSetXactSlot(tup_hdr, ZHTUP_SLOT_FROZEN);
 				break;
 			}
 		}
@@ -3186,7 +3249,7 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 	{
 		ZHeapTupleHeader	tup_hdr;
 		ItemId		itemid;
-		int			i;
+		int			i, trans_slot;
 
 		itemid = PageGetItemId(page, offnum);
 
@@ -3194,6 +3257,19 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 			continue;
 
 		tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
+		if (ItemIdIsDeleted(itemid))
+		{
+			if ((ItemIdGetVisibilityInfo(itemid) & ZHEAP_INVALID_XACT_SLOT))
+				continue;
+			trans_slot = ItemIdGetTransactionSlot(itemid);
+		}
+		else
+		{
+			tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
+			if (tup_hdr->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+				continue;
+			trans_slot = ZHeapTupleHeaderGetXactSlot(tup_hdr);
+		}
 
 		for (i = 0; i < nCompletedXactSlots; i++)
 		{
@@ -3202,8 +3278,7 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 			 * since the last time as the special undo record for them can
 			 * be found in the undo chain of their present slot.
 			 */
-			if (ZHeapTupleHeaderGetXactSlot(tup_hdr) == completed_slots[i] &&
-				!(tup_hdr->t_infomask & ZHEAP_INVALID_XACT_SLOT))
+			if (trans_slot == completed_slots[i])
 			{
 				offset_completed_slots[noffsets++] = offnum;
 				break;
@@ -3372,7 +3447,6 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 	if (nCompletedXactSlots)
 	{
 		UnpackedUndoRecord	*undorecord;
-		TransactionId	xid;
 		OffsetNumber	*offset_completed_xact_slots;
 		xl_zheap_completed_slot	*slot_info = NULL;
 		xl_zheap_tuple_info	*tuples = NULL;
@@ -3449,7 +3523,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 			ItemPointerData	ctid;
 			ItemId		itemid;
 			OffsetNumber offnum;
-			int	slotno;
+			int			slotno;
 
 			offnum = offset_completed_xact_slots[i];
 			itemid = PageGetItemId(page, offnum);
@@ -3458,30 +3532,41 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 
 			ItemPointerSet(&ctid, BufferGetBlockNumber(buf), offnum);
 
-			tup.t_tableOid = RelationGetRelid(relation);
-			tup.t_data = (ZHeapTupleHeader) PageGetItem(page, itemid);
-			tup.t_len = ItemIdGetLength(itemid);
-			tup.t_self = ctid;
-
-			slotno = ZHeapTupleHeaderGetXactSlot(tup.t_data);
-			prev_urecptr = slot_latest_urp[slotno];
-			xid = ZHeapTupleHeaderGetRawXid(tup.t_data, opaque);
-
 			/* prepare an undo record */
 			undorecord[i].uur_type = UNDO_INVALID_XACT_SLOT;
 			undorecord[i].uur_info = 0;
 			undorecord[i].uur_prevlen = 0;
 			undorecord[i].uur_relfilenode = relation->rd_node.relNode;
-			undorecord[i].uur_prevxid = xid;
 			undorecord[i].uur_xid = GetTopTransactionId();
-			undorecord[i].uur_cid = ZHeapTupleGetCid(&tup, buf);
 			undorecord[i].uur_tsid = relation->rd_node.spcNode;
 			undorecord[i].uur_fork = MAIN_FORKNUM;
-			undorecord[i].uur_blkprev = prev_urecptr;
 			undorecord[i].uur_block = BufferGetBlockNumber(buf);
 			undorecord[i].uur_offset = offnum;
 			undorecord[i].uur_payload.len = 0;
 			undorecord[i].uur_tuple.len = 0;
+
+			if (ItemIdIsDeleted(itemid))
+			{
+				slotno = ItemIdGetTransactionSlot(itemid);
+				undorecord[i].uur_prevxid =
+							ZHeapPageGetRawXid(slotno, opaque);
+				undorecord[i].uur_cid = ZHeapPageGetCid(slotno, buf, offnum);
+			}
+			else
+			{
+				tup.t_tableOid = RelationGetRelid(relation);
+				tup.t_data = (ZHeapTupleHeader) PageGetItem(page, itemid);
+				tup.t_len = ItemIdGetLength(itemid);
+				tup.t_self = ctid;
+
+				slotno = ZHeapTupleHeaderGetXactSlot(tup.t_data);
+				undorecord[i].uur_prevxid =
+						ZHeapTupleHeaderGetRawXid(tup.t_data, opaque);
+				undorecord[i].uur_cid = ZHeapTupleGetCid(&tup, buf);
+			}
+
+			prev_urecptr = slot_latest_urp[slotno];
+			undorecord[i].uur_blkprev = prev_urecptr;
 
 			urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERSISTENT,
 										InvalidTransactionId);
@@ -3513,14 +3598,19 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 			offnum = offset_completed_xact_slots[i];
 			itemid = PageGetItemId(page, offnum);
 			Assert(ItemIdIsUsed(itemid));
-			tup.t_data = (ZHeapTupleHeader) PageGetItem(page, itemid);
 
 			/*
-			 * we just append the invalid xact flag in the tuple to indicate
-			 * that for this tuple we need to fetch the transaction information
+			 * we just append the invalid xact flag in the tuple/itemid to indicate
+			 * that for this tuple/itemid we need to fetch the transaction information
 			 * from undo record.
 			 */
-			tup.t_data->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+			if (ItemIdIsDeleted(itemid))
+				ItemIdSetInvalidXact(itemid);
+			else
+			{
+				tup.t_data = (ZHeapTupleHeader) PageGetItem(page, itemid);
+				tup.t_data->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+			}
 		}
 
 		/* Initialize the completed slots. */
@@ -3628,7 +3718,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 /*
  * ZHeapTupleGetCid - Retrieve command id from tuple's undo record.
  *
- * It is expected that caller of this function has atleast read lock
+ * It is expected that the caller of this function has atleast read lock
  * on the buffer.
  */
 CommandId
@@ -3654,7 +3744,7 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf)
 	current_cid = urec->uur_cid;
 
 	UndoRecordRelease(urec);
-	
+
 	return current_cid;
 }
 
@@ -3832,6 +3922,40 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, TransactionId *xid_out,
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 
 	return;
+}
+
+/*
+ * ZHeapPageGetCid - Retrieve command id from tuple's undo record.
+ *
+ * This is similar to ZHeapTupleGetCid with a difference that here we use
+ * transaction slot to fetch the appropriate undo record.  It is expected that
+ * the caller of this function has atleast read lock on the buffer.
+ */
+CommandId
+ZHeapPageGetCid(int trans_slot, Buffer buf, OffsetNumber off)
+{
+	ZHeapPageOpaque	opaque;
+	UnpackedUndoRecord	*urec;
+	CommandId	current_cid;
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
+
+	if (TransactionIdPrecedes(ZHeapPageGetRawXid(trans_slot, opaque),
+							  RecentGlobalXmin))
+		return InvalidCommandId;
+
+	urec = UndoFetchRecord(ZHeapPageGetUndoPtr(trans_slot, opaque),
+						   BufferGetBlockNumber(buf),
+						   off,
+						   InvalidTransactionId);
+	if (urec == NULL)
+		return InvalidCommandId;
+
+	current_cid = urec->uur_cid;
+
+	UndoRecordRelease(urec);
+
+	return current_cid;
 }
 
 /*
@@ -4295,7 +4419,7 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 		 lineoff <= lines;
 		 lineoff++, lpp++)
 	{
-		if (ItemIdIsNormal(lpp))
+		if (ItemIdIsNormal(lpp) || ItemIdIsDeleted(lpp))
 		{
 			ZHeapTuple loctup;
 			ZHeapTuple	resulttup;
@@ -4310,22 +4434,41 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 			loctup->t_tableOid = RelationGetRelid(scan->rs_rd);
 			loctup->t_len = loctup_len;
 			ItemPointerSet(&(loctup->t_self), page, lineoff);
-
-			/*
-			 * We always need to make a copy of zheap tuple as once we release
-			 * the buffer an in-place update can change the tuple.
-			 */
-			memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lpp)), loctup->t_len);
-
-			if (all_visible)
+			if (ItemIdIsDeleted(lpp))
 			{
-				valid = true;
-				resulttup = loctup;
+				if (all_visible)
+				{
+					valid = true;
+					resulttup = NULL;
+				}
+				else
+				{
+					resulttup = ZHeapGetVisibleTuple(lineoff, snapshot, buffer,
+													 NULL);
+					valid = resulttup ? true : false;
+				}
 			}
 			else
 			{
-				resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer, NULL);
-				valid = resulttup ? true : false;
+				/*
+				 * We always need to make a copy of zheap tuple as once we
+				 * release the buffer, an in-place update can change the tuple.
+				 */
+				memcpy(loctup->t_data,
+					   ((ZHeapTupleHeader) PageGetItem((Page) dp, lpp)),
+					   loctup->t_len);
+
+				if (all_visible)
+				{
+					valid = true;
+					resulttup = loctup;
+				}
+				else
+				{
+					resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot,
+															  buffer, NULL);
+					valid = resulttup ? true : false;
+				}
 			}
 
 			/* Fixme - Serialization failures needs to be detected for zheap. */
@@ -4951,8 +5094,9 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		return NULL;
 
 	lp = PageGetItemId(dp, offnum);
+
 	/* check for unused or dead items */
-	if (!ItemIdIsNormal(lp))
+	if (!(ItemIdIsNormal(lp)) || ItemIdIsDead(lp))
 		return NULL;
 
 	loctup_len = ItemIdGetLength(lp);
@@ -4963,6 +5107,14 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	loctup->t_tableOid = RelationGetRelid(relation);
 	loctup->t_len = loctup_len;
 	loctup->t_self = *tid;
+
+	/*
+	 * If the record is deleted, its place in the page might have been taken
+	 * by another of its kind. Try to get it from the UNDO if it is still
+	 * visible.
+	 */
+	if (ItemIdIsDeleted(lp))
+		return ZHeapGetVisibleTuple(offnum, snapshot, buffer, all_dead);
 
 	/*
 	 * We always need to make a copy of zheap tuple as once we release the
@@ -5248,11 +5400,14 @@ zheap_fetch_undo(Relation relation,
 
 	return true;
 }
- 
+
 /*
  * ZHeapTupleHeaderAdvanceLatestRemovedXid - Advance the latestremovexid, if
  * tuple is deleted by a transaction greater than latestremovexid.  This is
- * required to generate conflicts on Hot Standby
+ * required to generate conflicts on Hot Standby.
+ *
+ * If we change this function then we need a similar change in
+ * *_xlog_vacuum_get_latestRemovedXid functions as well.
  *
  * This is quite similar to HeapTupleHeaderAdvanceLatestRemovedXid.
  */

@@ -401,6 +401,19 @@ do { \
 #define PageClearPrunable(page) \
 	(((PageHeader) (page))->pd_prune_xid = InvalidTransactionId)
 
+#define ZPageIsPrunable(page) \
+( \
+	TransactionIdIsValid(((PageHeader) (page))->pd_prune_xid) && \
+	TransactionIdDidCommit(((PageHeader) (page))->pd_prune_xid) \
+)
+#define ZPageSetPrunable(page, xid) \
+do { \
+	Assert(TransactionIdIsNormal(xid)); \
+	if (!TransactionIdIsValid(((PageHeader) (page))->pd_prune_xid) || \
+		!TransactionIdDidCommit(((PageHeader) (page))->pd_prune_xid)) \
+		((PageHeader) (page))->pd_prune_xid = (xid); \
+} while (0)
+#define ZPageClearPrunable(page) PageClearPrunable(page)
 
 /* ----------------------------------------------------------------
  *		extern declarations

@@ -60,6 +60,12 @@ extern void zheap_multi_insert(Relation relation, ZHeapTuple *tuples,
 								BulkInsertState bistate);
 extern void PageSetUNDO(UnpackedUndoRecord undorecord, Page page, int trans_slot_id,
 						TransactionId xid, UndoRecPtr urecptr);
+extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
+						TransactionId xid, TransactionId *latestRemovedXid);
+extern void zheap_page_prune_opt(Relation relation, Buffer buffer);
+extern void zheap_page_prune_execute(Buffer buffer, OffsetNumber *deleted,
+								int ndeleted, OffsetNumber *nowdead, int ndead,
+								OffsetNumber *nowunused, int nunused);
 
 /* Zheap scan related API's */
 extern HeapScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,

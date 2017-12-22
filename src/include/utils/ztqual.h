@@ -28,6 +28,8 @@
 /* These are the "satisfies" test routines for the zheap. */
 extern ZHeapTuple ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup,
 					   Snapshot snapshot, Buffer buffer, ItemPointer ctid);
+extern ZHeapTuple ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot,
+									   Buffer buffer, bool *all_dead);
 extern HTSU_Result ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup,
 						CommandId curcid, Buffer buffer, ItemPointer ctid,
 						TransactionId *xid, CommandId *cid, bool free_zhtup,

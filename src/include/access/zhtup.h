@@ -19,6 +19,7 @@
 #include "access/tupmacs.h"
 #include "access/transam.h"
 #include "access/undolog.h"
+#include "access/undorecord.h"
 #include "storage/bufpage.h"
 #include "storage/buf.h"
 #include "storage/itemptr.h"
@@ -159,6 +160,13 @@ do { \
 #define ZHeapTupleHasVarWidth(tuple) \
 		(((tuple)->t_data->t_infomask & ZHEAP_HASVARWIDTH) != 0)
 
+#define ZHeapTupleDeleted(tup_data) \
+		((tup_data->t_infomask & ZHEAP_DELETED) != 0)
+
+#define ZHeapTupleHasInvalidXact(tup_data) \
+		((tup_data->t_infomask & ZHEAP_INVALID_XACT_SLOT) != 0)
+
+
 #define ZHeapTupleHeaderGetRawXid(tup, opaque) \
 ( \
 	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].xid \
@@ -180,6 +188,11 @@ do { \
 	 (tup)->t_infomask & ZHEAP_UPDATED || \
 	 (tup)->t_infomask & ZHEAP_INPLACE_UPDATED || \
 	 (tup)->t_infomask & ZHEAP_XID_LOCK_ONLY) != 0) \
+)
+
+#define ZHeapPageGetUndoPtr(slot, opaque) \
+( \
+	opaque->transinfo[slot].urec_ptr \
 )
 
 extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
@@ -247,9 +260,12 @@ extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
 
 /* Zheap transaction information related API's */
 extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf);
+extern CommandId ZHeapPageGetCid(int trans_slot, Buffer buf, OffsetNumber off);
 extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
                                TransactionId *xid_out, CommandId *cid_out,
                                UndoRecPtr *urec_ptr_out, bool nobuflock);
+extern void ZHeapGetTransInfoFromUndo(UndoRecPtr urec_ptr, BlockNumber blkno,
+							OffsetNumber offset, UnpackedUndoRecord **urec_out);
 extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer ctid);
 extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
 					TransactionId priorXmax);
@@ -273,6 +289,10 @@ extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
 				) \
 			)
 
+#define MaxZHeapTupFixedSizeAlign0 \
+			(SizeofZHeapTupleHeader  + sizeof(ItemIdData))
+
+
 /* MaxZHeapPageFixedSpace - Maximum fixed size for page */
 #define MaxZHeapPageFixedSpace \
 	(BLCKSZ - SizeOfPageHeaderData - sizeof(ZHeapPageOpaqueData))
@@ -283,6 +303,10 @@ extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
 #define MaxZHeapTuplesPerPage	\
 	((int) ((MaxZHeapPageFixedSpace) / \
 			(MaxZHeapTupFixedSize)))
+
+#define MaxZHeapTuplesPerPageAlign0 \
+		((int) ((MaxZHeapPageFixedSpace) / \
+				(MaxZHeapTupFixedSizeAlign0)))
 
 #define MaxZHeapTupleSize  (BLCKSZ - MAXALIGN(SizeOfPageHeaderData + sizeof(ZHeapPageOpaqueData) + sizeof(ItemIdData)))
 #define MinZHeapTupleSize  MAXALIGN(SizeofHeapTupleHeader)

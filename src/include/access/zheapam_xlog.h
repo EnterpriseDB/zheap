@@ -21,6 +21,7 @@
 #include "access/xlogreader.h"
 #include "access/undoinsert.h"
 #include "access/zhtup.h"
+#include "storage/freespace.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
 
@@ -37,6 +38,7 @@
 #define XLOG_ZHEAP_FREEZE_XACT_SLOT		0x40
 #define XLOG_ZHEAP_INVALID_XACT_SLOT	0x50
 #define XLOG_ZHEAP_LOCK					0x60
+#define XLOG_ZHEAP_CLEAN				0x70
 
 #define	XLOG_ZHEAP_OPMASK				0x70
 
@@ -236,6 +238,26 @@ typedef struct xl_multi_insert_ztuple
 } xl_multi_insert_ztuple;
 
 #define SizeOfMultiInsertZTuple	(offsetof(xl_multi_insert_ztuple, t_hoff) + sizeof(uint8))
+
+/*
+ * This is what we need to know about vacuum page cleanup/redirect
+ *
+ * The array of OffsetNumbers following the fixed part of the record contains:
+ * for each redirected item: the item offset, then the offset redirected to
+ * for each now-dead item: the item offset for each now-unused item: the item offset
+ * The total number of OffsetNumbers is therefore 2*nredirected+ndead+nunused.
+ * Note that nunused is not explicitly stored, but may be found by reference to the
+ * total record length.
+ */
+typedef struct xl_zheap_clean
+{
+	TransactionId latestRemovedXid;
+	uint16          ndeleted;
+	uint16          ndead;
+	/* OFFSET NUMBERS are in the block reference 0 */
+} xl_zheap_clean;
+
+#define SizeOfZHeapClean (offsetof(xl_zheap_clean, ndead) + sizeof(uint16))
 
 extern void zheap_redo(XLogReaderState *record);
 extern void zheap_desc(StringInfo buf, XLogReaderState *record);

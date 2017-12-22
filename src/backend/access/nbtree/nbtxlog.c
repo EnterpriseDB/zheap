@@ -621,23 +621,41 @@ btree_xlog_delete_get_latestRemovedXid(XLogReaderState *record)
 		hoffnum = ItemPointerGetOffsetNumber(&(itup->t_tid));
 		hitemid = PageGetItemId(hpage, hoffnum);
 
-		/*
-		 * Follow any redirections until we find something useful.
-		 */
-		while (ItemIdIsRedirected(hitemid))
+		if (!(xlrec->flags & XLOG_BTREE_DELETE_RELATION_STORAGE_ZHEAP))
 		{
-			hoffnum = ItemIdGetRedirect(hitemid);
-			hitemid = PageGetItemId(hpage, hoffnum);
-			CHECK_FOR_INTERRUPTS();
+			/*
+			 * Follow any redirections until we find something useful.
+			 */
+			while (ItemIdIsRedirected(hitemid))
+			{
+				hoffnum = ItemIdGetRedirect(hitemid);
+				hitemid = PageGetItemId(hpage, hoffnum);
+				CHECK_FOR_INTERRUPTS();
+			}
 		}
 
 		/*
 		 * If the heap item has storage, then read the header and use that to
 		 * set latestRemovedXid.
 		 *
+		 * We have special handling for zheap tuples that are deleted and
+		 * don't have storage.
+		 *
 		 * Some LP_DEAD items may not be accessible, so we ignore them.
 		 */
-		if (ItemIdHasStorage(hitemid))
+		if ((xlrec->flags & XLOG_BTREE_DELETE_RELATION_STORAGE_ZHEAP) &&
+			ItemIdIsDeleted(hitemid))
+		{
+			TransactionId	xid;
+			ZHeapPageOpaque	opaque;
+
+			opaque = (ZHeapPageOpaque) PageGetSpecialPointer(hpage);
+			xid = ZHeapPageGetRawXid(ItemIdGetTransactionSlot(hitemid), opaque);
+			if (TransactionIdDidCommit(xid) &&
+				TransactionIdFollows(xid, latestRemovedXid))
+				latestRemovedXid = xid;
+		}
+		else if (ItemIdHasStorage(hitemid))
 		{
 			if ((xlrec->flags & XLOG_BTREE_DELETE_RELATION_STORAGE_ZHEAP) != 0)
 			{

@@ -304,8 +304,7 @@ zheap_xlog_delete(XLogReaderState *record)
 		PageSetUNDO(undorecord, page, xlrec->trans_slot_id, XLogRecGetXid(record), urecptr);
 
 		/* Mark the page as a candidate for pruning */
-		/* Fixme : need to uncomment once we have done this in zheap_delete operation */
-		/* PageSetPrunable(page, XLogRecGetXid(record)); */
+		ZPageSetPrunable(page, XLogRecGetXid(record));
 
 		if (xlrec->flags & XLZ_DELETE_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(page);
@@ -538,6 +537,9 @@ zheap_xlog_update(XLogReaderState *record)
 			PageSetUNDO(undorecord, oldpage, xlrec->old_trans_slot_id,
 						XLogRecGetXid(record), urecptr);
 
+		/* Mark the page as a candidate for pruning */
+		ZPageSetPrunable(oldpage, XLogRecGetXid(record));
+
 		if (xlrec->flags & XLZ_UPDATE_OLD_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(oldpage);
 
@@ -671,6 +673,25 @@ zheap_xlog_update(XLogReaderState *record)
 			 * tuple header.
 			 */
 			ItemIdChangeLen(lp, newlen);
+			if (newlen > oldtup.t_len)
+			{
+				ZHeapTupleHeader new_pos;
+				Size		newtupsize;
+
+				if (data_alignment_zheap == 0)
+					newtupsize = newlen;	/* no alignment */
+				else if (data_alignment_zheap == 4)
+					newtupsize = INTALIGN(newlen);	/* four byte alignment */
+				else
+					newtupsize = MAXALIGN(newlen);
+
+				((PageHeader) newpage)->pd_upper =
+									(((PageHeader) newpage)->pd_upper + oldtup.t_len) -
+									newtupsize;
+				ItemIdChangeOff(lp, ((PageHeader) newpage)->pd_upper);
+				new_pos= (ZHeapTupleHeader) PageGetItem(newpage, lp);
+				oldtup.t_data = new_pos;
+			}
 			memcpy((char *) oldtup.t_data, (char *) newtup, newlen);
 			PageSetUNDO(undorecord, newpage, trans_slot_id, XLogRecGetXid(record), urecptr);
 		}
@@ -933,9 +954,14 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 			itemid = PageGetItemId(page, offnum);
 			Assert(ItemIdIsUsed(itemid));
 
-			page = BufferGetPage(buffer);
-			tup.t_data = (ZHeapTupleHeader) PageGetItem(page, itemid);
-			tup.t_data->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+			if (ItemIdIsDeleted(itemid))
+				ItemIdSetInvalidXact(itemid);
+			else
+			{
+				page = BufferGetPage(buffer);
+				tup.t_data = (ZHeapTupleHeader) PageGetItem(page, itemid);
+				tup.t_data->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+			}
 		}
 
 		/* Initialize the completed slots. */
@@ -1261,6 +1287,91 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	}
 }
 
+/*
+ * Handles ZHEAP_CLEAN record type
+ */
+static void
+zheap_xlog_clean(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_zheap_clean *xlrec = (xl_zheap_clean *) XLogRecGetData(record);
+	Buffer		buffer;
+	Size		freespace = 0;
+	RelFileNode rnode;
+	BlockNumber blkno;
+	XLogRedoAction action;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+
+	/*
+	 * We're about to remove tuples. In Hot Standby mode, ensure that there's
+	 * no queries running for which the removed tuples are still visible.
+	 *
+	 * Not all ZHEAP_CLEAN records remove tuples with xids, so we only want to
+	 * conflict on the records that cause MVCC failures for user queries. If
+	 * latestRemovedXid is invalid, skip conflict processing.
+	 */
+	if (InHotStandby && TransactionIdIsValid(xlrec->latestRemovedXid))
+		ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid, rnode);
+
+	/*
+	 * If we have a full-page image, restore it (using a cleanup lock) and
+	 * we're done.
+	 */
+	action = XLogReadBufferForRedoExtended(record, 0, RBM_NORMAL, true,
+										   &buffer);
+	if (action == BLK_NEEDS_REDO)
+	{
+		Page		page = (Page) BufferGetPage(buffer);
+		OffsetNumber *end;
+		OffsetNumber *deleted;
+		OffsetNumber *nowdead;
+		OffsetNumber *nowunused;
+		int			ndeleted;
+		int			ndead;
+		int			nunused;
+		Size		datalen;
+
+		deleted = (OffsetNumber *) XLogRecGetBlockData(record, 0, &datalen);
+
+		ndeleted = xlrec->ndeleted;
+		ndead = xlrec->ndead;
+		end = (OffsetNumber *) ((char *) deleted + datalen);
+		nowdead = deleted + (ndeleted * 2);
+		nowunused = nowdead + ndead;
+		nunused = (end - nowunused);
+		Assert(nunused >= 0);
+
+		/* Update all item pointers per the record, and repair fragmentation */
+		zheap_page_prune_execute(buffer,
+								deleted, ndeleted,
+								nowdead, ndead,
+								nowunused, nunused);
+
+		freespace = PageGetZHeapFreeSpace(page); /* needed to update FSM below */
+
+		/*
+		 * Note: we don't worry about updating the page's prunability hints.
+		 * At worst this will cause an extra prune cycle to occur soon.
+		 */
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+
+	/*
+	 * Update the FSM as well.
+	 *
+	 * XXX: Don't do this if the page was restored from full page image. We
+	 * don't bother to update the FSM in that case, it doesn't need to be
+	 * totally accurate anyway.
+	 */
+	if (action == BLK_NEEDS_REDO)
+		XLogRecordPageWithFreeSpace(rnode, blkno, freespace);
+}
+
 void
 zheap_redo(XLogReaderState *record)
 {
@@ -1288,6 +1399,9 @@ zheap_redo(XLogReaderState *record)
 			break;
 		case XLOG_ZHEAP_MULTI_INSERT:
 			zheap_xlog_multi_insert(record);
+			break;
+		case XLOG_ZHEAP_CLEAN:
+			zheap_xlog_clean(record);
 			break;
 		default:
 			elog(PANIC, "zheap_redo: unknown op code %u", info);

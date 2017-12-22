@@ -17,6 +17,8 @@
 #include "access/htup_details.h"
 #include "access/itup.h"
 #include "access/xlog.h"
+#include "access/zhtup.h"
+#include "access/zheap.h"
 #include "storage/checksum.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
@@ -24,6 +26,7 @@
 
 /* GUC variable */
 bool		ignore_checksum_failure = false;
+#define	MaxTuplesPerPage Max(MaxHeapTuplesPerPage, MaxZHeapTuplesPerPageAlign0)
 
 
 /* ----------------------------------------------------------------
@@ -481,7 +484,7 @@ PageRepairFragmentation(Page page)
 	Offset		pd_lower = ((PageHeader) page)->pd_lower;
 	Offset		pd_upper = ((PageHeader) page)->pd_upper;
 	Offset		pd_special = ((PageHeader) page)->pd_special;
-	itemIdSortData itemidbase[MaxHeapTuplesPerPage];
+	itemIdSortData itemidbase[MaxTuplesPerPage];
 	itemIdSort	itemidptr;
 	ItemId		lp;
 	int			nline,
