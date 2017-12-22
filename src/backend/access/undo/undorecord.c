@@ -1114,13 +1114,30 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 		logno = UndoRecPtrGetLogNo(urp);
 		LWLockAcquire(&UndoDiscardInfo[logno].mutex, LW_SHARED);
 
+		if (!UndoRecPtrIsValid(UndoDiscardInfo[logno].undo_recptr))
+		{
+			/*
+			 * UndoDiscardInfo is not yet initialized. Hence, we've to check
+			 * UndoLogIsDiscarded and if it's already discarded then we have
+			 * nothing to do.
+			 */
+			LWLockRelease(&UndoDiscardInfo[logno].mutex);
+			if (UndoLogIsDiscarded(urp))
+			{
+				if (BufferIsValid(urec->uur_buffer))
+					ReleaseBuffer(urec->uur_buffer);
+
+				return NULL;
+			}
+			LWLockAcquire(&UndoDiscardInfo[logno].mutex, LW_SHARED);
+		}
+
+		/* Check again if it's already discarded. */
 		if (urp < UndoDiscardInfo[logno].undo_recptr)
 		{
 			LWLockRelease(&UndoDiscardInfo[logno].mutex);
-
 			if (BufferIsValid(urec->uur_buffer))
 				ReleaseBuffer(urec->uur_buffer);
-
 			return NULL;
 		}
 
