@@ -264,8 +264,6 @@ extern CommandId ZHeapPageGetCid(int trans_slot, Buffer buf, OffsetNumber off);
 extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
                                TransactionId *xid_out, CommandId *cid_out,
                                UndoRecPtr *urec_ptr_out, bool nobuflock);
-extern void ZHeapGetTransInfoFromUndo(UndoRecPtr urec_ptr, BlockNumber blkno,
-							OffsetNumber offset, UnpackedUndoRecord **urec_out);
 extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer ctid);
 extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
 					TransactionId priorXmax);
