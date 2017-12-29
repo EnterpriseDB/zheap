@@ -23,6 +23,7 @@
 #include "access/tuptoaster.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
+#include "access/zheaputils.h"
 #include "catalog/catalog.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
@@ -1043,6 +1044,9 @@ acquire_sample_rows(Relation onerel, int elevel,
 		{
 			ItemId		itemid;
 			HeapTupleData targtuple;
+			HeapTuple 		targtup = NULL;
+			TransactionId xid;
+			HTSV_Result		result;
 			bool		sample_it = false;
 
 			itemid = PageGetItemId(targpage, targoffset);
@@ -1060,15 +1064,39 @@ acquire_sample_rows(Relation onerel, int elevel,
 				continue;
 			}
 
-			ItemPointerSet(&targtuple.t_self, targblock, targoffset);
+			if (RelationStorageIsZHeap(onerel))
+			{
+				ZHeapTupleData targztuple;
 
-			targtuple.t_tableOid = RelationGetRelid(onerel);
-			targtuple.t_data = (HeapTupleHeader) PageGetItem(targpage, itemid);
-			targtuple.t_len = ItemIdGetLength(itemid);
+				ItemPointerSet(&targztuple.t_self, targblock, targoffset);
 
-			switch (HeapTupleSatisfiesVacuum(&targtuple,
-											 OldestXmin,
-											 targbuffer))
+				targztuple.t_tableOid = RelationGetRelid(onerel);
+				targztuple.t_data = (ZHeapTupleHeader) PageGetItem(targpage, itemid);
+				targztuple.t_len = ItemIdGetLength(itemid);
+
+				result = ZHeapTupleSatisfiesOldestXmin(&targztuple, OldestXmin, targbuffer, &xid);
+
+				targtup = zheap_to_heap(&targztuple, onerel->rd_att);
+				targtuple = *targtup;
+			}
+			else
+			{
+				ItemPointerSet(&targtuple.t_self, targblock, targoffset);
+
+				targtuple.t_tableOid = RelationGetRelid(onerel);
+				targtuple.t_data = (HeapTupleHeader) PageGetItem(targpage, itemid);
+				targtuple.t_len = ItemIdGetLength(itemid);
+
+				result = HeapTupleSatisfiesVacuum(&targtuple,
+												 OldestXmin,
+												 targbuffer);
+				if (result == HEAPTUPLE_INSERT_IN_PROGRESS)
+					xid = HeapTupleHeaderGetXmin(targtuple.t_data);
+				else if (result == HEAPTUPLE_DELETE_IN_PROGRESS)
+					xid = HeapTupleHeaderGetUpdateXid(targtuple.t_data);
+			}
+
+			switch (result)
 			{
 				case HEAPTUPLE_LIVE:
 					sample_it = true;
@@ -1102,7 +1130,7 @@ acquire_sample_rows(Relation onerel, int elevel,
 					 * has to adjust the numbers we send to the stats
 					 * collector to make this come out right.)
 					 */
-					if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(targtuple.t_data)))
+					if (TransactionIdIsCurrentTransactionId(xid))
 					{
 						sample_it = true;
 						liverows += 1;
@@ -1122,7 +1150,7 @@ acquire_sample_rows(Relation onerel, int elevel,
 					 * right.  (Note: this works out properly when the row was
 					 * both inserted and deleted in our xact.)
 					 */
-					if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetUpdateXid(targtuple.t_data)))
+					if (TransactionIdIsCurrentTransactionId(xid))
 						deadrows += 1;
 					else
 						liverows += 1;
@@ -1178,6 +1206,9 @@ acquire_sample_rows(Relation onerel, int elevel,
 
 				samplerows += 1;
 			}
+
+			if (RelationStorageIsZHeap(onerel) && targtup != NULL)
+				pfree(targtup);
 		}
 
 		/* Now release the lock and pin on the page */
