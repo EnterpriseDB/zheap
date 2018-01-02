@@ -31,6 +31,7 @@
 #include "access/transam.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
+#include "access/zheaputils.h"
 #include "bootstrap/bootstrap.h"
 #include "catalog/binary_upgrade.h"
 #include "catalog/catalog.h"
@@ -3006,13 +3007,6 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 						   indexInfo->ii_ExclusionOps != NULL);
 
 	/*
-	 * FIXME: Implement concurrent index creation for zheap. It needs some
-	 * changes in validate_index_heapscan.
-	 */
-	if (indexInfo->ii_Concurrent)
-		elog(ERROR, "concurrent index creation is not yet implemented for zheap");
-
-	/*
 	 * "Any visible" mode is not compatible with uniqueness checks; make sure
 	 * only one of those is requested.
 	 */
@@ -3677,6 +3671,7 @@ validate_index_heapscan(Relation heapRelation,
 {
 	HeapScanDesc scan;
 	HeapTuple	heapTuple;
+	ZHeapTuple	zheapTuple;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 	ExprState  *predicate;
@@ -3717,24 +3712,61 @@ validate_index_heapscan(Relation heapRelation,
 	 * here, because it's critical that we read from block zero forward to
 	 * match the sorted TIDs.
 	 */
-	scan = heap_beginscan_strat(heapRelation,	/* relation */
-								snapshot,	/* snapshot */
-								0,	/* number of keys */
-								NULL,	/* scan key */
-								true,	/* buffer access strategy OK */
-								false); /* syncscan not OK */
+	if (RelationStorageIsZHeap(heapRelation))
+		scan = zheap_beginscan_strat(heapRelation,	/* relation */
+									snapshot,	/* snapshot */
+									0,	/* number of keys */
+									NULL,	/* scan key */
+									true,	/* buffer access strategy OK */
+									false); /* syncscan not OK */
+	else
+		scan = heap_beginscan_strat(heapRelation,	/* relation */
+									snapshot,	/* snapshot */
+									0,	/* number of keys */
+									NULL,	/* scan key */
+									true,	/* buffer access strategy OK */
+									false); /* syncscan not OK */
 
 	/*
 	 * Scan all tuples matching the snapshot.
 	 */
-	while ((heapTuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	for (;;)
 	{
-		ItemPointer heapcursor = &heapTuple->t_self;
+		ItemPointer heapcursor;
 		ItemPointerData rootTuple;
 		OffsetNumber root_offnum;
 
 		CHECK_FOR_INTERRUPTS();
 
+		if (RelationStorageIsZHeap(heapRelation))
+		{
+			zheapTuple = zheap_getnext(scan, ForwardScanDirection);
+
+			if (zheapTuple == NULL)
+				break;
+
+			heapTuple = zheap_to_heap(zheapTuple, scan->rs_rd->rd_att);
+
+			/*
+			 * For zheap, we don't have any HOT chains. So, when we advance onto
+			 * a new zheap page, root_blkno should point to the current block
+			 * number.
+			 */
+			if (root_blkno != scan->rs_cblock)
+			{
+				root_blkno = scan->rs_cblock;
+				memset(in_index, 0, sizeof(in_index));
+			}
+		}
+		else
+		{
+			heapTuple = heap_getnext(scan, ForwardScanDirection);
+
+			if (heapTuple == NULL)
+				break;
+		}
+
+		heapcursor = &heapTuple->t_self;
 		state->htups += 1;
 
 		/*
@@ -3832,7 +3864,7 @@ validate_index_heapscan(Relation heapRelation,
 			MemoryContextReset(econtext->ecxt_per_tuple_memory);
 
 			/* Set up for predicate or expression evaluation */
-			ExecStoreHeapTuple(heapTuple, slot, false);
+			ExecStoreHeapTuple(heapTuple, slot, RelationStorageIsZHeap(heapRelation));
 
 			/*
 			 * In a partial index, discard tuples that don't satisfy the
