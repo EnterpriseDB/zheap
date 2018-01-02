@@ -104,6 +104,7 @@ extern bool ResolveCminCmaxDuringDecoding(struct HTAB *tuplecid_data,
  */
 #define InitNonVacuumableSnapshot(snapshotdata, xmin_horizon)  \
 	((snapshotdata).satisfies = HeapTupleSatisfiesNonVacuumable, \
+	 (snapshotdata).zsatisfies = ZHeapTupleSatisfiesNonVacuumable, \
 	 (snapshotdata).xmin = (xmin_horizon))
 
 /*

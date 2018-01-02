@@ -1479,3 +1479,24 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 
 	return HEAPTUPLE_LIVE;
 }
+
+
+/*
+ * ZHeapTupleSatisfiesNonVacuumable
+ *
+ *	True if tuple might be visible to some transaction; false if it's
+ *	surely dead to everyone, ie, vacuumable.
+ *
+ *	This is an interface to ZHeapTupleSatisfiesOldestXmin that meets the
+ *	SnapshotSatisfiesFunc API, so it can be used through a Snapshot.
+ *	snapshot->xmin must have been set up with the xmin horizon to use.
+ */
+ZHeapTuple
+ZHeapTupleSatisfiesNonVacuumable(ZHeapTuple ztup, Snapshot snapshot,
+								Buffer buffer, ItemPointer	ctid)
+{
+	TransactionId	xid;
+
+	return (ZHeapTupleSatisfiesOldestXmin(ztup, snapshot->xmin, buffer, &xid)
+		!= HEAPTUPLE_DEAD) ? ztup : NULL;
+}
