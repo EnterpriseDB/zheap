@@ -499,6 +499,8 @@ static void refuseDupeIndexAttach(Relation parentIdx, Relation partIdx,
 static void update_relispartition(Relation classRel, Oid relationId,
 					  bool newval);
 
+static bool StorageEngineOptionExists(List *options);
+
 
 /* ----------------------------------------------------------------
  *		DefineRelation
@@ -648,13 +650,17 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	/*
 	 * The statement option for storage_engine is retrieved from the
 	 * corresponding GUC variable.
+	 *
+	 * FIXME: we are avoiding adding zheap as storage engine option
+	 * for the partitioned table, since parent table can not take zheap
+	 * yet as it's storage_engine.
 	 */
-	if (strcmp(storage_engine, "zheap") == 0)
-	{
-		stmt->options = lcons(makeDefElem("storage_engine",
+	if (strcmp(storage_engine, "zheap") == 0 &&
+		!StorageEngineOptionExists(stmt->options) &&
+		(relkind == RELKIND_RELATION && !stmt->partbound))
+			stmt->options = lcons(makeDefElem("storage_engine",
 							(Node *) makeString("zheap"), -1),
 							stmt->options);
-	}
 	/*
 	 * Relation will have same storage_engine as its ancestors.
 	 *
@@ -672,8 +678,9 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			RangeVar   *parent = (RangeVar *) lfirst(cell);
 			Relation	relation;
 			relation = heap_openrv(parent, AccessShareLock);
-			if (RelationStorageIsZHeap(relation))
-				stmt->options = lcons(makeDefElem("storage_engine",
+			if (RelationStorageIsZHeap(relation) &&
+				!StorageEngineOptionExists(stmt->options))
+					stmt->options = lcons(makeDefElem("storage_engine",
 									(Node *) makeString("zheap"), -1),
 									stmt->options);
 			heap_close(relation, AccessShareLock);
@@ -1038,6 +1045,28 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	relation_close(rel, NoLock);
 
 	return address;
+}
+/*
+ * This is to check if the storage_engine is already added to the options list.
+ * This is helpful in the cases when storage_engine option is specified in conf
+ * file as well as in the create table statement. Additionally, it solves the
+ * issue of adding storage_engine option multiple times for inherited relations.
+ */
+bool
+StorageEngineOptionExists(List *options)
+{
+	if (options != NIL)
+	{
+		ListCell   *cell;
+
+		foreach(cell, options)
+		{
+			DefElem    *defel = (DefElem *) lfirst(cell);
+			if (pg_strcasecmp(defel->defname, "storage_engine") == 0)
+				return true;
+		}
+	}
+	return false;
 }
 
 /*
