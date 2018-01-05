@@ -215,9 +215,10 @@ zheap_page_prune_guts(Relation relation, Buffer buffer, TransactionId OldestXmin
 		if (prstate.marked[offnum])
 			continue;
 
-		/* Nothing to do if slot is empty or already dead */
+		/* Nothing to do if slot is empty, already dead or marked as deleted */
 		itemid = PageGetItemId(page, offnum);
-		if (!ItemIdIsUsed(itemid) || ItemIdIsDead(itemid))
+		if (!ItemIdIsUsed(itemid) || ItemIdIsDead(itemid) ||
+			ItemIdIsDeleted(itemid))
 			continue;
 
 		/* Process this item or chain of items */

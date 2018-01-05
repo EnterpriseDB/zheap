@@ -161,7 +161,7 @@ do { \
 		(((tuple)->t_data->t_infomask & ZHEAP_HASVARWIDTH) != 0)
 
 #define ZHeapTupleDeleted(tup_data) \
-		((tup_data->t_infomask & ZHEAP_DELETED) != 0)
+		((tup_data->t_infomask & (ZHEAP_DELETED | ZHEAP_UPDATED)) != 0)
 
 #define ZHeapTupleHasInvalidXact(tup_data) \
 		((tup_data->t_infomask & ZHEAP_INVALID_XACT_SLOT) != 0)
