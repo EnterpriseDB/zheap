@@ -2941,24 +2941,33 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 					 zhtup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
 				result = TransactionIdGetDatum(zheap_fetchinsertxid(zhtup, opaque));
 			else
-				result = TransactionIdGetDatum(
-						ZHeapTupleHeaderGetRawXid(zhtup->t_data, opaque));
+			{
+				uint64  epoch_xid;
+				ZHeapTupleGetTransInfo(zhtup, buf, &epoch_xid, &xid, NULL, NULL,
+									   false);
+
+				if (!TransactionIdIsValid(xid) || epoch_xid <
+					pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+					xid = FrozenTransactionId;
+				result = TransactionIdGetDatum(xid);
+			}
 		}
 			break;
 		case MaxTransactionIdAttributeNumber:
 			if (IsZHeapTupleModified(zhtup->t_data))
 			{
-				/*
-				 * Fixme - We need to fetch epoch here and decide whether xid belongs
-				 * to current epoch.  This depends on what we return in heap when the
-				 * xmax crosses the epoch boundary or if it is frozen.
-				 */
-				ZHeapTupleGetTransInfo(zhtup, buf, NULL, &xid, NULL, NULL,
+				uint64  epoch_xid;
+
+				ZHeapTupleGetTransInfo(zhtup, buf, &epoch_xid, &xid, NULL, NULL,
 									   false);
+
+				if (!TransactionIdIsValid(xid) || epoch_xid <
+					pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+					xid = FrozenTransactionId;
 				result = TransactionIdGetDatum(xid);
 			}
 			else
-				result = TransactionIdGetDatum(InvalidTransactionId);
+				result = TransactionIdGetDatum(FrozenTransactionId);
 
 			break;
 		case MinCommandIdAttributeNumber:
