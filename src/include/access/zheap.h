@@ -73,6 +73,7 @@ extern HeapScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,
 extern HeapScanDesc zheap_beginscan_strat(Relation relation, Snapshot snapshot,
 					int nkeys, ScanKey key,
 					bool allow_strat, bool allow_sync);
+extern HeapScanDesc zheap_beginscan_parallel(Relation, ParallelHeapScanDesc);
 extern ZHeapTuple zheap_getnext(HeapScanDesc scan, ScanDirection direction);
 extern ZHeapTuple zheap_search_buffer(ItemPointer tid, Relation relation,
 									  Buffer buffer, Snapshot snapshot,

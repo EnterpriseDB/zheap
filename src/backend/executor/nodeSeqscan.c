@@ -315,8 +315,13 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 								 node->ss.ss_currentRelation,
 								 estate->es_snapshot);
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pscan);
-	node->ss.ss_currentScanDesc =
-		heap_beginscan_parallel(node->ss.ss_currentRelation, pscan);
+
+	if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
+		node->ss.ss_currentScanDesc =
+				zheap_beginscan_parallel(node->ss.ss_currentRelation, pscan);
+	else
+		node->ss.ss_currentScanDesc =
+				heap_beginscan_parallel(node->ss.ss_currentRelation, pscan);
 }
 
 /* ----------------------------------------------------------------
@@ -347,6 +352,12 @@ ExecSeqScanInitializeWorker(SeqScanState *node,
 	ParallelHeapScanDesc pscan;
 
 	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
-	node->ss.ss_currentScanDesc =
-		heap_beginscan_parallel(node->ss.ss_currentRelation, pscan);
+
+	if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
+		node->ss.ss_currentScanDesc =
+				zheap_beginscan_parallel(node->ss.ss_currentRelation, pscan);
+	else
+		node->ss.ss_currentScanDesc =
+				heap_beginscan_parallel(node->ss.ss_currentRelation, pscan);
+
 }

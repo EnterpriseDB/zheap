@@ -4330,6 +4330,23 @@ zheap_beginscan_internal(Relation relation, Snapshot snapshot,
 }
 
 /*
+ *	zheap_beginscan_parallel - Same as heap_beginscan_parallel, except begins
+ *	scan on zheap tables for parallel query.
+ */
+HeapScanDesc
+zheap_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan)
+{
+	Snapshot	snapshot;
+
+	Assert(RelationGetRelid(relation) == parallel_scan->phs_relid);
+	snapshot = RestoreSnapshot(parallel_scan->phs_snapshot_data);
+	RegisterSnapshot(snapshot);
+
+	return zheap_beginscan_internal(relation, snapshot, 0, NULL, parallel_scan,
+								   true, true, true, false, false, true);
+}
+
+/*
  * zheapgetpage - Same as heapgetpage, but operate on zheap page and
  * in page-at-a-time mode, visible tuples are stored in rs_visztuples.
  */
