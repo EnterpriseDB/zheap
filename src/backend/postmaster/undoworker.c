@@ -98,7 +98,8 @@ UndoWorkerMain(Datum main_arg)
 		TransactionId OldestXmin, oldestXidHavingUndo;
 
 		OldestXmin = GetOldestXmin(NULL, true);
-		oldestXidHavingUndo = pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo);
+		oldestXidHavingUndo = GetXidFromEpochXid(
+						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 
 		/*
 		 * Discard UNDO's if xid < OldestXmin and

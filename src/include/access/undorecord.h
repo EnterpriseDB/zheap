@@ -113,6 +113,7 @@ typedef struct UndoRecordBlock
  */
 typedef struct UndoRecordTransaction
 {
+	uint32			urec_xidepoch; /* epoch of the current transaction */
 	uint64			urec_next;	/* urec pointer of the next transaction */
 } UndoRecordTransaction;
 
@@ -163,6 +164,7 @@ typedef struct UnpackedUndoRecord
 	BlockNumber uur_block;		/* block number */
 	OffsetNumber uur_offset;	/* offset number */
 	Buffer		uur_buffer;		/* buffer in which undo record data points */
+	uint32		uur_xidepoch;	/* epoch of the inserting transaction. */
 	uint64		uur_next;		/* urec pointer of the next transaction */
 	StringInfoData uur_payload;	/* payload bytes */
 	StringInfoData uur_tuple;	/* tuple bytes */

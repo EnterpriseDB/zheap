@@ -192,6 +192,9 @@ extern bool XLOG_DEBUG;
 #define XLOG_INCLUDE_ORIGIN		0x01	/* include the replication origin */
 #define XLOG_MARK_UNIMPORTANT	0x02	/* record not important for durability */
 
+/* Generate a 64-bit xid by using epoch and 32-bit xid. */
+#define MakeEpochXid(epoch, xid) \
+				((epoch << 32) | (xid))
 
 /* Checkpoint statistics */
 typedef struct CheckpointStatsData
@@ -277,6 +280,7 @@ extern XLogRecPtr GetInsertRecPtr(void);
 extern XLogRecPtr GetFlushRecPtr(void);
 extern XLogRecPtr GetLastImportantRecPtr(void);
 extern void GetNextXidAndEpoch(TransactionId *xid, uint32 *epoch);
+extern uint32 GetEpochForXid(TransactionId xid);
 extern void RemovePromoteSignalFiles(void);
 
 extern bool CheckPromoteSignal(void);

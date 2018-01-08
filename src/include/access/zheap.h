@@ -27,10 +27,12 @@
 
 /*
  * We need tansactionid and undo pointer to retrieve the undo information
- * for a particular transaction.
+ * for a particular transaction.  Xid's epoch is primarily required to check
+ * if the xid is from current epoch.
  */
 typedef struct TransInfo
 {
+	uint32		xid_epoch;
 	TransactionId	xid;
 	UndoRecPtr	urec_ptr;
 } TransInfo;
@@ -59,7 +61,7 @@ extern void zheap_multi_insert(Relation relation, ZHeapTuple *tuples,
 								int ntuples, CommandId cid, int options,
 								BulkInsertState bistate);
 extern void PageSetUNDO(UnpackedUndoRecord undorecord, Page page, int trans_slot_id,
-						TransactionId xid, UndoRecPtr urecptr);
+						uint32 epoch, TransactionId xid, UndoRecPtr urecptr);
 extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
 						TransactionId xid, TransactionId *latestRemovedXid);
 extern void zheap_page_prune_opt(Relation relation, Buffer buffer);

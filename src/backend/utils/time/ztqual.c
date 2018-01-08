@@ -10,6 +10,19 @@
  * IDENTIFICATION
  *	  src/backend/utils/time/ztqual.c
  *
+ * The core idea to check if the tuple is all-visible is to see if it is
+ * modified by transaction smaller than oldestXidWithEpochHavingUndo (aka
+ * there is no undo pending for the transaction) or if the transaction slot
+ * is frozen.  For undo tuples, we additionally check if the transaction id
+ * of a transaction that has modified the tuple is FrozenTransactionId. The
+ * idea is we will always check the visibility of latest tuple based on
+ * epoch+xid and undo tuple's visibility based on xid.  If the heap tuple is
+ * not all-visible (epoch+xid is not older than oldestXidWithEpochHavingUndo),
+ * then the xid corresponding to undo tuple must be in the range of 2-billion
+ * transactions with oldestXidHavingUndo (xid part in
+ * oldestXidWithEpochHavingUndo).  This is true because we don't allow undo
+ * records older than 2-billion transactions.
+ *
  *-------------------------------------------------------------------------
  */
 
@@ -33,11 +46,11 @@ static ZHeapTuple GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
  *			that has modified the undo tuple.
  */
 static void
-FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId *xid,
+FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch, TransactionId *xid,
 					   CommandId *cid, UndoRecPtr *urec_ptr)
 {
 	UnpackedUndoRecord	*urec;
-	TransactionId	undo_tup_xid;
+	TransactionId	undo_tup_xid, oldestXidHavingUndo;
 	uint8	uur_type;
 
 	undo_tup_xid = *xid;
@@ -55,6 +68,8 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId *xid,
 							   ItemPointerGetOffsetNumber(&undo_tup->t_self),
 							   InvalidTransactionId);
 
+		oldestXidHavingUndo = GetXidFromEpochXid(
+						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 		/*
 		 * The undo tuple must be visible, if the undo record containing
 		 * the information of the last transaction that has updated the
@@ -62,9 +77,10 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId *xid,
 		 * undo tuple precedes smallest xid that has undo.
 		 */
 		if (urec == NULL ||
-			TransactionIdPrecedes(urec->uur_prevxid,
-								  pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			TransactionIdPrecedes(urec->uur_prevxid, oldestXidHavingUndo))
 		{
+			if (epoch)
+				*epoch = 0;
 			*xid = InvalidTransactionId;
 			*cid = InvalidCommandId;
 			*urec_ptr = InvalidUndoRecPtr;
@@ -74,6 +90,14 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId *xid,
 			break;
 		}
 
+		/*
+		 * If we reach here, this means the transaction id that has
+		 * last modified this tuple must be in 2-billion xid range
+		 * of oldestXidHavingUndo, so we can get compute its epoch
+		 * as we do for current transaction.
+		 */
+		if (epoch)
+			*epoch = GetEpochForXid(urec->uur_prevxid);
 		*xid = urec->uur_prevxid;
 		*cid = urec->uur_cid;
 		*urec_ptr = urec->uur_blkprev;
@@ -104,6 +128,7 @@ GetTupleFromUndoCommon(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 {
 	CommandId	cid = InvalidCommandId;
 	int			undo_oper = -1;
+	TransactionId	oldestXidHavingUndo;
 
 	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
 	{
@@ -120,17 +145,21 @@ GetTupleFromUndoCommon(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 			   !(undo_tup->t_data->t_infomask & ZHEAP_UPDATED));
 	}
 
+	oldestXidHavingUndo = GetXidFromEpochXid(
+						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+
 	/*
 	 * We need to fetch all the transaction related information from undo
 	 * record for the tuples that point to a slot that gets invalidated for
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
-	if ((ZHeapTupleHeaderGetXactSlot(undo_tup->t_data) != ZHTUP_SLOT_FROZEN)
-		&& !TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+	if ((ZHeapTupleHeaderGetXactSlot(undo_tup->t_data) != ZHTUP_SLOT_FROZEN) &&
+		!TransactionIdEquals(xid, FrozenTransactionId) &&
+		!TransactionIdPrecedes(xid, oldestXidHavingUndo))
 	{
 		if (undo_tup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
 		{
-			FetchTransInfoFromUndo(undo_tup, &xid, &cid, &prev_urec_ptr);
+			FetchTransInfoFromUndo(undo_tup, NULL, &xid, &cid, &prev_urec_ptr);
 		}
 		else
 		{
@@ -147,11 +176,12 @@ GetTupleFromUndoCommon(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 
 	/*
 	 * The tuple must be all visible if the transaction slot is cleared or
-	 * latest xid that has changed the tuple precedes smallest xid that has
-	 * undo.
+	 * latest xid that has changed the tuple is too old that it is all-visible
+	 * or it precedes smallest xid that has undo.
 	 */
 	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+		TransactionIdEquals(xid, FrozenTransactionId) ||
+		TransactionIdPrecedes(xid, oldestXidHavingUndo))
 		return undo_tup;
 
 	if (undo_oper == ZHEAP_INPLACE_UPDATED ||
@@ -374,7 +404,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	ZHeapPageOpaque	opaque;
 	ZHeapTuple	undo_tup = NULL;
 	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
-	TransactionId	xid;
+	TransactionId	xid, oldestXidHavingUndo;
 	CommandId	cid = InvalidCommandId;
 	int	trans_slot_id = InvalidXactSlotId;
 	int prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
@@ -449,17 +479,21 @@ fetch_undo_record:
 		trans_slot_id != prev_trans_slot_id)
 		prev_urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(undo_tup->t_data, opaque);
 
+	oldestXidHavingUndo = GetXidFromEpochXid(
+						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+
 	/*
 	 * We need to fetch all the transaction related information from undo
 	 * record for the tuples that point to a slot that gets invalidated for
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
-	if ((ZHeapTupleHeaderGetXactSlot(undo_tup->t_data) != ZHTUP_SLOT_FROZEN)
-		&& !TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+	if ((ZHeapTupleHeaderGetXactSlot(undo_tup->t_data) != ZHTUP_SLOT_FROZEN) &&
+		!TransactionIdEquals(xid, FrozenTransactionId) &&
+		!TransactionIdPrecedes(xid, oldestXidHavingUndo))
 	{
 		if (undo_tup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
 		{
-			FetchTransInfoFromUndo(undo_tup, &xid, &cid, &prev_urec_ptr);
+			FetchTransInfoFromUndo(undo_tup, NULL, &xid, &cid, &prev_urec_ptr);
 		}
 		else
 		{
@@ -476,11 +510,12 @@ fetch_undo_record:
 
 	/*
 	 * The tuple must be all visible if the transaction slot is cleared or
-	 * latest xid that has changed the tuple precedes smallest xid that has
-	 * undo.
+	 * latest xid that has changed the tuple is too old that it is all-visible
+	 * or it precedes smallest xid that has undo.
 	 */
 	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+		TransactionIdEquals(xid, FrozenTransactionId) ||
+		TransactionIdPrecedes(xid, oldestXidHavingUndo))
 	{
 		result = true;
 		goto result_available;
@@ -592,12 +627,14 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	TransactionId	xid;
 	CommandId		cid = InvalidCommandId;
+	uint64		epoch_xid;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction info */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &xid, &cid, &urec_ptr, false);
+	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, &xid, &cid, &urec_ptr,
+						   false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -605,10 +642,11 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 		/*
 		 * The tuple is deleted and must be all visible if the transaction slot
 		 * is cleared or latest xid that has changed the tuple precedes
-		 * smallest xid that has undo.
+		 * smallest xid that has undo.  Transaction slot can also be considered
+		 * frozen if it belongs to previous epoch.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return NULL;
 
 		if (TransactionIdIsCurrentTransactionId(xid))
@@ -649,7 +687,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 		 * tuple precedes smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return zhtup;	/* tuple is updated */
 
 		if (TransactionIdIsCurrentTransactionId(xid))
@@ -690,7 +728,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	 * smallest xid that has undo.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return zhtup;
 
 	if (TransactionIdIsCurrentTransactionId(xid))
@@ -729,6 +767,7 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 	TransactionId	xid;
 	CommandId		cid;
 	ItemId	lp;
+	uint64		epoch, epoch_xid;
 	int		trans_slot;
 	int		vis_info;
 
@@ -746,9 +785,7 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 	 * record for the tuples that point to a slot that gets invalidated for
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
-	if (trans_slot != ZHTUP_SLOT_FROZEN &&
-		!TransactionIdPrecedes(ZHeapPageGetRawXid(trans_slot, opaque),
-							   RecentGlobalXmin))
+	if (trans_slot != ZHTUP_SLOT_FROZEN)
 	{
 		if (vis_info & ZHEAP_INVALID_XACT_SLOT)
 		{
@@ -759,35 +796,34 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 
 			urec_ptr = ZHeapPageGetUndoPtr(trans_slot, opaque);
 			xid = InvalidTransactionId;
-			FetchTransInfoFromUndo(&undo_tup, &xid, &cid, &urec_ptr);
+			FetchTransInfoFromUndo(&undo_tup, &epoch, &xid, &cid, &urec_ptr);
 		}
 		else
 		{
+			epoch = (uint64) ZHeapPageGetRawEpoch(trans_slot, opaque);
 			xid = ZHeapPageGetRawXid(trans_slot, opaque);
 			cid = ZHeapPageGetCid(trans_slot, buffer, off);
 			urec_ptr = ZHeapPageGetUndoPtr(trans_slot, opaque);
 		}
 	}
-	else if (trans_slot != ZHTUP_SLOT_FROZEN)
-	{
-		xid = ZHeapPageGetRawXid(trans_slot, opaque);
-		cid = ZHeapPageGetCid(trans_slot, buffer, off);
-		urec_ptr = ZHeapPageGetUndoPtr(trans_slot, opaque);
-	}
 	else
 	{
+		epoch = 0;
 		xid = InvalidTransactionId;
 		cid = InvalidCommandId;
 		urec_ptr = InvalidUndoRecPtr;
 	}
 
+	epoch_xid = MakeEpochXid(epoch, xid);
+
 	/*
 	 * The tuple is deleted and must be all visible if the transaction slot
 	 * is cleared or latest xid that has changed the tuple precedes
-	 * smallest xid that has undo.
+	 * smallest xid that has undo.  Transaction slot can also be considered
+	 * frozen if it belongs to previous epoch.
 	 */
 	if (trans_slot == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(xid, RecentGlobalXmin))
+		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 	{
 		if (all_dead)
 			*all_dead = true;
@@ -851,6 +887,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
+	uint64	epoch_xid;
 	bool	visible;
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
@@ -860,7 +897,8 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction info */
-	ZHeapTupleGetTransInfo(zhtup, buffer, xid, cid, &urec_ptr, false);
+	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, xid, cid, &urec_ptr,
+						   false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -873,7 +911,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 		 * check.
 		 */
 		Assert(!(ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN &&
-			   TransactionIdPrecedes(*xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo))));
+			   epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)));
 
 		if (TransactionIdIsCurrentTransactionId(*xid))
 		{
@@ -957,7 +995,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 		 * tuple precedes smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(*xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return HeapTupleMayBeUpdated;
 
 		if (TransactionIdIsCurrentTransactionId(*xid))
@@ -1037,7 +1075,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	 * smallest xid that has undo.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(*xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return HeapTupleMayBeUpdated;
 
 	if (TransactionIdIsCurrentTransactionId(*xid))
@@ -1063,16 +1101,18 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
  * Similar to HeapTupleIsSurelyDead, but for zheap tuples.
  */
 bool
-ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer)
+ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin, Buffer buffer)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	TransactionId	xid;
+	uint64			epoch_xid;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &xid, NULL, NULL, false);
+	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, &xid, NULL, NULL,
+						   false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -1083,7 +1123,7 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, TransactionId OldestXmin, Buffer buffer
 		 * smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, OldestXmin))
+			epoch_xid < OldestXmin)
 			return true;
 	}
 
@@ -1114,12 +1154,14 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	TransactionId	xid;
 	UndoRecPtr  urec_ptr = InvalidUndoRecPtr;
+	uint64			epoch_xid;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &xid, NULL, &urec_ptr, false);
+	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, &xid, NULL, &urec_ptr,
+						   false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -1130,7 +1172,7 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 		 * smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return NULL;
 
 		if (TransactionIdIsCurrentTransactionId(xid))
@@ -1165,7 +1207,7 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 		 * tuple precedes smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return zhtup;
 
 		if (TransactionIdIsCurrentTransactionId(xid))
@@ -1201,7 +1243,7 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 	 * undo.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return zhtup;
 
 	if (TransactionIdIsCurrentTransactionId(xid))
@@ -1252,6 +1294,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	TransactionId	xid;
+	uint64			epoch_xid;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
@@ -1260,7 +1303,8 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	snapshot->speculativeToken = 0;
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &xid, NULL, NULL, false);
+	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, &xid, NULL, NULL,
+						   false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -1271,7 +1315,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		 * smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return NULL;
 
 		if (TransactionIdIsCurrentTransactionId(xid))
@@ -1320,7 +1364,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		 * tuple precedes smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return zhtup;	/* tuple is updated */
 
 		if (TransactionIdIsCurrentTransactionId(xid))
@@ -1350,7 +1394,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	 * undo.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return zhtup;
 
 	if (TransactionIdIsCurrentTransactionId(xid))
@@ -1395,12 +1439,14 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 							  Buffer buffer, TransactionId *xid)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
+	uint64	epoch_xid;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, xid, NULL, NULL, false);
+	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, xid, NULL, NULL,
+						   false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -1411,7 +1457,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 		 * smallest xid that has undo.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-			TransactionIdPrecedes(*xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return HEAPTUPLE_DEAD;
 
 		if (TransactionIdIsCurrentTransactionId(*xid))
@@ -1452,7 +1498,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 	 * undo.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot(tuple) == ZHTUP_SLOT_FROZEN ||
-		TransactionIdPrecedes(*xid, pg_atomic_read_u32(&ProcGlobal->oldestXidHavingUndo)))
+		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return HEAPTUPLE_LIVE;
 
 	if (TransactionIdIsCurrentTransactionId(*xid))

@@ -381,6 +381,7 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 			return false;
 
 		uur->uur_next = work_txn.urec_next;
+		uur->uur_xidepoch = work_txn.urec_xidepoch;
 	}
 
 	/* Read payload information (if needed and not already done). */
@@ -760,7 +761,10 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 		need_start_undo = true;
 
 	if (need_start_undo)
+	{
 		urec->uur_next = SpecialUndoRecPtr;
+		urec->uur_xidepoch = GetEpochForXid(txid);
+	}
 	else
 		urec->uur_next = InvalidUndoRecPtr;
 

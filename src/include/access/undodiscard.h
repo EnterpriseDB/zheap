@@ -24,6 +24,7 @@
  */
 typedef struct DiscardXact
 {
+	uint32			xidepoch;	/* transaction id epoch */
 	TransactionId	xid;
 	LWLock			mutex;		 /* protects the below */
 	UndoRecPtr		undo_recptr; /* first undo record location for this xid. */

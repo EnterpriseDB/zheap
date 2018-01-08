@@ -54,6 +54,7 @@ UndoDiscardShmemInit(void)
 
 	for (i = 0; i < MaxBackends; i++)
 	{
+		UndoDiscardInfo[i].xidepoch = 0;
 		UndoDiscardInfo[i].xid = InvalidTransactionId;
 		UndoDiscardInfo[i].undo_recptr = InvalidUndoRecPtr;
 
@@ -101,6 +102,7 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 			isAborted)
 		{
 			TransactionId	undoxid = uur->uur_xid;
+			uint32	epoch = uur->uur_xidepoch;
 
 			/* Hey, I got some undo log to discard, can not hibernate now. */
 			*hibernate = false;
@@ -135,12 +137,14 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 
 				undo_recptr = next_insert;
 				need_discard = true;
+				epoch = 0;
 				undoxid = InvalidTransactionId;
 			}
 
 			LWLockAcquire(&discard->mutex, LW_EXCLUSIVE);
 
 			discard->xid = undoxid;
+			discard->xidepoch = epoch;
 			discard->undo_recptr = undo_recptr;
 
 			LWLockRelease(&discard->mutex);
@@ -170,12 +174,15 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
  *	find the xid which is not smaller than xmin.
  */
 void
-UndoDiscard(TransactionId oldestXid, bool *hibernate)
+UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 {
-	TransactionId	oldestXidHavingUndo = oldestXid;
+	TransactionId	oldestXidHavingUndo = oldestXmin;
+	uint64			epoch = GetEpochForXid(oldestXmin);
+	uint64			oldestXidWithEpoch;
 	UndoLogNumber logno = -1;
 	Oid spcNode = InvalidOid;
 
+	oldestXidWithEpoch = MakeEpochXid(epoch, oldestXidHavingUndo);
 	while (UndoLogNextActiveLog (&logno, &spcNode))
 	{
 		UndoRecPtr	urp;
@@ -184,7 +191,7 @@ UndoDiscard(TransactionId oldestXid, bool *hibernate)
 		 * If the first xid of the undo log is smaller than the xmin the try
 		 * to discard the undo log.
 		 */
-		if (TransactionIdPrecedes(UndoDiscardInfo[logno].xid, oldestXid))
+		if (TransactionIdPrecedes(UndoDiscardInfo[logno].xid, oldestXmin))
 		{
 			/*
 			 * If the XID in the discard entry is invalid then start scanning from
@@ -203,21 +210,24 @@ UndoDiscard(TransactionId oldestXid, bool *hibernate)
 			}
 
 			/* Process the undo log. */
-			UndoDiscardOneLog(&UndoDiscardInfo[logno], oldestXid, hibernate);
+			UndoDiscardOneLog(&UndoDiscardInfo[logno], oldestXmin, hibernate);
 		}
 
 		/* Update the correct value for oldestXidHavingUndo. */
 		if (TransactionIdIsValid(UndoDiscardInfo[logno].xid) &&
 			TransactionIdPrecedes(UndoDiscardInfo[logno].xid, oldestXidHavingUndo))
+		{
 			oldestXidHavingUndo = UndoDiscardInfo[logno].xid;
+			epoch = UndoDiscardInfo[logno].xidepoch;
+			oldestXidWithEpoch = MakeEpochXid(epoch, oldestXidHavingUndo);
+		}
 	}
 
 	/*
-	 * Update the oldestXidHavingUndo in the shared memory.
+	 * Update the oldestXidWithEpochHavingUndo in the shared memory.
 	 *
 	 * XXX In future if multiple worker can perform discard then we may need
 	 * to use compare and swap for updating the shared memory value.
 	 */
-	pg_atomic_write_u32(&ProcGlobal->oldestXidHavingUndo,
-						oldestXidHavingUndo);
+	pg_atomic_write_u64(&ProcGlobal->oldestXidWithEpochHavingUndo, oldestXidWithEpoch);
 }

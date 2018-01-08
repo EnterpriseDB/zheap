@@ -287,7 +287,7 @@ InitProcGlobal(void)
 	ProcStructLock = (slock_t *) ShmemAlloc(sizeof(slock_t));
 	SpinLockInit(ProcStructLock);
 
-	pg_atomic_init_u32(&ProcGlobal->oldestXidHavingUndo, InvalidTransactionId);
+	pg_atomic_init_u64(&ProcGlobal->oldestXidWithEpochHavingUndo, 0);
 }
 
 /*

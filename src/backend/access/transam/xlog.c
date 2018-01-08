@@ -8493,6 +8493,35 @@ GetNextXidAndEpoch(TransactionId *xid, uint32 *epoch)
 }
 
 /*
+ * GetEpochForXid - get the epoch associated with the xid
+ */
+uint32
+GetEpochForXid(TransactionId xid)
+{
+	uint32		ckptXidEpoch;
+	TransactionId ckptXid;
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	ckptXidEpoch = XLogCtl->ckptXidEpoch;
+	ckptXid = XLogCtl->ckptXid;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	/* Xid can be on either side when near wrap-around.  Xid is certainly
+	 * logically later than ckptXid.  So if it's numerically less, it must
+	 * have wrapped into the next epoch.  OTOH, if it is numerically more,
+	 * but logically lesser, then it belongs to previous epoch.
+	 */
+	if (xid > ckptXid &&
+		TransactionIdPrecedes(xid, ckptXid))
+		ckptXidEpoch--;
+	else if (xid < ckptXid &&
+			 TransactionIdFollows(xid, ckptXid))
+		ckptXidEpoch++;
+
+	return ckptXidEpoch;
+}
+
+/*
  * This must be called ONCE during postmaster or standalone-backend shutdown
  */
 void

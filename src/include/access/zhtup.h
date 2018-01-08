@@ -167,6 +167,11 @@ do { \
 		((tup_data->t_infomask & ZHEAP_INVALID_XACT_SLOT) != 0)
 
 
+#define ZHeapTupleHeaderGetRawEpoch(tup, opaque) \
+( \
+	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].xid_epoch \
+)
+
 #define ZHeapTupleHeaderGetRawXid(tup, opaque) \
 ( \
 	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].xid \
@@ -180,6 +185,11 @@ do { \
 #define ZHeapPageGetRawXid(slot, opaque) \
 ( \
 	opaque->transinfo[slot].xid \
+)
+
+#define ZHeapPageGetRawEpoch(slot, opaque) \
+( \
+	opaque->transinfo[slot].xid_epoch \
 )
 
 #define IsZHeapTupleModified(tup) \
@@ -262,8 +272,9 @@ extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
 extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf);
 extern CommandId ZHeapPageGetCid(int trans_slot, Buffer buf, OffsetNumber off);
 extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
-                               TransactionId *xid_out, CommandId *cid_out,
-                               UndoRecPtr *urec_ptr_out, bool nobuflock);
+						uint64 *epoch_xid_out, TransactionId *xid_out,
+						CommandId *cid_out, UndoRecPtr *urec_ptr_out,
+						bool nobuflock);
 extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer ctid);
 extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
 					TransactionId priorXmax);

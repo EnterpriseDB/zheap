@@ -68,6 +68,10 @@
 	(AssertMacro(TransactionIdIsNormal(id1) && TransactionIdIsNormal(id2)), \
 	(int32) ((id1) - (id2)) > 0)
 
+/* Extract xid from a value comprised of epoch and xid  */
+#define GetXidFromEpochXid(epochxid)			\
+	((uint32) (epochxid) & 0XFFFFFFFF)
+
 /* ----------
  *		Object ID (OID) zero is InvalidOid.
  *
