@@ -194,6 +194,7 @@ extern UndoRecPtr UndoLogGetCurrentLocation(void);
 extern UndoRecPtr UndoLogGetFirstValidRecord(UndoLogNumber logno);
 extern UndoRecPtr UndoLogGetNextInsertPtr(UndoLogNumber logno,
 										  TransactionId xid);
+extern void UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen);
 extern bool IsTransactionFirstRec(TransactionId xid);
 extern void UndoLogSetPrevLen(UndoLogNumber logno, uint16 prevlen);
 extern uint16 UndoLogGetPrevLen(UndoLogNumber logno);

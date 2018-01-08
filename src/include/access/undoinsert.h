@@ -70,6 +70,11 @@ extern UnpackedUndoRecord* UndoFetchRecord(UndoRecPtr urp,
 extern void UndoRecordRelease(UnpackedUndoRecord *urec);
 
 /*
+ * Set the value of PrevUndoLen.
+ */
+extern void UndoRecordSetPrevUndoLen(uint16 len);
+
+/*
  * Call UndoSetPrepareSize to set the value of how many maximum prepared can
  * be done before inserting the prepared undo.  If size is > MAX_PREPARED_UNDO
  * then it will allocate extra memory to hold the extra prepared undo.

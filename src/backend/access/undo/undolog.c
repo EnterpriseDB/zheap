@@ -1129,6 +1129,41 @@ UndoLogGetNextInsertPtr(UndoLogNumber logno, TransactionId xid)
 }
 
 /*
+ * Rewind the undo log insert position also set the prevlen in the mata
+ */
+void
+UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen)
+{
+	UndoLogNumber	logno = UndoRecPtrGetLogNo(insert_urp);
+	UndoLogControl *log = get_undo_log_by_number(logno);
+	UndoLogOffset	insert = UndoRecPtrGetOffset(insert_urp);
+
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	log->meta.insert = insert;
+	log->meta.prevlen = prevlen;
+
+	/*
+	 * Force the wal log on next undo allocation. So that during recovery undo
+	 * insert location is consistent with normal allocation.
+	 */
+	log->need_attach_wal_record = true;
+	LWLockRelease(&log->mutex);
+
+	/* WAL log the rewind. */
+	{
+		xl_undolog_rewind xlrec;
+
+		xlrec.logno = logno;
+		xlrec.insert = insert;
+		xlrec.prevlen = prevlen;
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
+		XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_REWIND);
+	}
+}
+
+/*
  * Delete unreachable files under pg_undo.  Any files corresponding to LSN
  * positions before the previous checkpoint are no longer needed.
  */
@@ -1782,6 +1817,20 @@ undolog_xlog_discard(XLogReaderState *record)
 	LWLockRelease(&log->mutex);
 }
 
+/*
+ * replay the rewind of a undo log
+ */
+static void
+undolog_xlog_rewind(XLogReaderState *record)
+{
+	xl_undolog_rewind *xlrec = (xl_undolog_rewind *) XLogRecGetData(record);
+	UndoLogControl *log;
+
+	log = get_undo_log_by_number(xlrec->logno);
+	log->meta.insert = xlrec->insert;
+	log->meta.prevlen = xlrec->prevlen;
+}
+
 void
 undolog_redo(XLogReaderState *record)
 {
@@ -1800,6 +1849,9 @@ undolog_redo(XLogReaderState *record)
 			break;
 		case XLOG_UNDOLOG_DISCARD:
 			undolog_xlog_discard(record);
+			break;
+		case XLOG_UNDOLOG_REWIND:
+			undolog_xlog_rewind(record);
 			break;
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);

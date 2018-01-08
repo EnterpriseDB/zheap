@@ -3814,7 +3814,7 @@ UserAbortTransactionBlock(void)
 
 	/* execute the undo actions, but we should be inside current transaction */
 	if (latest_urec_ptr && (CurrentTransactionState->state == TRANS_INPROGRESS))
-		execute_undo_actions(latest_urec_ptr, s->start_urec_ptr, true);
+		execute_undo_actions(latest_urec_ptr, s->start_urec_ptr, true, true);
 }
 
 /*
@@ -4193,7 +4193,7 @@ RollbackToSavepoint(const char *name)
 
 	/* execute the undo actions */
 	if (latest_urec_ptr && (s->state == TRANS_INPROGRESS))
-		execute_undo_actions(latest_urec_ptr, xact->start_urec_ptr, false);
+		execute_undo_actions(latest_urec_ptr, xact->start_urec_ptr, false, true);
 }
 
 /*

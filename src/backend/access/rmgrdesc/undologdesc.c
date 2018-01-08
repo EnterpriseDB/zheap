@@ -57,6 +57,14 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 						 UndoLogOffsetFormat,
 						 xlrec->logno, xlrec->discard, xlrec->end);
 	}
+	else if (info == XLOG_UNDOLOG_REWIND)
+	{
+		xl_undolog_rewind *xlrec = (xl_undolog_rewind *) rec;
+
+		appendStringInfo(buf, "logno %u insert " UndoLogOffsetFormat " prevlen %d",
+						 xlrec->logno, xlrec->insert, xlrec->prevlen);
+	}
+
 }
 
 const char *

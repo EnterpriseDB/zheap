@@ -31,10 +31,15 @@ static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off)
 
 /*
  * execute_undo_actions - Execute the undo actions
+ *
+ * from_urecptr - undo record pointer from where to start applying undo action.
+ * to_urecptr	- undo record pointer upto which point apply undo action.
+ * nopartial	- true if undo chain is complete.
+ * rewind	- whether to rewind the next undo insert location or not
  */
 void
 execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
-					 bool nopartial)
+					 bool nopartial, bool rewind)
 {
 	UnpackedUndoRecord *uur = NULL;
 	UndoRecPtr	urec_ptr;
@@ -168,6 +173,29 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			UndoRecordRelease(uur);
 			luur = list_delete_first(luur);
 		}
+	}
+
+	if (rewind)
+	{
+		 /* Read the prevlen from the first record of this transaction. */
+		uur = UndoFetchRecord(to_urecptr, InvalidBlockNumber,
+							  InvalidOffsetNumber, InvalidTransactionId);
+		Assert(uur != NULL);
+
+		/*
+		 * Rewind the insert location to start of this transaction.  This is
+		 * to avoid reapplying some intermediate undo. We do not need to wal
+		 * log this information here, because if the system crash before we
+		 * rewind the insert pointer then after recovery we can identify
+		 * whether the undo is already applied or not from the slot undo record
+		 * pointer. Also set the correct prevlen value (what we have fetched
+		 * from the undo).
+		 */
+		UndoLogRewind(to_urecptr, uur->uur_prevlen);
+
+		/* set the local prevlen of undorecord.c */
+		UndoRecordSetPrevUndoLen(uur->uur_prevlen);
+		UndoRecordRelease(uur);
 	}
 }
 

@@ -858,10 +858,11 @@ InsertPreparedUndo(void)
 		offset = UndoRecPtrGetOffset(urp);
 
 		/*
-		 * If we don't have prevlen locally then it may be the case of undo
-		 * insert during Recovery so fetch the value from the meta.
+		 * If we don't have prevlen locally then read the value from the meta.
+		 * If InRecovery then always read it from the meta because prevlen in
+		 * meta might have changed because of rewind wal replay.
 		 */
-		if (prev_undolen == 0 && InRecovery)
+		if (prev_undolen == 0 || InRecovery)
 			prev_undolen = UndoLogGetPrevLen(UndoRecPtrGetLogNo(urp));
 
 		/* store the previous undo record length in the header */
@@ -1194,4 +1195,13 @@ UndoRecordRelease(UnpackedUndoRecord *urec)
 	}
 
 	pfree (urec);
+}
+
+/*
+ * Externally set the value of prev_undolen.
+ */
+void
+UndoRecordSetPrevUndoLen(uint16 len)
+{
+	prev_undolen = len;
 }

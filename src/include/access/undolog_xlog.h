@@ -22,6 +22,7 @@
 #define XLOG_UNDOLOG_EXTEND		0x10
 #define XLOG_UNDOLOG_ATTACH		0x20
 #define XLOG_UNDOLOG_DISCARD	0x30
+#define XLOG_UNDOLOG_REWIND		0x40
 
 /* Create a new undo log. */
 typedef struct xl_undolog_create
@@ -67,6 +68,14 @@ typedef struct xl_undolog_discard
 	UndoLogOffset discard;
 	UndoLogOffset end;
 } xl_undolog_discard;
+
+/* Rewind insert location of the undo log. */
+typedef struct xl_undolog_rewind
+{
+	UndoLogNumber logno;
+	UndoLogOffset insert;
+	uint16		  prevlen;
+} xl_undolog_rewind;
 
 extern void undolog_desc(StringInfo buf,XLogReaderState *record);
 extern const char *undolog_identify(uint8 info);
