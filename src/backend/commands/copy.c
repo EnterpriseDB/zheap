@@ -23,6 +23,7 @@
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/zheaputils.h"
 #include "catalog/dependency.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_type.h"
@@ -3041,9 +3042,15 @@ CopyFrom(CopyState cstate)
 						 */
 						tuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
 					}
+					else if (RelationStorageIsZHeap(resultRelInfo->ri_RelationDesc))
+					{
+						zheap_insert(resultRelInfo->ri_RelationDesc, ztuple, mycid,
+									hi_options);
+						tuple = zheap_to_heap(ztuple, resultRelInfo->ri_RelationDesc->rd_att);
+					}
 					else
-						heap_insert(resultRelInfo->ri_RelationDesc, tuple,
-									mycid, hi_options, bistate);
+						heap_insert(resultRelInfo->ri_RelationDesc, tuple, mycid,
+									hi_options, bistate);
 
 					/* And create index entries for it */
 					if (resultRelInfo->ri_NumIndices > 0)
@@ -3058,6 +3065,8 @@ CopyFrom(CopyState cstate)
 					ExecARInsertTriggers(estate, resultRelInfo, tuple,
 										 recheckIndexes, cstate->transition_capture);
 
+					if (RelationStorageIsZHeap(resultRelInfo->ri_RelationDesc))
+						heap_freetuple(tuple);
 					list_free(recheckIndexes);
 				}
 			}
