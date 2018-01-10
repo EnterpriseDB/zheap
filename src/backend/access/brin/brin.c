@@ -1232,9 +1232,14 @@ summarize_range(IndexInfo *indexInfo, BrinBuildState *state, Relation heapRel,
 	 * by transactions that are still in progress, among other corner cases.
 	 */
 	state->bs_currRangeStart = heapBlk;
-	IndexBuildHeapRangeScan(heapRel, state->bs_irel, indexInfo, false, true,
-							heapBlk, scanNumBlks,
-							brinbuildCallback, (void *) state, NULL);
+	if (RelationStorageIsZHeap(heapRel))
+		IndexBuildZHeapRangeScan(heapRel, state->bs_irel, indexInfo, false, true,
+								heapBlk, scanNumBlks,
+								brinbuildCallback, (void *) state, NULL);
+	else
+		IndexBuildHeapRangeScan(heapRel, state->bs_irel, indexInfo, false, true,
+								heapBlk, scanNumBlks,
+								brinbuildCallback, (void *) state, NULL);
 
 	/*
 	 * Now we update the values obtained by the scan with the placeholder
