@@ -110,6 +110,11 @@
  *
  * TTS_SLOW flag in tts_flags and tts_off are saved state for
  * slot_deform_tuple, and should not be touched by any other code.
+ *
+ * For page mode scan of zheap table, locally stored per page tuples are
+ * freed once we move to new page or at end of scan. The tts_shouldFreeZtup
+ * will be set false for such tuples. The tts_shouldFreeZtup is set true
+ * only for single tuple scan mode.
  *----------
  */
 
@@ -121,16 +126,20 @@
 #define			TTS_FLAG_SHOULDFREE		(1 << 2)
 #define TTS_SHOULDFREE(slot) (((slot)->tts_flags & TTS_FLAG_SHOULDFREE) != 0)
 
+/* should pfree tts_ztuple? */
+#define			TTS_FLAG_SHOULDZFREE	(1 << 3)
+#define TTS_SHOULDZFREE(slot) (((slot)->tts_flags & TTS_FLAG_SHOULDZFREE) != 0)
+
 /* should pfree tts_mintuple? */
-#define			TTS_FLAG_SHOULDFREEMIN	(1 << 3)
+#define			TTS_FLAG_SHOULDFREEMIN	(1 << 4)
 #define TTS_SHOULDFREEMIN(slot) (((slot)->tts_flags & TTS_FLAG_SHOULDFREEMIN) != 0)
 
 /* saved state for slot_deform_tuple */
-#define			TTS_FLAG_SLOW		(1 << 4)
+#define			TTS_FLAG_SLOW		(1 << 5)
 #define TTS_SLOW(slot) (((slot)->tts_flags & TTS_FLAG_SLOW) != 0)
 
 /* fixed tuple descriptor */
-#define			TTS_FLAG_FIXED		(1 << 5)
+#define			TTS_FLAG_FIXED		(1 << 6)
 #define TTS_FIXED(slot) (((slot)->tts_flags & TTS_FLAG_FIXED) != 0)
 
 typedef struct TupleTableSlot
@@ -142,16 +151,16 @@ typedef struct TupleTableSlot
 	AttrNumber	tts_nvalid;		/* # of valid values in tts_values */
 #define FIELDNO_TUPLETABLESLOT_TUPLE 3
 	HeapTuple	tts_tuple;		/* physical tuple, or NULL if virtual */
-	ZHeapTuple      tts_ztuple;
+	ZHeapTuple	tts_ztuple;
 #define FIELDNO_TUPLETABLESLOT_TUPLEDESCRIPTOR 5
 	TupleDesc	tts_tupleDescriptor;	/* slot's tuple descriptor */
 	MemoryContext tts_mcxt;		/* slot itself is in this context */
 	Buffer		tts_buffer;		/* tuple's buffer, or InvalidBuffer */
-#define FIELDNO_TUPLETABLESLOT_OFF 7
+#define FIELDNO_TUPLETABLESLOT_OFF 8
 	uint32		tts_off;		/* saved state for slot_deform_tuple */
-#define FIELDNO_TUPLETABLESLOT_VALUES 8
+#define FIELDNO_TUPLETABLESLOT_VALUES 9
 	Datum	   *tts_values;		/* current per-attribute values */
-#define FIELDNO_TUPLETABLESLOT_ISNULL 9
+#define FIELDNO_TUPLETABLESLOT_ISNULL 10
 	bool	   *tts_isnull;		/* current per-attribute isnull flags */
 	MinimalTuple tts_mintuple;	/* minimal tuple, or NULL if none */
 	HeapTupleData tts_minhdr;	/* workspace for minimal-tuple-only case */

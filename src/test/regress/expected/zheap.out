@@ -316,3 +316,40 @@ SELECT c1 from update_test_zheap;
 (7 rows)
 
 DROP TABLE update_test_zheap;
+--
+-- 8. verify basic cursor fetch.
+--
+CREATE TABLE cursor_zheap
+(
+	a int
+) WITH (storage_engine = 'zheap');
+INSERT INTO cursor_zheap SELECT * FROM generate_series(1, 5);
+SELECT * FROM cursor_zheap;
+ a 
+---
+ 1
+ 2
+ 3
+ 4
+ 5
+(5 rows)
+
+BEGIN;
+	DECLARE cur1 SCROLL CURSOR FOR SELECT * FROM cursor_zheap;
+	FETCH 2 in cur1;
+ a 
+---
+ 1
+ 2
+(2 rows)
+
+	FETCH BACKWARD 2 in cur1;
+ a 
+---
+ 1
+(1 row)
+
+END;
+CREATE MATERIALIZED VIEW mvtest_mv AS SELECT * FROM cursor_zheap;
+DROP MATERIALIZED VIEW mvtest_mv;
+DROP TABLE cursor_zheap;

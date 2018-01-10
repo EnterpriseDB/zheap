@@ -193,3 +193,26 @@ UPDATE update_test_zheap SET c3 = 'bbbbb' WHERE c1 = 7;
 SELECT c1 from update_test_zheap;
 
 DROP TABLE update_test_zheap;
+
+--
+-- 8. verify basic cursor fetch.
+--
+CREATE TABLE cursor_zheap
+(
+	a int
+) WITH (storage_engine = 'zheap');
+
+INSERT INTO cursor_zheap SELECT * FROM generate_series(1, 5);
+
+SELECT * FROM cursor_zheap;
+
+BEGIN;
+	DECLARE cur1 SCROLL CURSOR FOR SELECT * FROM cursor_zheap;
+	FETCH 2 in cur1;
+	FETCH BACKWARD 2 in cur1;
+END;
+
+CREATE MATERIALIZED VIEW mvtest_mv AS SELECT * FROM cursor_zheap;
+
+DROP MATERIALIZED VIEW mvtest_mv;
+DROP TABLE cursor_zheap;

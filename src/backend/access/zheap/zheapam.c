@@ -4407,6 +4407,7 @@ zheap_beginscan_internal(Relation relation, Snapshot snapshot,
 	scan->rs_allow_sync = allow_sync;
 	scan->rs_temp_snap = temp_snap;
 	scan->rs_parallel = parallel_scan;
+	scan->rs_ntuples = 0;
 
 	/*
 	 * we can use page-at-a-time mode if it's an MVCC-safe snapshot
@@ -4633,6 +4634,7 @@ zheapgettup_pagemode(HeapScanDesc scan,
 	int			lines;
 	int			lineindex;
 	int			linesleft;
+	int			i = 0;
 
 	/*
 	 * calculate next starting lineindex, given scan direction
@@ -4769,7 +4771,13 @@ zheapgettup_pagemode(HeapScanDesc scan,
 		/*
 		 * if we get here, it means we've exhausted the items on this page and
 		 * it's time to move to the next.
+		 * For now we shall free all of the zheap tuples stored in rs_visztuples.
+		 * Later a better memory management is required.
 		 */
+		for (i = 0; i < scan->rs_ntuples; i++)
+			zheap_freetuple(scan->rs_visztuples[i]);
+		scan->rs_ntuples = 0;
+
 		if (backward)
 		{
 			finished = (page == scan->rs_startblock) ||

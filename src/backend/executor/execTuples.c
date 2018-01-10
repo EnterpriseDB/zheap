@@ -462,17 +462,28 @@ ExecStoreZTuple(ZHeapTuple tuple,
 	/*
 	 * Free any old physical tuple belonging to the slot.
 	 */
-	if (slot->tts_shouldFree)
+	if (TTS_SHOULDFREE(slot))
+	{
+		heap_freetuple(slot->tts_tuple);
+		slot->tts_flags &= ~TTS_FLAG_SHOULDFREE;
+	}
+	if (TTS_SHOULDZFREE(slot))
+	{
 		zheap_freetuple(slot->tts_ztuple);
-	if (slot->tts_shouldFreeMin)
+		slot->tts_flags &= ~TTS_FLAG_SHOULDZFREE;
+	}
+	if (TTS_SHOULDFREEMIN(slot))
+	{
 		heap_free_minimal_tuple(slot->tts_mintuple);
+		slot->tts_flags &= ~TTS_FLAG_SHOULDFREEMIN;
+	}
 
 	/*
 	 * Store the new tuple into the specified slot.
 	 */
-	slot->tts_isempty = false;
-	slot->tts_shouldFree = shouldFree;
-	slot->tts_shouldFreeMin = false;
+	slot->tts_flags &= ~TTS_FLAG_EMPTY;
+	if (shouldFree)
+		slot->tts_flags |= TTS_FLAG_SHOULDZFREE;
 	slot->tts_ztuple = tuple;
 	slot->tts_tuple = NULL;
 	slot->tts_mintuple = NULL;
@@ -529,6 +540,12 @@ ExecStoreMinimalTuple(MinimalTuple mtup,
 		heap_freetuple(slot->tts_tuple);
 		slot->tts_flags &= ~TTS_FLAG_SHOULDFREE;
 	}
+	if (TTS_SHOULDZFREE(slot))
+	{
+		zheap_freetuple(slot->tts_ztuple);
+		slot->tts_ztuple = NULL;
+		slot->tts_flags &= ~TTS_FLAG_SHOULDZFREE;
+	}
 	if (TTS_SHOULDFREEMIN(slot))
 	{
 		heap_free_minimal_tuple(slot->tts_mintuple);
@@ -549,6 +566,7 @@ ExecStoreMinimalTuple(MinimalTuple mtup,
 	slot->tts_flags &= ~TTS_FLAG_EMPTY;
 	if (shouldFree)
 		slot->tts_flags |= TTS_FLAG_SHOULDFREEMIN;
+
 	slot->tts_tuple = &slot->tts_minhdr;
 	slot->tts_mintuple = mtup;
 
@@ -583,17 +601,20 @@ ExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 	 */
 	if (TTS_SHOULDFREE(slot))
 	{
-		if (slot->tts_ztuple != NULL)
-			zheap_freetuple(slot->tts_ztuple);
-		else
-			heap_freetuple(slot->tts_tuple);
+		heap_freetuple(slot->tts_tuple);
 		slot->tts_flags &= ~TTS_FLAG_SHOULDFREE;
+	}
+	if (TTS_SHOULDZFREE(slot))
+	{
+		zheap_freetuple(slot->tts_ztuple);
+		slot->tts_flags &= ~TTS_FLAG_SHOULDZFREE;
 	}
 	if (TTS_SHOULDFREEMIN(slot))
 	{
 		heap_free_minimal_tuple(slot->tts_mintuple);
 		slot->tts_flags &= ~TTS_FLAG_SHOULDFREEMIN;
-	}
+	}	
+	
 
 	slot->tts_ztuple = NULL;
 	slot->tts_tuple = NULL;
@@ -1008,13 +1029,13 @@ ExecMaterializeZSlot(TupleTableSlot *slot)
 	 * sanity checks
 	 */
 	Assert(slot != NULL);
-	Assert(!slot->tts_isempty);
+	Assert(!TTS_EMPTY(slot));
 
 	/*
-	 * If we have a regular physical tuple, and it's locally palloc'd, we have
-	 * nothing to do.
+	 * If we have a regular physical tuple, and it's locally palloc'd (which
+	 * is always true in case of zheap), we have  nothing to do.
 	 */
-	if (slot->tts_ztuple && slot->tts_shouldFree)
+	if (slot->tts_ztuple)
 		return slot->tts_ztuple;
 
 	/*
@@ -1026,7 +1047,7 @@ ExecMaterializeZSlot(TupleTableSlot *slot)
 	 */
 	oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
 	slot->tts_ztuple = ExecCopySlotZTuple(slot);
-	slot->tts_shouldFree = true;
+	slot->tts_flags |= TTS_FLAG_SHOULDZFREE;
 	MemoryContextSwitchTo(oldContext);
 
 	/*
@@ -1053,7 +1074,7 @@ ExecMaterializeZSlot(TupleTableSlot *slot)
 	 * storage, we must not pfree it now, since callers might have already
 	 * fetched datum pointers referencing it.)
 	 */
-	if (!slot->tts_shouldFreeMin)
+	if (!TTS_SHOULDFREEMIN(slot))
 		slot->tts_mintuple = NULL;
 
 	return slot->tts_ztuple;

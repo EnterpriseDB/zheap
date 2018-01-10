@@ -93,10 +93,12 @@ SeqNext(SeqScanState *node)
 	 * our scan tuple slot and return the slot.  Note: we pass 'false' for
 	 * heap tuples because tuples returned by heap_getnext() are pointers onto
 	 * disk pages and were not created with palloc() and so should not be
-	 * pfree()'d.  OTOH, we pass 'true' for zheap tuples as they were created
-	 * created with palloc.  Note also that ExecStoreTuple will increment the
-	 * refcount of the buffer; the refcount will not be dropped until the tuple
-	 * table slot is cleared.
+	 * pfree()'d.  OTOH, if scan is not in page mode we pass 'true' for zheap
+	 * tuples as they were created with palloc.  In page mode we need to
+	 * support scroll cursor's movement in both direction so we do not free the
+	 * locally stored tuples until we mode to next page.  Note also that
+	 * ExecStoreTuple will increment the refcount of the buffer; the refcount
+	 * will not be dropped until the tuple table slot is cleared.
 	 */
 	if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
 	{
@@ -105,7 +107,8 @@ SeqNext(SeqScanState *node)
 							slot,	/* slot to store in */
 							scandesc->rs_cbuf,		/* buffer associated with this
 													 * tuple */
-							true);	/* pfree this pointer */
+							!scandesc->rs_pageatatime);	/* pfree only if not read
+														 * in page mode */
 		else
 			ExecClearTuple(slot);
 	}
@@ -246,7 +249,22 @@ ExecEndSeqScan(SeqScanState *node)
 	 * close heap scan
 	 */
 	if (scanDesc != NULL)
+	{
+		/*
+		 * In zheap if scan is in page at a time mode we do not free the locally
+		 * stored rs_visztuples immediately after its access, I think it is time
+		 * to free them now.
+		 */
+		if (RelationStorageIsZHeap(node->ss.ss_currentRelation) && scanDesc->rs_pageatatime)
+		{
+			int i;
+			for (i = 0; i < scanDesc->rs_ntuples; i++)
+				zheap_freetuple(scanDesc->rs_visztuples[i]);
+			scanDesc->rs_ntuples = 0;
+		}
+
 		heap_endscan(scanDesc);
+	}
 }
 
 /* ----------------------------------------------------------------
