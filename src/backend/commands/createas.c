@@ -599,7 +599,8 @@ intorel_receive(TupleTableSlot *slot, DestReceiver *self)
 		zheap_insert(myState->rel,
 					ztuple,
 					myState->output_cid,
-					myState->hi_options);
+					myState->hi_options,
+					myState->bistate);
 	}
 	else
 	{

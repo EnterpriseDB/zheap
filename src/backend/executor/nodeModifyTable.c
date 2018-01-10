@@ -556,7 +556,7 @@ ExecInsert(ModifyTableState *mtstate,
 			if (RelationStorageIsZHeap(resultRelationDesc))
 				newId = zheap_insert(resultRelationDesc, ztuple,
 									 estate->es_output_cid,
-									 0);
+									 0, NULL);
 			else
 				newId = heap_insert(resultRelationDesc, tuple,
 									estate->es_output_cid,

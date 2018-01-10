@@ -45,7 +45,7 @@ typedef struct ZHeapPageOpaqueData
 typedef ZHeapPageOpaqueData *ZHeapPageOpaque;
 
 extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
-			 int options);
+			 int options, BulkInsertState bistate);
 extern HTSU_Result zheap_delete(Relation relation, ItemPointer tid,
 						CommandId cid, Snapshot crosscheck, Snapshot snapshot,
 						bool wait, HeapUpdateFailureData *hufd);

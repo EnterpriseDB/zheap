@@ -3045,7 +3045,7 @@ CopyFrom(CopyState cstate)
 					else if (RelationStorageIsZHeap(resultRelInfo->ri_RelationDesc))
 					{
 						zheap_insert(resultRelInfo->ri_RelationDesc, ztuple, mycid,
-									hi_options);
+									hi_options, bistate);
 						tuple = zheap_to_heap(ztuple, resultRelInfo->ri_RelationDesc->rd_att);
 					}
 					else

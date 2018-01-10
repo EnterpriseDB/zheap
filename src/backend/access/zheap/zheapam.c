@@ -577,7 +577,7 @@ xid_infomask_changed(uint16 new_infomask, uint16 old_infomask)
  */
 Oid
 zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
-			 int options)
+			 int options, BulkInsertState bistate)
 {
 	TransactionId xid = GetTopTransactionId();
 	uint32	epoch = GetEpochForXid(xid);
@@ -606,7 +606,7 @@ reacquire_buffer:
 	 * this will also pin the requisite visibility map page.
 	 */
 	buffer = RelationGetBufferForTuple(relation, zheaptup->t_len,
-									   InvalidBuffer, options, NULL,
+									   InvalidBuffer, options, bistate,
 									   &vmbuffer, NULL);
 	page = BufferGetPage(buffer);
 
