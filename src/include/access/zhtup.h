@@ -108,7 +108,7 @@ typedef ZHeapTupleData *ZHeapTuple;
 
 #define ZHeapTupleHeaderGetNatts(tup) \
 ( \
-	((tup)->t_infomask2 & HEAP_NATTS_MASK) \
+	((tup)->t_infomask2 & ZHEAP_NATTS_MASK) \
 )
 
 #define ZHeapTupleHeaderSetNatts(tup, natts) \
