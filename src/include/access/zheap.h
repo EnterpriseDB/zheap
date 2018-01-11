@@ -70,12 +70,19 @@ extern void zheap_page_prune_execute(Buffer buffer, OffsetNumber *deleted,
 								OffsetNumber *nowunused, int nunused);
 
 /* Zheap scan related API's */
+extern void zheapgetpage(HeapScanDesc scan, BlockNumber page);
+extern void zheap_rescan(HeapScanDesc scan, ScanKey key);
+extern void zheap_rescan_set_params(HeapScanDesc scan, ScanKey key,
+					   bool allow_strat, bool allow_sync, bool allow_pagemode);
 extern HeapScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,
 				int nkeys, ScanKey key);
 extern HeapScanDesc zheap_beginscan_strat(Relation relation, Snapshot snapshot,
 					int nkeys, ScanKey key,
 					bool allow_strat, bool allow_sync);
 extern HeapScanDesc zheap_beginscan_parallel(Relation, ParallelHeapScanDesc);
+extern HeapScanDesc zheap_beginscan_sampling(Relation relation, Snapshot snapshot,
+					int nkeys, ScanKey key,
+					bool allow_strat, bool allow_sync, bool allow_pagemode);
 extern ZHeapTuple zheap_getnext(HeapScanDesc scan, ScanDirection direction);
 extern ZHeapTuple zheap_search_buffer(ItemPointer tid, Relation relation,
 									  Buffer buffer, Snapshot snapshot,

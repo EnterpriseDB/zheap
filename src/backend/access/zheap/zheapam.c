@@ -4342,6 +4342,42 @@ zinitscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 		pgstat_count_heap_scan(scan->rs_rd);
 }
 
+/* ----------------
+ *		zheap_rescan		- similar to heap_rescan
+ * ----------------
+ */
+void
+zheap_rescan(HeapScanDesc scan,
+			ScanKey key)
+{
+	/*
+	 * unpin scan buffers
+	 */
+	if (BufferIsValid(scan->rs_cbuf))
+		ReleaseBuffer(scan->rs_cbuf);
+
+	/*
+	 * reinitialize scan descriptor
+	 */
+	zinitscan(scan, key, true);
+}
+
+/* ----------------
+ *		zheap_rescan_set_params	- similar to heap_rescan_set_params
+ * ----------------
+ */
+void
+zheap_rescan_set_params(HeapScanDesc scan, ScanKey key,
+					   bool allow_strat, bool allow_sync, bool allow_pagemode)
+{
+	/* adjust parameters */
+	scan->rs_allow_strat = allow_strat;
+	scan->rs_allow_sync = allow_sync;
+	scan->rs_pageatatime = allow_pagemode && IsMVCCSnapshot(scan->rs_snapshot);
+	/* ... and rescan */
+	zheap_rescan(scan, key);
+}
+
 /*
  * zheap_beginscan - same as heap_beginscan
  */
@@ -4364,6 +4400,19 @@ zheap_beginscan_strat(Relation relation, Snapshot snapshot,
 	return zheap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
 									allow_strat, allow_sync, true,
 									false, false, false);
+}
+
+/*
+ * zheap_beginscan_sampling - same as zheap_beginscan_sampling
+ */
+HeapScanDesc
+zheap_beginscan_sampling(Relation relation, Snapshot snapshot,
+						int nkeys, ScanKey key,
+						bool allow_strat, bool allow_sync, bool allow_pagemode)
+{
+	return zheap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
+								   allow_strat, allow_sync, allow_pagemode,
+								   false, true, false);
 }
 
 /*
@@ -4465,7 +4514,7 @@ zheap_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan)
  * zheapgetpage - Same as heapgetpage, but operate on zheap page and
  * in page-at-a-time mode, visible tuples are stored in rs_visztuples.
  */
-static void
+void
 zheapgetpage(HeapScanDesc scan, BlockNumber page)
 {
 	Buffer		buffer;

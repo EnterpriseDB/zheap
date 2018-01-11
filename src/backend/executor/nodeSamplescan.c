@@ -25,12 +25,38 @@
 #include "utils/builtins.h"
 #include "utils/rel.h"
 #include "utils/tqual.h"
+#include "utils/ztqual.h"
+
+#define _beginscan_sampling(relation, ...) \
+( \
+	(RelationStorageIsZHeap(relation)) ? \
+	zheap_beginscan_sampling(relation, __VA_ARGS__) \
+	: \
+	heap_beginscan_sampling(relation, __VA_ARGS__) \
+)
+
+#define _rescan_set_params(relation, ...) \
+( \
+	(RelationStorageIsZHeap(relation)) ? \
+	zheap_rescan_set_params(__VA_ARGS__) \
+	: \
+	heap_rescan_set_params(__VA_ARGS__) \
+)
+
+#define tablesample_getnext(node) \
+( \
+	(RelationStorageIsZHeap(node->ss.ss_currentRelation)) ? \
+	(void *)zheap_tablesample_getnext(node) \
+	: \
+	(void *)heap_tablesample_getnext(node) \
+)
 
 static TupleTableSlot *SampleNext(SampleScanState *node);
 static void tablesample_init(SampleScanState *scanstate);
-static HeapTuple tablesample_getnext(SampleScanState *scanstate);
+static HeapTuple heap_tablesample_getnext(SampleScanState *scanstate);
 static bool SampleTupleVisible(HeapTuple tuple, OffsetNumber tupoffset,
 				   HeapScanDesc scan);
+static ZHeapTuple zheap_tablesample_getnext(SampleScanState *scanstate);
 
 /* ----------------------------------------------------------------
  *						Scan Support
@@ -46,7 +72,7 @@ static bool SampleTupleVisible(HeapTuple tuple, OffsetNumber tupoffset,
 static TupleTableSlot *
 SampleNext(SampleScanState *node)
 {
-	HeapTuple	tuple;
+	void		*tuple = NULL;
 	TupleTableSlot *slot;
 
 	/*
@@ -63,9 +89,20 @@ SampleNext(SampleScanState *node)
 	slot = node->ss.ss_ScanTupleSlot;
 
 	if (tuple)
-		ExecStoreBufferHeapTuple(tuple, /* tuple to store */
-								 slot,	/* slot to store in */
-								 node->ss.ss_currentScanDesc->rs_cbuf); /* tuple's buffer */
+	{
+		if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
+		{
+			bool pagemode = node->ss.ss_currentScanDesc->rs_pageatatime;
+			ExecStoreZTuple((ZHeapTuple)tuple,	/* tuple to store */
+							slot,	/* slot to store in */
+							node->ss.ss_currentScanDesc->rs_cbuf,	/* tuple's buffer */
+							!pagemode);	/* don't free here for page at-a-time mode */
+		}
+		else
+			ExecStoreBufferHeapTuple(tuple, /* tuple to store */
+									 slot,	/* slot to store in */
+									 node->ss.ss_currentScanDesc->rs_cbuf); /* tuple's buffer */
+	}
 	else
 		ExecClearTuple(slot);
 
@@ -218,7 +255,22 @@ ExecEndSampleScan(SampleScanState *node)
 	 * close heap scan
 	 */
 	if (node->ss.ss_currentScanDesc)
+	{
+		/*
+		 * In zheap if scan is in page at a time mode we do not free the locally
+		 * stored rs_visztuples immediately after its access, I think it is time
+		 * to free them now.
+		 */
+		if (RelationStorageIsZHeap(node->ss.ss_currentRelation)
+						&& node->ss.ss_currentScanDesc->rs_pageatatime)
+		{
+			int i;
+			for (i = 0; i < node->ss.ss_currentScanDesc->rs_ntuples; i++)
+				zheap_freetuple(node->ss.ss_currentScanDesc->rs_visztuples[i]);
+			node->ss.ss_currentScanDesc->rs_ntuples = 0;
+		}
 		heap_endscan(node->ss.ss_currentScanDesc);
+	}
 }
 
 /* ----------------------------------------------------------------
@@ -318,7 +370,7 @@ tablesample_init(SampleScanState *scanstate)
 	if (scanstate->ss.ss_currentScanDesc == NULL)
 	{
 		scanstate->ss.ss_currentScanDesc =
-			heap_beginscan_sampling(scanstate->ss.ss_currentRelation,
+			_beginscan_sampling(scanstate->ss.ss_currentRelation,
 									scanstate->ss.ps.state->es_snapshot,
 									0, NULL,
 									scanstate->use_bulkread,
@@ -327,7 +379,8 @@ tablesample_init(SampleScanState *scanstate)
 	}
 	else
 	{
-		heap_rescan_set_params(scanstate->ss.ss_currentScanDesc, NULL,
+		_rescan_set_params(scanstate->ss.ss_currentRelation,
+							   scanstate->ss.ss_currentScanDesc, NULL,
 							   scanstate->use_bulkread,
 							   allow_sync,
 							   scanstate->use_pagemode);
@@ -346,7 +399,7 @@ tablesample_init(SampleScanState *scanstate)
  * perhaps be better to refactor to share more code.
  */
 static HeapTuple
-tablesample_getnext(SampleScanState *scanstate)
+heap_tablesample_getnext(SampleScanState *scanstate)
 {
 	TsmRoutine *tsm = scanstate->tsmroutine;
 	HeapScanDesc scan = scanstate->ss.ss_currentScanDesc;
@@ -561,4 +614,234 @@ SampleTupleVisible(HeapTuple tuple, OffsetNumber tupoffset, HeapScanDesc scan)
 											scan->rs_snapshot,
 											scan->rs_cbuf);
 	}
+}
+
+/*
+ * Get next tuple from TABLESAMPLE method.
+ *
+ * Similar to heap_tablesample_getnext.
+ */
+static ZHeapTuple
+zheap_tablesample_getnext(SampleScanState *scanstate)
+{
+	TsmRoutine *tsm = scanstate->tsmroutine;
+	HeapScanDesc scan = scanstate->ss.ss_currentScanDesc;
+	ZHeapTuple	tuple = scan->rs_cztup;
+	Snapshot	snapshot = scan->rs_snapshot;
+	BlockNumber blockno;
+	OffsetNumber maxoffset;
+	int			i;
+	Page		page;
+	bool		all_visible;
+	bool		pagemode = scan->rs_pageatatime;
+
+	if (!scan->rs_inited)
+	{
+		/*
+		 * return null immediately if relation is empty
+		 */
+		if (scan->rs_nblocks == 0)
+		{
+			Assert(!BufferIsValid(scan->rs_cbuf));
+			return NULL;
+		}
+		if (tsm->NextSampleBlock)
+		{
+			blockno = tsm->NextSampleBlock(scanstate);
+			if (!BlockNumberIsValid(blockno))
+			{
+				return NULL;
+			}
+		}
+		else
+			blockno = scan->rs_startblock;
+		Assert(blockno < scan->rs_nblocks);
+		zheapgetpage(scan, blockno);
+		scan->rs_inited = true;
+	}
+	else
+	{
+		/* continue from previously returned page/tuple */
+		blockno = scan->rs_cblock;	/* current page */
+	}
+
+	/*
+	 * When not using pagemode, we must lock the buffer during tuple
+	 * visibility checks.
+	 */
+	if (!pagemode)
+	{
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+		page = (Page) BufferGetPage(scan->rs_cbuf);
+		all_visible = PageIsAllVisible(page) && !snapshot->takenDuringRecovery;
+		maxoffset = PageGetMaxOffsetNumber(page);
+	}
+	else
+	{
+		all_visible = false;
+		maxoffset = scan->rs_ntuples;
+	}
+
+	for (;;)
+	{
+		OffsetNumber tupoffset;
+		bool		finished;
+
+		CHECK_FOR_INTERRUPTS();
+
+		/* Ask the tablesample method which tuples to check on this page. */
+		tupoffset = tsm->NextSampleTuple(scanstate,
+										 blockno,
+										 maxoffset);
+
+		if (OffsetNumberIsValid(tupoffset))
+		{
+			if (!pagemode)
+			{
+				ItemId		itemid;
+				bool		visible;
+				ZHeapTuple loctup;
+				Size		loctup_len;
+
+				/* Skip invalid tuple pointers. */
+				itemid = PageGetItemId(page, tupoffset);
+				if (!ItemIdIsNormal(itemid))
+					continue;
+
+				loctup_len = ItemIdGetLength(itemid);
+
+				loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
+				loctup->t_data = (ZHeapTupleHeader) ((char *) loctup +
+													 ZHEAPTUPLESIZE);
+
+				loctup->t_tableOid = RelationGetRelid(scan->rs_rd);
+				loctup->t_len = loctup_len;
+				ItemPointerSet(&(loctup->t_self), blockno, tupoffset);
+
+				/*
+				 * We always need to make a copy of zheap tuple as once we release
+				 * the buffer an in-place update can change the tuple.
+				 */
+				memcpy(loctup->t_data,
+					   ((ZHeapTupleHeader) PageGetItem((Page) page, itemid)),
+					   loctup->t_len);
+
+				if (all_visible)
+				{
+					tuple = loctup;
+					visible = true;
+				}
+				else
+				{
+					tuple = ZHeapTupleSatisfiesVisibility(loctup,
+															scan->rs_snapshot,
+															scan->rs_cbuf,
+															NULL);
+
+					visible = (tuple != NULL);
+				}
+
+				/* Fixme - Serialization failures needs to be detected for zheap. */
+				/*
+				CheckForSerializableConflictOut(visible, scan->rs_rd, tuple,
+												scan->rs_cbuf, snapshot); */
+
+				if (visible)
+				{
+					/* Found visible tuple, return it. */
+					LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+					return tuple;
+				}
+				else
+				{
+					/* Try next tuple from same page. */
+					continue;
+				}
+			}
+			else
+			{
+				return scan->rs_visztuples[tupoffset - 1];
+			}
+		}
+
+		/*
+		 * if we get here, it means we've exhausted the items on this page and
+		 * it's time to move to the next.
+		 * For now we shall free all of the zheap tuples stored in rs_visztuples.
+		 * Later a better memory management is required.
+		 */
+		if (pagemode)
+		{
+			for (i = 0; i < scan->rs_ntuples; i++)
+				zheap_freetuple(scan->rs_visztuples[i]);
+			scan->rs_ntuples = 0;
+		}
+
+		if (!pagemode)
+			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+
+		if (tsm->NextSampleBlock)
+		{
+			blockno = tsm->NextSampleBlock(scanstate);
+			Assert(!scan->rs_syncscan);
+			finished = !BlockNumberIsValid(blockno);
+		}
+		else
+		{
+			/* Without NextSampleBlock, just do a plain forward seqscan. */
+			blockno++;
+			if (blockno >= scan->rs_nblocks)
+				blockno = 0;
+
+			/*
+			 * Report our new scan position for synchronization purposes.
+			 *
+			 * Note: we do this before checking for end of scan so that the
+			 * final state of the position hint is back at the start of the
+			 * rel.  That's not strictly necessary, but otherwise when you run
+			 * the same query multiple times the starting position would shift
+			 * a little bit backwards on every invocation, which is confusing.
+			 * We don't guarantee any specific ordering in general, though.
+			 */
+			if (scan->rs_syncscan)
+				ss_report_location(scan->rs_rd, blockno);
+
+			finished = (blockno == scan->rs_startblock);
+		}
+
+		/*
+		 * Reached end of scan?
+		 */
+		if (finished)
+		{
+			if (BufferIsValid(scan->rs_cbuf))
+				ReleaseBuffer(scan->rs_cbuf);
+			scan->rs_cbuf = InvalidBuffer;
+			scan->rs_cblock = InvalidBlockNumber;
+			scan->rs_inited = false;
+			return NULL;
+		}
+
+		Assert(blockno < scan->rs_nblocks);
+		zheapgetpage(scan, blockno);
+
+		/* Re-establish state for new page */
+		if (!pagemode)
+		{
+			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+			page = (Page) BufferGetPage(scan->rs_cbuf);
+			all_visible = PageIsAllVisible(page) && !snapshot->takenDuringRecovery;
+			maxoffset = PageGetMaxOffsetNumber(page);
+		}
+		else
+		{
+			all_visible = false;
+			maxoffset = scan->rs_ntuples;
+		}
+	}
+
+	/* Count successfully-fetched tuples as heap fetches */
+	pgstat_count_heap_getnext(scan->rs_rd);
+
+	return scan->rs_cztup;
 }
