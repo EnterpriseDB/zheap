@@ -3270,7 +3270,7 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 		MemoryContextReset(econtext->ecxt_per_tuple_memory);
 
 		/* Set up for predicate or expression evaluation */
-		ExecStoreZTuple(zheapTuple, slot, InvalidBuffer, true);
+		ExecStoreZTuple(zheapTuple, slot, InvalidBuffer, !scan->rs_pageatatime);
 
 		/*
 		 * In a partial index, discard tuples that don't satisfy the
