@@ -4116,6 +4116,7 @@ PostgresMain(int argc, char *argv[],
 		 * not preventing advance of global xmin while we wait for the client.
 		 */
 		InvalidateCatalogSnapshotConditionally();
+		XactPerformUndoActionsIfPending();
 
 		/*
 		 * (1) If we've reached idle state, tell the frontend we're ready for

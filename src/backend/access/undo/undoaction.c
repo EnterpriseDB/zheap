@@ -268,10 +268,21 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 	TransactionId	xid = GetTopTransactionId();
 
 	/*
+	 * FIXME: If reloid is not valid then we have nothing to do. In future,
+	 * we might want to do it differently for transactions that perform both
+	 * DDL and DML operations.
+	 */
+	if (!OidIsValid(reloid))
+	{
+		elog(LOG, "ignoring undo for invalid reloid");
+		return;
+	}
+
+	/*
 	 * If the action is executed by backend as a result of rollback, we must
 	 * already have an appropriate lock on relation.
 	 */
-	rel = heap_open(reloid, NoLock);
+	rel = heap_open(reloid, RowExclusiveLock);
 
 	buffer = ReadBuffer(rel, blkno);
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
