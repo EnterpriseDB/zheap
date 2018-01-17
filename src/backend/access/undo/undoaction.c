@@ -26,7 +26,8 @@
 #include "miscadmin.h"
 
 static void execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr,
-					Oid reloid, BlockNumber blkno, bool blk_chain_complete);
+					Oid reloid, BlockNumber blkno, bool blk_chain_complete,
+					bool nopartial);
 static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off);
 
 /*
@@ -34,12 +35,11 @@ static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off)
  *
  * from_urecptr - undo record pointer from where to start applying undo action.
  * to_urecptr	- undo record pointer upto which point apply undo action.
- * nopartial	- true if undo chain is complete.
- * rewind	- whether to rewind the next undo insert location or not
+ * nopartial	- true if rollback is for complete transaction.
  */
 void
 execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
-					 bool nopartial, bool rewind)
+					 bool nopartial)
 {
 	UnpackedUndoRecord *uur = NULL;
 	UndoRecPtr	urec_ptr;
@@ -118,12 +118,12 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		if (!more_undo && nopartial)
 		{
 			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-									  prev_block, true);
+									  prev_block, true, nopartial);
 		}
 		else
 		{
 			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-									  prev_block, false);
+									  prev_block, false, nopartial);
 		}
 
 		/* release the undo records for which action has been replayed */
@@ -164,7 +164,8 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	if (list_length(luur))
 	{
 		execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-								  prev_block, nopartial ? true : false);
+								prev_block, nopartial ? true : false,
+								nopartial);
 
 		/* release the undo records for which action has been replayed */
 		while (luur)
@@ -175,7 +176,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		}
 	}
 
-	if (rewind)
+	if (!nopartial)
 	{
 		 /* Read the prevlen from the first record of this transaction. */
 		uur = UndoFetchRecord(to_urecptr, InvalidBlockNumber,
@@ -248,10 +249,15 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off)
  *	blkno	- block number on which undo actions needs to be applied.
  *	blk_chain_complete - indicates whether the undo chain for block is
  *						 complete.
+ *	nopartial - true if rollback is for complete transaction. If we are not
+ *				rolling back the complete transaction then we need to apply the
+ *				undo action for UNDO_INVALID_XACT_SLOT also because in such
+ *				case we will rewind the insert undo location.
  */
 static void
 execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
-						  BlockNumber blkno, bool blk_chain_complete)
+						  BlockNumber blkno, bool blk_chain_complete,
+						  bool nopartial)
 {
 	ListCell   *l_iter;
 	Relation	rel;
@@ -346,6 +352,27 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 				}
 				break;
 			case UNDO_INVALID_XACT_SLOT:
+				/*
+				 * If we are rewinding the undo log insert location then apply
+				 * the undo action for invalid xact slot.  Refer detailed
+				 * comments in PageFreezeTransSlots.
+				 */
+				if (!nopartial)
+				{
+					ItemId		lp;
+					ZHeapTupleHeader zhtup;
+
+					lp = PageGetItemId(page, uur->uur_offset);
+
+					/* Reset the invalid xact flag from the tuple/itemid. */
+					if (ItemIdIsDeleted(lp))
+						ItemIdResetInvalidXact(lp);
+					else
+					{
+						zhtup = (ZHeapTupleHeader) PageGetItem(page, lp);
+						zhtup->t_infomask &= ~ZHEAP_INVALID_XACT_SLOT;
+					}
+				}
 				break;
 			default:
 				elog(ERROR, "unsupported undo record type");

@@ -206,6 +206,9 @@ typedef uint16 ItemLength;
 #define ItemIdSetInvalidXact(itemId) \
 	((itemId)->lp_off = ((itemId)->lp_off & ~VISIBILTY_MASK) | ITEMID_XACT_INVALID)
 
+#define ItemIdResetInvalidXact(itemId) \
+	((itemId)->lp_off = ((itemId)->lp_off & ~VISIBILTY_MASK) & ~(ITEMID_XACT_INVALID))
+
 /*
  * ItemIdGetTransactionSlot
  *	In a REDIRECT pointer, lp_off contains the transaction slot information in

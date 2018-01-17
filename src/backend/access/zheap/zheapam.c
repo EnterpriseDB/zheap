@@ -3426,6 +3426,8 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 	int		nFrozenSlots = 0;
 	int		completed_xact_slots[MAX_PAGE_TRANS_INFO_SLOTS];
 	int		nCompletedXactSlots = 0;
+	TransactionId	topxid = GetTopTransactionId();
+	bool	isSubxactId = false;
 
 	oldestXidWithEpochHavingUndo = pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
 
@@ -3513,6 +3515,9 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 		return true;
 	}
 
+	if (GetCurrentTransactionId() != topxid)
+		isSubxactId = true;
+
 	/*
 	 * Try to reuse transaction slots of committed transactions. This is just
 	 * like above but we write undo records for each of the slot that can be
@@ -3526,6 +3531,16 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 		{
 			completed_xact_slots[nCompletedXactSlots++] = slot_no;
 			slot_latest_urp[slot_no] = opaque->transinfo[slot_no].urec_ptr;
+
+			/*
+			 * If we are under a subtransaction then just reuse one slot,
+			 * because during the rollback of the subtransaction we will rewind
+			 * the undo insert location and the undo written for invalidating
+			 * the slot will be overwritten. So, it is better to invalidate
+			 * only one slot which our transaction is going to use.
+			 */
+			if (isSubxactId)
+				break;
 		}
 	}
 
@@ -3622,7 +3637,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 			undorecord[i].uur_info = 0;
 			undorecord[i].uur_prevlen = 0;
 			undorecord[i].uur_relfilenode = relation->rd_node.relNode;
-			undorecord[i].uur_xid = GetTopTransactionId();
+			undorecord[i].uur_xid = topxid;
 			undorecord[i].uur_tsid = relation->rd_node.spcNode;
 			undorecord[i].uur_fork = MAIN_FORKNUM;
 			undorecord[i].uur_block = BufferGetBlockNumber(buf);
