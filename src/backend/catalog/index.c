@@ -76,6 +76,7 @@
 #include "utils/tuplesort.h"
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"
+#include "access/zheaputils.h"
 
 
 /* Potentially set by pg_upgrade_support functions */
@@ -3339,6 +3340,7 @@ IndexCheckExclusion(Relation heapRelation,
 {
 	HeapScanDesc scan;
 	HeapTuple	heapTuple;
+	ZHeapTuple	zTuple;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 	ExprState  *predicate;
@@ -3373,15 +3375,37 @@ IndexCheckExclusion(Relation heapRelation,
 	 * Scan all live tuples in the base relation.
 	 */
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = heap_beginscan_strat(heapRelation,	/* relation */
-								snapshot,	/* snapshot */
-								0,	/* number of keys */
-								NULL,	/* scan key */
-								true,	/* buffer access strategy OK */
-								true);	/* syncscan OK */
 
-	while ((heapTuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	if (RelationStorageIsZHeap(heapRelation))
+		scan = zheap_beginscan_strat(heapRelation,	/* relation */
+										snapshot,	/* snapshot */
+										0,	/* number of keys */
+										NULL,	/* scan key */
+										true,	/* buffer access strategy OK */
+										true);	/* syncscan OK */
+	else
+		scan = heap_beginscan_strat(heapRelation,	/* relation */
+										snapshot,	/* snapshot */
+										0,	/* number of keys */
+										NULL,	/* scan key */
+										true,	/* buffer access strategy OK */
+										true);	/* syncscan OK */
+	while(true)
 	{
+		if (RelationStorageIsZHeap(heapRelation))
+		{
+			zTuple = zheap_getnext(scan, ForwardScanDirection);
+			if (zTuple)
+				heapTuple = zheap_to_heap(zTuple, heapRelation->rd_att);
+			else
+				heapTuple = NULL;
+		}
+		else
+			heapTuple = heap_getnext(scan, ForwardScanDirection);
+
+		if (heapTuple == NULL)
+			break;
+
 		CHECK_FOR_INTERRUPTS();
 
 		MemoryContextReset(econtext->ecxt_per_tuple_memory);
