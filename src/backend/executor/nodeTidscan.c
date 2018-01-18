@@ -323,6 +323,15 @@ TidNext(TidScanState *node)
 	slot = node->ss.ss_ScanTupleSlot;
 
 	/*
+	 * FIXME: TidScan is not yet implemented for zheap.
+	 */
+	if (RelationStorageIsZHeap(heapRelation))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot do tidscan in zheap table \"%s\"",
+						RelationGetRelationName(heapRelation))));
+
+	/*
 	 * First time through, compute the list of TIDs to be visited
 	 */
 	if (node->tss_TidList == NULL)
