@@ -421,6 +421,7 @@ DefineQueryRewrite(const char *rulename,
 		{
 			HeapScanDesc scanDesc;
 			Snapshot	snapshot;
+			bool not_empty = false;
 
 			if (event_relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 				ereport(ERROR,
@@ -435,12 +436,23 @@ DefineQueryRewrite(const char *rulename,
 								RelationGetRelationName(event_relation))));
 
 			snapshot = RegisterSnapshot(GetLatestSnapshot());
-			scanDesc = heap_beginscan(event_relation, snapshot, 0, NULL);
-			if (heap_getnext(scanDesc, ForwardScanDirection) != NULL)
-				ereport(ERROR,
-						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-						 errmsg("could not convert table \"%s\" to a view because it is not empty",
-								RelationGetRelationName(event_relation))));
+			if (RelationStorageIsZHeap(event_relation))
+			{
+				scanDesc = zheap_beginscan(event_relation, snapshot, 0, NULL);
+				if (zheap_getnext(scanDesc, ForwardScanDirection) != NULL)
+					not_empty = true;
+			}
+			else
+			{
+				scanDesc = heap_beginscan(event_relation, snapshot, 0, NULL);
+				if (heap_getnext(scanDesc, ForwardScanDirection) != NULL)
+					not_empty = true;
+			}
+			if (not_empty)
+					ereport(ERROR,
+							(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+							errmsg("could not convert table \"%s\" to a view because it is not empty",
+									RelationGetRelationName(event_relation))));
 			heap_endscan(scanDesc);
 			UnregisterSnapshot(snapshot);
 
