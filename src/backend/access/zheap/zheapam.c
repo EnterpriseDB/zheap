@@ -3334,7 +3334,6 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 		if (!ItemIdIsUsed(itemid) || ItemIdIsDead(itemid))
 			continue;
 
-		tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
 		if (ItemIdIsDeleted(itemid))
 		{
 			if ((ItemIdGetVisibilityInfo(itemid) & ZHEAP_INVALID_XACT_SLOT))
