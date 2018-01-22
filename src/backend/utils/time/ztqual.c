@@ -771,7 +771,8 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 	int		trans_slot;
 	int		vis_info;
 
-	*all_dead = false;
+	if (all_dead)
+		*all_dead = false;
 
 	lp = PageGetItemId(BufferGetPage(buffer), off);
 	Assert(ItemIdIsDeleted(lp));
