@@ -631,7 +631,7 @@ zheap_tablesample_getnext(SampleScanState *scanstate)
 	BlockNumber blockno;
 	OffsetNumber maxoffset;
 	int			i;
-	Page		page;
+	Page		page = NULL;
 	bool		all_visible;
 	bool		pagemode = scan->rs_pageatatime;
 
