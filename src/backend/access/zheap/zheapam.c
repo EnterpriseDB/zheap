@@ -19,6 +19,18 @@
  *	  the POSTGRES zheap access method used for relations backed
  *	  by undo storage.
  *
+ *	  In zheap, we never generate subtransaction id and rather always use top
+ *	  transaction id.  The sub-transaction id is mainly required to detect the
+ *	  visibility of tuple when the sub-transaction state is different from
+ *	  main transaction state, say due to Rollback To SavePoint.  In zheap, we
+ *	  always perform undo actions to make sure that the tuple state reaches to
+ *	  the state where it is at the start of subtransaction in such a case.
+ *	  This will also help in avoiding the transaction slots to grow inside a
+ *	  page and will have lesser clog entries.  Another advantage is that it
+ *	  will help us retaining the undo records for one transaction together
+ *	  in undo log instead of those being interleaved which will avoid having
+ *	  more undo records that have UREC_INFO_TRANSACTION.
+ *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
