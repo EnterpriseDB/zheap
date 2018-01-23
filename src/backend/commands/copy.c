@@ -2729,6 +2729,7 @@ CopyFrom(CopyState cstate)
 
 		/* Place tuple in tuple slot --- but slot shouldn't free it */
 		slot = myslot;
+
 		if (RelationStorageIsZHeap(cstate->rel))
 			ExecStoreZTuple(ztuple, slot, InvalidBuffer, false);
 		else
@@ -2931,7 +2932,10 @@ CopyFrom(CopyState cstate)
 				MemoryContextSwitchTo(oldcontext);
 			}
 
-			tuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
+			if (RelationStorageIsZHeap(cstate->rel))
+				ztuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
+			else
+				tuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
 		}
 
 		skip_tuple = false;

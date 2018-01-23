@@ -1827,6 +1827,7 @@ ExecPrepareTupleRouting(ModifyTableState *mtstate,
 	ResultRelInfo *partrel;
 	HeapTuple	tuple;
 	TupleConversionMap *map;
+	ZHeapTuple	ztuple;
 
 	/*
 	 * Determine the target partition.  If ExecFindPartition does not find a
@@ -1875,8 +1876,11 @@ ExecPrepareTupleRouting(ModifyTableState *mtstate,
 	 */
 	estate->es_result_relation_info = partrel;
 
-	/* Get the heap tuple out of the given slot. */
-	tuple = ExecMaterializeSlot(slot);
+	/* Get the tuple out of the given slot. */
+	if (RelationStorageIsZHeap(targetRelInfo->ri_RelationDesc))
+		ztuple = ExecMaterializeZSlot(slot);
+	else
+		tuple = ExecMaterializeSlot(slot);
 
 	/*
 	 * If we're capturing transition tuples, we might need to convert from the

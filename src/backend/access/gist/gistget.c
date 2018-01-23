@@ -561,7 +561,10 @@ getNextNearest(IndexScanDesc scan)
 		if (GISTSearchItemIsHeap(*item))
 		{
 			/* found a heap item at currently minimal distance */
-			scan->xs_ctup.t_self = item->data.heap.heapPtr;
+			if (RelationStorageIsZHeap(scan->heapRelation))
+				scan->cur_tid =  item->data.heap.heapPtr;
+			else
+				scan->xs_ctup.t_self = item->data.heap.heapPtr;
 			scan->xs_recheck = item->data.heap.recheck;
 
 			index_store_float8_orderby_distances(scan, so->orderByTypes,
