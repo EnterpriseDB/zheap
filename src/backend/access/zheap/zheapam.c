@@ -644,26 +644,11 @@ reacquire_buffer:
 	/* transaction slot must be reserved before adding tuple to page */
 	Assert(trans_slot_id != InvalidXactSlotId);
 
-	ZHeapTupleHeaderSetXactSlot(zheaptup->t_data, trans_slot_id);
-
 	/*
 	 * See heap_insert to know why checking conflicts is important
 	 * before actually inserting the tuple.
 	 */
 	CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
-
-	RelationPutZHeapTuple(relation, buffer, zheaptup);
-
-	if (PageIsAllVisible(BufferGetPage(buffer)))
-	{
-		all_visible_cleared = true;
-		PageClearAllVisible(BufferGetPage(buffer));
-		visibilitymap_clear(relation,
-							ItemPointerGetBlockNumber(&(zheaptup->t_self)),
-							vmbuffer, VISIBILITYMAP_VALID_BITS);
-	}
-
-	MarkBufferDirty(buffer);
 
 	prev_urecptr = PageGetUNDO(page, trans_slot_id);
 
@@ -678,8 +663,7 @@ reacquire_buffer:
 	undorecord.uur_tsid = relation->rd_node.spcNode;
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
-	undorecord.uur_block = ItemPointerGetBlockNumber(&(zheaptup->t_self));
-	undorecord.uur_offset = ItemPointerGetOffsetNumber(&(zheaptup->t_self));
+	undorecord.uur_block = BufferGetBlockNumber(buffer);
 	undorecord.uur_payload.len = 0;
 	undorecord.uur_tuple.len = 0;
 
@@ -688,6 +672,23 @@ reacquire_buffer:
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
 
+	ZHeapTupleHeaderSetXactSlot(zheaptup->t_data, trans_slot_id);
+
+	RelationPutZHeapTuple(relation, buffer, zheaptup);
+
+	if (PageIsAllVisible(BufferGetPage(buffer)))
+	{
+		all_visible_cleared = true;
+		PageClearAllVisible(BufferGetPage(buffer));
+		visibilitymap_clear(relation,
+							ItemPointerGetBlockNumber(&(zheaptup->t_self)),
+							vmbuffer, VISIBILITYMAP_VALID_BITS);
+	}
+
+	MarkBufferDirty(buffer);
+
+	Assert(undorecord.uur_block == ItemPointerGetBlockNumber(&(zheaptup->t_self)));
+	undorecord.uur_offset = ItemPointerGetOffsetNumber(&(zheaptup->t_self));
 	InsertPreparedUndo();
 	PageSetUNDO(undorecord, page, trans_slot_id, epoch, xid, urecptr);
 
