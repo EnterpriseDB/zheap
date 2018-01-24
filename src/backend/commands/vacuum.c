@@ -1679,10 +1679,12 @@ vacuum_rel(Oid relid, RangeVar *relation, int options, VacuumParams *params)
 		relation_close(onerel, lmode);
 		PopActiveSnapshot();
 		CommitTransactionCommand();
-		ereport(WARNING,
+		ereport(LOG,
 				(errmsg("skipping \"%s\" --- cannot vacuum zheap tables",
 						RelationGetRelationName(onerel))));
-		return false;
+
+		/* But, return true so that ANALYZE can go ahead */
+		return true;
 	}
 	/*
 	 * Get a session-level lock too. This will protect our access to the
