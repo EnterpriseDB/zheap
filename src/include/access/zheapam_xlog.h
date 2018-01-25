@@ -226,7 +226,7 @@ typedef struct xl_zheap_multi_insert
 	uint16		ntuples;
 } xl_zheap_multi_insert;
 
-#define SizeOfZHeapMultiInsert	(offsetof(xl_zheap_multi_insert, flags) + sizeof(uint16))
+#define SizeOfZHeapMultiInsert	(offsetof(xl_zheap_multi_insert, ntuples) + sizeof(uint16))
 
 typedef struct xl_multi_insert_ztuple
 {
