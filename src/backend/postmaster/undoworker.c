@@ -89,7 +89,13 @@ UndoWorkerMain(Datum main_arg)
 	SetConfigOption("application_name", MyBgworkerEntry->bgw_name,
 					PGC_USERSET, PGC_S_SESSION);
 
-	BackgroundWorkerInitializeConnection(NULL, NULL);
+	/*
+	 * FIXME: This is to ensure that we can have a database connection for
+	 * undo worker, which is required while performing undo actions. In future,
+	 * this should either be done without a database connection or there should
+	 * be a means to specify which database to connect.
+	 */
+	BackgroundWorkerInitializeConnection("postgres", NULL, 0);
 
 	/* Enter main loop */
 	while (!got_SIGTERM)

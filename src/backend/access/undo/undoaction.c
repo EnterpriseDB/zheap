@@ -25,8 +25,8 @@
 #include "utils/relfilenodemap.h"
 #include "miscadmin.h"
 
-static void execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr,
-					Oid reloid, BlockNumber blkno, bool blk_chain_complete,
+static void execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
+					 TransactionId xid, BlockNumber blkno, bool blk_chain_complete,
 					bool nopartial);
 static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off);
 
@@ -50,6 +50,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	BlockNumber	prev_block = InvalidBlockNumber;
 	List	   *luur = NIL;
 	bool		more_undo;
+	TransactionId xid;
 
 	Assert(from_urecptr != InvalidUndoRecPtr);
 	/*
@@ -78,6 +79,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		Assert(uur != NULL);
 
 		reloid = RelidByRelfilenode(uur->uur_tsid, uur->uur_relfilenode);
+		xid = uur->uur_xid;
 
 		/* Collect the undo records that belong to the same page. */
 		if (!OidIsValid(prev_reloid) ||
@@ -118,12 +120,12 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		if (!more_undo && nopartial)
 		{
 			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-									  prev_block, true, nopartial);
+									  xid, prev_block, true, nopartial);
 		}
 		else
 		{
 			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-									  prev_block, false, nopartial);
+									  xid, prev_block, false, nopartial);
 		}
 
 		/* release the undo records for which action has been replayed */
@@ -164,7 +166,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	if (list_length(luur))
 	{
 		execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-								prev_block, nopartial ? true : false,
+								xid, prev_block, nopartial ? true : false,
 								nopartial);
 
 		/* release the undo records for which action has been replayed */
@@ -235,7 +237,7 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off)
 }
 
 /*
- * execute_undo_actions - Execute the undo actions for a page
+ * execute_undo_actions_page - Execute the undo actions for a page
  *
  *	After applying all the undo actions for a page, we clear the transaction
  *	slot on a page if the undo chain for block is complete, otherwise rewind
@@ -256,16 +258,15 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off)
  */
 static void
 execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
-						  BlockNumber blkno, bool blk_chain_complete,
-						  bool nopartial)
+						  TransactionId xid, BlockNumber blkno,
+						  bool blk_chain_complete, bool nopartial)
 {
 	ListCell   *l_iter;
 	Relation	rel;
 	Buffer		buffer;
 	Page		page;
 	ZHeapPageOpaque	opaque;
-	int			slot_no;
-	TransactionId	xid = GetTopTransactionId();
+	int			slot_no = 0;
 
 	/*
 	 * FIXME: If reloid is not valid then we have nothing to do. In future,
@@ -288,6 +289,23 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	page = BufferGetPage(buffer);
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+	/* Identify the slot number for this transaction */
+	while (slot_no < MAX_PAGE_TRANS_INFO_SLOTS &&
+		   !(TransactionIdEquals(xid, opaque->transinfo[slot_no].xid)))
+		slot_no++;
+
+	/*
+	 * If undo action has been already applied for this page then skip
+	 * the process altogether.
+	 */
+	if (opaque->transinfo[slot_no].urec_ptr <= urec_ptr ||
+		slot_no == MAX_PAGE_TRANS_INFO_SLOTS)
+	{
+		UnlockReleaseBuffer(buffer);
+		heap_close(rel, NoLock);
+		return;
+	}
 
 	START_CRIT_SECTION();
 
@@ -390,23 +408,14 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 		}
 	}
 
-	/* update the transaction slots */
-	for (slot_no = 0; slot_no < MAX_PAGE_TRANS_INFO_SLOTS; slot_no++)
+	/* update the transaction slot */
+	if (blk_chain_complete)
 	{
-		if (TransactionIdEquals(xid, opaque->transinfo[slot_no].xid))
-		{
-			if (blk_chain_complete)
-			{
-				opaque->transinfo[slot_no].xid = InvalidTransactionId;
-				opaque->transinfo[slot_no].urec_ptr = InvalidUndoRecPtr;
-			}
-			else
-			{
-				opaque->transinfo[slot_no].urec_ptr = urec_ptr;
-			}
-			break;
-		}
+		opaque->transinfo[slot_no].xid = InvalidTransactionId;
+		opaque->transinfo[slot_no].urec_ptr = InvalidUndoRecPtr;
 	}
+	else
+		opaque->transinfo[slot_no].urec_ptr = urec_ptr;
 
 	MarkBufferDirty(buffer);
 

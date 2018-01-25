@@ -23,6 +23,7 @@
 #include "storage/bufmgr.h"
 #include "storage/shmem.h"
 #include "storage/proc.h"
+#include "postmaster/undoloop.h"
 
 DiscardXact	*UndoDiscardInfo = NULL;
 
@@ -76,13 +77,18 @@ UndoDiscardShmemInit(void)
 static void
 UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 {
-	UndoRecPtr	undo_recptr = discard->undo_recptr;
+	UndoRecPtr	undo_recptr, next_urecptr, from_urecptr, next_insert;
 	UnpackedUndoRecord	*uur;
 	bool	need_discard = false;
+	uint16 uur_prevlen;
+	UndoLogNumber logno = UndoRecPtrGetLogNo(discard->undo_recptr);
+	TransactionId	undoxid;
+	uint32	epoch;
+	undo_recptr = discard->undo_recptr;
 
 	do
 	{
-		bool isAborted;
+		bool isCommitted;
 
 		/* Fetch the undo record for given undo_recptr. */
 		uur = UndoFetchRecord(undo_recptr, InvalidBlockNumber,
@@ -90,24 +96,70 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 
 		Assert(uur != NULL);
 
-		isAborted = TransactionIdDidAbort(uur->uur_xid);
+		isCommitted = TransactionIdDidCommit(uur->uur_xid);
+		next_urecptr = uur->uur_next;
+		undoxid = uur->uur_xid;
+		epoch = uur->uur_xidepoch;
 
 		/* There might not be any undo log and hibernation might be needed. */
 		*hibernate = true;
 
-		/* we can discard upto this point. */
-		if (TransactionIdFollowsOrEquals(uur->uur_xid, xmin) ||
-			uur->uur_next == SpecialUndoRecPtr ||
-			uur->uur_next == InvalidUndoRecPtr ||
-			isAborted)
+		/*
+		 * At system restart, undo actions need to be applied for all the
+		 * transactions which were running the last time system was up. Now,
+		 * the transactions which were running when the system was up and those
+		 * that are active now are in-progress. To distinguish them we compare
+		 * their respective xids to oldestxmin. Basically, the transactions
+		 * with xid smaller than oldestxmin are the aborted ones. Hence,
+		 * performing their undo actions.
+		 */
+		if (!isCommitted && TransactionIdPrecedes(undoxid, xmin))
 		{
-			TransactionId	undoxid = uur->uur_xid;
-			uint32	epoch = uur->uur_xidepoch;
+			/*
+			 * At the time of recovery, we might not have a valid next undo
+			 * record pointer and in that case we'll calculate the location
+			 * of from pointer using the last record of next insert location.
+			 */
+			if (next_urecptr != SpecialUndoRecPtr)
+			{
+				UnpackedUndoRecord *next_urec = UndoFetchRecord(next_urecptr,
+																InvalidBlockNumber,
+																InvalidOffsetNumber,
+																InvalidTransactionId);
+				from_urecptr = UndoGetPrevUndoRecptr(next_urecptr, next_urec->uur_prevlen);
+				UndoRecordRelease(next_urec);
+			}
+			else
+			{
+				uur_prevlen = UndoLogGetPrevLen(logno);
+				Assert(uur_prevlen != 0);
+				next_insert = UndoLogGetNextInsertPtr(logno, undoxid);
+				if (!UndoRecPtrIsValid(next_insert))
+				{
+					UndoRecordRelease(uur);
+					continue;
+				}
 
+				from_urecptr = UndoGetPrevUndoRecptr(next_insert, uur_prevlen);
+			}
+
+			UndoRecordRelease(uur);
+			uur = NULL;
+			StartTransactionCommand();
+			execute_undo_actions(from_urecptr, undo_recptr, true);
+			CommitTransactionCommand();
+		}
+
+		/* we can discard upto this point. */
+		if (TransactionIdFollowsOrEquals(undoxid, xmin) ||
+			next_urecptr == SpecialUndoRecPtr ||
+			next_urecptr == InvalidUndoRecPtr)
+		{
 			/* Hey, I got some undo log to discard, can not hibernate now. */
 			*hibernate = false;
 
-			UndoRecordRelease(uur);
+			if (uur)
+				UndoRecordRelease(uur);
 
 			/*
 			 * If Transaction id is smaller than the xmin that means this must
@@ -115,12 +167,8 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 			 * last insert point in this undo log and discard till that point.
 			 * Also, if a transation is aborted, we stop discarding undo from the
 			 * same location.
-			 *
-			 * FIXME: We should rollback the transaction here and continue
-			 * discarding undo. We should revisit this after implementing ROLLBACK
-			 * for zheap.
 			 */
-			if (TransactionIdPrecedes(undoxid, xmin) && !isAborted)
+			if (TransactionIdPrecedes(undoxid, xmin))
 			{
 				UndoLogNumber logno = UndoRecPtrGetLogNo(discard->undo_recptr);
 				UndoRecPtr	next_insert = InvalidUndoRecPtr;
@@ -159,9 +207,13 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 		 * This transaction is smaller than the xmin so lets jump to the next
 		 * transaction.
 		 */
-		undo_recptr = uur->uur_next;
-		UndoRecordRelease(uur);
+		undo_recptr = next_urecptr;
+
+		if(uur)
+			UndoRecordRelease(uur);
+
 		need_discard = true;
+
 	} while (true);
 }
 
