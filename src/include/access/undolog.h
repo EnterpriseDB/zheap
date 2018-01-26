@@ -183,7 +183,8 @@ extern void UndoLogSegmentPath(UndoLogNumber logno, int segno, Oid tablespace,
 							   char *path);
 
 /* Checkpointing interfaces. */
-extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo);
+extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
+							   XLogRecPtr priorCheckPointRedo);
 extern bool UndoLogNextActiveLog(UndoLogNumber *logno, Oid *spcNode);
 extern void UndoLogGetDirtySegmentRange(UndoLogNumber logno,
 										int *low_segno, int *high_segno);

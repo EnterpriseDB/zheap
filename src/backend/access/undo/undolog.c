@@ -1215,7 +1215,7 @@ CleanUpUndoCheckPointFiles(XLogRecPtr checkPointRedo)
  * properties.
  */
 void
-CheckPointUndoLogs(XLogRecPtr checkPointRedo)
+CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 {
 	UndoLogSharedData *shared = MyUndoLogState.shared;
 	UndoLogMetaData *serialized = NULL;
@@ -1313,7 +1313,7 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo)
 	if (serialized)
 		pfree(serialized);
 
-	CleanUpUndoCheckPointFiles(checkPointRedo);
+	CleanUpUndoCheckPointFiles(priorCheckPointRedo);
 }
 
 void
