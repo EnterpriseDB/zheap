@@ -706,7 +706,7 @@ zheap_xlog_update(XLogReaderState *record)
 			if (ZPageAddItem(newpage, (Item) newtup, newlen, xlrec->new_offnum,
 						 true, true) == InvalidOffsetNumber)
 				elog(PANIC, "failed to add tuple");
-			PageSetUNDO(undorecord, newpage, trans_slot_id, xid_epoch, xid, urecptr);
+			PageSetUNDO(undorecord, newpage, trans_slot_id, xid_epoch, xid, newurecptr);
 		}
 
 		if (xlrec->flags & XLZ_UPDATE_NEW_ALL_VISIBLE_CLEARED)
