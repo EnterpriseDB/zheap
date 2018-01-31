@@ -76,7 +76,13 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		/* Fetch the undo record for given undo_recptr. */
 		uur = UndoFetchRecord(urec_ptr, InvalidBlockNumber,
 							  InvalidOffsetNumber, InvalidTransactionId);
-		Assert(uur != NULL);
+		/*
+		 * If the record is already discarded by undo worker,
+		 * then we cannot fetch record successfully.
+		 * Hence, exit quietly.
+		 */
+		if(uur == NULL)
+			return;
 
 		reloid = RelidByRelfilenode(uur->uur_tsid, uur->uur_relfilenode);
 		xid = uur->uur_xid;
