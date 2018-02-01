@@ -2987,7 +2987,7 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				result = TransactionIdGetDatum(xid);
 			}
 			else
-				result = TransactionIdGetDatum(FrozenTransactionId);
+				result = TransactionIdGetDatum(InvalidTransactionId);
 
 			break;
 		case MinCommandIdAttributeNumber:
