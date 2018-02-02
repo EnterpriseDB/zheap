@@ -120,7 +120,8 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 			 * record pointer and in that case we'll calculate the location
 			 * of from pointer using the last record of next insert location.
 			 */
-			if (next_urecptr != SpecialUndoRecPtr)
+			if ((next_urecptr != SpecialUndoRecPtr)
+				&& (next_urecptr != InvalidUndoRecPtr))
 			{
 				UnpackedUndoRecord *next_urec = UndoFetchRecord(next_urecptr,
 																InvalidBlockNumber,
