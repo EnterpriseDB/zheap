@@ -849,6 +849,11 @@ UndoLogAllocateInRecovery(TransactionId xid, size_t size,
 			 "unexpectedly couldn't allocate %zu bytes in undo log number %d",
 			 size, logno);
 
+	/*
+	 * By this time we have allocated a undo log in transaction so after this
+	 * it will not be first undo record for the transaction.
+	 */
+	log->is_first_rec = false;
 	return MakeUndoRecPtr(logno, log->meta.insert);
 }
 

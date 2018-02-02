@@ -804,11 +804,11 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 	xl_undo_header	*xlundohdr;
 	xl_zheap_invalid_xact_slot *xlrec;
 	xl_zheap_completed_slot	*completed_slots = NULL;
-	xl_zheap_completed_slot all_slots[MAX_PAGE_TRANS_INFO_SLOTS];
+	xl_zheap_completed_slot all_slots[MAX_PAGE_TRANS_INFO_SLOTS] = {0};
 	xl_zheap_tuple_info *tuples = NULL;
 	XLogRedoAction action;
 	UnpackedUndoRecord	*undorecord;
-	UnpackedUndoRecord	*slot_urec[MAX_PAGE_TRANS_INFO_SLOTS];
+	UnpackedUndoRecord	*slot_urec[MAX_PAGE_TRANS_INFO_SLOTS] = {0};
 	Buffer	buffer;
 	TransactionId	xid = XLogRecGetXid(record);
 	int	   *completed_xact_slots = NULL;
@@ -816,7 +816,7 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 	int		slot_no;
 	Page	page;
 	int		i;
-	int		noffsets;
+	int		noffsets = 0;
 	int 	nCompletedXactSlots;
 	ZHeapPageOpaque	 opaque;
 	OffsetNumber	*offsets = NULL;
