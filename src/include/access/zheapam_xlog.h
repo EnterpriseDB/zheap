@@ -122,6 +122,7 @@ typedef struct xl_zheap_delete
 
 	/* zheap related info */
 	OffsetNumber offnum;		/* deleted tuple's offset */
+	uint16		infomask;	/* lock mode */
 	uint8		trans_slot_id;	/* transaction slot id */
 	uint8		flags;
 } xl_zheap_delete;
@@ -149,6 +150,7 @@ typedef struct xl_zheap_update
 									 * written in undo record for delete operation */
 	/* zheap related info */
 	OffsetNumber old_offnum;	/* old tuple's offset */
+	uint16		old_infomask;	/* infomask bits to set on old tuple */
 	uint8		old_trans_slot_id;	/* old tuple's transaction slot id */
 	uint8		flags;
 	OffsetNumber new_offnum;	/* new tuple's offset */
@@ -203,6 +205,7 @@ typedef struct xl_zheap_lock
 	TransactionId   prev_xid;
 	/* zheap related info */
 	OffsetNumber    offnum;		/* locked tuple's offset */
+	uint16	infomask;	/* lock mode */
 	uint8   trans_slot_id;		/* transaction slot id */
 } xl_zheap_lock;
 

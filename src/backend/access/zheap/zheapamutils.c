@@ -133,7 +133,7 @@ ltrmark:;
 		test = zheap_lock_tuple(relation, &ztuple,
 								estate->es_output_cid,
 								lockmode, LockWaitBlock,
-								false, true, NULL, &buffer, &hufd);
+								false, false, estate->es_snapshot, &buffer, &hufd);
 		switch (test)
 		{
 			case HeapTupleSelfUpdated:

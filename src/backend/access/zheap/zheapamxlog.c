@@ -303,7 +303,7 @@ zheap_xlog_delete(XLogReaderState *record)
 		zheaptup.t_len = ItemIdGetLength(lp);
 		ZHeapTupleHeaderSetXactSlot(zheaptup.t_data, xlrec->trans_slot_id);
 		zheaptup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
-		zheaptup.t_data->t_infomask |= ZHEAP_DELETED;
+		zheaptup.t_data->t_infomask = xlrec->infomask;
 
 		PageSetUNDO(undorecord, page, xlrec->trans_slot_id, xid_epoch, xid, urecptr);
 
@@ -533,10 +533,7 @@ zheap_xlog_update(XLogReaderState *record)
 	if (oldaction == BLK_NEEDS_REDO)
 	{
 		oldtup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
-		if (inplace_update)
-			oldtup.t_data->t_infomask |= ZHEAP_INPLACE_UPDATED;
-		else
-			oldtup.t_data->t_infomask |= ZHEAP_UPDATED;
+		oldtup.t_data->t_infomask = xlrec->old_infomask;
 		ZHeapTupleHeaderSetXactSlot(oldtup.t_data, xlrec->old_trans_slot_id);
 
 		if (oldblk != newblk)
@@ -1081,8 +1078,7 @@ zheap_xlog_lock(XLogReaderState *record)
 		zheaptup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 		zheaptup.t_len = ItemIdGetLength(lp);
 		ZHeapTupleHeaderSetXactSlot(zheaptup.t_data, xlrec->trans_slot_id);
-		zheaptup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
-		zheaptup.t_data->t_infomask |= ZHEAP_XID_LOCK_ONLY;
+		zheaptup.t_data->t_infomask = xlrec->infomask;
 
 		PageSetUNDO(undorecord, page, xlrec->trans_slot_id, xid_epoch, xid, urecptr);
 

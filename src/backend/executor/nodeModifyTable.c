@@ -1408,7 +1408,7 @@ lreplace:;
 		if (resultRelInfo->ri_NumIndices > 0)
 		{
 			if (RelationStorageIsZHeap(resultRelationDesc) &&
-				!ZHeapTupleIsInPlaceUpdated(ztuple))
+				!ZHeapTupleIsInPlaceUpdated(ztuple->t_data->t_infomask))
 			{
 				recheckIndexes = ExecInsertIndexTuples(slot, &(ztuple->t_self),
 												   estate, false, NULL, NIL);

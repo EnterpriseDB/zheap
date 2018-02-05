@@ -23,6 +23,7 @@
 
 #include "access/htup_details.h"
 #include "access/xact.h"
+#include "access/zheaputils.h"
 #include "executor/executor.h"
 #include "executor/nodeLockRows.h"
 #include "foreign/fdwapi.h"
@@ -43,6 +44,7 @@ ExecLockRows(PlanState *pstate)
 	TupleTableSlot *slot;
 	EState	   *estate;
 	PlanState  *outerPlan;
+	ZHeapTupleData ztuple = {0};
 	bool		epq_needed;
 	ListCell   *lc;
 
@@ -83,15 +85,7 @@ lnext:
 		LockTupleMode lockmode;
 		HTSU_Result test;
 		HeapTuple	copyTuple;
-
-		/*
-		 * FIXME: ExecLockRows is not yet implemented for zheap.
-		 */
-		if (RelationStorageIsZHeap(erm->relation))
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("cannot lock rows in zheap table \"%s\"",
-							RelationGetRelationName(erm->relation))));
+		ItemPointer tid;
 
 		/* clear any leftover test tuple for this rel */
 		testTuple = &(node->lr_curtuples[erm->rti - 1]);
@@ -168,7 +162,6 @@ lnext:
 		}
 
 		/* okay, try to lock the tuple */
-		tuple.t_self = *((ItemPointer) DatumGetPointer(datum));
 		switch (erm->markType)
 		{
 			case ROW_MARK_EXCLUSIVE:
@@ -189,10 +182,54 @@ lnext:
 				break;
 		}
 
-		test = heap_lock_tuple(erm->relation, &tuple,
-							   estate->es_output_cid,
-							   lockmode, erm->waitPolicy, true,
-							   &buffer, &hufd);
+		tid = (ItemPointer) DatumGetPointer(datum);
+		ItemPointerCopy(tid, &(tuple.t_self));
+		if (RelationStorageIsZHeap(erm->relation))
+		{
+			Page	page;
+			ItemId	lp;
+
+			if (lockmode == LockTupleNoKeyExclusive ||
+				lockmode == LockTupleKeyShare)
+				elog(ERROR, "unsupported rowmark type for zheap");
+
+			/*
+			 * FIXME : We need to take the buffer lock and get the tuple
+			 * length which is duplication work done in zheap_lock_tuple.
+			 *
+			 * Another possibility here is that we can pass a flag to
+			 * zheap_lock_tuple, saying that it need to allocate the memory
+			 * for ztuple.t_data or we don't need t_data to be filled, but
+			 * that will make zheap_lock_tuple API incompatible with
+			 * heap_lock_tuple.
+			 */
+			buffer = ReadBuffer(erm->relation, ItemPointerGetBlockNumber(tid));
+			LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
+			page = BufferGetPage(buffer);
+			lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+
+			Assert(ItemIdIsNormal(lp));
+			ztuple.t_len = ItemIdGetLength(lp);
+			UnlockReleaseBuffer(buffer);
+
+			ItemPointerCopy(tid, &(ztuple.t_self));
+			ztuple.t_data = palloc0(ztuple.t_len);
+			test = zheap_lock_tuple(erm->relation, &ztuple,
+										estate->es_output_cid,
+										lockmode, erm->waitPolicy,
+										true, false, estate->es_snapshot, &buffer, &hufd);
+			/* be tidy */
+			pfree(ztuple.t_data);
+		}
+		else
+		{
+			test = heap_lock_tuple(erm->relation, &tuple,
+								   estate->es_output_cid,
+								   lockmode, erm->waitPolicy, true,
+								   &buffer, &hufd);
+		}
+
 		ReleaseBuffer(buffer);
 		switch (test)
 		{
@@ -232,25 +269,50 @@ lnext:
 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 							 errmsg("tuple to be locked was already moved to another partition due to concurrent update")));
 
-				if (ItemPointerEquals(&hufd.ctid, &tuple.t_self))
+				if (ItemPointerEquals(&hufd.ctid, tid) &&
+					!hufd.in_place_updated_or_locked)
 				{
 					/* Tuple was deleted, so don't return it */
 					goto lnext;
 				}
 
-				/* updated, so fetch and lock the updated version */
-				copyTuple = EvalPlanQualFetch(estate, erm->relation,
-											  lockmode, erm->waitPolicy,
-											  &hufd.ctid, hufd.xmax);
-
-				if (copyTuple == NULL)
+				if (RelationStorageIsZHeap(erm->relation))
 				{
-					/*
-					 * Tuple was deleted; or it's locked and we're under SKIP
-					 * LOCKED policy, so don't return it
-					 */
-					goto lnext;
+					ZHeapTuple	zTuple;
+
+					/* updated, so fetch and lock the updated version */
+					zTuple = EvalPlanQualZFetch(estate, erm->relation,
+												lockmode, erm->waitPolicy,
+												&hufd.ctid, hufd.xmax);
+
+					if (zTuple == NULL)
+					{
+						/*
+						 * Tuple was deleted; or it's locked and we're under SKIP
+						 * LOCKED policy, so don't return it
+						 */
+						goto lnext;
+					}
+
+					copyTuple = zheap_to_heap(zTuple, erm->relation->rd_att);
 				}
+				else
+				{
+					/* updated, so fetch and lock the updated version */
+					copyTuple = EvalPlanQualFetch(estate, erm->relation,
+												  lockmode, erm->waitPolicy,
+												  &hufd.ctid, hufd.xmax);
+
+					if (copyTuple == NULL)
+					{
+						/*
+						 * Tuple was deleted; or it's locked and we're under SKIP
+						 * LOCKED policy, so don't return it
+						 */
+						goto lnext;
+					}
+				}
+
 				/* remember the actually locked tuple's TID */
 				tuple.t_self = copyTuple->t_self;
 
@@ -323,10 +385,23 @@ lnext:
 			Assert(ItemPointerIsValid(&(erm->curCtid)));
 
 			/* okay, fetch the tuple */
-			tuple.t_self = erm->curCtid;
-			if (!heap_fetch(erm->relation, SnapshotAny, &tuple, &buffer,
-							false, NULL))
-				elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
+			if (RelationStorageIsZHeap(erm->relation))
+			{
+				ZHeapTuple zTuple;
+
+				if (!zheap_fetch(erm->relation, SnapshotAny, &erm->curCtid, &zTuple,
+								 &buffer, false, NULL))
+					elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
+
+				tuple = *(zheap_to_heap(zTuple, erm->relation->rd_att));
+			}
+			else
+			{
+				tuple.t_self = erm->curCtid;
+				if (!heap_fetch(erm->relation, SnapshotAny, &tuple, &buffer,
+								false, NULL))
+					elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
+			}
 
 			/* successful, copy and store tuple */
 			EvalPlanQualSetTuple(&node->lr_epqstate, erm->rti,

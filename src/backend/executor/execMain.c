@@ -38,6 +38,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/zheaputils.h"
 #include "access/sysattr.h"
 #include "access/transam.h"
 #include "access/xact.h"
@@ -3147,6 +3148,16 @@ EvalPlanQualSetTuple(EPQState *epqstate, Index rti, HeapTuple tuple)
 		heap_freetuple(estate->es_epqTuple[rti - 1]);
 	estate->es_epqTuple[rti - 1] = tuple;
 	estate->es_epqTupleSet[rti - 1] = true;
+
+	/*
+	 * free zheap tuple which was allocated in EvalPlanQualBegin. It is no longer
+	 * required here.
+	 */
+	if (estate->es_epqZTuple != NULL)
+	{
+		pfree(estate->es_epqZTuple);
+		estate->es_epqZTuple = NULL;
+	}
 }
 
 /*
@@ -3254,13 +3265,28 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 				/* ordinary table, fetch the tuple */
 				Buffer		buffer;
 
-				tuple.t_self = *((ItemPointer) DatumGetPointer(datum));
-				if (!heap_fetch(erm->relation, SnapshotAny, &tuple, &buffer,
-								false, NULL))
-					elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
+				if (RelationStorageIsZHeap(erm->relation))
+				{
+					ZHeapTuple zTuple;
+					ItemPointer	tid = (ItemPointer) DatumGetPointer(datum);
 
-				/* successful, copy tuple */
-				copyTuple = heap_copytuple(&tuple);
+					if (!zheap_fetch(erm->relation, SnapshotAny, tid, &zTuple,
+									 &buffer, false, NULL))
+						elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
+
+					copyTuple = zheap_to_heap(zTuple, erm->relation->rd_att);
+				}
+				else
+				{
+					tuple.t_self = *((ItemPointer) DatumGetPointer(datum));
+					if (!heap_fetch(erm->relation, SnapshotAny, &tuple, &buffer,
+									false, NULL))
+						elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
+
+					/* successful, copy tuple */
+					copyTuple = heap_copytuple(&tuple);
+				}
+
 				ReleaseBuffer(buffer);
 			}
 
@@ -3315,6 +3341,16 @@ EvalPlanQualSetZTuple(EPQState *epqstate, Index rti, ZHeapTuple tuple)
 		zheap_freetuple(estate->es_epqZTuple[rti - 1]);
 	estate->es_epqZTuple[rti - 1] = tuple;
 	estate->es_epqTupleSet[rti - 1] = true;
+
+	/*
+	 * free heap tuple which was allocated in EvalPlanQualBegin. It is no longer
+	 * required here.
+	 */
+	if (estate->es_epqTuple != NULL)
+	{
+		pfree(estate->es_epqTuple);
+		estate->es_epqTuple = NULL;
+	}
 }
 
 /*
@@ -3546,11 +3582,24 @@ EvalPlanQualStart(EPQState *epqstate, EState *parentestate, Plan *planTree)
 			}
 
 			if (isZheap)
+			{
+				/*
+				 * As of now, we need both type of tuples for zheap because in
+				 * the case of explicit locking, we convert the zheap tuple to
+				 * heap tuple before passing it to EvalPlanQual mechanism.  The
+				 * update/delete code path is performance intensive, so we avoid
+				 * this extra copy and directly operate on zheap tuple.
+				 */
 				estate->es_epqZTuple = (ZHeapTuple *)
 					palloc0(rtsize * sizeof(ZHeapTuple));
-			else
 				estate->es_epqTuple = (HeapTuple *)
 					palloc0(rtsize * sizeof(HeapTuple));
+			}
+			else
+			{
+				estate->es_epqTuple = (HeapTuple *)
+					palloc0(rtsize * sizeof(HeapTuple));
+			}
 		}
 		else
 		{

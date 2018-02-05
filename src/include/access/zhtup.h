@@ -84,9 +84,31 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define	ZHEAP_UPDATED			0x0040	/* tuple is not updated inplace */
 #define ZHEAP_XID_LOCK_ONLY		0x0080	/* xid, if valid, is only a locker */
 
-#define ZHEAP_INVALID_XACT_SLOT	0x0100	/* transaction slot on tuple got reused */
+#define ZHEAP_XID_KEYSHR_LOCK	0x0100	/* xid is a key-shared locker */
+#define ZHEAP_XID_NOKEY_EXCL_LOCK	0x0200	/* xid is a nokey-exclusive locker */
+ /* xid is a shared locker */
+#define ZHEAP_XID_SHR_LOCK	(ZHEAP_XID_NOKEY_EXCL_LOCK | ZHEAP_XID_KEYSHR_LOCK)
+#define ZHEAP_XID_EXCL_LOCK		0x0400	/* tuple was updated and key cols
+										 * modified, or tuple deleted */
 
-#define ZHEAP_VIS_STATUS_MASK	0x01F0	/* mask for visibility bits (5, 6, 7, 8 and 9) */
+#define ZHEAP_INVALID_XACT_SLOT	0x0800	/* transaction slot on tuple got reused */
+
+#define ZHEAP_LOCK_MASK		(ZHEAP_XID_KEYSHR_LOCK | ZHEAP_XID_NOKEY_EXCL_LOCK | \
+							 ZHEAP_XID_SHR_LOCK | ZHEAP_XID_EXCL_LOCK)
+
+#define ZHEAP_VIS_STATUS_MASK	0x0FF0	/* mask for visibility bits (5 ~ 12 bits) */
+
+/*
+ * Use these to test whether a particular lock is applied to a tuple
+ */
+#define ZHEAP_XID_IS_KEYSHR_LOCKED(infomask) \
+	(((infomask) & ZHEAP_LOCK_MASK) == ZHEAP_XID_KEYSHR_LOCK)
+#define ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) \
+	(((infomask) & ZHEAP_LOCK_MASK) == ZHEAP_XID_NOKEY_EXCL_LOCK)
+#define ZHEAP_XID_IS_SHR_LOCKED(infomask) \
+	(((infomask) & ZHEAP_LOCK_MASK) == ZHEAP_XID_SHR_LOCK)
+#define ZHEAP_XID_IS_EXCL_LOCKED(infomask) \
+	(((infomask) & ZHEAP_LOCK_MASK) == ZHEAP_XID_EXCL_LOCK)
 
 /*
  * information stored in t_infomask2:
@@ -101,9 +123,9 @@ typedef ZHeapTupleData *ZHeapTuple;
 	((infomask) & ZHEAP_XID_LOCK_ONLY) != 0 \
 )
 
-#define ZHeapTupleIsInPlaceUpdated(tup) \
+#define ZHeapTupleIsInPlaceUpdated(infomask) \
 ( \
-  ((tup)->t_data->t_infomask & ZHEAP_INPLACE_UPDATED) != 0 \
+  (infomask & ZHEAP_INPLACE_UPDATED) != 0 \
 )
 
 #define ZHeapTupleHeaderGetNatts(tup) \
@@ -192,12 +214,12 @@ do { \
 	opaque->transinfo[slot].xid_epoch \
 )
 
-#define IsZHeapTupleModified(tup) \
+#define IsZHeapTupleModified(t_infomask) \
 ( \
-	(((tup)->t_infomask & ZHEAP_DELETED || \
-	 (tup)->t_infomask & ZHEAP_UPDATED || \
-	 (tup)->t_infomask & ZHEAP_INPLACE_UPDATED || \
-	 (tup)->t_infomask & ZHEAP_XID_LOCK_ONLY) != 0) \
+	((t_infomask & ZHEAP_DELETED || \
+	 t_infomask & ZHEAP_UPDATED || \
+	 t_infomask & ZHEAP_INPLACE_UPDATED || \
+	 t_infomask & ZHEAP_XID_LOCK_ONLY) != 0) \
 )
 
 #define ZHeapPageGetUndoPtr(slot, opaque) \
