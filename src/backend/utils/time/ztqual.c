@@ -116,15 +116,14 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch, TransactionId *xid,
 }
 
 /*
- * GetTupleFromUndoCommon
+ * GetVisibleTupleIfAny
  *
- * This is a helper function for GetTupleFromUndo and
- * GetTupleFromUndoWithOffset.
+ * This is a helper function for GetTupleFromUndoWithOffset.
  */
 static ZHeapTuple
-GetTupleFromUndoCommon(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
-					   Snapshot snapshot, Buffer buffer, TransactionId xid,
-					   int trans_slot_id)
+GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
+					 Snapshot snapshot, Buffer buffer, TransactionId xid,
+					 int trans_slot_id)
 {
 	CommandId	cid = InvalidCommandId;
 	int			undo_oper = -1;
@@ -267,10 +266,13 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 	UnpackedUndoRecord	*urec;
 	ZHeapPageOpaque	opaque;
 	ZHeapTuple	undo_tup;
-	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
+	UndoRecPtr	prev_urec_ptr;
 	TransactionId	xid;
-	int	trans_slot_id = InvalidXactSlotId;
-	int	prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
+	CommandId	cid;
+	int			undo_oper;
+	TransactionId	oldestXidHavingUndo;
+	int	trans_slot_id;
+	int	prev_trans_slot_id;
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
 
@@ -278,7 +280,13 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
 	 * tuple is modified after the scan is started, fetch the prior record
 	 * from undo to see if it is visible.
 	 */
-fetch_undo_record:
+fetch_prior_undo_record:
+	prev_urec_ptr = InvalidUndoRecPtr;
+	cid = InvalidCommandId;
+	undo_oper = -1;
+	trans_slot_id = InvalidXactSlotId;
+	prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
+
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
@@ -294,7 +302,7 @@ fetch_undo_record:
 		urec_ptr = urec->uur_blkprev;
 		UndoRecordRelease(urec);
 
-		goto fetch_undo_record;
+		goto fetch_prior_undo_record;
 	}
 
 	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, true);
@@ -312,8 +320,130 @@ fetch_undo_record:
 		trans_slot_id != prev_trans_slot_id)
 		prev_urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(undo_tup->t_data, opaque);
 
-	return GetTupleFromUndoCommon(prev_urec_ptr, undo_tup,
-								  snapshot, buffer, xid, trans_slot_id);
+	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
+	{
+		undo_oper = ZHEAP_INPLACE_UPDATED;
+	}
+	else if (undo_tup->t_data->t_infomask & ZHEAP_XID_LOCK_ONLY)
+	{
+		undo_oper = ZHEAP_XID_LOCK_ONLY;
+	}
+	else
+	{
+		/* we can't further operate on deleted or non-inplace-updated tuple */
+		Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED) ||
+			   !(undo_tup->t_data->t_infomask & ZHEAP_UPDATED));
+	}
+
+	oldestXidHavingUndo = GetXidFromEpochXid(
+						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+
+	/*
+	 * We need to fetch all the transaction related information from undo
+	 * record for the tuples that point to a slot that gets invalidated for
+	 * reuse at some point of time.  See PageFreezeTransSlots.
+	 */
+	if ((ZHeapTupleHeaderGetXactSlot(undo_tup->t_data) != ZHTUP_SLOT_FROZEN) &&
+		!TransactionIdEquals(xid, FrozenTransactionId) &&
+		!TransactionIdPrecedes(xid, oldestXidHavingUndo))
+	{
+		if (undo_tup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+		{
+			FetchTransInfoFromUndo(undo_tup, NULL, &xid, &cid, &prev_urec_ptr);
+		}
+		else
+		{
+			/*
+			 * we don't use prev_undo_xid to fetch the undo record for cid as it is
+			 * required only when transaction is current transaction in which case
+			 * there is no risk of transaction chain switching, so we are safe.  It
+			 * might be better to move this check near to it's usage, but that will
+			 * make code look ugly, so keeping it here.
+			 */
+			cid = ZHeapTupleGetCid(undo_tup, buffer);
+		}
+	}
+
+	/*
+	 * The tuple must be all visible if the transaction slot is cleared or
+	 * latest xid that has changed the tuple is too old that it is all-visible
+	 * or it precedes smallest xid that has undo.
+	 */
+	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
+		TransactionIdEquals(xid, FrozenTransactionId) ||
+		TransactionIdPrecedes(xid, oldestXidHavingUndo))
+		return undo_tup;
+
+	if (undo_oper == ZHEAP_INPLACE_UPDATED ||
+		undo_oper == ZHEAP_XID_LOCK_ONLY)
+	{
+		if (TransactionIdIsCurrentTransactionId(xid))
+		{
+			if (undo_oper == ZHEAP_XID_LOCK_ONLY)
+				return undo_tup;
+			if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
+			{
+				/*
+					* Updated after scan started, need to fetch prior tuple
+					* in undo chain.
+					*/
+				urec_ptr = prev_urec_ptr;
+				zhtup = undo_tup;
+				prev_undo_xid = xid;
+
+				goto fetch_prior_undo_record;
+			}
+			else
+				return undo_tup;	/* updated before scan started */
+		}
+		else if (IsMVCCSnapshot(snapshot) && XidInMVCCSnapshot(xid, snapshot))
+		{
+			urec_ptr = prev_urec_ptr;
+			zhtup = undo_tup;
+			prev_undo_xid = xid;
+
+			goto fetch_prior_undo_record;
+		}
+		else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(xid))
+		{
+			urec_ptr = prev_urec_ptr;
+			zhtup = undo_tup;
+			prev_undo_xid = xid;
+
+			goto fetch_prior_undo_record;
+		}
+		else if (TransactionIdDidCommit(xid))
+			return undo_tup;
+		else
+		{
+			urec_ptr = prev_urec_ptr;
+			zhtup = undo_tup;
+			prev_undo_xid = xid;
+
+			goto fetch_prior_undo_record;
+		}
+	}
+	else	/* undo tuple is the root tuple */
+	{
+		if (TransactionIdIsCurrentTransactionId(xid))
+		{
+			if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
+				return NULL;	/* inserted after scan started */
+			else
+				return undo_tup;	/* inserted before scan started */
+		}
+		else if (IsMVCCSnapshot(snapshot) && XidInMVCCSnapshot(xid, snapshot))
+			return NULL;
+		else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(xid))
+			return NULL;
+		else if (TransactionIdDidCommit(xid))
+			return undo_tup;
+		else
+			return NULL;
+	}
+
+	/* we should never reach here */
+	return NULL;
 }
 
 /*
@@ -378,8 +508,8 @@ fetch_undo_record:
 		trans_slot_id != prev_trans_slot_id)
 		prev_urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(undo_tup->t_data, opaque);
 
-	return GetTupleFromUndoCommon(prev_urec_ptr, undo_tup,
-								  snapshot, buffer, xid, trans_slot_id);
+	return GetVisibleTupleIfAny(prev_urec_ptr, undo_tup,
+								snapshot, buffer, xid, trans_slot_id);
 }
 
 /*
@@ -402,14 +532,14 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 {
 	UnpackedUndoRecord	*urec;
 	ZHeapPageOpaque	opaque;
-	ZHeapTuple	undo_tup = NULL;
-	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
+	ZHeapTuple	undo_tup;
+	UndoRecPtr	prev_urec_ptr;
 	TransactionId	xid, oldestXidHavingUndo;
-	CommandId	cid = InvalidCommandId;
-	int	trans_slot_id = InvalidXactSlotId;
-	int prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
-	int	undo_oper = -1;
-	bool result = false;
+	CommandId	cid;
+	int	trans_slot_id;
+	int prev_trans_slot_id;
+	int	undo_oper;
+	bool result;
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
 
@@ -417,7 +547,15 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	 * tuple is modified after the scan is started, fetch the prior record
 	 * from undo to see if it is visible.
 	 */
-fetch_undo_record:
+fetch_prior_undo_record:
+	undo_tup = NULL;
+	prev_urec_ptr = InvalidUndoRecPtr;
+	cid = InvalidCommandId;
+	trans_slot_id = InvalidXactSlotId;
+	prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
+	undo_oper = -1;
+	result = false;
+
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
@@ -433,7 +571,7 @@ fetch_undo_record:
 		urec_ptr = urec->uur_blkprev;
 		UndoRecordRelease(urec);
 
-		goto fetch_undo_record;
+		goto fetch_prior_undo_record;
 	}
 
 	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, free_zhtup);
@@ -533,39 +671,42 @@ fetch_undo_record:
 			}
 			if (cid >= curcid)
 			{
-				/* updated after scan started */
-				return UndoTupleSatisfiesUpdate(prev_urec_ptr,
-												undo_tup,
-												curcid,
-												buffer,
-												ctid,
-												xid,
-												true,
-												in_place_updated_or_locked);
+				/*
+					* Updated after scan started, need to fetch prior tuple
+					* in undo chain.
+					*/
+				urec_ptr = prev_urec_ptr;
+				zhtup = undo_tup;
+				prev_undo_xid = xid;
+				free_zhtup = true;
+
+				goto fetch_prior_undo_record;
 			}
 			else
 				result = true;	/* updated before scan started */
 		}
 		else if (TransactionIdIsInProgress(xid))
-			return UndoTupleSatisfiesUpdate(prev_urec_ptr,
-											undo_tup,
-											curcid,
-											buffer,
-											ctid,
-											xid,
-											true,
-											in_place_updated_or_locked);
+		{
+			/* Note the values required to fetch prior tuple in undo chain. */
+			urec_ptr = prev_urec_ptr;
+			zhtup = undo_tup;
+			prev_undo_xid = xid;
+			free_zhtup = true;
+
+			goto fetch_prior_undo_record;
+		}
 		else if (TransactionIdDidCommit(xid))
 			result = true;
 		else
-			return UndoTupleSatisfiesUpdate(prev_urec_ptr,
-											undo_tup,
-											curcid,
-											buffer,
-											ctid,
-											xid,
-											true,
-											in_place_updated_or_locked);
+		{
+			/* Note the values required to fetch prior tuple in undo chain. */
+			urec_ptr = prev_urec_ptr;
+			zhtup = undo_tup;
+			prev_undo_xid = xid;
+			free_zhtup = true;
+
+			goto fetch_prior_undo_record;
+		}
 	}
 	else	/* undo tuple is the root tuple */
 	{
