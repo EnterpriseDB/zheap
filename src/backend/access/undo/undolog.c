@@ -1419,6 +1419,20 @@ ensure_undo_log_number(UndoLogNumber logno)
 	UndoLogSharedData *shared = MyUndoLogState.shared;
 	int		bankno = UndoLogNoGetBankNo(logno);
 
+	/* In single-user mode, we have to use backend-private memory. */
+	if (!IsUnderPostmaster)
+	{
+			if (MyUndoLogState.banks[bankno] == NULL)
+			{
+				size_t size;
+
+				size = sizeof(UndoLogControl) * (1 << UndoLogBankBits);
+				MyUndoLogState.banks[bankno] =
+					MemoryContextAllocZero(TopMemoryContext, size);
+			}
+			return;
+	}
+
 	/* Do we need to create a bank in shared memory for this undo log number? */
 	if (shared->banks[bankno] == DSM_HANDLE_INVALID)
 	{
