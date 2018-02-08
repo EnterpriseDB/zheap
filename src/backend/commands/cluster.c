@@ -129,6 +129,16 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
 					 errmsg("cannot cluster temporary tables of other sessions")));
 
 		/*
+		 * FIXME: We need to write a mechanism to support clustering of zheap
+		 * tables. Currently, we just throw an error message if clustering is
+		 * performed on zheap tables.
+		 */
+		if (RelationStorageIsZHeap(rel))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot cluster a zheap table")));
+
+		/*
 		 * Reject clustering a partitioned table.
 		 */
 		if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
