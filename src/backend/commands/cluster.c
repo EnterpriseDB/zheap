@@ -671,10 +671,6 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
 	else
 		namespaceid = RelationGetNamespace(OldHeap);
 
-	if (RelationStorageIsZHeap(OldHeap))
-		elog(ERROR, "cannot create transient table for zheap \"%s\".",
-			 RelationGetRelationName(OldHeap));
-
 	/*
 	 * Create the new heap, using a temporary name in the same namespace as
 	 * the existing table.  NOTE: there is some risk of collision with user

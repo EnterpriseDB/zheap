@@ -24,6 +24,7 @@
 #include "access/tupconvert.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/zheaputils.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
@@ -4791,8 +4792,11 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		TupleTableSlot *oldslot;
 		TupleTableSlot *newslot;
 		HeapScanDesc scan;
-		HeapTuple	tuple;
+		HeapTuple	tuple = NULL;
+		ZHeapTuple	ztuple = NULL;
 		MemoryContext oldCxt;
+		MemoryContext tupCxt;
+		MemoryContext altCxt = NULL;
 		List	   *dropped_attrs = NIL;
 		ListCell   *lc;
 		Snapshot	snapshot;
@@ -4805,6 +4809,15 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 			ereport(DEBUG1,
 					(errmsg("verifying table \"%s\"",
 							RelationGetRelationName(oldrel))));
+
+		/*
+		 * Set up a working context so that we can easily free the memory
+		 * getting created by zheap_getnext() function.
+		 */
+		if (RelationStorageIsZHeap(oldrel))
+			altCxt = AllocSetContextCreate(CurrentMemoryContext,
+										   "Alter Table",
+										   ALLOCSET_DEFAULT_SIZES);
 
 		if (newrel)
 		{
@@ -4860,29 +4873,37 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		 */
 		oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
-		/*
-		 * FIXME: We need to write the mechanism for scanning and rewritting
-		 * zheap tables here.For now, we throw error in case a zheap table
-		 * has any tuple.
-		 */
-		if (RelationStorageIsZHeap(oldrel))
+		while (true)
 		{
-			if (zheap_getnext(scan, ForwardScanDirection) != NULL)
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("can't verify/rewrite zheap tables"),
-						 errhint("Truncate the table.")));
+			if (RelationStorageIsZHeap(oldrel))
+			{
+				/*
+				 * For zheap relations, we switch to the local context 'altCxt'
+				 * so that the memory allocated by zheapgetpage() called from
+				 * zheap_getnext() to store zheap tuples is alive till the table
+				 * rewriting is complete. If we do not do this, i.e. if we call
+				 * zheap_getnext in per-tuple memory context then the memory
+				 * allocated by zheapgetpage() to store all the zheap tuples in
+				 * a page would get reset by ResetExprContext() called later
+				 * in this function.
+				 */
+				tupCxt = MemoryContextSwitchTo(altCxt);
+				ztuple = zheap_getnext(scan, ForwardScanDirection);
+				altCxt = MemoryContextSwitchTo(tupCxt);
+			}
+			else
+				tuple = heap_getnext(scan, ForwardScanDirection);
 
-			goto exit;
-		}
+			if (!tuple && !ztuple)
+				break;
 
-		while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
-		{
 			if (tab->rewrite > 0)
 			{
 				Oid			tupOid = InvalidOid;
 
 				/* Extract data from old tuple */
+				if (RelationStorageIsZHeap(newrel))
+					tuple = zheap_to_heap(ztuple, oldTupDesc);
 				heap_deform_tuple(tuple, oldTupDesc, values, isnull);
 				if (oldTupDesc->tdhasoid)
 					tupOid = HeapTupleGetOid(tuple);
@@ -4911,28 +4932,55 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 				 * Form the new tuple. Note that we don't explicitly pfree it,
 				 * since the per-tuple memory context will be reset shortly.
 				 */
-				tuple = heap_form_tuple(newTupDesc, values, isnull);
+				if (RelationStorageIsZHeap(newrel))
+					ztuple = zheap_form_tuple(newTupDesc, values, isnull);
+				else
+					tuple = heap_form_tuple(newTupDesc, values, isnull);
 
 				/* Preserve OID, if any */
 				if (newTupDesc->tdhasoid)
-					HeapTupleSetOid(tuple, tupOid);
+				{
+					if (RelationStorageIsZHeap(newrel))
+						ZHeapTupleSetOid(ztuple, tupOid);
+					else
+						HeapTupleSetOid(tuple, tupOid);
+				}
 
 				/*
 				 * Constraints might reference the tableoid column, so
 				 * initialize t_tableOid before evaluating them.
 				 */
-				tuple->t_tableOid = RelationGetRelid(oldrel);
+				if (RelationStorageIsZHeap(newrel))
+					ztuple->t_tableOid = RelationGetRelid(oldrel);
+				else
+					tuple->t_tableOid = RelationGetRelid(oldrel);
 			}
 
 			/* Now check any constraints on the possibly-changed tuple */
-			ExecStoreHeapTuple(tuple, newslot, false);
+			if (RelationStorageIsZHeap(oldrel))
+				ExecStoreZTuple(ztuple, newslot, InvalidBuffer, false);
+			else
+				ExecStoreHeapTuple(tuple, newslot, false);
+
 			econtext->ecxt_scantuple = newslot;
 
 			foreach(l, notnull_attrs)
 			{
 				int			attn = lfirst_int(l);
+				bool		isNull = false;
 
-				if (heap_attisnull(tuple, attn + 1, newTupDesc))
+				if (ztuple)
+				{
+					if (zheap_attisnull(ztuple, attn + 1, newTupDesc))
+						isNull = true;
+				}
+				else
+				{
+					if(heap_attisnull(tuple, attn + 1, newTupDesc))
+					   isNull = true;
+				}
+
+				if (isNull)
 				{
 					Form_pg_attribute attr = TupleDescAttr(newTupDesc, attn);
 
@@ -4981,15 +5029,27 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 
 			/* Write the tuple out to the new relation */
 			if (newrel)
-				heap_insert(newrel, tuple, mycid, hi_options, bistate);
+			{
+				if (RelationStorageIsZHeap(newrel))
+					zheap_insert(newrel, ztuple, mycid, hi_options, bistate);
+				else
+					heap_insert(newrel, tuple, mycid, hi_options, bistate);
+			}
 
 			ResetExprContext(econtext);
+
+			if (newrel && RelationStorageIsZHeap(newrel))
+				tuple = NULL;
 
 			CHECK_FOR_INTERRUPTS();
 		}
 
-exit:
 		MemoryContextSwitchTo(oldCxt);
+		if (altCxt)
+		{
+			MemoryContextDelete(altCxt);
+			altCxt = NULL;
+		}
 		heap_endscan(scan);
 		UnregisterSnapshot(snapshot);
 
