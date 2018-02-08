@@ -36,8 +36,8 @@ HeapTuple
 zheap_to_heap(ZHeapTuple ztuple, TupleDesc tupDesc)
 {
 	HeapTuple tuple;
-	Datum	*values = palloc0(sizeof(Datum) * ZHeapTupleHeaderGetNatts(ztuple->t_data));
-	bool	*nulls = palloc0(sizeof(bool) * ZHeapTupleHeaderGetNatts(ztuple->t_data));
+	Datum	*values = palloc0(sizeof(Datum) * tupDesc->natts);
+	bool	*nulls = palloc0(sizeof(bool) * tupDesc->natts);
 
 	zheap_deform_tuple(ztuple, tupDesc, values, nulls);
 	tuple = heap_form_tuple(tupDesc, values, nulls);
@@ -59,8 +59,8 @@ ZHeapTuple
 heap_to_zheap(HeapTuple tuple, TupleDesc tupDesc)
 {
 	ZHeapTuple ztuple;
-	Datum	*values = palloc0(sizeof(Datum) * HeapTupleHeaderGetNatts(tuple->t_data));
-	bool	*nulls = palloc0(sizeof(bool) * HeapTupleHeaderGetNatts(tuple->t_data));
+	Datum	*values = palloc0(sizeof(Datum) * tupDesc->natts);
+	bool	*nulls = palloc0(sizeof(bool) * tupDesc->natts);
 
 	heap_deform_tuple(tuple, tupDesc, values, nulls);
 	ztuple = zheap_form_tuple(tupDesc, values, nulls);
