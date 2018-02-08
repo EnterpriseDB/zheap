@@ -175,6 +175,8 @@ static void attach_undo_log(void);
 static void detach_current_undo_log(void);
 static void extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end);
 static void undo_log_before_exit(int code, Datum value);
+static void forget_undo_buffers(int logno, UndoLogOffset old_discard,
+								UndoLogOffset new_discard);
 
 PG_FUNCTION_INFO_V1(pg_stat_get_undo_logs);
 
@@ -917,9 +919,6 @@ UndoLogDiscard(UndoRecPtr discard_point)
 	UndoLogOffset old_discard;
 	UndoLogOffset discard = UndoRecPtrGetOffset(discard_point);
 	UndoLogOffset end;
-	BlockNumber old_blockno;
-	BlockNumber blockno;
-	RelFileNode	rnode;
 	int		segno;
 	int		new_segno;
 	bool		need_to_flush_wal = false;
@@ -936,6 +935,16 @@ UndoLogDiscard(UndoRecPtr discard_point)
 		elog(ERROR, "cannot move discard pointer backwards");
 	end = log->meta.end;
 	LWLockRelease(&log->mutex);
+
+	/*
+	 * Drop all buffers holding this undo data out of the buffer pool (except
+	 * the last one, if the new location is in the middle of it somewhere), so
+	 * that the contained data doesn't ever touch the disk.  The caller
+	 * promises that this data will not be needed again.  We have to drop the
+	 * buffers from the buffer pool before removing files, otherwise a
+	 * concurrent session might try to write the block to evict the buffer.
+	 */
+	forget_undo_buffers(logno, old_discard, discard);
 
 	/*
 	 * Check if we crossed a segment boundary and need to do some synchronous
@@ -1054,18 +1063,6 @@ UndoLogDiscard(UndoRecPtr discard_point)
 		if (need_to_flush_wal)
 			XLogFlush(ptr);
 	}
-
-	/*
-	 * Drop all buffers holding this undo data out of the buffer pool (except
-	 * the last one, if the new location is in the middle of it somewhere), so
-	 * that the contained data doesn't ever touch the disk.  The caller
-	 * promises that this data will not be needed again.
-	 */
-	UndoRecPtrAssignRelFileNode(rnode, MakeUndoRecPtr(logno, old_discard));
-	old_blockno = old_discard / BLCKSZ;
-	blockno = discard / BLCKSZ;
-	while (old_blockno < blockno)
-		ForgetBuffer(rnode, UndoLogForkNum, old_blockno++);
 
 	/* Update shmem to show the new discard and end pointers. */
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
@@ -1748,6 +1745,25 @@ undolog_xlog_attach(XLogReaderState *record)
 }
 
 /*
+ * Drop all buffers for the given undo log, from the old_discard to up
+ * new_discard, not including the buffer that holds new_discard.
+ */
+static void
+forget_undo_buffers(int logno, UndoLogOffset old_discard,
+					UndoLogOffset new_discard)
+{
+	BlockNumber old_blockno;
+	BlockNumber new_blockno;
+	RelFileNode	rnode;
+
+	UndoRecPtrAssignRelFileNode(rnode, MakeUndoRecPtr(logno, old_discard));
+	old_blockno = old_discard / BLCKSZ;
+	new_blockno = new_discard / BLCKSZ;
+	while (old_blockno < new_blockno)
+		ForgetBuffer(rnode, UndoLogForkNum, old_blockno++);
+}
+
+/*
  * replay an undo segment discard record
  */
 static void
@@ -1777,6 +1793,9 @@ undolog_xlog_discard(XLogReaderState *record)
 	discard = log->meta.discard;
 	end = log->meta.end;
 	LWLockRelease(&log->mutex);
+
+	/* Drop buffers before we remove/recycle any files. */
+	forget_undo_buffers(xlrec->logno, discard, xlrec->discard);
 
 	/* Rewind to the start of the segment. */
 	old_segment_begin = discard - discard % UndoLogSegmentSize;
