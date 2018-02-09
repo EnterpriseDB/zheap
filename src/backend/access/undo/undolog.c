@@ -1413,6 +1413,7 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 	for (logno = shared->low_logno; logno < shared->high_logno; ++logno)
 	{
 		UndoLogControl *log;
+		int		segno;
 
 		/* Get a zero-initialized control objects. */
 		ensure_undo_log_number(logno);
@@ -1424,6 +1425,31 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 			elog(ERROR, "corrupted pg_undo meta data in file \"%s\": %m",
 				 path);
 		log->meta = log->checkpoint_meta;
+
+		/*
+		 * If there are any segment files between the discard and insert
+		 * pointers that don't exist on disk as expected, then create new
+		 * empty files.  If we are restarting after a crash, segment files
+		 * that were present at the moment of the checkpoint might be missing
+		 * now because later WAL records will discard them.
+		 */
+		for (segno = log->meta.discard / UndoLogSegmentSize;
+			 segno <= log->meta.insert / UndoLogSegmentSize;
+			 ++segno)
+		{
+			struct stat	stat_buffer;
+			char	path[MAXPGPATH];
+			int		rc;
+
+			UndoLogSegmentPath(logno, segno, log->meta.tablespace, path);
+			rc = stat(path, &stat_buffer);
+			if (rc == 0 && stat_buffer.st_size == UndoLogSegmentSize)
+				continue;
+			if (rc != 0 && errno != ENOENT)
+				elog(ERROR, "could not stat \"%s\": %m", path);
+			allocate_empty_undo_segment(logno, log->meta.tablespace,
+										segno * UndoLogSegmentSize);
+		}
 
 		/*
 		 * If a any transactions are in progress, we need to associate them
