@@ -25,6 +25,10 @@
 #define ZHeapTupleSatisfiesVisibility(tuple, snapshot, buffer, ctid) \
 	((*(snapshot)->zsatisfies) (tuple, snapshot, buffer, ctid))
 
+/* Fetch CTID information stored in undo */
+extern void ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid,
+								TransactionId *xid, CommandId *cid);
+
 /* These are the "satisfies" test routines for the zheap. */
 extern ZHeapTuple ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup,
 					   Snapshot snapshot, Buffer buffer, ItemPointer ctid);

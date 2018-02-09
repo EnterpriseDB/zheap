@@ -906,8 +906,15 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 			offnum = offsets[i];
 
 			itemid = PageGetItemId(page, offnum);
-			tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
-			slot_no = ZHeapTupleHeaderGetXactSlot(tup_hdr);
+			Assert(ItemIdIsUsed(itemid));
+
+			if (ItemIdIsDeleted(itemid))
+				slot_no = ItemIdGetTransactionSlot(itemid);
+			else
+			{
+				tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
+				slot_no = ZHeapTupleHeaderGetXactSlot(tup_hdr);
+			}
 		}
 
 		prev_urecptr = all_slots[slot_no].urp;

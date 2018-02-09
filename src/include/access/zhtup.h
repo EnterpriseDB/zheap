@@ -298,6 +298,7 @@ extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 						CommandId *cid_out, UndoRecPtr *urec_ptr_out,
 						bool nobuflock);
 extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer ctid);
+extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, ItemPointer ctid);
 extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
 					TransactionId priorXmax);
 

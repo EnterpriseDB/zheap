@@ -116,6 +116,53 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch, TransactionId *xid,
 }
 
 /*
+ * ZHeapPageGetNewCtid
+ *
+ * 	This should be called for ctid which is already set deleted to get the new
+ * 	ctid, xid and cid which modified the given one.
+ */
+void
+ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
+						 CommandId *cid)
+{
+	ZHeapPageOpaque	opaque;
+	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
+	int		trans_slot;
+	int		vis_info;
+	uint64		epoch;
+	ItemId	lp;
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buffer));
+	lp = PageGetItemId(BufferGetPage(buffer), ItemPointerGetOffsetNumber(ctid));
+
+	Assert(ItemIdIsDeleted(lp));
+
+	trans_slot = ItemIdGetTransactionSlot(lp);
+	vis_info = ItemIdGetVisibilityInfo(lp);
+
+	if (vis_info & ITEMID_XACT_INVALID)
+	{
+		ZHeapTupleData	undo_tup;
+		ItemPointerSetBlockNumber(&undo_tup.t_self,
+								  BufferGetBlockNumber(buffer));
+		ItemPointerSetOffsetNumber(&undo_tup.t_self, ItemPointerGetOffsetNumber(ctid));
+
+		urec_ptr = ZHeapPageGetUndoPtr(trans_slot, opaque);
+		*xid = InvalidTransactionId;
+		FetchTransInfoFromUndo(&undo_tup, &epoch, xid, cid, &urec_ptr);
+	}
+	else
+	{
+		epoch = (uint64) ZHeapPageGetRawEpoch(trans_slot, opaque);
+		*xid = ZHeapPageGetRawXid(trans_slot, opaque);
+		*cid = ZHeapPageGetCid(trans_slot, buffer, ItemPointerGetOffsetNumber(ctid));
+		urec_ptr = ZHeapPageGetUndoPtr(trans_slot, opaque);
+	}
+
+	ZHeapPageGetCtid(trans_slot, buffer, ctid);
+}
+
+/*
  * GetVisibleTupleIfAny
  *
  * This is a helper function for GetTupleFromUndoWithOffset.

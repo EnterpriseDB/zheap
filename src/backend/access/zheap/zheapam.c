@@ -943,7 +943,20 @@ zheap_delete(Relation relation, ItemPointer tid,
 
 	offnum = ItemPointerGetOffsetNumber(tid);
 	lp = PageGetItemId(page, offnum);
-	Assert(ItemIdIsNormal(lp));
+	Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
+
+	/*
+	 * If TID is already delete marked due to pruning, then get new ctid, so
+	 * that we can delete the new tuple.  We will get new ctid if the tuple
+	 * was non-inplace-updated otherwise we will get same TID.
+	 */
+	if (ItemIdIsDeleted(lp))
+	{
+		ctid = *tid;
+		ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
+		result = HeapTupleUpdated;
+		goto zheap_tuple_updated;
+	}
 
 	zheaptup.t_tableOid = RelationGetRelid(relation);
 	zheaptup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
@@ -997,6 +1010,24 @@ check_tup_satisfies_update:
 			XactLockTableWait(xwait, relation, &(zheaptup.t_self), XLTW_Delete);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
+			/* By the time, we require the lock on buffer, some other xact
+			 * could have updated this tuple.  We need take care of the cases
+			 * when page is pruned after we release the buffer lock. For this,
+			 * we check if ItemId is not deleted and refresh the tuple offset
+			 * position in page.  If TID is already delete marked due to
+			 * pruning, then get new ctid, so that we can update the new tuple.
+			 */
+			if (ItemIdIsDeleted(lp))
+			{
+				ctid = *tid;
+				ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
+				result = HeapTupleUpdated;
+				goto zheap_tuple_updated;
+			}
+
+			zheaptup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+			zheaptup.t_len = ItemIdGetLength(lp);
+
 			/*
 			 * xwait is done, but if xwait had just locked the tuple then some
 			 * other xact could update this tuple before we get to this point.
@@ -1029,6 +1060,7 @@ check_tup_satisfies_update:
 			result = HeapTupleUpdated;
 	}
 
+zheap_tuple_updated:
 	if (result != HeapTupleMayBeUpdated)
 	{
 		Assert(result == HeapTupleSelfUpdated ||
@@ -1072,6 +1104,23 @@ check_tup_satisfies_update:
 
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
+		/*
+		 * Also take care of cases when page is pruned after we release the
+		 * buffer lock. For this we check if ItemId is not deleted and refresh
+		 * the tuple offset position in page.  If TID is already delete marked
+		 * due to pruning, then get new ctid, so that we can delete the new
+		 * tuple.
+		 */
+		if (ItemIdIsDeleted(lp))
+		{
+			ctid = *tid;
+			ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
+			result = HeapTupleUpdated;
+			goto zheap_tuple_updated;
+		}
+
+		zheaptup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+		zheaptup.t_len = ItemIdGetLength(lp);
 		goto check_tup_satisfies_update;
 	}
 
@@ -1298,8 +1347,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	TransactionId xid = GetTopTransactionId();
 	TransactionId tup_xid, save_tup_xid, oldestXidHavingUndo;
 	CommandId	tup_cid;
-	Bitmapset  *inplace_upd_attrs;
-	Bitmapset  *key_attrs;
+	Bitmapset  *inplace_upd_attrs = NULL;
+	Bitmapset  *key_attrs = NULL;
 	Bitmapset  *interesting_attrs;
 	Bitmapset  *modified_attrs;
 	ItemId		lp;
@@ -1381,7 +1430,20 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
 	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(otid));
-	Assert(ItemIdIsNormal(lp));
+	Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
+
+	/*
+	 * If TID is already delete marked due to pruning, then get new ctid, so
+	 * that we can update the new tuple.  We will get new ctid if the tuple
+	 * was non-inplace-updated otherwise we will get same TID.
+	 */
+	if (ItemIdIsDeleted(lp))
+	{
+		ctid = *otid;
+		ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
+		result = HeapTupleUpdated;
+		goto zheap_tuple_updated;
+	}
 
 	/*
 	 * Fill in enough data in oldtup for ZHeapDetermineModifiedColumns to work
@@ -1482,6 +1544,24 @@ check_tup_satisfies_update:
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
 			/*
+			 * Also take care of cases when page is pruned after we release the
+			 * buffer lock. For this we check if ItemId is not deleted and refresh
+			 * the tuple offset position in page.  If TID is already delete marked
+			 * due to pruning, then get new ctid, so that we can update the new
+			 * tuple.
+			 */
+			if (ItemIdIsDeleted(lp))
+			{
+				ctid = *otid;
+				ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
+				result = HeapTupleUpdated;
+				goto zheap_tuple_updated;
+			}
+
+			oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+			oldtup.t_len = ItemIdGetLength(lp);
+
+			/*
 			 * xwait is done, but if xwait had just locked the tuple then some
 			 * other xact could update this tuple before we get to this point.
 			 * Check for xid change, and start over if so.
@@ -1513,6 +1593,7 @@ check_tup_satisfies_update:
 			result = HeapTupleUpdated;
 	}
 
+zheap_tuple_updated:
 	if (result != HeapTupleMayBeUpdated)
 	{
 		Assert(result == HeapTupleSelfUpdated ||
@@ -1545,6 +1626,24 @@ check_tup_satisfies_update:
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 		visibilitymap_pin(relation, block, &vmbuffer);
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+		/*
+		 * Also take care of cases when page is pruned after we release the
+		 * buffer lock. For this we check if ItemId is not deleted and refresh
+		 * the tuple offset position in page.  If TID is already delete marked
+		 * due to pruning, then get new ctid, so that we can update the new
+		 * tuple.
+		 */
+		if (ItemIdIsDeleted(lp))
+		{
+			ctid = *otid;
+			ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
+			result = HeapTupleUpdated;
+			goto zheap_tuple_updated;
+		}
+
+		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+		oldtup.t_len = ItemIdGetLength(lp);
 		goto check_tup_satisfies_update;
 	}
 
@@ -1568,8 +1667,43 @@ check_tup_satisfies_update:
 
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
+		/*
+		 * Also take care of cases when page is pruned after we release the
+		 * buffer lock. For this we check if ItemId is not deleted and refresh
+		 * the tuple offset position in page.  If TID is already delete marked
+		 * due to pruning, then get new ctid, so that we can update the new
+		 * tuple.
+		 */
+		if (ItemIdIsDeleted(lp))
+		{
+			ctid = *otid;
+			ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
+			result = HeapTupleUpdated;
+			goto zheap_tuple_updated;
+		}
+
+		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+		oldtup.t_len = ItemIdGetLength(lp);
+
 		goto check_tup_satisfies_update;
 	}
+
+	interesting_attrs = bms_add_members(interesting_attrs, inplace_upd_attrs);
+
+	/* Determine columns modified by the update. */
+	modified_attrs = ZHeapDetermineModifiedColumns(relation, interesting_attrs,
+												   &oldtup, newtup);
+
+	is_index_updated = bms_overlap(modified_attrs, inplace_upd_attrs);
+
+	/*
+	 * inplace updates can be done only if the length of new tuple is lesser
+	 * than or equal to old tuple and there are no index column updates.
+	 */
+	if ((newtup->t_len <= oldtup.t_len) && !is_index_updated)
+		use_inplace_update = true;
+	else
+		use_inplace_update = false;
 
 	/* transaction slot must be reserved before adding tuple to page */
 	Assert(trans_slot_id != InvalidXactSlotId);
@@ -2350,7 +2484,20 @@ zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 	page = BufferGetPage(*buffer);
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
-	Assert(ItemIdIsNormal(lp));
+	Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
+
+	/*
+	 * If TID is already delete marked due to pruning, then get new ctid, so
+	 * that we can lock the new tuple.  We will get new ctid if the tuple
+	 * was non-inplace-updated otherwise we will get same TID.
+	 */
+	if (ItemIdIsDeleted(lp))
+	{
+		ctid = *tid;
+		ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
+		result = HeapTupleUpdated;
+		goto failed;
+	}
 
 	zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 	zhtup.t_len = ItemIdGetLength(lp);
@@ -2459,8 +2606,25 @@ check_tup_satisfies_update:
 				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 
 				/*
+				 * Also take care of cases when page is pruned after we release
+				 * the buffer lock. For this we check if ItemId is not deleted
+				 * and refresh the tuple offset position in page.  If TID is
+				 * already delete marked due to pruning, then get new ctid, so
+				 * that we can lock the new tuple.
+				 */
+				if (ItemIdIsDeleted(lp))
+				{
+					ctid = *tid;
+					ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
+					result = HeapTupleUpdated;
+					goto failed;
+				}
+
+				zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+				zhtup.t_len = ItemIdGetLength(lp);
+
+				/*
 				 * Make sure it's still an appropriate lock, else start over.
-				 * See above about allowing xmax to change.
 				 */
 				if (!ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask) ||
 					ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(zhtup.t_data->t_infomask) ||
@@ -2481,8 +2645,27 @@ check_tup_satisfies_update:
 		 */
 		if (require_sleep && TransactionIdIsCurrentTransactionId(xwait))
 		{
-			/* ... but if the xid changed in the meantime, start over */
+			/*
+			 * ... but if the xid changed in the meantime, start over
+			 *
+			 * Also take care of cases when page is pruned after we release
+			 * the buffer lock. For this we check if ItemId is not deleted and
+			 * refresh the tuple offset position in page.  If TID is already
+			 * delete marked due to pruning, then get new ctid, so that we can
+			 * lock the new tuple.
+			 */
 			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+			if (ItemIdIsDeleted(lp))
+			{
+				ctid = *tid;
+				ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
+				result = HeapTupleUpdated;
+				goto failed;
+			}
+
+			zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+			zhtup.t_len = ItemIdGetLength(lp);
+
 			if (xid_infomask_changed(zhtup.t_data->t_infomask, infomask) ||
 				!TransactionIdEquals(ZHeapTupleHeaderGetRawXid(zhtup.t_data, opaque),
 									 xwait))
@@ -2545,6 +2728,24 @@ check_tup_satisfies_update:
 			}
 
 			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+
+			/*
+			 * Also take care of cases when page is pruned after we release
+			 * the buffer lock. For this we check if ItemId is not deleted and
+			 * refresh the tuple offset position in page.  If TID is already
+			 * delete marked due to pruning, then get new ctid, so that we can
+			 * lock the new tuple.
+			 */
+			if (ItemIdIsDeleted(lp))
+			{
+				ctid = *tid;
+				ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
+				result = HeapTupleUpdated;
+				goto failed;
+			}
+
+			zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+			zhtup.t_len = ItemIdGetLength(lp);
 
 			/*
 			 * xwait is done, but if xwait had just locked the tuple then some
@@ -2673,6 +2874,24 @@ failed:
 		pgstat_report_wait_end();
 
 		LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+
+		/*
+		 * Also take care of cases when page is pruned after we release
+		 * the buffer lock. For this we check if ItemId is not deleted and
+		 * refresh the tuple offset position in page.  If TID is already
+		 * delete marked due to pruning, then get new ctid, so that we can
+		 * lock the new tuple.
+		 */
+		if (ItemIdIsDeleted(lp))
+		{
+			ctid = *tid;
+			ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
+			result = HeapTupleUpdated;
+			goto failed;
+		}
+
+		zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+		zhtup.t_len = ItemIdGetLength(lp);
 
 		goto check_tup_satisfies_update;
 	}
@@ -4198,41 +4417,8 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf)
 void
 ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer	ctid)
 {
-	ZHeapPageOpaque	opaque;
-	UnpackedUndoRecord	*urec;
-	UndoRecPtr	urec_ptr;
-
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
-	urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(zhtup->t_data, opaque);
-
-fetch_undo_record:
-	urec = UndoFetchRecord(urec_ptr,
-						   ItemPointerGetBlockNumber(&zhtup->t_self),
-						   ItemPointerGetOffsetNumber(&zhtup->t_self),
-						   InvalidTransactionId);
-	/*
-	 * Skip the undo record for transaction slot reuse, it is used only for
-	 * the purpose of fetching transaction information for tuples that point
-	 * to such slots.
-	 */
-	if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
-	{
-		urec_ptr = urec->uur_blkprev;
-		UndoRecordRelease(urec);
-
-		goto fetch_undo_record;
-	}
-
-	/*
-	 * We always expect urec here to valid as it try to fetch ctid of tuples
-	 * that are visible to the snapshot, so corresponding undo record can't be
-	 * discarded.
-	 */
-	Assert(urec && urec->uur_type == UNDO_UPDATE);
-
-	*ctid = *(ItemPointer) urec->uur_payload.data;
-
-	UndoRecordRelease(urec);
+	*ctid = zhtup->t_self;
+	ZHeapPageGetCtid(ZHeapTupleHeaderGetXactSlot(zhtup->t_data), buf, ctid);
 }
 
 /*
@@ -4421,6 +4607,53 @@ ZHeapPageGetCid(int trans_slot, Buffer buf, OffsetNumber off)
 	return current_cid;
 }
 
+
+/*
+ * ZHeapPageGetCtid - Retrieve tuple id from tuple's undo record.
+ *
+ * It is expected that caller of this function has atleast read lock.
+ */
+void
+ZHeapPageGetCtid(int trans_slot, Buffer buf, ItemPointer ctid)
+{
+	ZHeapPageOpaque	opaque;
+	UnpackedUndoRecord	*urec;
+	UndoRecPtr	urec_ptr;
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
+
+	urec_ptr = ZHeapPageGetUndoPtr(trans_slot, opaque);
+fetch_undo_record:
+	urec = UndoFetchRecord(urec_ptr,
+						   ItemPointerGetBlockNumber(ctid),
+						   ItemPointerGetOffsetNumber(ctid),
+						   InvalidTransactionId);
+	/*
+	 * Skip the undo record for transaction slot reuse, it is used only for
+	 * the purpose of fetching transaction information for tuples that point
+	 * to such slots.
+	 */
+	if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
+	{
+		urec_ptr = urec->uur_blkprev;
+		UndoRecordRelease(urec);
+
+		goto fetch_undo_record;
+	}
+
+	/*
+	 * We always expect urec here to valid as it try to fetch ctid of tuples
+	 * that are visible to the snapshot, so corresponding undo record can't be
+	 * discarded.
+	 */
+	Assert(urec && urec->uur_type == UNDO_UPDATE);
+
+	*ctid = *(ItemPointer) urec->uur_payload.data;
+
+	UndoRecordRelease(urec);
+}
+
+
 /*
  * ValidateTuplesXact - Check if the tuple is modified by priorXmax.
  *
@@ -4453,7 +4686,10 @@ ValidateTuplesXact(ZHeapTuple tuple, Buffer buf, TransactionId priorXmax)
 	page = BufferGetPage(buf);
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
-	Assert(ItemIdIsNormal(lp));
+	Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
+
+	zhtup.t_tableOid = tuple->t_tableOid;
+	zhtup.t_self = *tid;
 
 	/*
 	 * If the tuple is updated such that its transaction slot has been
@@ -4461,22 +4697,28 @@ ValidateTuplesXact(ZHeapTuple tuple, Buffer buf, TransactionId priorXmax)
 	 * To avoid, that we get the latest tuple from page rather than relying on
 	 * it's in-memory copy.
 	 */
-	zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-	zhtup.t_len = ItemIdGetLength(lp);
-	zhtup.t_tableOid = tuple->t_tableOid;
-	zhtup.t_self = *tid;
+	if (!ItemIdIsDeleted(lp))
+	{
+		zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+		zhtup.t_len = ItemIdGetLength(lp);
+		xid = ZHeapTupleHeaderGetRawXid(zhtup.t_data, opaque);
+		trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup.t_data);
+		urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(zhtup.t_data, opaque);
+	}
+	else
+	{
+		trans_slot_id = ItemIdGetTransactionSlot(lp);
+		xid = ZHeapPageGetRawXid(trans_slot_id, opaque);
+		urec_ptr = ZHeapPageGetUndoPtr(trans_slot_id, opaque);
+	}
 
-	if (TransactionIdEquals(ZHeapTupleHeaderGetRawXid(zhtup.t_data, opaque),
-							priorXmax))
+	if (TransactionIdEquals(xid, priorXmax))
 	{
 		valid = true;
 		goto tuple_is_valid;
 	}
 
 	undo_tup = &zhtup;
-	urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(undo_tup->t_data, opaque);
-	xid = ZHeapTupleHeaderGetRawXid(undo_tup->t_data, opaque);
-	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 
 	/*
 	 * Current xid on tuple must not precede RecentGlobalXmin as it will be
@@ -4488,6 +4730,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Buffer buf, TransactionId priorXmax)
 	do
 	{
 		prev_trans_slot_id = trans_slot_id;
+		Assert(prev_trans_slot_id != ZHTUP_SLOT_FROZEN);
 
 fetch_undo_record:
 		urec = UndoFetchRecord(urec_ptr,
@@ -4500,8 +4743,7 @@ fetch_undo_record:
 		 * the transaction slot on tuple can be marked as frozen nor the
 		 * corresponding undo be discarded.
 		 */
-		Assert(!((ZHeapTupleHeaderGetXactSlot(undo_tup->t_data) == ZHTUP_SLOT_FROZEN) ||
-			   urec == NULL));
+		Assert(urec != NULL);
 
 		if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
 		{
