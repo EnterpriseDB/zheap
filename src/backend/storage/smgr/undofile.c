@@ -270,7 +270,7 @@ static File undofile_open_segment_file(Oid relNode, Oid spcNode, int segno)
 	file = PathNameOpenFile(path, O_RDWR | PG_BINARY);
 
 	if (file <= 0)
-		elog(ERROR, "cannot open segment file '%s': %m", path);
+		elog(ERROR, "cannot open undo segment file '%s': %m", path);
 
 	return file;
 }
