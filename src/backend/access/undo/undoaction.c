@@ -28,7 +28,8 @@
 static void execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 					 TransactionId xid, BlockNumber blkno, bool blk_chain_complete,
 					bool nopartial);
-static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off);
+static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
+									  TransactionId xid);
 
 /*
  * execute_undo_actions - Execute the undo actions
@@ -216,7 +217,8 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
  *	it, otherwise mark it as dead.
  */
 static inline void
-undo_action_insert(Relation rel, Page page, OffsetNumber off)
+undo_action_insert(Relation rel, Page page, OffsetNumber off,
+				   TransactionId xid)
 {
 	ItemId		lp;
 	bool		relhasindex;
@@ -240,6 +242,8 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off)
 		/* Set hint bit for ZPageAddItem */
 		PageSetHasFreeLinePointers(page);
 	}
+
+	ZPageSetPrunable(page, xid);
 }
 
 /*
@@ -323,7 +327,7 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 		{
 			case UNDO_INSERT:
 				{
-					undo_action_insert(rel, page, uur->uur_offset);
+					undo_action_insert(rel, page, uur->uur_offset, xid);
 				}
 				break;
 			case UNDO_MULTI_INSERT:
@@ -339,7 +343,7 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 						 iter_offset <= end_offset;
 						 iter_offset++)
 					{
-						undo_action_insert(rel, page, iter_offset);
+						undo_action_insert(rel, page, iter_offset, xid);
 					}
 				}
 				break;

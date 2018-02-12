@@ -10,6 +10,17 @@
  * IDENTIFICATION
  *	  src/backend/access/heap/prunezheap.c
  *
+ * In Zheap, we can reclaim space on following operations
+ * a. non-inplace updates, when committed or rolled back.
+ * b. inplace updates that reduces the tuple length, when commited.
+ * c. deletes, when committed.
+ * d. inserts, when rolled back.
+ *
+ * Since we only store xid which changed the page in pd_prune_xid, to prune
+ * the page, we can check if pd_prune_xid is in progress.  This can sometimes
+ * lead to unwanted page pruning calls as a side effect, example in case of
+ * rolled back deletes.  If there is nothing to prune, then the call to prune
+ * is cheap, so we don't want to optimize it at this stage.
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"

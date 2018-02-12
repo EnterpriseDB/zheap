@@ -541,7 +541,8 @@ zheap_xlog_update(XLogReaderState *record)
 						xid_epoch, xid, urecptr);
 
 		/* Mark the page as a candidate for pruning */
-		ZPageSetPrunable(oldpage, XLogRecGetXid(record));
+		if (!inplace_update)
+			ZPageSetPrunable(oldpage, XLogRecGetXid(record));
 
 		if (xlrec->flags & XLZ_UPDATE_OLD_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(oldpage);
@@ -695,6 +696,13 @@ zheap_xlog_update(XLogReaderState *record)
 				new_pos= (ZHeapTupleHeader) PageGetItem(newpage, lp);
 				oldtup.t_data = new_pos;
 			}
+			else if (newlen < oldtup.t_len)
+			{
+				/* new tuple is smaller, a prunable cadidate */
+				Assert (oldpage == newpage);
+				ZPageSetPrunable(newpage, XLogRecGetXid(record));
+			}
+
 			memcpy((char *) oldtup.t_data, (char *) newtup, newlen);
 			PageSetUNDO(undorecord, newpage, trans_slot_id, xid_epoch, xid, urecptr);
 		}

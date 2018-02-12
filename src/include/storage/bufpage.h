@@ -162,6 +162,12 @@ typedef struct PageHeaderData
 typedef PageHeaderData *PageHeader;
 
 /*
+ * We cannot include storage/procarray.h here, otherwise it creates cyclic
+ * dependency. So declaring TransactionIdIsInProgress again.
+ */
+extern bool TransactionIdIsInProgress(TransactionId xid);
+
+/*
  * pd_flags contains the following flag bits.  Undefined bits are initialized
  * to zero and may be used in the future.
  *
@@ -404,13 +410,14 @@ do { \
 #define ZPageIsPrunable(page) \
 ( \
 	TransactionIdIsValid(((PageHeader) (page))->pd_prune_xid) && \
-	TransactionIdDidCommit(((PageHeader) (page))->pd_prune_xid) \
+	!TransactionIdIsInProgress(((PageHeader) (page))->pd_prune_xid) \
 )
 #define ZPageSetPrunable(page, xid) \
 do { \
 	Assert(TransactionIdIsNormal(xid)); \
 	if (!TransactionIdIsValid(((PageHeader) (page))->pd_prune_xid) || \
-		!TransactionIdDidCommit(((PageHeader) (page))->pd_prune_xid)) \
+		TransactionIdIsInProgress(((PageHeader) (page))->pd_prune_xid) || \
+		TransactionIdPrecedes(xid, ((PageHeader) (page))->pd_prune_xid)) \
 		((PageHeader) (page))->pd_prune_xid = (xid); \
 } while (0)
 #define ZPageClearPrunable(page) PageClearPrunable(page)

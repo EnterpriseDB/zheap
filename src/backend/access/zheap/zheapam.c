@@ -2021,10 +2021,12 @@ reacquire_buffer:
 	}
 
 	/*
-	 * Non in-place update will delete the old record so set this xid as
-	 * prunable
+	 * A page can be pruned for non-inplace updates or inplace updates that
+	 * results in shorter tuples.  If this transaction commits, the tuple will
+	 * become DEAD sooner or later.  If the transaction finally aborts, the
+	 * subsequent page pruning will be a no-op and the hint will be cleared.
 	 */
-	if (!use_inplace_update)
+	if (!use_inplace_update || (newtup->t_len < oldtup.t_len))
 		ZPageSetPrunable(page, xid);
 
 	ZHeapTupleHeaderSetXactSlot(oldtup.t_data, trans_slot_id);
