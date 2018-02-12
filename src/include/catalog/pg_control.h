@@ -61,6 +61,13 @@ typedef struct CheckPoint
 	 * set to InvalidTransactionId.
 	 */
 	TransactionId oldestActiveXid;
+
+	/*
+	 * Oldest transaction id with epoc which is having undo. Include this value
+	 * in the checkpoint record so that whenever server starts we get proper
+	 * value.
+	 */
+	uint64 oldestXidWithEpochHavingUndo;
 } CheckPoint;
 
 /* XLOG info values for XLOG rmgr */

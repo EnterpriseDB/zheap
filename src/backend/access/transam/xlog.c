@@ -5161,6 +5161,7 @@ BootStrapXLOG(void)
 	checkPoint.newestCommitTsXid = InvalidTransactionId;
 	checkPoint.time = (pg_time_t) time(NULL);
 	checkPoint.oldestActiveXid = InvalidTransactionId;
+	checkPoint.oldestXidWithEpochHavingUndo = 0;
 
 	ShmemVariableCache->nextXid = checkPoint.nextXid;
 	ShmemVariableCache->nextOid = checkPoint.nextOid;
@@ -6781,6 +6782,10 @@ StartupXLOG(void)
 			(errmsg_internal("commit timestamp Xid oldest/newest: %u/%u",
 							 checkPoint.oldestCommitTsXid,
 							 checkPoint.newestCommitTsXid)));
+	ereport(DEBUG1,
+			(errmsg_internal("oldest xid with epoch having undo: " UINT64_FORMAT,
+							 checkPoint.oldestXidWithEpochHavingUndo)));
+
 	if (!TransactionIdIsNormal(checkPoint.nextXid))
 		ereport(PANIC,
 				(errmsg("invalid next transaction ID")));
@@ -6797,6 +6802,10 @@ StartupXLOG(void)
 					 checkPoint.newestCommitTsXid);
 	XLogCtl->ckptXidEpoch = checkPoint.nextXidEpoch;
 	XLogCtl->ckptXid = checkPoint.nextXid;
+
+	/* Read oldest xid having undo from checkpoint and set in proc global. */
+	pg_atomic_write_u64(&ProcGlobal->oldestXidWithEpochHavingUndo,
+						checkPoint.oldestXidWithEpochHavingUndo);
 
 	/*
 	 * Initialize replication slots, before there's a chance to remove
@@ -8971,6 +8980,9 @@ CreateCheckPoint(int flags)
 		checkPoint.nextOid += ShmemVariableCache->oidCount;
 	LWLockRelease(OidGenLock);
 
+	checkPoint.oldestXidWithEpochHavingUndo =
+			pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
+
 	MultiXactGetCheckptMulti(shutdown,
 							 &checkPoint.nextMulti,
 							 &checkPoint.nextMultiOffset,
@@ -9883,6 +9895,9 @@ xlog_redo(XLogReaderState *record)
 		MultiXactAdvanceOldest(checkPoint.oldestMulti,
 							   checkPoint.oldestMultiDB);
 
+		pg_atomic_write_u64(&ProcGlobal->oldestXidWithEpochHavingUndo,
+							checkPoint.oldestXidWithEpochHavingUndo);
+
 		/*
 		 * No need to set oldestClogXid here as well; it'll be set when we
 		 * redo an xl_clog_truncate if it changed since initialization.
@@ -9941,12 +9956,17 @@ xlog_redo(XLogReaderState *record)
 		/* ControlFile->checkPointCopy always tracks the latest ckpt XID */
 		ControlFile->checkPointCopy.nextXidEpoch = checkPoint.nextXidEpoch;
 		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;
+		ControlFile->checkPointCopy.oldestXidWithEpochHavingUndo =
+									checkPoint.oldestXidWithEpochHavingUndo;
 
 		/* Update shared-memory copy of checkpoint XID/epoch */
 		SpinLockAcquire(&XLogCtl->info_lck);
 		XLogCtl->ckptXidEpoch = checkPoint.nextXidEpoch;
 		XLogCtl->ckptXid = checkPoint.nextXid;
 		SpinLockRelease(&XLogCtl->info_lck);
+
+		ControlFile->checkPointCopy.oldestXidWithEpochHavingUndo =
+									checkPoint.oldestXidWithEpochHavingUndo;
 
 		/* Write an undo log metadata snapshot. */
 		CheckPointUndoLogs(checkPoint.redo, ControlFile->checkPointCopy.redo);
@@ -9989,6 +10009,9 @@ xlog_redo(XLogReaderState *record)
 		/* Handle multixact */
 		MultiXactAdvanceNextMXact(checkPoint.nextMulti,
 								  checkPoint.nextMultiOffset);
+
+		pg_atomic_write_u64(&ProcGlobal->oldestXidWithEpochHavingUndo,
+							checkPoint.oldestXidWithEpochHavingUndo);
 
 		/*
 		 * NB: This may perform multixact truncation when replaying WAL
