@@ -685,4 +685,9 @@
 # CUSTOMIZED OPTIONS
 #------------------------------------------------------------------------------
 
+# To specify the storage engine type for your relations.
+# The possible options are heap and zheap only.
+#
+#storage_engine='heap'
+#
 # Add settings for extensions here
