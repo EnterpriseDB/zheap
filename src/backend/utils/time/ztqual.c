@@ -110,9 +110,10 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch, TransactionId *xid,
 
 		UndoRecordRelease(urec);
 
-		if (undo_tup_xid != InvalidTransactionId && undo_tup_xid == *xid)
+		if ((undo_tup_xid == InvalidTransactionId || undo_tup_xid == *xid)
+			&& uur_type == UNDO_INVALID_XACT_SLOT)
 			break;
-	} while (uur_type != UNDO_INVALID_XACT_SLOT);
+	} while (true);
 }
 
 /*
