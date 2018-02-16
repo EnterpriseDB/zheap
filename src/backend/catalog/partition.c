@@ -19,6 +19,7 @@
 #include "access/htup_details.h"
 #include "access/tupconvert.h"
 #include "access/sysattr.h"
+#include "access/zheaputils.h"
 #include "catalog/indexing.h"
 #include "catalog/partition.h"
 #include "catalog/pg_inherits.h"
