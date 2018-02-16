@@ -3886,7 +3886,7 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 
 		if (ItemIdIsDeleted(itemid))
 		{
-			if ((ItemIdGetVisibilityInfo(itemid) & ZHEAP_INVALID_XACT_SLOT))
+			if ((ItemIdGetVisibilityInfo(itemid) & ITEMID_XACT_INVALID))
 				continue;
 			trans_slot = ItemIdGetTransactionSlot(itemid);
 		}
@@ -5850,7 +5850,7 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	lp = PageGetItemId(dp, offnum);
 
 	/* check for unused or dead items */
-	if (!(ItemIdIsNormal(lp)) || ItemIdIsDead(lp))
+	if (!(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp)))
 		return NULL;
 
 	loctup_len = ItemIdGetLength(lp);

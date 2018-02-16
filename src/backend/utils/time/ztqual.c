@@ -540,7 +540,7 @@ fetch_undo_record:
 	}
 
 	/* need to ensure that undo record contains complete tuple */
-	Assert(urec->uur_type == UNDO_DELETE);
+	Assert(urec->uur_type == UNDO_DELETE || urec->uur_type == UNDO_UPDATE);
 	undo_tup = CopyTupleFromUndoRecord(urec, NULL, false);
 	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 	prev_urec_ptr = urec->uur_blkprev;
@@ -977,7 +977,7 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 	 */
 	if (trans_slot != ZHTUP_SLOT_FROZEN)
 	{
-		if (vis_info & ZHEAP_INVALID_XACT_SLOT)
+		if (vis_info & ITEMID_XACT_INVALID)
 		{
 			ZHeapTupleData	undo_tup;
 			ItemPointerSetBlockNumber(&undo_tup.t_self,
