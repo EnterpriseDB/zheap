@@ -4444,7 +4444,8 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, uint64 *epoch_xid_out,
     ItemId	lp;
     Page	page;
     ItemPointer tid = &(zhtup->t_self);
-
+	int		trans_slot;
+	bool	is_invalid_slot = false;
 
 	if (nobuflock)
 	{
@@ -4456,22 +4457,40 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, uint64 *epoch_xid_out,
 		page = BufferGetPage(buf);
 		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 		lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
-		Assert(ItemIdIsNormal(lp));
+		Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
 
-		/*
-		 * If the tuple is updated such that its transaction slot has been
-		 * changed, then we will never be able to get the correct tuple from undo.
-		 * To avoid, that we get the latest tuple from page rather than relying on
-		 * it's in-memory copy.
-		 */
-		zhtup->t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-		zhtup->t_len = ItemIdGetLength(lp);
-		tuple = zhtup->t_data;
+		if (!ItemIdIsDeleted(lp))
+		{
+			/*
+			 * If the tuple is updated such that its transaction slot has
+			 * been changed, then we will never be able to get the correct
+			 * tuple from undo. To avoid, that we get the latest tuple from
+			 * page rather than relying on it's in-memory copy.
+			 */
+			zhtup->t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+			zhtup->t_len = ItemIdGetLength(lp);
+			tuple = zhtup->t_data;
+			trans_slot = ZHeapTupleHeaderGetXactSlot(tuple);
+			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
+			if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+				is_invalid_slot = true;
+		}
+		else
+		{
+			trans_slot = ItemIdGetTransactionSlot(lp);
+			urec_ptr = ZHeapPageGetUndoPtr(trans_slot, opaque);
+			if (ItemIdGetVisibilityInfo(lp) & ITEMID_XACT_INVALID)
+				is_invalid_slot = true;
+		}
 	}
 	else
 	{
 		page = BufferGetPage(buf);
 		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+		trans_slot = ZHeapTupleHeaderGetXactSlot(tuple);
+		urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
+		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+			is_invalid_slot = true;
 	}
 
 	/*
@@ -4479,13 +4498,11 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, uint64 *epoch_xid_out,
 	 * record for the tuples that point to a slot that gets invalidated for
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
-	if (ZHeapTupleHeaderGetXactSlot(tuple) != ZHTUP_SLOT_FROZEN)
+	if (trans_slot != ZHTUP_SLOT_FROZEN)
 	{
-		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+		if (is_invalid_slot)
 		{
 			uint8	uur_type;
-
-			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
 
 			do
 			{
@@ -4545,10 +4562,22 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, uint64 *epoch_xid_out,
 		}
 		else
 		{
-			epoch = (uint64) ZHeapTupleHeaderGetRawEpoch(tuple, opaque);
-			xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
-			cid = ZHeapTupleGetCid(zhtup, buf);
-			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
+			lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+			if (!ItemIdIsDeleted(lp))
+			{
+				epoch = (uint64) ZHeapTupleHeaderGetRawEpoch(tuple, opaque);
+				xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
+				cid = ZHeapTupleGetCid(zhtup, buf);
+				urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
+			}
+			else
+			{
+				epoch = (uint64) ZHeapPageGetRawEpoch(trans_slot, opaque);
+				xid = ZHeapPageGetRawXid(trans_slot, opaque);
+				cid = ZHeapPageGetCid(trans_slot, buf,
+									  ItemPointerGetOffsetNumber(tid));
+				urec_ptr = ZHeapPageGetUndoPtr(trans_slot, opaque);
+			}
 		}
 	}
 	else

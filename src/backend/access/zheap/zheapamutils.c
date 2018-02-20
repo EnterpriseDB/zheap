@@ -120,7 +120,7 @@ ltrmark:;
 		page = BufferGetPage(buffer);
 		lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
 
-		Assert(ItemIdIsNormal(lp));
+		Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
 		ztuple.t_len = ItemIdGetLength(lp);
 		UnlockReleaseBuffer(buffer);
 
