@@ -107,44 +107,6 @@ static ZHeapFreeOffsetRanges *
 ZHeapGetUsableOffsetRanges(Buffer buffer, ZHeapTuple *tuples, int ntuples,
 						   Size saveFreeSpace);
 
-
-#include "access/bufmask.h"
-#include "access/heapam.h"
-#include "access/heapam_xlog.h"
-#include "access/hio.h"
-#include "access/multixact.h"
-#include "access/parallel.h"
-#include "access/relscan.h"
-#include "access/sysattr.h"
-#include "access/transam.h"
-#include "access/tuptoaster.h"
-#include "access/valid.h"
-#include "access/visibilitymap.h"
-#include "access/xact.h"
-#include "access/xlog.h"
-#include "access/xloginsert.h"
-#include "access/xlogutils.h"
-#include "catalog/catalog.h"
-#include "catalog/namespace.h"
-#include "miscadmin.h"
-#include "pgstat.h"
-#include "port/atomics.h"
-#include "storage/bufmgr.h"
-#include "storage/freespace.h"
-#include "storage/lmgr.h"
-#include "storage/predicate.h"
-#include "storage/procarray.h"
-#include "storage/smgr.h"
-#include "storage/spin.h"
-#include "storage/standby.h"
-#include "utils/datum.h"
-#include "utils/inval.h"
-#include "utils/lsyscache.h"
-#include "utils/relcache.h"
-#include "utils/snapmgr.h"
-#include "utils/syscache.h"
-#include "utils/tqual.h"
-
 /*
  * zheap_fill_tuple
  *		Load data portion of a tuple from values/isnull arrays
