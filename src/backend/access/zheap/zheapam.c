@@ -1650,23 +1650,6 @@ zheap_tuple_updated:
 		goto check_tup_satisfies_update;
 	}
 
-	interesting_attrs = bms_add_members(interesting_attrs, inplace_upd_attrs);
-
-	/* Determine columns modified by the update. */
-	modified_attrs = ZHeapDetermineModifiedColumns(relation, interesting_attrs,
-												   &oldtup, newtup);
-
-	is_index_updated = bms_overlap(modified_attrs, inplace_upd_attrs);
-
-	/*
-	 * inplace updates can be done only if the length of new tuple is lesser
-	 * than or equal to old tuple and there are no index column updates.
-	 */
-	if ((newtup->t_len <= oldtup.t_len) && !is_index_updated)
-		use_inplace_update = true;
-	else
-		use_inplace_update = false;
-
 	/* transaction slot must be reserved before adding tuple to page */
 	Assert(trans_slot_id != InvalidXactSlotId);
 
