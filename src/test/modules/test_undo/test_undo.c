@@ -89,7 +89,7 @@ undo_discard(PG_FUNCTION_ARGS)
 {
 	UndoRecPtr undo_ptr = undo_rec_ptr_from_text(PG_GETARG_TEXT_PP(0));
 
-	UndoLogDiscard(undo_ptr);
+	UndoLogDiscard(undo_ptr, InvalidTransactionId);
 
 	PG_RETURN_VOID();
 }
@@ -458,7 +458,7 @@ undo_foreground_discard_test(PG_FUNCTION_ARGS)
 		UndoLogAdvance(undo_ptr, size);
 
 		/* Discard the space that we just allocated. */
-		UndoLogDiscard(undo_ptr + size);
+		UndoLogDiscard(undo_ptr + size, InvalidTransactionId);
 	}
 
 	PG_RETURN_VOID();

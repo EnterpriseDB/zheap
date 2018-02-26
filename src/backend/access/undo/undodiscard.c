@@ -83,6 +83,7 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 	uint16 uur_prevlen;
 	UndoLogNumber logno = UndoRecPtrGetLogNo(discard->undo_recptr);
 	TransactionId	undoxid;
+	TransactionId	latest_discardxid = InvalidTransactionId;
 	uint32	epoch;
 	undo_recptr = discard->undo_recptr;
 
@@ -187,6 +188,7 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 				undo_recptr = next_insert;
 				need_discard = true;
 				epoch = 0;
+				latest_discardxid = undoxid;
 				undoxid = InvalidTransactionId;
 			}
 
@@ -199,7 +201,7 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 			LWLockRelease(&discard->mutex);
 
 			if (need_discard)
-				UndoLogDiscard(undo_recptr);
+				UndoLogDiscard(undo_recptr, latest_discardxid);
 
 			break;
 		}
@@ -209,6 +211,7 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 		 * transaction.
 		 */
 		undo_recptr = next_urecptr;
+		latest_discardxid = undoxid;
 
 		if(uur)
 			UndoRecordRelease(uur);

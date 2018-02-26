@@ -38,6 +38,7 @@
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
+#include "storage/standby.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 
@@ -923,7 +924,7 @@ UndoLogAdvance(UndoRecPtr insertion_point, size_t size)
  * with it and how this code should handle it.
  */
 void
-UndoLogDiscard(UndoRecPtr discard_point)
+UndoLogDiscard(UndoRecPtr discard_point, TransactionId xid)
 {
 	UndoLogNumber logno = UndoRecPtrGetLogNo(discard_point);
 	UndoLogControl *log = get_undo_log_by_number(logno);
@@ -1067,6 +1068,7 @@ UndoLogDiscard(UndoRecPtr discard_point)
 		xlrec.logno = logno;
 		xlrec.discard = discard;
 		xlrec.end = end;
+		xlrec.latestxid = xid;
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
@@ -1891,12 +1893,23 @@ undolog_xlog_discard(XLogReaderState *record)
 	UndoLogOffset new_segment_begin;
 	BlockNumber old_blockno;
 	BlockNumber blockno;
-	RelFileNode rnode;
+	RelFileNode rnode = {0};
 	char	dir[MAXPGPATH];
 
 	log = get_undo_log_by_number(xlrec->logno);
 	if (log == NULL)
 		elog(ERROR, "unknown undo log %d", xlrec->logno);
+
+	/*
+	 * We're about to discard undologs. In Hot Standby mode, ensure that
+	 * there's no queries running which need to get tuple from discarded undo.
+	 *
+	 * XXX we are passing empty rnode to the conflict function so that it can
+	 * check conflict in all the backend regardless of which database the
+	 * backend is connected.
+	 */
+	if (InHotStandby && TransactionIdIsValid(xlrec->latestxid))
+		ResolveRecoveryConflictWithSnapshot(xlrec->latestxid, rnode);
 
 	/*
 	 * See if we need to unlink or rename any files, but don't consider it an

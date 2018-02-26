@@ -67,6 +67,7 @@ typedef struct xl_undolog_discard
 	UndoLogNumber logno;
 	UndoLogOffset discard;
 	UndoLogOffset end;
+	TransactionId latestxid;	/* latest xid whose undolog are discarded. */
 } xl_undolog_discard;
 
 /* Rewind insert location of the undo log. */
