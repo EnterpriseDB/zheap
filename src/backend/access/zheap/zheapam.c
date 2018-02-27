@@ -2750,7 +2750,7 @@ check_tup_satisfies_update:
 							tuple->t_self = zhtup.t_self;
 
 							memcpy(tuple->t_data, zhtup.t_data, zhtup.t_len);
-							goto out_unlocked;
+							goto out_locked;
 						}
 						break;
 				case LockTupleNoKeyExclusive:
@@ -2762,7 +2762,7 @@ check_tup_satisfies_update:
 
 						memcpy(tuple->t_data, zhtup.t_data, zhtup.t_len);
 
-						goto out_unlocked;
+						goto out_locked;
 					}
 					break;
 				case LockTupleExclusive:
@@ -2775,7 +2775,7 @@ check_tup_satisfies_update:
 
 						memcpy(tuple->t_data, zhtup.t_data, zhtup.t_len);
 
-						goto out_unlocked;
+						goto out_locked;
 					}
 					break;
 				case LockTupleKeyShare:
