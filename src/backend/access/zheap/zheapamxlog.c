@@ -1300,6 +1300,9 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			PageClearAllVisible(page);
 		MarkBufferDirty(buffer);
 
+		/* be tidy */
+		for (i = 0; i < nranges; i++)
+			pfree(undorecord[i].uur_payload.data);
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
 
