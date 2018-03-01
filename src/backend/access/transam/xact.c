@@ -3666,6 +3666,7 @@ EndTransactionBlock(void)
 {
 	TransactionState s = CurrentTransactionState;
 	bool		result = false;
+	UndoRecPtr	latest_urec_ptr = s->latest_urec_ptr;
 
 	switch (s->blockState)
 	{
@@ -3711,6 +3712,9 @@ EndTransactionBlock(void)
 					elog(FATAL, "EndTransactionBlock: unexpected state %s",
 						 BlockStateAsString(s->blockState));
 				s = s->parent;
+
+				if (!UndoRecPtrIsValid(latest_urec_ptr))
+					latest_urec_ptr = s->latest_urec_ptr;
 			}
 			if (s->blockState == TBLOCK_INPROGRESS)
 				s->blockState = TBLOCK_END;
@@ -3796,7 +3800,7 @@ EndTransactionBlock(void)
 	if (!result)
 	{
 		TransactionState xact = &TopTransactionStateData;
-		UndoActionStartPtr = s->latest_urec_ptr;
+		UndoActionStartPtr = latest_urec_ptr;
 		UndoActionEndPtr = xact->start_urec_ptr;
 		PerformUndoActions = true;
 	}
