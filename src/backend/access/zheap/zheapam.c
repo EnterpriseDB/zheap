@@ -4310,6 +4310,11 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 		if (scratch != NULL)
 			pfree(scratch);
 
+		if (noffsets > 0)
+			pfree(undorecord);
+
+		pfree(offset_completed_xact_slots);
+
 		return true;
 	}
 
@@ -6982,6 +6987,7 @@ reacquire_buffer:
 		for (i = 0; i < zfree_offset_ranges->nranges; i++)
 			pfree(undorecord[i].uur_payload.data);
 		pfree(zfree_offset_ranges);
+		pfree(undorecord);
 
 		UnlockReleaseBuffer(buffer);
 		if (vmbuffer != InvalidBuffer)

@@ -318,6 +318,10 @@ zheap_xlog_delete(XLogReaderState *record)
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
+
+	/* be tidy */
+	pfree(undorecord.uur_tuple.data);
+
 	UnlockReleaseUndoBuffers();
 	FreeFakeRelcacheEntry(reln);
 }
@@ -728,6 +732,13 @@ zheap_xlog_update(XLogReaderState *record)
 		UnlockReleaseBuffer(newbuffer);
 	if (BufferIsValid(oldbuffer))
 		UnlockReleaseBuffer(oldbuffer);
+
+	/* be tidy */
+	pfree(undorecord.uur_tuple.data);
+
+	if (!inplace_update)
+		pfree(undorecord.uur_payload.data);
+
 	UnlockReleaseUndoBuffers();
 	FreeFakeRelcacheEntry(reln);
 
@@ -1009,6 +1020,14 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
 
+	/* be tidy */
+	if (noffsets > 0)
+	{
+		pfree(undorecord);
+		if (!(xlrec->flags & XLZ_HAS_TUPLE_INFO))
+			pfree(offsets);
+	}
+
 	UnlockReleaseUndoBuffers();
 }
 
@@ -1103,6 +1122,9 @@ zheap_xlog_lock(XLogReaderState *record)
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
+
+	/* be tidy */
+	pfree(undorecord.uur_tuple.data);
 
 	UnlockReleaseUndoBuffers();
 	FreeFakeRelcacheEntry(reln);
@@ -1304,6 +1326,8 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		/* be tidy */
 		for (i = 0; i < nranges; i++)
 			pfree(undorecord[i].uur_payload.data);
+		pfree(undorecord);
+
 		if (BufferIsValid(buffer))
 			UnlockReleaseBuffer(buffer);
 
