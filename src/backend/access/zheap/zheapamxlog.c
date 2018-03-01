@@ -1262,7 +1262,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		tupdata = XLogRecGetBlockData(record, 0, &len);
 		endptr = tupdata + len;
 
-		offnum = (OffsetNumber)undorecord[j].uur_payload.data[0];
+		offnum = ((OffsetNumber *)undorecord[j].uur_payload.data)[0];
 		for (i = 0; i < xlrec->ntuples; i++)
 		{
 			xl_multi_insert_ztuple *xlhdr;
@@ -1280,10 +1280,10 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 				 * Change the offset range if we've reached the end of current
 				 * range.
 				 */
-				if (offnum == (OffsetNumber)undorecord[j].uur_payload.data[1])
+				if (offnum > ((OffsetNumber *)undorecord[j].uur_payload.data)[1])
 				{
 					j++;
-					offnum = (OffsetNumber)undorecord[j].uur_payload.data[0];
+					offnum = ((OffsetNumber *)undorecord[j].uur_payload.data)[0];
 				}
 			}
 			if (PageGetMaxOffsetNumber(page) + 1 < offnum)
