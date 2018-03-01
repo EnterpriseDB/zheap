@@ -563,7 +563,7 @@ zheap_xlog_update(XLogReaderState *record)
 	{
 		newbuffer = XLogInitBufferForRedo(record, 0);
 		newpage = (Page) BufferGetPage(newbuffer);
-		PageInit(newpage, BufferGetPageSize(newbuffer), 0);
+		ZheapInitPage(newpage, BufferGetPageSize(newbuffer));
 		newaction = BLK_NEEDS_REDO;
 	}
 	else
@@ -711,7 +711,8 @@ zheap_xlog_update(XLogReaderState *record)
 			if (ZPageAddItem(newpage, (Item) newtup, newlen, xlrec->new_offnum,
 						 true, true) == InvalidOffsetNumber)
 				elog(PANIC, "failed to add tuple");
-			PageSetUNDO(undorecord, newpage, trans_slot_id, xid_epoch, xid, newurecptr);
+			PageSetUNDO((newbuffer == oldbuffer) ? undorecord : newundorecord,
+						newpage, trans_slot_id, xid_epoch, xid, newurecptr);
 		}
 
 		if (xlrec->flags & XLZ_UPDATE_NEW_ALL_VISIBLE_CLEARED)
