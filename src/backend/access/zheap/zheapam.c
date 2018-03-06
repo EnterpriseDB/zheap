@@ -610,6 +610,12 @@ reacquire_buffer:
 	/* transaction slot must be reserved before adding tuple to page */
 	Assert(trans_slot_id != InvalidXactSlotId);
 
+	if (options & HEAP_INSERT_SPECULATIVE)
+	{
+		/* Mark the tuple as speculatively inserted tuple. */
+		zheaptup->t_data->t_infomask |= ZHEAP_SPECULATIVE_INSERT;
+	}
+
 	/*
 	 * See heap_insert to know why checking conflicts is important
 	 * before actually inserting the tuple.
@@ -630,8 +636,29 @@ reacquire_buffer:
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
 	undorecord.uur_block = BufferGetBlockNumber(buffer);
-	undorecord.uur_payload.len = 0;
 	undorecord.uur_tuple.len = 0;
+
+	/*
+	 * Store the speculative insertion token in undo, so that we can retrieve
+	 * it during visibility check of the speculatively inserted tuples.
+	 *
+	 * Note that we don't need to WAL log this value as this is a temporary
+	 * information required only on master node to detect conflicts for
+	 * Insert .. On Conflict.
+	 */
+	if (options & HEAP_INSERT_SPECULATIVE)
+	{
+		uint32 specToken;
+
+		undorecord.uur_payload.len = sizeof(uint32);
+		specToken = GetSpeculativeInsertionToken();
+		initStringInfo(&undorecord.uur_payload);
+		appendBinaryStringInfo(&undorecord.uur_payload,
+							   (char *) &specToken,
+							   sizeof(uint32));
+	}
+	else
+		undorecord.uur_payload.len = 0;
 
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, InvalidTransactionId);
 
@@ -762,6 +789,13 @@ reacquire_buffer:
 	}
 
 	END_CRIT_SECTION();
+
+	/* be tidy */
+	if (undorecord.uur_payload.len > 0)
+	{
+		Assert(options & HEAP_INSERT_SPECULATIVE);
+		pfree(undorecord.uur_payload.data);
+	}
 
 	UnlockReleaseBuffer(buffer);
 	if (vmbuffer != InvalidBuffer)
@@ -3082,6 +3116,185 @@ compute_new_xid_infomask(TransactionId tup_xid, uint16 old_infomask,
 }
 
 /*
+ *	zheap_finish_speculative - mark speculative insertion as successful
+ *
+ * To successfully finish a speculative insertion we have to clear speculative
+ * flag from tuple.  See heap_finish_speculative why it is important to clear
+ * the information of speculative insertion on tuple.
+ */
+void
+zheap_finish_speculative(Relation relation, ZHeapTuple tuple)
+{
+	Buffer		buffer;
+	Page		page;
+	OffsetNumber offnum;
+	ItemId		lp = NULL;
+	ZHeapTupleHeader zhtup;
+
+	buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(&(tuple->t_self)));
+	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+	page = (Page) BufferGetPage(buffer);
+
+	offnum = ItemPointerGetOffsetNumber(&(tuple->t_self));
+	if (PageGetMaxOffsetNumber(page) >= offnum)
+		lp = PageGetItemId(page, offnum);
+
+	if (PageGetMaxOffsetNumber(page) < offnum || !ItemIdIsNormal(lp))
+		elog(ERROR, "invalid lp");
+
+	zhtup = (ZHeapTupleHeader) PageGetItem(page, lp);
+
+	/* NO EREPORT(ERROR) from here till changes are logged */
+	START_CRIT_SECTION();
+
+	Assert(ZHeapTupleHeaderIsSpeculative(tuple->t_data));
+
+	MarkBufferDirty(buffer);
+
+	/* Clear the speculative insertion marking from the tuple. */
+	zhtup->t_infomask &= ~ZHEAP_SPECULATIVE_INSERT;
+
+	/* XLOG stuff */
+	if (RelationNeedsWAL(relation))
+	{
+		xl_zheap_confirm xlrec;
+		XLogRecPtr	recptr;
+
+		xlrec.offnum = ItemPointerGetOffsetNumber(&tuple->t_self);
+		xlrec.flags = XLZ_SPEC_INSERT_SUCCESS;
+
+		XLogBeginInsert();
+
+		/* We want the same filtering on this as on a plain insert */
+		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
+
+		XLogRegisterData((char *) &xlrec, SizeOfZHeapConfirm);
+		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+
+		recptr = XLogInsert(RM_ZHEAP2_ID, XLOG_ZHEAP_CONFIRM);
+
+		PageSetLSN(page, recptr);
+	}
+
+	END_CRIT_SECTION();
+
+	UnlockReleaseBuffer(buffer);
+}
+
+/*
+ *	zheap_abort_speculative - kill a speculatively inserted tuple
+ *
+ * Marks a tuple that was speculatively inserted in the same command as dead.
+ * That makes it immediately appear as dead to all transactions, including our
+ * own.  In particular, it makes another backend inserting a duplicate key
+ * value won't unnecessarily wait for our whole transaction to finish (it'll
+ * just wait for our speculative insertion to finish).
+ *
+ * The functionality is same as heap_abort_speculative, but we achieve it
+ * differently.
+ */
+void
+zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
+{
+	TransactionId xid = GetTopTransactionId();
+	ItemPointer tid = &(tuple->t_self);
+	ItemId		lp;
+	ZHeapTupleHeader zhtuphdr;
+	Page		page;
+	BlockNumber block;
+	Buffer		buffer;
+	ZHeapPageOpaque opaque;
+
+	Assert(ItemPointerIsValid(tid));
+
+	block = ItemPointerGetBlockNumber(tid);
+	buffer = ReadBuffer(relation, block);
+	page = BufferGetPage(buffer);
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+	/*
+	 * Page can't be all visible, we just inserted into it, and are still
+	 * running.
+	 */
+	Assert(!PageIsAllVisible(page));
+
+	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+	Assert(ItemIdIsNormal(lp));
+
+	zhtuphdr = (ZHeapTupleHeader) PageGetItem(page, lp);
+
+	/*
+	 * Sanity check that the tuple really is a speculatively inserted tuple,
+	 * inserted by us.
+	 */
+	if (ZHeapTupleHeaderGetRawXid(zhtuphdr, opaque) != xid)
+		elog(ERROR, "attempted to kill a tuple inserted by another transaction");
+	if (!(IsToastRelation(relation) || ZHeapTupleHeaderIsSpeculative(zhtuphdr)))
+		elog(ERROR, "attempted to kill a non-speculative tuple");
+	Assert(!IsZHeapTupleModified(zhtuphdr->t_infomask));
+
+	START_CRIT_SECTION();
+
+	/*
+	 * The tuple will become DEAD immediately.  Flag that this page is a
+	 * candidate for pruning.  The action here is exactly same as what we do
+	 * for rolling back insert.
+	 */
+	ItemIdSetDead(lp);
+	ZPageSetPrunable(page, xid);
+
+	MarkBufferDirty(buffer);
+
+	/*
+	 * XLOG stuff
+	 *
+	 * The WAL records generated here match heap_delete().  The same recovery
+	 * routines are used.
+	 */
+	if (RelationNeedsWAL(relation))
+	{
+		xl_zheap_confirm xlrec;
+		XLogRecPtr	recptr;
+
+		xlrec.offnum = ItemPointerGetOffsetNumber(&tuple->t_self);
+		xlrec.flags = XLZ_SPEC_INSERT_FAILED;
+
+		XLogBeginInsert();
+
+		XLogRegisterData((char *) &xlrec, SizeOfZHeapConfirm);
+		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+
+		/* No replica identity & replication origin logged */
+
+		recptr = XLogInsert(RM_ZHEAP2_ID, XLOG_ZHEAP_CONFIRM);
+
+		PageSetLSN(page, recptr);
+	}
+
+	END_CRIT_SECTION();
+
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+	/*
+	 * Fixme - need to delete from toast table once we have support for toast
+	 * tables in zheap.
+	 */
+
+	/*
+	 * Never need to mark tuple for invalidation, since catalogs don't support
+	 * speculative insertion
+	 */
+
+	/* Now we can release the buffer */
+	ReleaseBuffer(buffer);
+
+	/* count deletion, as we counted the insertion too */
+	pgstat_count_heap_delete(relation);
+}
+
+/*
  * zheap_freetuple
  */
 void
@@ -4371,6 +4584,53 @@ ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer	ctid)
 {
 	*ctid = zhtup->t_self;
 	ZHeapPageGetCtid(ZHeapTupleHeaderGetXactSlot(zhtup->t_data), buf, ctid);
+}
+
+/*
+ * ZHeapTupleGetSpecToken - Retrieve speculative token from tuple's undo
+ *			record.
+ *
+ * It is expected that caller of this function has atleast read lock
+ * on the buffer.
+ */
+void
+ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, uint32 *specToken)
+{
+	ZHeapPageOpaque	opaque;
+	UnpackedUndoRecord	*urec;
+	UndoRecPtr	urec_ptr;
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
+	urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(zhtup->t_data, opaque);
+
+fetch_undo_record:
+	urec = UndoFetchRecord(urec_ptr,
+						   ItemPointerGetBlockNumber(&zhtup->t_self),
+						   ItemPointerGetOffsetNumber(&zhtup->t_self),
+						   InvalidTransactionId);
+	/*
+	 * Skip the undo record for transaction slot reuse, it is used only for
+	 * the purpose of fetching transaction information for tuples that point
+	 * to such slots.
+	 */
+	if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
+	{
+		urec_ptr = urec->uur_blkprev;
+		UndoRecordRelease(urec);
+
+		goto fetch_undo_record;
+	}
+
+	/*
+	 * We always expect urec to be valid as it try to fetch speculative token
+	 * of tuples for which inserting transaction hasn't been committed.  So,
+	 * corresponding undo record can't be discarded.
+	 */
+	Assert(urec);
+
+	*specToken = *(uint32 *) urec->uur_payload.data;
+
+	UndoRecordRelease(urec);
 }
 
 /*

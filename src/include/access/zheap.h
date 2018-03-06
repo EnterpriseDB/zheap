@@ -56,6 +56,8 @@ extern HTSU_Result zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 					CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 					bool follow_updates, bool eval, Snapshot snapshot,
 					Buffer *buffer, HeapUpdateFailureData *hufd);
+extern void zheap_finish_speculative(Relation relation, ZHeapTuple tuple);
+extern void zheap_abort_speculative(Relation relation, ZHeapTuple tuple);
 extern void ZheapInitPage(Page page, Size pageSize);
 extern void zheap_multi_insert(Relation relation, ZHeapTuple *tuples,
 								int ntuples, CommandId cid, int options,

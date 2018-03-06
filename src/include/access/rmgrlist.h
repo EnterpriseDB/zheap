@@ -49,4 +49,5 @@ PG_RMGR(RM_GENERIC_ID, "Generic", generic_redo, generic_desc, generic_identify, 
 PG_RMGR(RM_LOGICALMSG_ID, "LogicalMessage", logicalmsg_redo, logicalmsg_desc, logicalmsg_identify, NULL, NULL, NULL)
 PG_RMGR(RM_UNDOLOG_ID, "UndoLog", undolog_redo, undolog_desc, undolog_identify, NULL, NULL, NULL)
 PG_RMGR(RM_ZHEAP_ID, "Zheap", zheap_redo, zheap_desc, zheap_identify, NULL, NULL, NULL)
+PG_RMGR(RM_ZHEAP2_ID, "Zheap2", zheap2_redo, zheap2_desc, zheap2_identify, NULL, NULL, NULL)
 PG_RMGR(RM_UNDOACTION_ID, "UndoAction", undoaction_redo, undoaction_desc, undoaction_identify, NULL, NULL, NULL)

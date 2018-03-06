@@ -84,6 +84,7 @@ extern void WaitForLockersMultiple(List *locktags, LOCKMODE lockmode);
 /* Lock an XID for tuple insertion (used to wait for an insertion to finish) */
 extern uint32 SpeculativeInsertionLockAcquire(TransactionId xid);
 extern void SpeculativeInsertionLockRelease(TransactionId xid);
+extern uint32 GetSpeculativeInsertionToken(void);
 extern void SpeculativeInsertionWait(TransactionId xid, uint32 token);
 
 /* Lock a general object (other than a relation) of the current database */

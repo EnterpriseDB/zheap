@@ -90,6 +90,21 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 	}
 }
 
+void
+zheap2_desc(StringInfo buf, XLogReaderState *record)
+{
+	char	   *rec = XLogRecGetData(record);
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+
+	info &= XLOG_ZHEAP_OPMASK;
+	if (info == XLOG_ZHEAP_CONFIRM)
+	{
+		xl_zheap_confirm *xlrec = (xl_zheap_confirm *) rec;
+
+		appendStringInfo(buf, "off %u: flags %u", xlrec->offnum, xlrec->flags);
+	}
+}
+
 const char *
 zheap_identify(uint8 info)
 {
@@ -129,6 +144,21 @@ zheap_identify(uint8 info)
 			break;
 		case XLOG_ZHEAP_MULTI_INSERT | XLOG_ZHEAP_INIT_PAGE:
 			id = "MULTI_INSERT+INIT";
+			break;
+	}
+
+	return id;
+}
+
+const char *
+zheap2_identify(uint8 info)
+{
+	const char *id = NULL;
+
+	switch (info & ~XLR_INFO_MASK)
+	{
+		case XLOG_ZHEAP_CONFIRM:
+			id = "CONFIRM";
 			break;
 	}
 

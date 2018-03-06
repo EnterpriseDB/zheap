@@ -48,6 +48,14 @@
  */
 #define XLOG_ZHEAP_INIT_PAGE		0x80
 
+/*
+ * We ran out of opcodes, so zheapam.c now has a second RmgrId.  These opcodes
+ * are associated with RM_ZHEAP2_ID, but are not logically different from
+ * the ones above associated with RM_ZHEAP_ID.  XLOG_ZHEAP_OPMASK applies to
+ * these, too.
+ */
+#define XLOG_ZHEAP_CONFIRM		0x00
+
 /* common undo record related info */
 typedef struct xl_undo_header
 {
@@ -262,8 +270,27 @@ typedef struct xl_zheap_clean
 
 #define SizeOfZHeapClean (offsetof(xl_zheap_clean, ndead) + sizeof(uint16))
 
+/* This is what we need to know about confirmation of speculative insertion */
+/*
+ * xl_zheap_confirm flag values, 8 bits are available.
+ */
+/* speculative insertion is successful */
+#define XLZ_SPEC_INSERT_SUCCESS			(1<<0)
+/* speculative insertion failed */
+#define XLZ_SPEC_INSERT_FAILED				(1<<1)
+typedef struct xl_zheap_confirm
+{
+	OffsetNumber offnum;		/* confirmed tuple's offset on page */
+	uint8		 flags;
+} xl_zheap_confirm;
+
+#define SizeOfZHeapConfirm	(offsetof(xl_zheap_confirm, flags) + sizeof(uint8))
+
 extern void zheap_redo(XLogReaderState *record);
 extern void zheap_desc(StringInfo buf, XLogReaderState *record);
 extern const char *zheap_identify(uint8 info);
+extern void zheap2_redo(XLogReaderState *record);
+extern void zheap2_desc(StringInfo buf, XLogReaderState *record);
+extern const char *zheap2_identify(uint8 info);
 
 #endif   /* ZHEAP_XLOG_H */

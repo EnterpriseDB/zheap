@@ -70,6 +70,14 @@ static TupleTableSlot *ExecPrepareTupleRouting(ModifyTableState *mtstate,
 						PartitionTupleRouting *proute,
 						ResultRelInfo *targetRelInfo,
 						TupleTableSlot *slot);
+static bool ExecOnConflictZUpdate(ModifyTableState *mtstate,
+					 ResultRelInfo *resultRelInfo,
+					 ItemPointer conflictTid,
+					 TupleTableSlot *planSlot,
+					 TupleTableSlot *excludedSlot,
+					 EState *estate,
+					 bool canSetTag,
+					 TupleTableSlot **returning);
 static ResultRelInfo *getTargetResultRelInfo(ModifyTableState *node);
 static void ExecSetupChildParentMapForTcs(ModifyTableState *mtstate);
 static void ExecSetupChildParentMapForSubplan(ModifyTableState *mtstate);
@@ -225,6 +233,40 @@ ExecCheckHeapTupleVisible(EState *estate,
 }
 
 /*
+ * Similar to ExecCheckHeapTupleVisible(), but for zheap tuples.
+ */
+static void
+ExecCheckZHeapTupleVisible(EState *estate,
+						   ZHeapTuple tuple,
+						   Buffer buffer)
+{
+	if (!IsolationUsesXactSnapshot())
+		return;
+
+	/*
+	 * We need buffer pin and lock to call ZHeapTupleSatisfiesVisibility.
+	 * Caller should be holding pin, but not lock.
+	 */
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+	if (!ZHeapTupleSatisfiesVisibility(tuple, estate->es_snapshot, buffer, NULL))
+	{
+		TransactionId   xid;
+		/*
+		 * We should not raise a serialization failure if the conflict is
+		 * against a tuple inserted by our own transaction, even if it's not
+		 * visible to our snapshot.  (This would happen, for example, if
+		 * conflicting keys are proposed for insertion in a single command.)
+		 */
+		ZHeapTupleGetTransInfo(tuple, buffer, NULL, &xid, NULL, NULL, false);
+		if (!TransactionIdIsCurrentTransactionId(xid))
+			ereport(ERROR,
+					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+					 errmsg("could not serialize access due to concurrent update")));
+	}
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+}
+
+/*
  * ExecCheckTIDVisible -- convenience variant of ExecCheckHeapTupleVisible()
  */
 static void
@@ -240,11 +282,25 @@ ExecCheckTIDVisible(EState *estate,
 	if (!IsolationUsesXactSnapshot())
 		return;
 
-	tuple.t_self = *tid;
-	if (!heap_fetch(rel, SnapshotAny, &tuple, &buffer, false, NULL))
-		elog(ERROR, "failed to fetch conflicting tuple for ON CONFLICT");
-	ExecCheckHeapTupleVisible(estate, &tuple, buffer);
+	if (RelationStorageIsZHeap(rel))
+	{
+		ZHeapTuple	ztuple;
+		if (!zheap_fetch(rel, SnapshotAny, tid, &ztuple, &buffer, false, NULL))
+			goto fail;
+		ExecCheckZHeapTupleVisible(estate, ztuple, buffer);
+	}
+	else
+	{
+		tuple.t_self = *tid;
+		if (!heap_fetch(rel, SnapshotAny, &tuple, &buffer, false, NULL))
+			goto fail;
+		ExecCheckHeapTupleVisible(estate, &tuple, buffer);
+	}
+
 	ReleaseBuffer(buffer);
+	return;
+fail:
+	elog(ERROR, "failed to fetch conflicting tuple for ON CONFLICT");
 }
 
 /* ----------------------------------------------------------------
@@ -452,85 +508,150 @@ ExecInsert(ModifyTableState *mtstate,
 			 * the pre-check, or when we re-check after inserting the tuple
 			 * speculatively.
 			 */
-			if (RelationStorageIsZHeap(resultRelationDesc))
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("INSERT ON CONFLICT not supported on zheap table \"%s\"",
-								RelationGetRelationName(resultRelationDesc))));
 	vlock:
 			specConflict = false;
-			if (!ExecCheckIndexConstraints(slot, estate, &conflictTid,
-										   arbiterIndexes))
+			if (RelationStorageIsZHeap(resultRelationDesc))
 			{
-				/* committed conflict tuple found */
-				if (onconflict == ONCONFLICT_UPDATE)
+				if (!ExecCheckIndexConstraints(slot, estate, &conflictTid,
+											   arbiterIndexes))
 				{
-					/*
-					 * In case of ON CONFLICT DO UPDATE, execute the UPDATE
-					 * part.  Be prepared to retry if the UPDATE fails because
-					 * of another concurrent UPDATE/DELETE to the conflict
-					 * tuple.
-					 */
-					TupleTableSlot *returning = NULL;
-
-					if (ExecOnConflictUpdate(mtstate, resultRelInfo,
-											 &conflictTid, planSlot, slot,
-											 estate, canSetTag, &returning))
+					/* committed conflict tuple found */
+					if (onconflict == ONCONFLICT_UPDATE)
 					{
-						InstrCountTuples2(&mtstate->ps, 1);
-						return returning;
+						/*
+						 * In case of ON CONFLICT DO UPDATE, execute the UPDATE
+						 * part.  Be prepared to retry if the UPDATE fails because
+						 * of another concurrent UPDATE/DELETE to the conflict
+						 * tuple.
+						 */
+						TupleTableSlot *returning = NULL;
+						if (ExecOnConflictZUpdate(mtstate, resultRelInfo,
+												  &conflictTid, planSlot, slot,
+												  estate, canSetTag, &returning))
+						{
+							InstrCountFiltered2(&mtstate->ps, 1);
+							return returning;
+						}
+						else
+							goto vlock;
 					}
 					else
-						goto vlock;
+					{
+						/*
+						 * In case of ON CONFLICT DO NOTHING, do nothing. However,
+						 * verify that the tuple is visible to the executor's MVCC
+						 * snapshot at higher isolation levels.
+						 */
+						Assert(onconflict == ONCONFLICT_NOTHING);
+						ExecCheckTIDVisible(estate, resultRelInfo, &conflictTid);
+						InstrCountFiltered2(&mtstate->ps, 1);
+						return NULL;
+					}
 				}
+
+				SpeculativeInsertionLockAcquire(GetTopTransactionId());
+
+				/* insert the tuple, with the speculative token */
+				newId = zheap_insert(resultRelationDesc, ztuple,
+									 estate->es_output_cid,
+									 HEAP_INSERT_SPECULATIVE,
+									 NULL);
+
+				/* insert index entries for tuple */
+				recheckIndexes = ExecInsertIndexTuples(slot, &(ztuple->t_self),
+													   estate, true, &specConflict,
+													   arbiterIndexes);
+
+				/* adjust the tuple's state accordingly */
+				if (!specConflict)
+					zheap_finish_speculative(resultRelationDesc, ztuple);
 				else
-				{
-					/*
-					 * In case of ON CONFLICT DO NOTHING, do nothing. However,
-					 * verify that the tuple is visible to the executor's MVCC
-					 * snapshot at higher isolation levels.
-					 */
-					Assert(onconflict == ONCONFLICT_NOTHING);
-					ExecCheckTIDVisible(estate, resultRelInfo, &conflictTid);
-					InstrCountTuples2(&mtstate->ps, 1);
-					return NULL;
-				}
+					zheap_abort_speculative(resultRelationDesc, ztuple);
+
+				/*
+				 * Wake up anyone waiting for our decision.  They will re-check
+				 * the tuple, see that it's no longer speculative, and wait on our
+				 * XID as if this was a regularly inserted tuple all along.  Or if
+				 * we killed the tuple, they will see it's dead, and proceed as if
+				 * the tuple never existed.
+				 */
+				SpeculativeInsertionLockRelease(GetTopTransactionId());
 			}
-
-			/*
-			 * Before we start insertion proper, acquire our "speculative
-			 * insertion lock".  Others can use that to wait for us to decide
-			 * if we're going to go ahead with the insertion, instead of
-			 * waiting for the whole transaction to complete.
-			 */
-			specToken = SpeculativeInsertionLockAcquire(GetCurrentTransactionId());
-			HeapTupleHeaderSetSpeculativeToken(tuple->t_data, specToken);
-
-			/* insert the tuple, with the speculative token */
-			newId = heap_insert(resultRelationDesc, tuple,
-								estate->es_output_cid,
-								HEAP_INSERT_SPECULATIVE,
-								NULL);
-
-			/* insert index entries for tuple */
-			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
-												   estate, true, &specConflict,
-												   arbiterIndexes);
-
-			/* adjust the tuple's state accordingly */
-			if (!specConflict)
-				heap_finish_speculative(resultRelationDesc, tuple);
 			else
-				heap_abort_speculative(resultRelationDesc, tuple);
+			{
+				if (!ExecCheckIndexConstraints(slot, estate, &conflictTid,
+										   arbiterIndexes))
+				{
+					/* committed conflict tuple found */
+					if (onconflict == ONCONFLICT_UPDATE)
+					{
+						/*
+						 * In case of ON CONFLICT DO UPDATE, execute the UPDATE
+						 * part.  Be prepared to retry if the UPDATE fails because
+						 * of another concurrent UPDATE/DELETE to the conflict
+						 * tuple.
+						 */
+						TupleTableSlot *returning = NULL;
 
-			/*
-			 * Wake up anyone waiting for our decision.  They will re-check
-			 * the tuple, see that it's no longer speculative, and wait on our
-			 * XID as if this was a regularly inserted tuple all along.  Or if
-			 * we killed the tuple, they will see it's dead, and proceed as if
-			 * the tuple never existed.
-			 */
-			SpeculativeInsertionLockRelease(GetCurrentTransactionId());
+						if (ExecOnConflictUpdate(mtstate, resultRelInfo,
+												 &conflictTid, planSlot, slot,
+												 estate, canSetTag, &returning))
+						{
+							InstrCountFiltered2(&mtstate->ps, 1);
+							return returning;
+						}
+						else
+							goto vlock;
+					}
+					else
+					{
+						/*
+						 * In case of ON CONFLICT DO NOTHING, do nothing. However,
+						 * verify that the tuple is visible to the executor's MVCC
+						 * snapshot at higher isolation levels.
+						 */
+						Assert(onconflict == ONCONFLICT_NOTHING);
+						ExecCheckTIDVisible(estate, resultRelInfo, &conflictTid);
+						InstrCountFiltered2(&mtstate->ps, 1);
+						return NULL;
+					}
+				}
+
+				/*
+				 * Before we start insertion proper, acquire our "speculative
+				 * insertion lock".  Others can use that to wait for us to decide
+				 * if we're going to go ahead with the insertion, instead of
+				 * waiting for the whole transaction to complete.
+				 */
+				specToken = SpeculativeInsertionLockAcquire(GetCurrentTransactionId());
+				HeapTupleHeaderSetSpeculativeToken(tuple->t_data, specToken);
+
+				/* insert the tuple, with the speculative token */
+				newId = heap_insert(resultRelationDesc, tuple,
+									estate->es_output_cid,
+									HEAP_INSERT_SPECULATIVE,
+									NULL);
+
+				/* insert index entries for tuple */
+				recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
+													   estate, true, &specConflict,
+													   arbiterIndexes);
+
+				/* adjust the tuple's state accordingly */
+				if (!specConflict)
+					heap_finish_speculative(resultRelationDesc, tuple);
+				else
+					heap_abort_speculative(resultRelationDesc, tuple);
+
+				/*
+				 * Wake up anyone waiting for our decision.  They will re-check
+				 * the tuple, see that it's no longer speculative, and wait on our
+				 * XID as if this was a regularly inserted tuple all along.  Or if
+				 * we killed the tuple, they will see it's dead, and proceed as if
+				 * the tuple never existed.
+				 */
+				SpeculativeInsertionLockRelease(GetCurrentTransactionId());
+			}
 
 			/*
 			 * If there was a conflict, start from the beginning.  We'll do
@@ -1666,6 +1787,206 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 	return true;
 }
 
+/*
+ * Similar to ExecOnConflictUpdate(), but for handling zheap tuples.
+ */
+static bool
+ExecOnConflictZUpdate(ModifyTableState *mtstate,
+					  ResultRelInfo *resultRelInfo,
+					  ItemPointer conflictTid,
+					  TupleTableSlot *planSlot,
+					  TupleTableSlot *excludedSlot,
+					  EState *estate,
+					  bool canSetTag,
+					  TupleTableSlot **returning)
+{
+	ExprContext *econtext = mtstate->ps.ps_ExprContext;
+	Relation	relation = resultRelInfo->ri_RelationDesc;
+	ExprState  *onConflictSetWhere = resultRelInfo->ri_onConflict->oc_WhereClause;
+	ZHeapTupleData	tuple = {0};
+	HeapUpdateFailureData hufd;
+	LockTupleMode lockmode;
+	HTSU_Result test;
+	Buffer		buffer;
+	Page		page;
+	ItemId		lp;
+	TransactionId	xid;
+
+	/* Determine lock mode to use */
+	lockmode = ExecUpdateLockMode(estate, resultRelInfo);
+
+	buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(conflictTid));
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
+	page = BufferGetPage(buffer);
+	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(conflictTid));
+
+	Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
+	tuple.t_len = ItemIdGetLength(lp);
+	UnlockReleaseBuffer(buffer);
+
+	tuple.t_data = palloc0(tuple.t_len);
+
+	/*
+	 * Lock tuple for update.  Don't follow updates when tuple cannot be
+	 * locked without doing so.  A row locking conflict here means our
+	 * previous conclusion that the tuple is conclusively committed is not
+	 * true anymore.
+	 */
+	ItemPointerCopy(conflictTid, &(tuple.t_self));
+	test = zheap_lock_tuple(relation, &tuple, estate->es_output_cid,
+							lockmode, LockWaitBlock, true, true,
+							estate->es_snapshot, &buffer, &hufd);
+	switch (test)
+	{
+		case HeapTupleMayBeUpdated:
+			/* success! */
+			break;
+
+		case HeapTupleInvisible:
+
+			/*
+			 * This can occur when a just inserted tuple is updated again in
+			 * the same command. E.g. because multiple rows with the same
+			 * conflicting key values are inserted.
+			 *
+			 * This is somewhat similar to the ExecUpdate()
+			 * HeapTupleSelfUpdated case.  We do not want to proceed because
+			 * it would lead to the same row being updated a second time in
+			 * some unspecified order, and in contrast to plain UPDATEs
+			 * there's no historical behavior to break.
+			 *
+			 * It is the user's responsibility to prevent this situation from
+			 * occurring.  These problems are why SQL-2003 similarly specifies
+			 * that for SQL MERGE, an exception must be raised in the event of
+			 * an attempt to update the same row twice.
+			 */
+			ZHeapTupleGetTransInfo(&tuple, buffer, NULL, &xid, NULL, NULL, true);
+			if (TransactionIdIsCurrentTransactionId(xid))
+				ereport(ERROR,
+						(errcode(ERRCODE_CARDINALITY_VIOLATION),
+						 errmsg("ON CONFLICT DO UPDATE command cannot affect row a second time"),
+						 errhint("Ensure that no rows proposed for insertion within the same command have duplicate constrained values.")));
+
+			/* This shouldn't happen */
+			elog(ERROR, "attempted to lock invisible tuple");
+
+		case HeapTupleSelfUpdated:
+
+			/*
+			 * This state should never be reached. As a dirty snapshot is used
+			 * to find conflicting tuples, speculative insertion wouldn't have
+			 * seen this row to conflict with.
+			 */
+			elog(ERROR, "unexpected self-updated tuple");
+
+		case HeapTupleUpdated:
+			if (IsolationUsesXactSnapshot())
+				ereport(ERROR,
+						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+						 errmsg("could not serialize access due to concurrent update")));
+
+			/*
+			 * Tell caller to try again from the very start.
+			 *
+			 * It does not make sense to use the usual EvalPlanQual() style
+			 * loop here, as the new version of the row might not conflict
+			 * anymore, or the conflicting tuple has actually been deleted.
+			 */
+			ReleaseBuffer(buffer);
+			return false;
+
+		default:
+			elog(ERROR, "unrecognized zheap_lock_tuple status: %u", test);
+	}
+
+	/*
+	 * Success, the tuple is locked.
+	 *
+	 * Reset per-tuple memory context to free any expression evaluation
+	 * storage allocated in the previous cycle.
+	 */
+	ResetExprContext(econtext);
+
+	/*
+	 * Verify that the tuple is visible to our MVCC snapshot if the current
+	 * isolation level mandates that.
+	 *
+	 * It's not sufficient to rely on the check within ExecUpdate() as e.g.
+	 * CONFLICT ... WHERE clause may prevent us from reaching that.
+	 *
+	 * This means we only ever continue when a new command in the current
+	 * transaction could see the row, even though in READ COMMITTED mode the
+	 * tuple will not be visible according to the current statement's
+	 * snapshot.  This is in line with the way UPDATE deals with newer tuple
+	 * versions.
+	 */
+	ExecCheckZHeapTupleVisible(estate, &tuple, buffer);
+
+	/* Store target's existing tuple in the state's dedicated slot */
+	ExecStoreZTuple(&tuple, mtstate->mt_existing, buffer, false);
+
+	/*
+	 * Make tuple and any needed join variables available to ExecQual and
+	 * ExecProject.  The EXCLUDED tuple is installed in ecxt_innertuple, while
+	 * the target's existing tuple is installed in the scantuple.  EXCLUDED
+	 * has been made to reference INNER_VAR in setrefs.c, but there is no
+	 * other redirection.
+	 */
+	econtext->ecxt_scantuple = mtstate->mt_existing;
+	econtext->ecxt_innertuple = excludedSlot;
+	econtext->ecxt_outertuple = NULL;
+
+	if (!ExecQual(onConflictSetWhere, econtext))
+	{
+		ReleaseBuffer(buffer);
+		InstrCountFiltered1(&mtstate->ps, 1);
+		return true;			/* done with the tuple */
+	}
+
+	if (resultRelInfo->ri_WithCheckOptions != NIL)
+	{
+		/*
+		 * Check target's existing tuple against UPDATE-applicable USING
+		 * security barrier quals (if any), enforced here as RLS checks/WCOs.
+		 *
+		 * The rewriter creates UPDATE RLS checks/WCOs for UPDATE security
+		 * quals, and stores them as WCOs of "kind" WCO_RLS_CONFLICT_CHECK,
+		 * but that's almost the extent of its special handling for ON
+		 * CONFLICT DO UPDATE.
+		 *
+		 * The rewriter will also have associated UPDATE applicable straight
+		 * RLS checks/WCOs for the benefit of the ExecUpdate() call that
+		 * follows.  INSERTs and UPDATEs naturally have mutually exclusive WCO
+		 * kinds, so there is no danger of spurious over-enforcement in the
+		 * INSERT or UPDATE path.
+		 */
+		ExecWithCheckOptions(WCO_RLS_CONFLICT_CHECK, resultRelInfo,
+							 mtstate->mt_existing,
+							 mtstate->ps.state);
+	}
+
+	/* Project the new tuple version */
+	ExecProject(resultRelInfo->ri_onConflict->oc_ProjInfo);
+
+	/*
+	 * Note that it is possible that the target tuple has been modified in
+	 * this session, after the above heap_lock_tuple. We choose to not error
+	 * out in that case, in line with ExecUpdate's treatment of similar cases.
+	 * This can happen if an UPDATE is triggered from within ExecQual(),
+	 * ExecWithCheckOptions() or ExecProject() above, e.g. by selecting from a
+	 * wCTE in the ON CONFLICT's SET.
+	 */
+
+	/* Execute UPDATE with projection */
+	*returning = ExecUpdate(mtstate, &tuple.t_self, NULL,
+							mtstate->mt_conflproj, planSlot,
+							&mtstate->mt_epqstate, mtstate->ps.state,
+							canSetTag);
+
+	ReleaseBuffer(buffer);
+	return true;
+}
 
 /*
  * Process BEFORE EACH STATEMENT triggers

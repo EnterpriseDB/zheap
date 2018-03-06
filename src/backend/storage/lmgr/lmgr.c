@@ -769,6 +769,17 @@ SpeculativeInsertionLockRelease(TransactionId xid)
 }
 
 /*
+ *		GetSpeculativeInsertionToken
+ *
+ * Return the value of speculative insertion token.
+ */
+uint32
+GetSpeculativeInsertionToken(void)
+{
+	return speculativeInsertionToken;
+}
+
+/*
  *		SpeculativeInsertionWait
  *
  * Wait for the specified transaction to finish or abort the insertion of a

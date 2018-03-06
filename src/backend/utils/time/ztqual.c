@@ -1591,6 +1591,14 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		return zhtup;
 	else if (TransactionIdIsInProgress(xid))
 	{
+		/* Return the speculative token to caller. */
+		if (ZHeapTupleHeaderIsSpeculative(tuple))
+		{
+			ZHeapTupleGetSpecToken(zhtup, buffer, &snapshot->speculativeToken);
+
+			Assert(snapshot->speculativeToken != 0);
+		}
+
 		snapshot->xmin = xid;
 		return zhtup;		/* in insertion by other */
 	}

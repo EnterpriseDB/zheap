@@ -1421,6 +1421,52 @@ zheap_xlog_clean(XLogReaderState *record)
 		XLogRecordPageWithFreeSpace(rnode, blkno, freespace);
 }
 
+/*
+ * Handles XLOG_ZHEAP_CONFIRM record type
+ */
+static void
+zheap_xlog_confirm(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_zheap_confirm *xlrec = (xl_zheap_confirm *) XLogRecGetData(record);
+	Buffer		buffer;
+	Page		page;
+	OffsetNumber offnum;
+	ItemId		lp = NULL;
+	ZHeapTupleHeader zhtup;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		page = BufferGetPage(buffer);
+
+		offnum = xlrec->offnum;
+		if (PageGetMaxOffsetNumber(page) >= offnum)
+			lp = PageGetItemId(page, offnum);
+
+		if (PageGetMaxOffsetNumber(page) < offnum || !ItemIdIsNormal(lp))
+			elog(PANIC, "invalid lp");
+
+		zhtup = (ZHeapTupleHeader) PageGetItem(page, lp);
+
+		if (xlrec->flags == XLZ_SPEC_INSERT_SUCCESS)
+		{
+			/* Confirm tuple as actually inserted */
+			zhtup->t_infomask &= ~ZHEAP_SPECULATIVE_INSERT;
+		}
+		else
+		{
+			Assert(xlrec->flags == XLZ_SPEC_INSERT_FAILED);
+			ItemIdSetDead(lp);
+			ZPageSetPrunable(page, XLogRecGetXid(record));
+		}
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
 void
 zheap_redo(XLogReaderState *record)
 {
@@ -1454,5 +1500,20 @@ zheap_redo(XLogReaderState *record)
 			break;
 		default:
 			elog(PANIC, "zheap_redo: unknown op code %u", info);
+	}
+}
+
+void
+zheap2_redo(XLogReaderState *record)
+{
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+
+	switch (info & XLOG_ZHEAP_OPMASK)
+	{
+		case XLOG_ZHEAP_CONFIRM:
+			zheap_xlog_confirm(record);
+			break;
+		default:
+			elog(PANIC, "zheap2_redo: unknown op code %u", info);
 	}
 }

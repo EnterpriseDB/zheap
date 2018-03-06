@@ -92,6 +92,8 @@ typedef ZHeapTupleData *ZHeapTuple;
 										 * modified, or tuple deleted */
 
 #define ZHEAP_INVALID_XACT_SLOT	0x0800	/* transaction slot on tuple got reused */
+#define ZHEAP_SPECULATIVE_INSERT	0x1000 /* tuple insertion is a speculative
+											* insertion and can be taken back */
 
 #define ZHEAP_LOCK_MASK		(ZHEAP_XID_KEYSHR_LOCK | ZHEAP_XID_NOKEY_EXCL_LOCK | \
 							 ZHEAP_XID_SHR_LOCK | ZHEAP_XID_EXCL_LOCK)
@@ -126,6 +128,11 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define ZHeapTupleIsInPlaceUpdated(infomask) \
 ( \
   (infomask & ZHEAP_INPLACE_UPDATED) != 0 \
+)
+
+#define ZHeapTupleHeaderIsSpeculative(tup) \
+( \
+	(tup->t_infomask & ZHEAP_SPECULATIVE_INSERT) \
 )
 
 #define ZHeapTupleHeaderGetNatts(tup) \
@@ -298,6 +305,7 @@ extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 						CommandId *cid_out, UndoRecPtr *urec_ptr_out,
 						bool nobuflock);
 extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer ctid);
+extern void ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, uint32 *specToken);
 extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, ItemPointer ctid);
 extern bool	ValidateTuplesXact(ZHeapTuple tuple, Buffer buf,
 					TransactionId priorXmax);

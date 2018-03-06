@@ -725,7 +725,7 @@ retry:
 	while ((tup = index_getnext(index_scan,
 								ForwardScanDirection)) != NULL)
 	{
-		TransactionId xwait;
+		TransactionId xwait, xid;
 		ItemPointerData ctid_wait;
 		XLTW_Oper	reason_wait;
 		Datum		existing_values[INDEX_MAX_KEYS];
@@ -779,13 +779,24 @@ retry:
 		xwait = TransactionIdIsValid(DirtySnapshot.xmin) ?
 			DirtySnapshot.xmin : DirtySnapshot.xmax;
 
+		/* For zheap, we always use Top Transaction Id. */
+		if (RelationStorageIsZHeap(heap))
+		{
+			xid = GetTopTransactionId();
+			ctid_wait = tup->t_self;
+		}
+		else
+		{
+			xid = GetCurrentTransactionId();
+			ctid_wait = tup->t_data->t_ctid;
+		}
+
 		if (TransactionIdIsValid(xwait) &&
 			(waitMode == CEOUC_WAIT ||
 			 (waitMode == CEOUC_LIVELOCK_PREVENTING_WAIT &&
 			  DirtySnapshot.speculativeToken &&
-			  TransactionIdPrecedes(GetCurrentTransactionId(), xwait))))
+			  TransactionIdPrecedes(xid, xwait))))
 		{
-			ctid_wait = tup->t_data->t_ctid;
 			reason_wait = indexInfo->ii_ExclusionOps ?
 				XLTW_RecheckExclusionConstr : XLTW_InsertIndex;
 			index_endscan(index_scan);
