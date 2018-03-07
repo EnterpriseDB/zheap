@@ -4134,6 +4134,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 	UndoRecPtr	prev_urecptr = InvalidUndoRecPtr;
 	UndoRecPtr	slot_latest_urp[MAX_PAGE_TRANS_INFO_SLOTS];
 	UnpackedUndoRecord	*slot_urec[MAX_PAGE_TRANS_INFO_SLOTS] = {0};
+	UnpackedUndoRecord	*undorecord = NULL;
 	uint64		oldestXidWithEpochHavingUndo;
 	int		slot_no;
 	int		frozen_slots[MAX_PAGE_TRANS_INFO_SLOTS];
@@ -4260,7 +4261,6 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 
 	if (nCompletedXactSlots)
 	{
-		UnpackedUndoRecord	*undorecord;
 		OffsetNumber	*offset_completed_xact_slots;
 		xl_zheap_completed_slot	*slot_info = NULL;
 		xl_zheap_tuple_info	*tuples = NULL;
