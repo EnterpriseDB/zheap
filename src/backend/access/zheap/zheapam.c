@@ -502,6 +502,9 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 		Assert(!(tup->t_data->t_infomask & ZHEAP_HASOID));
 	}
 
+	tup->t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
+	tup->t_data->t_infomask2 &= ~ZHEAP_XACT_SLOT;
+
 	if (options & ZHTUP_SLOT_FROZEN)
 		ZHeapTupleHeaderSetXactSlot(tup->t_data, ZHTUP_SLOT_FROZEN);
 	tup->t_tableOid = RelationGetRelid(relation);
