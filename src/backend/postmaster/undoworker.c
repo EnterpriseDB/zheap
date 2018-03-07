@@ -59,6 +59,7 @@ UndoLauncherRegister(void)
 
 	/* TODO: This should be configurable. */
 
+	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
