@@ -292,5 +292,6 @@ extern const char *zheap_identify(uint8 info);
 extern void zheap2_redo(XLogReaderState *record);
 extern void zheap2_desc(StringInfo buf, XLogReaderState *record);
 extern const char *zheap2_identify(uint8 info);
+extern void zheap_mask(char *pagedata, BlockNumber blkno);
 
 #endif   /* ZHEAP_XLOG_H */
