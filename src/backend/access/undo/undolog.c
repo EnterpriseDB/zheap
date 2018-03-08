@@ -93,31 +93,6 @@
 	UndoLogOffsetFromUsableByteNo(UndoLogOffsetToUsableByteNo(offset) + (n))
 
 /*
- * The in-memory control object for an undo log.  As well as the current
- * meta-data for the undo log, we also lazily maintain a snapshot of the
- * meta-data as it was at the redo point of a checkpoint that is in progress.
- *
- * Conceptually the set of UndoLogControl objects is arranged into a very
- * large array for access by log number, but because we typically need only a
- * smallish number of adjacent undo logs to be active at a time we arrange
- * them into smaller fragments called 'banks'.
- */
-typedef struct UndoLogControl
-{
-	UndoLogMetaData meta;			/* current meta-data */
-	UndoLogMetaData checkpoint_meta;	/* snapshot for next checkpoint */
-	XLogRecPtr	checkpoint_lsn;
-	bool		checkpoint_in_progress;
-	bool	need_attach_wal_record;	/* need_attach_wal_record */
-	pid_t		pid;				/* InvalidPid for unattached */
-	LWLock	mutex;					/* protects the above */
-
-	UndoLogNumber next_free;		/* protected by UndoLogLock */
-
-	/* TODO: links for work_list */
-} UndoLogControl;
-
-/*
  * Main control structure for undo log management in shared memory.
  */
 typedef struct UndoLogSharedData

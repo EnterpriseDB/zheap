@@ -21,6 +21,10 @@
 #include "common/relpath.h"
 #include "storage/bufpage.h"
 
+#ifndef FRONTEND
+#include "storage/lwlock.h"
+#endif
+
 /* The type used to identify an undo log and position within it. */
 typedef uint64 UndoRecPtr;
 
@@ -166,6 +170,33 @@ typedef struct UndoLogMetaData
 	 */
 	uint16	prevlen;
 } UndoLogMetaData;
+
+#ifndef FRONTEND
+
+/*
+ * The in-memory control object for an undo log.  As well as the current
+ * meta-data for the undo log, we also lazily maintain a snapshot of the
+ * meta-data as it was at the redo point of a checkpoint that is in progress.
+ *
+ * Conceptually the set of UndoLogControl objects is arranged into a very
+ * large array for access by log number, but because we typically need only a
+ * smallish number of adjacent undo logs to be active at a time we arrange
+ * them into smaller fragments called 'banks'.
+ */
+typedef struct UndoLogControl
+{
+	UndoLogMetaData meta;			/* current meta-data */
+	UndoLogMetaData checkpoint_meta;	/* snapshot for next checkpoint */
+	XLogRecPtr	checkpoint_lsn;
+	bool		checkpoint_in_progress;
+	bool	need_attach_wal_record;	/* need_attach_wal_record */
+	pid_t		pid;				/* InvalidPid for unattached */
+	LWLock	mutex;					/* protects the above */
+
+	UndoLogNumber next_free;		/* protected by UndoLogLock */
+} UndoLogControl;
+
+#endif
 
 /* Space management. */
 extern UndoRecPtr UndoLogAllocate(size_t size, UndoPersistence level);
