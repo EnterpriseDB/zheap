@@ -16,6 +16,15 @@ other kinds of storage managers.  Removing the switch layer would save
 nothing noticeable anyway, since storage-access operations are surely far
 more expensive than one extra layer of C function calls.
 
+PostgreSQL vTODO accesses undo logs via shared buffers.  While in
+ancestral Postgres the storage manager for each relation was recorded
+in the system catalog, this new storage manager is used for blocks
+tagged with a special pseudo-database number reserved for undo logs.
+
+TODO: Instead of hijacking database number 9 for undo logs, we could
+change the structure of buffer tags so that different subsystems could
+have their own buffer tag namespace.
+
 In Berkeley Postgres each relation was tagged with the ID of the storage
 manager to use for it.  This is gone.  It would be probably more reasonable
 to associate storage managers with tablespaces, should we ever re-introduce
@@ -31,6 +40,12 @@ The files in this directory, and their contents, are
     md.c	The "magnetic disk" storage manager, which is really just
 		an interface to the kernel's filesystem operations.
 
+    undo_file.c The undo log storage manager.  This supports
+		buffer-pool based access to the contents of undo log
+		segment files.  It supports a limited subset of the
+		smgr interface: it can only read and write blocks of
+		existing files.
+
     smgrtype.c	Storage manager type -- maps string names to storage manager
 		IDs and provides simple comparison operators.  This is the
 		regproc support for type "smgr" in the system catalogs.
@@ -38,6 +53,9 @@ The files in this directory, and their contents, are
 		in the catalogs anymore.)
 
 Note that md.c in turn relies on src/backend/storage/file/fd.c.
+undo_file.c also uses fd.c to read and write blocks, but it expects
+src/backend/access/undo/undolog.c to manage the files holding those
+blocks.
 
 
 Relation Forks
