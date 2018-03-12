@@ -211,8 +211,7 @@ void undofile_preckpt(void)
 
 void undofile_sync(void)
 {
-	UndoLogNumber logno;
-	Oid		spcNode;
+	UndoLogControl *log = NULL;
 
 	/*
 	 * XXX For now we just track the range of segments in each undo log that
@@ -221,20 +220,20 @@ void undofile_sync(void)
 	 * involving some IPC like md.c's queue machinery.
 	 */
 
-	logno = -1;
-	spcNode = InvalidOid;
-	while (UndoLogNextActiveLog(&logno, &spcNode))
+	/* TODO: this is being rewritten completely -- watch this space */
+
+	while ((log = UndoLogNext(log)))
 	{
 		int		low_segno = 0,
 				high_segno = 0,
 				segno = 0;
 
-		UndoLogGetDirtySegmentRange(logno, &low_segno, &high_segno);
+		UndoLogGetDirtySegmentRange(log->logno, &low_segno, &high_segno);
 		for (segno = low_segno; segno < high_segno; ++segno)
 		{
 			File		file;
 
-			file = undofile_open_segment_file(logno, spcNode, segno);
+			file = undofile_open_segment_file(log->logno, log->meta.tablespace, segno);
 
 			/* The file may be gone due to concurrent discard. */
 			if (file == 0)
@@ -252,7 +251,7 @@ void undofile_sync(void)
 			FileClose(file);
 
 			/* Remember that we've fsync this far. */
-			UndoLogSetHighestSyncedSegment(logno, segno);
+			UndoLogSetHighestSyncedSegment(log->logno, segno);
 		}
 	}
 }

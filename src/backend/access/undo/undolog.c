@@ -50,9 +50,9 @@
 
 /*
  * Number of bits of an undo log number used to identify a bank of
- * UndoLogDescriptor objects.  This allows us to break up our array of
- * UndoLogDesctiptor objects into many smaller arrays, called banks, and find
- * our way to an UndoLogDescriptor object in O(1) complexity in two steps.
+ * UndoLogControl objects.  This allows us to break up our array of
+ * UndoLogControl objects into many smaller arrays, called banks, and find our
+ * way to an UndoLogControl object in O(1) complexity in two steps.
  */
 #define UndoLogBankBits 14 /* 2^14 entries = a 64KB banks array */
 
@@ -256,42 +256,44 @@ UndoLogSegmentPath(UndoLogNumber logno, int segno, Oid tablespace, char *path)
 }
 
 /*
- * Iterate through the set of currently active logs.  That is, logs that have
- * not yet been entirely discarded.
+ * Iterate through the set of currently active logs.
  *
- * Intially, *logno should contain InvalidLogNumber.  The function should be
- * called repeatedly until it returns false.  When it returns true, the next
- * log number and its tablespace OID have been written to *logno and *spcNode.
+ * TODO: This probably needs to be replaced.  For the use of UndoDiscard,
+ * maybe we should instead have an ordered data structure organized by
+ * oldest_xid so that undo workers only have to consume logs from one end of
+ * the queue when they have an oldest xmin.  For the use of undo_file.c we'll
+ * need something completely different anyway (watch this space).  For now we
+ * just stupidly visit all undo logs in the range [log_logno, high_logno),
+ * which is obviously not ideal.
  */
-bool
-UndoLogNextActiveLog(UndoLogNumber *logno, Oid *spcNode)
+UndoLogControl *
+UndoLogNext(UndoLogControl *log)
 {
 	UndoLogSharedData *shared = MyUndoLogState.shared;
 
-	/* if the logno received is invalid then start from low_logno */
-	if (*logno == InvalidUndoLogNumber)
-		*logno = shared->low_logno;
-	else
-		(*logno)++;
-
-	for (;*logno < shared->high_logno; (*logno)++)
+	if (log == NULL)
 	{
-		UndoLogControl *log;
-		log = get_undo_log_by_number(*logno);
+		UndoLogNumber low_logno;
 
-		if (log == NULL)
-			continue;
+		LWLockAcquire(UndoLogLock, LW_SHARED);
+		low_logno = shared->low_logno;
+		LWLockRelease(UndoLogLock);
 
-		LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-		*spcNode = log->meta.tablespace;
-		if(log->meta.insert > log->meta.discard)
-		{
-			LWLockRelease(&log->mutex);
-			return true;
-		}
-		LWLockRelease(&log->mutex);
+		return get_undo_log_by_number(low_logno);
 	}
-	return false;
+	else
+	{
+		UndoLogNumber high_logno;
+
+		LWLockAcquire(UndoLogLock, LW_SHARED);
+		high_logno = shared->high_logno;
+		LWLockRelease(UndoLogLock);
+
+		if (log->logno + 1 == high_logno)
+			return NULL;
+
+		return get_undo_log_by_number(log->logno + 1);
+	}
 }
 
 /*
@@ -1457,7 +1459,6 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 		log->pid = InvalidPid;
 		log->next_free = shared->free_list;
 		shared->free_list = logno;
-		LWLockInitialize(&log->mutex, LWTRANCHE_UNDOLOG);
 	}
 	CloseTransientFile(fd);
 }
@@ -1497,6 +1498,30 @@ get_undo_log_by_number(UndoLogNumber logno)
 	return &MyUndoLogState.banks[bankno][slotno];
 }
 
+UndoLogControl *
+UndoLogGet(UndoLogNumber logno)
+{
+	/* TODO just rename the above function */
+	return get_undo_log_by_number(logno);
+}
+
+/*
+ * We write the undo log number into each UndoLogControl object.
+ */
+static void
+initialize_undo_log_bank(int bankno, UndoLogControl *bank)
+{
+	int		i;
+	int		logs_per_bank = 1 << (UndoLogNumberBits - UndoLogBankBits);
+
+	for (i = 0; i < logs_per_bank; ++i)
+	{
+		bank[i].logno = logs_per_bank * bankno + i;
+		LWLockInitialize(&bank[i].mutex, LWTRANCHE_UNDOLOG);
+		LWLockInitialize(&bank[i].discard_lock, LWTRANCHE_UNDODISCARD);
+	}
+}
+
 /*
  * Create shared memory space for a given undo log number, if it doesn't exist
  * already.
@@ -1517,6 +1542,7 @@ ensure_undo_log_number(UndoLogNumber logno)
 				size = sizeof(UndoLogControl) * (1 << UndoLogBankBits);
 				MyUndoLogState.banks[bankno] =
 					MemoryContextAllocZero(TopMemoryContext, size);
+				initialize_undo_log_bank(bankno, MyUndoLogState.banks[bankno]);
 			}
 			return;
 	}
@@ -1534,6 +1560,7 @@ ensure_undo_log_number(UndoLogNumber logno)
 		memset(dsm_segment_address(segment), 0, size);
 		shared->banks[bankno] = dsm_segment_handle(segment);
 		MyUndoLogState.banks[bankno] = dsm_segment_address(segment);
+		initialize_undo_log_bank(bankno, MyUndoLogState.banks[bankno]);
 	}
 }
 
@@ -1613,9 +1640,6 @@ attach_undo_log(void)
 		 */
 		log->meta.insert = UndoLogBlockHeaderSize;
 		log->meta.discard = UndoLogBlockHeaderSize;
-
-		/* Initialize. */
-		LWLockInitialize(&log->mutex, LWTRANCHE_UNDOLOG);
 
 		/* TODO: Choose log->meta.tablespace */
 
@@ -1802,7 +1826,6 @@ undolog_xlog_create(XLogReaderState *record)
 	log->meta.tablespace = xlrec->tablespace;
 	log->meta.insert = UndoLogBlockHeaderSize;
 	log->meta.discard = UndoLogBlockHeaderSize;
-	LWLockInitialize(&log->mutex, LWTRANCHE_UNDOLOG);
 
 	LWLockAcquire(UndoLogLock, LW_SHARED);
 	shared->high_logno = Max(xlrec->logno + 1, shared->high_logno);

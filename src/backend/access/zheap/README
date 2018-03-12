@@ -567,12 +567,12 @@ record and in the meantime undo worker discards the corresponding undo record.
 To handle such race conditions, we need to maintain some synchronization
 between backends and undo worker so that backends don’t try to access already
 discarded undo.  So whenever undo fetch is trying to read a undo record from
-an undo log, first it needs to acquire a DiscardXact.mutex in SHARED mode for
+an undo log, first it needs to acquire a log->discard_lock in SHARED mode for
 the undo log and check that the undo record pointer is not less than
-DiscardXact.undo_recptr, if so, then don’t fetch that undo record and return
+log->oldest_data, if so, then don't fetch that undo record and return
 NULL (that means the previous version is all visible).  And undo worker will
-take the DiscardXact.mutex in EXCLUSIVE mode for updating the
-DiscardXact.undo_recptr. We hold this lock just to update the value in shared
+take log->discard_lock in EXCLUSIVE mode for updating the
+log->oldest_data. We hold this lock just to update the value in shared
 memory, the actual discard happens outside this lock.
 
 Undo Log Storage

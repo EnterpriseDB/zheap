@@ -130,7 +130,6 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, XLOGShmemSize());
 		size = add_size(size, CLOGShmemSize());
 		size = add_size(size, UndoLogShmemSize());
-		size = add_size(size, UndoDiscardShmemSize());
 		size = add_size(size, CommitTsShmemSize());
 		size = add_size(size, SUBTRANSShmemSize());
 		size = add_size(size, TwoPhaseShmemSize());
@@ -224,7 +223,6 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	XLOGShmemInit();
 	CLOGShmemInit();
 	UndoLogShmemInit();
-	UndoDiscardShmemInit();
 	CommitTsShmemInit();
 	SUBTRANSShmemInit();
 	MultiXactShmemInit();

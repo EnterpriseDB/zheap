@@ -20,22 +20,6 @@
 #include "storage/lwlock.h"
 
 /*
- * Hold the discard information for one undo log.
- */
-typedef struct DiscardXact
-{
-	uint32			xidepoch;	/* transaction id epoch */
-	TransactionId	xid;
-	LWLock			mutex;		 /* protects the below */
-	UndoRecPtr		undo_recptr; /* first undo record location for this xid. */
-} DiscardXact;
-
-/*
- * Shared memory array to holds the discard information for all the undologs.
- */
-extern DiscardXact	*UndoDiscardInfo;
-
-/*
  * Discard the undo for all the transaction whose xid is smaller than xmin
  *
  *	Check the DiscardInfo memory array for each slot (every undo log) , process
@@ -44,12 +28,6 @@ extern DiscardXact	*UndoDiscardInfo;
  *	find the xid which is not smaller than xmin.
  */
 extern void UndoDiscard(TransactionId xmin, bool *hibernate);
-
-/* Compute shared memory space needed for undolog discard information. */
-extern Size UndoDiscardShmemSize(void);
-
-/* Initialize the undo discard shared mem structure. */
-extern void UndoDiscardShmemInit(void);
 
 #endif   /* UNDODISCARD_H */
 

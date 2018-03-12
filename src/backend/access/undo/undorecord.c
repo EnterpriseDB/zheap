@@ -510,6 +510,7 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 	BlockNumber	cur_blk;
 	RelFileNode	rnode;
 	UndoLogNumber logno = UndoRecPtrGetLogNo(urecptr);
+	UndoLogControl *log;
 	Page		page;
 	char	   *readptr;
 	char	   *endptr;
@@ -529,34 +530,38 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 	if (!UndoRecPtrIsValid(prev_xact_urp))
 		return;
 
+	Assert(UndoRecPtrGetLogNo(prev_xact_urp) == logno);
+
+	log = UndoLogGet(logno);
+
 	/*
 	 * Acquire the discard lock before accessing the undo record so that
 	 * discard worker doen't remove the record while we are in process of
 	 * reading it.
 	 */
-	LWLockAcquire(&UndoDiscardInfo[logno].mutex, LW_SHARED);
+	LWLockAcquire(&log->discard_lock, LW_SHARED);
 
 	UndoRecPtrAssignRelFileNode(rnode, prev_xact_urp);
 	cur_blk = UndoRecPtrGetBlockNum(prev_xact_urp);
 	starting_byte = UndoRecPtrGetPageOffset(prev_xact_urp);
 
-	if (UndoDiscardInfo[logno].undo_recptr == InvalidUndoRecPtr)
+	if (log->oldest_data == InvalidUndoRecPtr)
 	{
 		/*
-		 * UndoDiscardInfo is not yet initialized. Hence, we've to check
+		 * oldest_data is not yet initialized.  We have to check
 		 * UndoLogIsDiscarded and if it's already discarded then we have
 		 * nothing to do.
 		 */
-		LWLockRelease(&UndoDiscardInfo[logno].mutex);
+		LWLockRelease(&log->discard_lock);
 		if (UndoLogIsDiscarded(prev_xact_urp))
 			return;
-		LWLockAcquire(&UndoDiscardInfo[logno].mutex, LW_SHARED);
+		LWLockAcquire(&log->discard_lock, LW_SHARED);
 	}
 
 	/* Check again if it's already discarded. */
-	if (prev_xact_urp < UndoDiscardInfo[logno].undo_recptr)
+	if (prev_xact_urp < log->oldest_data)
 	{
-		LWLockRelease(&UndoDiscardInfo[logno].mutex);
+		LWLockRelease(&log->discard_lock);
 		return;
 	}
 
@@ -621,7 +626,7 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 		break;
 	}
 
-	LWLockRelease(&UndoDiscardInfo[logno].mutex);
+	LWLockRelease(&log->discard_lock);
 }
 
 /*
@@ -1079,6 +1084,8 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 	/* Find the undo record pointer we are interested in. */
 	while (true)
 	{
+		UndoLogControl *log;
+
 		UndoRecPtrAssignRelFileNode(rnode, urp);
 
 		/*
@@ -1119,30 +1126,37 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 		prevrnode = rnode;
 
 		logno = UndoRecPtrGetLogNo(urp);
-		LWLockAcquire(&UndoDiscardInfo[logno].mutex, LW_SHARED);
+		log = UndoLogGet(logno);
 
-		if (!UndoRecPtrIsValid(UndoDiscardInfo[logno].undo_recptr))
+		/*
+		 * Prevent UndoDiscardOneLog() from discarding data while we try to
+		 * read it.  Usually we would acquire log->mutex to read log->meta
+		 * members, but in this case we know that discard can't move without
+		 * also holding log->discard_lock.
+		 */
+		LWLockAcquire(&log->discard_lock, LW_SHARED);
+		if (!UndoRecPtrIsValid(log->oldest_data))
 		{
 			/*
 			 * UndoDiscardInfo is not yet initialized. Hence, we've to check
 			 * UndoLogIsDiscarded and if it's already discarded then we have
 			 * nothing to do.
 			 */
-			LWLockRelease(&UndoDiscardInfo[logno].mutex);
+			LWLockRelease(&log->discard_lock);
 			if (UndoLogIsDiscarded(urp))
 			{
 				if (BufferIsValid(urec->uur_buffer))
 					ReleaseBuffer(urec->uur_buffer);
-
 				return NULL;
 			}
-			LWLockAcquire(&UndoDiscardInfo[logno].mutex, LW_SHARED);
+
+			LWLockAcquire(&log->discard_lock, LW_SHARED);
 		}
 
-		/* Check again if it's already discarded. */
-		if (urp < UndoDiscardInfo[logno].undo_recptr)
+		/* Check if it's already discarded. */
+		if (urp < log->oldest_data)
 		{
-			LWLockRelease(&UndoDiscardInfo[logno].mutex);
+			LWLockRelease(&log->discard_lock);
 			if (BufferIsValid(urec->uur_buffer))
 				ReleaseBuffer(urec->uur_buffer);
 			return NULL;
@@ -1150,7 +1164,7 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 
 		/* Fetch the current undo record. */
 		urec = UndoGetOneRecord(urec, urp, rnode);
-		LWLockRelease(&UndoDiscardInfo[logno].mutex);
+		LWLockRelease(&log->discard_lock);
 
 		if (blkno == InvalidBlockNumber)
 			break;
