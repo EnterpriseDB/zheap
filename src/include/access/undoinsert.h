@@ -63,7 +63,8 @@ extern void CancelPreparedUndo(void);
 extern UnpackedUndoRecord* UndoFetchRecord(UndoRecPtr urp,
 										   BlockNumber blkno,
 										   OffsetNumber offset,
-										   TransactionId xid);
+										   TransactionId xid,
+										   SatisfyUndoRecordCallback callback);
 /*
  * Release the resources allocated by UndoFetchRecord.
  */

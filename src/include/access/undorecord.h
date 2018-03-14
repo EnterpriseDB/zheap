@@ -208,4 +208,13 @@ extern bool InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 extern bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page,
 				 int starting_byte, int *already_decoded);
 
+/*
+ * Typedef for callback function for UndoFetchRecord.
+ *
+ * This checks whether an undorecord satisfies the given conditions.
+ */
+typedef bool (*SatisfyUndoRecordCallback) (UnpackedUndoRecord* urec,
+											BlockNumber blkno,
+											OffsetNumber offset,
+											TransactionId xid);
 #endif   /* UNDORECORD_H */

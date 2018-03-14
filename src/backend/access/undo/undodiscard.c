@@ -93,7 +93,7 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 
 		/* Fetch the undo record for given undo_recptr. */
 		uur = UndoFetchRecord(undo_recptr, InvalidBlockNumber,
-							  InvalidOffsetNumber, InvalidTransactionId);
+							  InvalidOffsetNumber, InvalidTransactionId, NULL);
 
 		Assert(uur != NULL);
 
@@ -127,7 +127,8 @@ UndoDiscardOneLog(DiscardXact *discard, TransactionId xmin, bool *hibernate)
 				UnpackedUndoRecord *next_urec = UndoFetchRecord(next_urecptr,
 																InvalidBlockNumber,
 																InvalidOffsetNumber,
-																InvalidTransactionId);
+																InvalidTransactionId,
+																NULL);
 				from_urecptr = UndoGetPrevUndoRecptr(next_urecptr, next_urec->uur_prevlen);
 				UndoRecordRelease(next_urec);
 			}

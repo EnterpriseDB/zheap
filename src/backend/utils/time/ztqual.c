@@ -66,7 +66,8 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch, TransactionId *xid,
 		urec = UndoFetchRecord(*urec_ptr,
 							   ItemPointerGetBlockNumber(&undo_tup->t_self),
 							   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-							   InvalidTransactionId);
+							   InvalidTransactionId,
+							   ZHeapSatisfyUndoRecord);
 
 		oldestXidHavingUndo = GetXidFromEpochXid(
 						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
@@ -338,7 +339,8 @@ fetch_prior_undo_record:
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
-						   prev_undo_xid);
+						   prev_undo_xid,
+						   ZHeapSatisfyUndoRecord);
 
 	/*
 	 * Skip the undo record for transaction slot reuse, it is used only for
@@ -524,7 +526,8 @@ fetch_undo_record:
 	urec = UndoFetchRecord(urec_ptr,
 						   BufferGetBlockNumber(buffer),
 						   off,
-						   InvalidTransactionId);
+						   InvalidTransactionId,
+						   ZHeapSatisfyUndoRecord);
 
 	/*
 	 * Skip the undo record for transaction slot reuse, it is used only for
@@ -607,7 +610,8 @@ fetch_prior_undo_record:
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
-						   prev_undo_xid);
+						   prev_undo_xid,
+						   ZHeapSatisfyUndoRecord);
 
 	/*
 	 * Skip the undo record for transaction slot reuse, it is used only for

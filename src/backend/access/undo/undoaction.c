@@ -76,7 +76,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 
 		/* Fetch the undo record for given undo_recptr. */
 		uur = UndoFetchRecord(urec_ptr, InvalidBlockNumber,
-							  InvalidOffsetNumber, InvalidTransactionId);
+							  InvalidOffsetNumber, InvalidTransactionId, NULL);
 		/*
 		 * If the record is already discarded by undo worker,
 		 * then we cannot fetch record successfully.
@@ -189,7 +189,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	{
 		 /* Read the prevlen from the first record of this transaction. */
 		uur = UndoFetchRecord(to_urecptr, InvalidBlockNumber,
-							  InvalidOffsetNumber, InvalidTransactionId);
+							  InvalidOffsetNumber, InvalidTransactionId, NULL);
 		Assert(uur != NULL);
 
 		/*

@@ -115,6 +115,9 @@ extern ZHeapTuple
 CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 						bool free_zhtup);
 extern bool
+ZHeapSatisfyUndoRecord(UnpackedUndoRecord* uurec, BlockNumber blkno,
+								OffsetNumber offset, TransactionId xid);
+extern bool
 ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 				   TransactionId priorXmax);
 /*

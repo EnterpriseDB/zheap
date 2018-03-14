@@ -1066,7 +1066,7 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode)
  */
 UnpackedUndoRecord*
 UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
-				TransactionId xid)
+				TransactionId xid, SatisfyUndoRecordCallback callback)
 {
 	RelFileNode		 rnode, prevrnode = {0};
 	UnpackedUndoRecord *urec = NULL;
@@ -1153,8 +1153,8 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 		if (blkno == InvalidBlockNumber)
 			break;
 
-		if ((urec->uur_block == blkno && urec->uur_offset == offset) &&
-			(!TransactionIdIsValid(xid) || TransactionIdEquals(xid, urec->uur_xid)))
+		/* Check whether the undorecord satisfies conditions */
+		if (callback(urec, blkno, offset, xid))
 			break;
 
 		urp = urec->uur_blkprev;
