@@ -2915,7 +2915,7 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 			 * reused for an unrelated tuple.  This implies that the latest
 			 * version of the row was deleted, so we need do nothing.
 			 */
-			if (!ValidateTuplesXact(tuple, buffer, priorXmax))
+			if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax))
 			{
 				ReleaseBuffer(buffer);
 				return NULL;
@@ -3055,7 +3055,7 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 		}
 
 		/* Ensure that the tuple is same as what we are expecting as above. */
-		if (!ValidateTuplesXact(tuple, buffer, priorXmax))
+		if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax))
 		{
 			ReleaseBuffer(buffer);
 			return NULL;

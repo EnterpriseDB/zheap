@@ -114,7 +114,9 @@ extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 extern ZHeapTuple
 CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 						bool free_zhtup);
-
+extern bool
+ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
+				   TransactionId priorXmax);
 /*
  * Given a page, it stores contiguous ranges of free offsets that can be
  * used/reused in the same page. This is used in zheap_multi_insert to decide

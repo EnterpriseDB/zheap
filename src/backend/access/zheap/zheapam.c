@@ -4906,7 +4906,8 @@ fetch_undo_record:
  *	prior version is modified by priorXmax.
  */
 bool
-ValidateTuplesXact(ZHeapTuple tuple, Buffer buf, TransactionId priorXmax)
+ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
+				   TransactionId priorXmax)
 {
 	ZHeapPageOpaque	opaque;
 	ZHeapTupleData	zhtup;
@@ -4952,9 +4953,22 @@ ValidateTuplesXact(ZHeapTuple tuple, Buffer buf, TransactionId priorXmax)
 	}
 	else
 	{
+		ZHeapTuple vis_tuple;
 		trans_slot_id = ItemIdGetTransactionSlot(lp);
 		xid = ZHeapPageGetRawXid(trans_slot_id, opaque);
 		urec_ptr = ZHeapPageGetUndoPtr(trans_slot_id, opaque);
+
+		/*
+		 * XXX for now we shall get a visible undo tuple for the given
+		 * dirty snapshot. The tuple data is needed below in
+		 * CopyTupleFromUndoRecord and some undo records will not have
+		 * tuple data and mask info with them.
+		 * */
+		vis_tuple = ZHeapGetVisibleTuple(ItemPointerGetOffsetNumber(tid),
+										 snapshot, buf, NULL);
+		Assert(vis_tuple != NULL);
+		zhtup.t_data = vis_tuple->t_data;
+		zhtup.t_len = vis_tuple->t_len;
 	}
 
 	if (TransactionIdEquals(xid, priorXmax))
@@ -6359,7 +6373,7 @@ zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer, ItemPointer tid)
 	 * transaction slot can be reused.
 	 */
 	Assert(urec != NULL);
-	Assert(urec->uur_type != UNDO_INVALID_XACT_SLOT);
+	Assert(urec->uur_type == UNDO_INPLACE_UPDATE);
 
 	undo_tup = CopyTupleFromUndoRecord(urec, NULL, false);
 	UndoRecordRelease(urec);
@@ -6700,6 +6714,8 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 		case UNDO_XID_LOCK_ONLY:
 			{
 				ZHeapTupleHeader	undo_tup_hdr;
+
+				Assert(zhtup != NULL);
 
 				undo_tup_hdr = (ZHeapTupleHeader) urec->uur_tuple.data;
 
