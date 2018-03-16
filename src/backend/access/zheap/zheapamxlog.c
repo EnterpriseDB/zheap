@@ -1245,7 +1245,6 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 
 	InsertPreparedUndo();
 	SetUndoPageLSNs(lsn);
-	UnlockReleaseUndoBuffers();
 
 	/* Apply the wal for data */
 	if (action == BLK_NEEDS_REDO)
@@ -1323,17 +1322,18 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			PageClearAllVisible(page);
 		MarkBufferDirty(buffer);
 
-		/* be tidy */
-		for (i = 0; i < nranges; i++)
-			pfree(undorecord[i].uur_payload.data);
-		pfree(undorecord);
-
-		if (BufferIsValid(buffer))
-			UnlockReleaseBuffer(buffer);
-
 		if (tupdata != endptr)
 			elog(ERROR, "total tuple length mismatch");
 	}
+
+	/* be tidy */
+	for (i = 0; i < nranges; i++)
+		pfree(undorecord[i].uur_payload.data);
+	pfree(undorecord);
+
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+	UnlockReleaseUndoBuffers();
 }
 
 /*
