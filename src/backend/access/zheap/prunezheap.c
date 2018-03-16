@@ -493,10 +493,11 @@ zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 			break;
 	}
 
-	if (tupdead || recent_dead)
-	{
+	if (tupdead)
 		ZHeapTupleHeaderAdvanceLatestRemovedXid(tup.t_data, xid, &prstate->latestRemovedXid);
 
+	if (tupdead || recent_dead)
+	{
 		/* count dead or recently dead tuple in result */
 		ndeleted++;
 	}
