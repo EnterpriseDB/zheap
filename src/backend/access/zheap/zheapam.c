@@ -1730,17 +1730,18 @@ zheap_tuple_updated:
 		zheap_page_prune_opt(relation, buffer);
 		pagefree = PageGetZHeapFreeSpace(page);
 		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-
-		/*
-		 * In one special case if we are updating the last tuple of page,
-		 * we can combine free space immediately next to that tuple with
-		 * the orignal tuple space and try to do inplace update there!
-		 */
-		if (ItemIdGetOffset(lp) == ((PageHeader) page)->pd_upper &&
-			(pagefree + oldtup.t_len) >= newtupsize &&
-			!is_index_updated)
-			use_inplace_update = true;
 	}
+
+	/*
+	 * In one special case if we are updating the last tuple of page,
+	 * we can combine free space immediately next to that tuple with
+	 * the original tuple space and try to do inplace update there!
+	 */
+	if (!use_inplace_update &&
+		ItemIdGetOffset(lp) == ((PageHeader) page)->pd_upper &&
+		(pagefree + oldtup.t_len) >= newtupsize &&
+		!is_index_updated)
+		use_inplace_update = true;
 
 	/* updated tuple doesn't fit on current page */
 	if (!use_inplace_update && newtupsize > pagefree)
