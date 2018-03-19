@@ -45,13 +45,9 @@ static UndoRecordPayload work_payload;
 /*
  * Previous top transaction id which inserted the undo.  Whenever a new main
  * transaction try to prepare an undo record we will check if its txid not the
- * same as prev_txid then we will insert the start undo record.  We will keep
- * the reference of the previous transaction's start undo record in
- * prev_xact_urp.
+ * same as prev_txid then we will insert the start undo record.
  */
 static TransactionId	prev_txid = InvalidTransactionId;
-static UndoRecPtr		prev_xact_urp = InvalidUndoRecPtr;
-static uint16			prev_undolen = 0;
 
 /* Undo block number to buffer mapping. */
 typedef struct UndoBuffers
@@ -506,6 +502,7 @@ ReadUndoBytes(char *destptr, int readlen, char **readptr, char *endptr,
 void
 UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 {
+	UndoRecPtr	prev_xact_urp;
 	Buffer		buffer = InvalidBuffer;
 	BlockNumber	cur_blk;
 	RelFileNode	rnode;
@@ -518,21 +515,27 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 	int			already_decoded = 0;
 	int			starting_byte;
 
+	log = UndoLogGet(logno);
+
+	/*
+	 * We can read the previous transaction's location without locking,
+	 * because only the backend attached to the log can write to it (or we're
+	 * in recovery).
+	 */
+	Assert(AmAttachedToUndoLog(log) || InRecovery);
+	if (log->meta.last_xact_start == 0)
+		prev_xact_urp = InvalidUndoRecPtr;
+	else
+		prev_xact_urp = MakeUndoRecPtr(log->logno, log->meta.last_xact_start);
+
 	/*
 	 * If previous transaction's urp is not valid means this backend is
 	 * preparing its first undo so fetch the information from the undo log
 	 * if it's still invalid urp means this is the first undo record for this
 	 * log and we have nothing to update.
 	 */
-	if (!UndoRecPtrIsValid(prev_xact_urp) || InRecovery)
-		prev_xact_urp = UndoLogGetLastXactStartPoint(logno);
-
 	if (!UndoRecPtrIsValid(prev_xact_urp))
 		return;
-
-	Assert(UndoRecPtrGetLogNo(prev_xact_urp) == logno);
-
-	log = UndoLogGet(logno);
 
 	/*
 	 * Acquire the discard lock before accessing the undo record so that
@@ -716,9 +719,9 @@ UndoRecPtr
 PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 				  TransactionId xid)
 {
+	UndoLogControl *log;
 	UndoRecordSize	size;
 	UndoRecPtr		urecptr;
-	UndoRecPtr		next_insert = InvalidUndoRecPtr;
 	RelFileNode		rnode;
 	UndoRecordSize  cur_size = 0;
 	BlockNumber		cur_blk;
@@ -755,13 +758,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 		txid = SubTransGetTopmostTransaction(xid);
 	}
 
-
 	/*
-	 * If there is no swithcing of transactions and next insert location is
-	 * same as prev_xact_urp, then insert a new start undo record. This
-	 * occurs when the undo record pointer is rewound while rollback-ing the
-	 * subtransaction which contains the first undo record of this transaction.
-	 *
 	 * If this is the first undo record for this transaction then set the
 	 * uur_next to the SpecialUndoRecPtr.  This is the indication to allocate
 	 * the space for the transaction header and the valid value of the uur_next
@@ -769,13 +766,10 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	 * transaction.
 	 */
 
-	if (prev_txid == txid)
-		next_insert = UndoLogGetNextInsertPtr(LogNumberFromXid(txid), urec->uur_xid);
-
-	if ((prev_xact_urp == next_insert || prev_txid != txid) &&
-	   (!InRecovery || IsTransactionFirstRec(txid)))
+	if (prev_txid != txid && (!InRecovery || IsTransactionFirstRec(txid)))
 		need_start_undo = true;
 
+ resize:
 	if (need_start_undo)
 	{
 		urec->uur_next = SpecialUndoRecPtr;
@@ -792,16 +786,36 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	else
 		urecptr = UndoLogAllocate(size, upersistence);
 
+	log = UndoLogGet(UndoRecPtrGetLogNo(urecptr));
+	Assert(AmAttachedToUndoLog(log));
+
+	/*
+	 * If we've rewound all the way back to the start of the transaction by
+	 * rolling back the first subtransaction (which we can't detect until
+	 * after we've allocated some space), we'll need a new transaction header.
+	 * If we weren't already generating one, that will make the record larger,
+	 * so we'll have to go back and recompute the size.
+	 *
+	 * TODO: What should we do here if we switched to different undo log
+	 * mid-transaction?
+	 */
+	if (!need_start_undo &&
+		log->meta.insert == log->meta.last_xact_start)
+	{
+		need_start_undo = true;
+		urec->uur_info = 0;		/* force recomputation of info bits */
+		goto resize;
+	}
+
 	/*
 	 * If transaction id is switched then update the previous transaction's
 	 * start undo record.
 	 */
-	if (need_start_undo)
+	if (need_start_undo && txid != prev_txid)
 	{
 		UndoRecordUpdateTransactionInfo(urecptr);
 
-		/* Remember the current transactions xid and start undorecptr. */
-		prev_xact_urp = urecptr;
+		/* Remember the current transaction's xid. */
 		prev_txid = txid;
 
 		/* Store the current transaction's start undorecptr in the undo log. */
@@ -860,6 +874,8 @@ InsertPreparedUndo(void)
 	UndoRecPtr	urp;
 	UnpackedUndoRecord	*uur;
 	UndoLogOffset offset;
+	UndoLogControl *log;
+	uint16	prev_undolen;
 
 	Assert(prepare_idx > 0);
 
@@ -878,12 +894,12 @@ InsertPreparedUndo(void)
 		offset = UndoRecPtrGetOffset(urp);
 
 		/*
-		 * If we don't have prevlen locally then read the value from the meta.
-		 * If InRecovery then always read it from the meta because prevlen in
-		 * meta might have changed because of rewind wal replay.
+		 * We can read meta.prevlen without locking, because only we can write
+		 * to it.
 		 */
-		if (prev_undolen == 0 || InRecovery)
-			prev_undolen = UndoLogGetPrevLen(UndoRecPtrGetLogNo(urp));
+		log = UndoLogGet(UndoRecPtrGetLogNo(urp));
+		Assert(AmAttachedToUndoLog(log) || InRecovery);
+		prev_undolen = log->meta.prevlen;
 
 		/* store the previous undo record length in the header */
 		uur->uur_prevlen = prev_undolen;
@@ -1218,10 +1234,12 @@ UndoRecordRelease(UnpackedUndoRecord *urec)
 }
 
 /*
- * Externally set the value of prev_undolen.
+ * Called whenever we attach to a new undo log, so that we forget about our
+ * translation-unit private state relating to the log we were last attached
+ * to.
  */
 void
-UndoRecordSetPrevUndoLen(uint16 len)
+UndoRecordOnUndoLogChange(UndoPersistence persistence)
 {
-	prev_undolen = len;
+	prev_txid = InvalidTransactionId;
 }

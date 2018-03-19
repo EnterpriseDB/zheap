@@ -217,4 +217,7 @@ typedef bool (*SatisfyUndoRecordCallback) (UnpackedUndoRecord* urec,
 											BlockNumber blkno,
 											OffsetNumber offset,
 											TransactionId xid);
+
+extern void UndoRecordOnUndoLogChange(UndoPersistence persistence);
+
 #endif   /* UNDORECORD_H */

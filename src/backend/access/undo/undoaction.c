@@ -203,8 +203,6 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		 */
 		UndoLogRewind(to_urecptr, uur->uur_prevlen);
 
-		/* set the local prevlen of undorecord.c */
-		UndoRecordSetPrevUndoLen(uur->uur_prevlen);
 		UndoRecordRelease(uur);
 	}
 }

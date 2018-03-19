@@ -231,6 +231,7 @@ extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
 
 extern UndoLogControl *UndoLogGet(UndoLogNumber logno);
 extern UndoLogControl *UndoLogNext(UndoLogControl *log);
+extern bool AmAttachedToUndoLog(UndoLogControl *log);
 
 #endif
 

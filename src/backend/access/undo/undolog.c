@@ -1577,6 +1577,9 @@ attach_undo_log(void)
 	Assert(!InRecovery);
 	Assert(MyUndoLogState.log == NULL);
 
+	/* undorecord.c needs to clean up some private state. */
+	UndoRecordOnUndoLogChange(UNDO_PERSISTENT);
+
 	/*
 	 * We have to acquire a lock to attach to a log.
 	 *
@@ -2080,4 +2083,13 @@ prepare_to_modify_undo_log(UndoLogControl *log)
 			log->checkpoint_in_progress = false;
 		}
 	}
+}
+
+/*
+ * For assertions only.
+ */
+bool
+AmAttachedToUndoLog(UndoLogControl *log)
+{
+	return MyUndoLogState.log == log;
 }
