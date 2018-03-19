@@ -6112,31 +6112,35 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	if (!(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp)))
 		return NULL;
 
-	loctup_len = ItemIdGetLength(lp);
-
-	loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
-	loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
-
-	loctup->t_tableOid = RelationGetRelid(relation);
-	loctup->t_len = loctup_len;
-	loctup->t_self = *tid;
-
 	/*
 	 * If the record is deleted, its place in the page might have been taken
 	 * by another of its kind. Try to get it from the UNDO if it is still
 	 * visible.
 	 */
 	if (ItemIdIsDeleted(lp))
-		return ZHeapGetVisibleTuple(offnum, snapshot, buffer, all_dead);
+	{
+		resulttup = ZHeapGetVisibleTuple(offnum, snapshot, buffer, all_dead);
+	}
+	else
+	{
+		loctup_len = ItemIdGetLength(lp);
 
-	/*
-	 * We always need to make a copy of zheap tuple as once we release the
-	 * buffer an in-place update can change the tuple.
-	 */
-	memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lp)), loctup->t_len);
+		loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
+		loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
 
-	/* If it's visible per the snapshot, we must return it */
-	resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer, NULL);
+		loctup->t_tableOid = RelationGetRelid(relation);
+		loctup->t_len = loctup_len;
+		loctup->t_self = *tid;
+
+		/*
+		 * We always need to make a copy of zheap tuple as once we release the
+		 * buffer an in-place update can change the tuple.
+		 */
+		memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lp)), loctup->t_len);
+
+		/* If it's visible per the snapshot, we must return it */
+		resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer, NULL);
+	}
 
 	/* Fixme - Serialization failures needs to be detected for zheap. */
 	/* CheckForSerializableConflictOut(valid, relation, zheapTuple,
@@ -6147,7 +6151,7 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		/* set the tid */
 		*tid = resulttup->t_self;
 	}
-	else
+	else if (!ItemIdIsDeleted(lp))
 	{
 		/*
 		 * Temporarily get the copy of tuple from page to check if tuple is
@@ -6159,17 +6163,22 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		loctup_tmp.t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lp);
 		loctup_tmp.t_len = ItemIdGetLength(lp);
 		loctup_tmp.t_self = *tid;
-	}
 
-	/*
-	 * If we can't see it, maybe no one else can either.  At caller
-	 * request, check whether tuple is dead to all transactions.
-	 */
-	if (!resulttup && all_dead &&
-		ZHeapTupleIsSurelyDead(&loctup_tmp,
-							   pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo),
-							   buffer))
-		*all_dead = true;
+		/*
+		 * If we can't see it, maybe no one else can either.  At caller
+		 * request, check whether tuple is dead to all transactions.
+		 */
+		if (!resulttup && all_dead &&
+			ZHeapTupleIsSurelyDead(&loctup_tmp,
+								   pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo),
+								   buffer))
+			*all_dead = true;
+	}
+	else
+	{
+		/* For deleted item pointers, we've already set the value for all_dead. */
+		return NULL;
+	}
 
 	return resulttup;
 }
