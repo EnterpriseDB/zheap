@@ -2045,7 +2045,7 @@ DropUndoLogsInTablespace(Oid tablespace)
 }
 
 void
-ResetUnloggedUndoLogs(void)
+ResetUndoLogs(UndoPersistence persistence)
 {
 	UndoLogNumber low_logno;
 	UndoLogNumber high_logno;
@@ -2068,7 +2068,7 @@ ResetUnloggedUndoLogs(void)
 		char	segment_prefix[MAXPGPATH];
 		size_t	segment_prefix_size;
 
-		if (log->meta.persistence != UNDO_UNLOGGED)
+		if (log->meta.persistence != persistence)
 			continue;
 
 		/* Scan the directory for files belonging to this undo log. */

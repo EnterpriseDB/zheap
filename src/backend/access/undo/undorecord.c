@@ -94,7 +94,8 @@ static bool ReadUndoBytes(char *destptr, int readlen,
 			  char **readptr, char *endptr,
 			  int *my_bytes_read, int *total_bytes_read, bool nocopy);
 static UnpackedUndoRecord* UndoGetOneRecord(UnpackedUndoRecord *urec,
-											UndoRecPtr urp, RelFileNode rnode);
+											UndoRecPtr urp, RelFileNode rnode,
+											UndoPersistence persistence);
 static void UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr);
 
 /*
@@ -518,6 +519,17 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 	log = UndoLogGet(logno);
 
 	/*
+	 * TODO: For now we don't know how to build a transaction chain for
+	 * temporary undo logs.  That's because this log might have been used by a
+	 * different backend, and we can't access its buffers.  What should happen
+	 * is that the undo data should be automatically discarded when the other
+	 * backend detaches, but that code doesn't exist yet and the undo worker
+	 * can't do it either.
+	 */
+	if (log->meta.persistence == UNDO_TEMP)
+		return;
+
+	/*
 	 * We can read the previous transaction's location without locking,
 	 * because only the backend attached to the log can write to it (or we're
 	 * in recovery).
@@ -580,7 +592,8 @@ UndoRecordUpdateTransactionInfo(UndoRecPtr urecptr)
 		}
 
 		buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
-										   RBM_NORMAL, NULL);
+										   RBM_NORMAL, NULL,
+										   RelPersistenceForUndoPersistence(log->meta.persistence));
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buffer);
 
@@ -655,7 +668,7 @@ UndoRecordSetInfo(UnpackedUndoRecord *uur)
  * its index otherwise search the buffer and insert an entry.
  */
 static int
-InsertFindBufferSlot(RelFileNode rnode, BlockNumber blk)
+InsertFindBufferSlot(RelFileNode rnode, BlockNumber blk, UndoPersistence persistence)
 {
 	int 	i;
 	Buffer 	buffer;
@@ -675,15 +688,13 @@ InsertFindBufferSlot(RelFileNode rnode, BlockNumber blk)
 	{
 		/*
 		 * Fetch the buffer in which we want to insert the undo record.
-		 *
-		 * FIXME: This API can't be used for persistence level temporary
-		 * and unlogged.
 		 */
 		buffer = ReadBufferWithoutRelcache(rnode,
 										   UndoLogForkNum,
 										   blk,
 										   RBM_NORMAL,
-										   NULL);
+										   NULL,
+										   RelPersistenceForUndoPersistence(persistence));
 		undo_buffer[buffer_idx].buf = buffer;
 		undo_buffer[buffer_idx].blk = blk;
 		buffer_idx++;
@@ -829,7 +840,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 
 	do
 	{
-		bufidx = InsertFindBufferSlot(rnode, cur_blk);
+		bufidx = InsertFindBufferSlot(rnode, cur_blk, log->meta.persistence);
 		if (cur_size == 0)
 			cur_size = BLCKSZ - starting_byte;
 		else
@@ -1007,7 +1018,8 @@ UnlockReleaseUndoBuffers(void)
  * and set it to invalid if he wishes to fetch the record from another block.
  */
 static UnpackedUndoRecord*
-UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode)
+UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
+				 UndoPersistence persistence)
 {
 	Buffer			 buffer = urec->uur_buffer;
 	Page			 page;
@@ -1022,7 +1034,8 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode)
 	if (!BufferIsValid(buffer))
 	{
 		buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
-										   RBM_NORMAL, NULL);
+										   RBM_NORMAL, NULL,
+										   RelPersistenceForUndoPersistence(persistence));
 
 		urec->uur_buffer = buffer;
 	}
@@ -1053,7 +1066,8 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode)
 		/* Go to next block. */
 		cur_blk++;
 		buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
-										   RBM_NORMAL, NULL);
+										   RBM_NORMAL, NULL,
+										   RelPersistenceForUndoPersistence(persistence));
 	}
 
 	/*
@@ -1186,7 +1200,7 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 		}
 
 		/* Fetch the current undo record. */
-		urec = UndoGetOneRecord(urec, urp, rnode);
+		urec = UndoGetOneRecord(urec, urp, rnode, log->meta.persistence);
 		LWLockRelease(&log->discard_lock);
 
 		if (blkno == InvalidBlockNumber)

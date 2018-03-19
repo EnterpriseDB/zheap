@@ -63,6 +63,14 @@ typedef enum
 	 (rp) == RELPERSISTENCE_UNLOGGED ? UNDO_UNLOGGED : UNDO_TEMP)
 
 /*
+ * Convert from UndoPersistence to a relpersistence value.
+ */
+#define RelPersistenceForUndoPersistence(up)				\
+	((up) == UNDO_PERMANENT ? RELPERSISTENCE_PERMANENT :	\
+	 (up) == UNDO_UNLOGGED ? RELPERSISTENCE_UNLOGGED :		\
+	 RELPERSISTENCE_TEMP)
+
+/*
  * Get the appropriate UndoPersistence value from a Relation.
  */
 #define UndoPersistenceForRelation(rel)									\
@@ -272,7 +280,7 @@ extern Size UndoLogShmemSize(void);
 extern void UndoLogInit(void);
 extern void UndoLogSegmentPath(UndoLogNumber logno, int segno, Oid tablespace,
 							   char *path);
-extern void ResetUnloggedUndoLogs(void);
+extern void ResetUndoLogs(UndoPersistence persistence);
 
 /* Interface use by tablespace.c. */
 extern bool DropUndoLogsInTablespace(Oid tablespace);

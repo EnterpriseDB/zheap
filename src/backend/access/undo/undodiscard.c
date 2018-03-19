@@ -213,6 +213,10 @@ UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 	{
 		TransactionId oldest_xid = InvalidTransactionId;
 
+		/* We can't process temporary undo logs. */
+		if (log->meta.persistence == UNDO_TEMP)
+			continue;
+
 		/*
 		 * If the first xid of the undo log is smaller than the xmin the try
 		 * to discard the undo log.
