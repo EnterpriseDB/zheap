@@ -934,15 +934,6 @@ InsertPreparedUndo(void)
 }
 
 /*
- * Prototype just to ensure that code gets compiled.
- */
-void
-SetUndoPageLSNs(XLogRecPtr lsn)
-{
-	return;
-}
-
-/*
  * Unlock and release undo buffers.  This step performed after exiting any
  * critical section.
  */

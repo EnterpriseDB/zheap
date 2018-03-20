@@ -35,14 +35,6 @@ extern UndoRecPtr PrepareUndoInsert(UnpackedUndoRecord *, UndoPersistence, Trans
 extern void InsertPreparedUndo(void);
 
 /*
- * Set the page LSNs of the buffers into which a previously-prepared undo
- * record was inserted.  Pass the LSN returned by XLogInsert to this function.
- * This step is required only for persistent undo; otherwise, there's no LSN.
- * This function must be called before exiting the critical section.
- */
-extern void SetUndoPageLSNs(XLogRecPtr);
-
-/*
  * Unlock and release undo buffers.  This step performed after exiting any
  * critical section.
  */

@@ -90,7 +90,6 @@ zheap_xlog_insert(XLogReaderState *record)
 
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, xid);
 	InsertPreparedUndo();
-	SetUndoPageLSNs(lsn);
 
 	/*
 	 * undo should be inserted at same location as it was during the actual
@@ -289,7 +288,6 @@ zheap_xlog_delete(XLogReaderState *record)
 
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, xid);
 	InsertPreparedUndo();
-	SetUndoPageLSNs(lsn);
 
 	/*
 	 * undo should be inserted at same location as it was during the actual
@@ -527,7 +525,6 @@ zheap_xlog_update(XLogReaderState *record)
 	Assert (urecptr == xlundohdr->urec_ptr);
 
 	InsertPreparedUndo();
-	SetUndoPageLSNs(lsn);
 
 	/* Ensure old tuple points to the tuple in page. */
 	oldtup.t_data = (ZHeapTupleHeader) PageGetItem(oldpage, lp);
@@ -963,10 +960,7 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 	}
 
 	if (noffsets > 0)
-	{
 		InsertPreparedUndo();
-		SetUndoPageLSNs(lsn);
-	}
 
 	if (action == BLK_NEEDS_REDO)
 	{
@@ -1100,7 +1094,6 @@ zheap_xlog_lock(XLogReaderState *record)
 
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, xid);
 	InsertPreparedUndo();
-	SetUndoPageLSNs(lsn);
 
 	/*
 	 * undo should be inserted at same location as it was during the actual
@@ -1244,7 +1237,6 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	Assert (urecptr == xlundohdr->urec_ptr);
 
 	InsertPreparedUndo();
-	SetUndoPageLSNs(lsn);
 
 	/* Apply the wal for data */
 	if (action == BLK_NEEDS_REDO)
