@@ -447,6 +447,23 @@ UndoLogGetPrevLen(UndoLogNumber logno)
 	return prevlen;
 }
 
+/*
+ * To retrieve log number from xid.
+ */
+UndoLogNumber
+LogNumberFromXid(TransactionId xid)
+{
+	uint16		high_bits = UndoLogGetXidHigh(xid);
+	uint16		low_bits = UndoLogGetXidLow(xid);
+	UndoLogNumber logno;
+
+	if (InRecovery)
+		logno = MyUndoLogState.xidToLogNumber[high_bits][low_bits];
+	else
+		logno =  MyUndoLogState.logno;
+
+	return logno;
+}
 
 /*
  * Is this record is the first record for any transaction.
@@ -454,14 +471,12 @@ UndoLogGetPrevLen(UndoLogNumber logno)
 bool
 IsTransactionFirstRec(TransactionId xid)
 {
-	uint16		high_bits = UndoLogGetXidHigh(xid);
-	uint16		low_bits = UndoLogGetXidLow(xid);
 	UndoLogNumber logno;
 	UndoLogControl *log;
 
 	Assert(InRecovery);
 
-	logno = MyUndoLogState.xidToLogNumber[high_bits][low_bits];
+	logno = LogNumberFromXid(xid);
 	log = get_undo_log_by_number(logno);
 	if (log == NULL)
 		elog(ERROR, "cannot find undo log number %d for xid %u", logno, xid);

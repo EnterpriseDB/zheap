@@ -1345,7 +1345,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	HTSU_Result result;
 	TransactionId xid = GetTopTransactionId();
 	TransactionId tup_xid, save_tup_xid, oldestXidHavingUndo;
-	CommandId	tup_cid;
+	CommandId	tup_cid = NULL;
 	Bitmapset  *inplace_upd_attrs = NULL;
 	Bitmapset  *key_attrs = NULL;
 	Bitmapset  *interesting_attrs;

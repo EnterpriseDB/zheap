@@ -712,7 +712,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 				  TransactionId xid)
 {
 	UndoRecordSize	size;
-	UndoRecPtr		urecptr;
+	UndoRecPtr		urecptr, next_insert = NULL;
 	RelFileNode		rnode;
 	UndoRecordSize  cur_size = 0;
 	BlockNumber		cur_blk;
@@ -751,13 +751,23 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 
 
 	/*
+	 * If there is no swithcing of transactions and next insert location is
+	 * same as prev_xact_urp, then insert a new start undo record. This
+	 * occurs when the undo record pointer is rewound while rollback-ing the
+	 * subtransaction which contains the first undo record of this transaction.
+	 *
 	 * If this is the first undo record for this transaction then set the
 	 * uur_next to the SpecialUndoRecPtr.  This is the indication to allocate
 	 * the space for the transaction header and the valid value of the uur_next
 	 * will be updated while preparing the first undo record of the next
 	 * transaction.
 	 */
-	if (prev_txid != txid && (!InRecovery || IsTransactionFirstRec(txid)))
+
+	if (prev_txid == txid)
+		next_insert = UndoLogGetNextInsertPtr(LogNumberFromXid(txid), urec->uur_xid);
+
+	if ((prev_xact_urp == next_insert || prev_txid != txid) &&
+	   (!InRecovery || IsTransactionFirstRec(txid)))
 		need_start_undo = true;
 
 	if (need_start_undo)
