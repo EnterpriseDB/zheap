@@ -4485,6 +4485,8 @@ WriteControlFile(void)
 	ControlFile->float4ByVal = FLOAT4PASSBYVAL;
 	ControlFile->float8ByVal = FLOAT8PASSBYVAL;
 
+	ControlFile->zheap_page_trans_slots = ZHEAP_PAGE_TRANS_SLOTS;
+
 	/* Contents are protected with a CRC */
 	INIT_CRC32C(ControlFile->crc);
 	COMP_CRC32C(ControlFile->crc,
@@ -4717,6 +4719,13 @@ ReadControlFile(void)
 						   " but the server was compiled without USE_FLOAT8_BYVAL."),
 				 errhint("It looks like you need to recompile or initdb.")));
 #endif
+	if (ControlFile->zheap_page_trans_slots != ZHEAP_PAGE_TRANS_SLOTS)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with ZHEAP_PAGE_TRANS_SLOTS %d,"
+						   " but the server was compiled with ZHEAP_PAGE_TRANS_SLOTS %d.",
+						   ControlFile->zheap_page_trans_slots, (int) ZHEAP_PAGE_TRANS_SLOTS),
+				 errhint("It looks like you need to recompile or initdb.")));
 
 	wal_segment_size = ControlFile->xlog_seg_size;
 

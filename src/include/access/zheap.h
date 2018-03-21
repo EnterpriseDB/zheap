@@ -23,8 +23,6 @@
 #include "utils/rel.h"
 #include "utils/snapshot.h"
 
-#define MAX_PAGE_TRANS_INFO_SLOTS	4
-
 /*
  * We need tansactionid and undo pointer to retrieve the undo information
  * for a particular transaction.  Xid's epoch is primarily required to check
@@ -39,10 +37,13 @@ typedef struct TransInfo
 
 typedef struct ZHeapPageOpaqueData
 {
-	TransInfo	transinfo[MAX_PAGE_TRANS_INFO_SLOTS];
+	TransInfo	transinfo[1];
 } ZHeapPageOpaqueData;
 
 typedef ZHeapPageOpaqueData *ZHeapPageOpaque;
+
+#define SizeOfZHeapPageOpaqueData (ZHEAP_PAGE_TRANS_SLOTS \
+										 * sizeof(TransInfo))
 
 extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate);

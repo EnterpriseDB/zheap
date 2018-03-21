@@ -29,6 +29,12 @@ controls the padding between tuples. This parameter is just for some
 experiments to see the impact of alignment on database size.  This parameter
 will be removed later; we’ll align as described in the zheap design document.
 
+Each zheap page has fixed set of transaction slots each of which contains the
+transaction information (transaction id and epoch) and the latest undo record
+pointer for that transaction.  By default, we have four transaction slots per
+page, but this can be changed by setting --with-trans_slots_per_zheap_page=<value>
+while configuring zheap.
+
 What doesn’t work yet?
 ======================
 

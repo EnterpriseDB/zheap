@@ -24,10 +24,10 @@
 #include "storage/buf.h"
 #include "storage/itemptr.h"
 
-/* valid values for transaction slot is between 0 and MAX_PAGE_TRANS_INFO_SLOTS */
+/* valid values for transaction slot is between 0 and ZHEAP_PAGE_TRANS_SLOTS */
 #define InvalidXactSlotId	(-1)
 /* we use frozen slot to indicate that the tuple is all visible now */
-#define	ZHTUP_SLOT_FROZEN	0x007
+#define	ZHTUP_SLOT_FROZEN	0x01F
 
 /*
  * Heap tuple header.  To avoid wasting space, the fields should be
@@ -116,7 +116,7 @@ typedef ZHeapTupleData *ZHeapTuple;
  * information stored in t_infomask2:
  */
 #define ZHEAP_NATTS_MASK			0x07FF	/* 11 bits for number of attributes */
-#define ZHEAP_XACT_SLOT				0x3800	/* 3 bits (12, 13 and 14) for transaction slot */
+#define ZHEAP_XACT_SLOT				0xF800	/* 5 bits (12, 13, 14, 15 and 16) for transaction slot */
 #define	ZHEAP_XACT_SLOT_MASK		0x000B	/* 11 - mask to retrieve transaction slot */
 
 
@@ -333,7 +333,7 @@ extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, ItemPointer ctid);
 
 /* MaxZHeapPageFixedSpace - Maximum fixed size for page */
 #define MaxZHeapPageFixedSpace \
-	(BLCKSZ - SizeOfPageHeaderData - sizeof(ZHeapPageOpaqueData))
+	(BLCKSZ - SizeOfPageHeaderData - SizeOfZHeapPageOpaqueData)
 /*
  * MaxZHeapTuplesPerPage is an upper bound on the number of tuples that can
  * fit on one zheap page.
@@ -346,7 +346,7 @@ extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, ItemPointer ctid);
 		((int) ((MaxZHeapPageFixedSpace) / \
 				(MaxZHeapTupFixedSizeAlign0)))
 
-#define MaxZHeapTupleSize  (BLCKSZ - MAXALIGN(SizeOfPageHeaderData + sizeof(ZHeapPageOpaqueData) + sizeof(ItemIdData)))
+#define MaxZHeapTupleSize  (BLCKSZ - MAXALIGN(SizeOfPageHeaderData + SizeOfZHeapPageOpaqueData + sizeof(ItemIdData)))
 #define MinZHeapTupleSize  MAXALIGN(SizeofZHeapTupleHeader)
 
 #define ZPageAddItem(page, item, size, offsetNumber, overwrite, is_heap) \

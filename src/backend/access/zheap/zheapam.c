@@ -3928,7 +3928,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, uint32 epoch,
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
 
-	for (slot_no = 0; slot_no < MAX_PAGE_TRANS_INFO_SLOTS; slot_no++)
+	for (slot_no = 0; slot_no < ZHEAP_PAGE_TRANS_SLOTS; slot_no++)
 	{
 		if (opaque->transinfo[slot_no].xid_epoch == epoch &&
 			opaque->transinfo[slot_no].xid == xid)
@@ -3944,7 +3944,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, uint32 epoch,
 	/* no transaction slot available, try to reuse some existing slot */
 	if (PageFreezeTransSlots(relation, buf))
 	{
-		for (slot_no = 0; slot_no < MAX_PAGE_TRANS_INFO_SLOTS; slot_no++)
+		for (slot_no = 0; slot_no < ZHEAP_PAGE_TRANS_SLOTS; slot_no++)
 			if (opaque->transinfo[slot_no].xid == InvalidTransactionId)
 				return slot_no;
 
@@ -4134,14 +4134,14 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 	ZHeapPageOpaque	opaque;
 	UndoRecPtr	urecptr = InvalidUndoRecPtr;
 	UndoRecPtr	prev_urecptr = InvalidUndoRecPtr;
-	UndoRecPtr	slot_latest_urp[MAX_PAGE_TRANS_INFO_SLOTS];
-	UnpackedUndoRecord	*slot_urec[MAX_PAGE_TRANS_INFO_SLOTS] = {0};
+	UndoRecPtr	slot_latest_urp[ZHEAP_PAGE_TRANS_SLOTS];
+	UnpackedUndoRecord	*slot_urec[ZHEAP_PAGE_TRANS_SLOTS] = {0};
 	UnpackedUndoRecord	*undorecord = NULL;
 	uint64		oldestXidWithEpochHavingUndo;
 	int		slot_no;
-	int		frozen_slots[MAX_PAGE_TRANS_INFO_SLOTS];
+	int		frozen_slots[ZHEAP_PAGE_TRANS_SLOTS];
 	int		nFrozenSlots = 0;
-	int		completed_xact_slots[MAX_PAGE_TRANS_INFO_SLOTS];
+	int		completed_xact_slots[ZHEAP_PAGE_TRANS_SLOTS];
 	int		nCompletedXactSlots = 0;
 	TransactionId	topxid = GetTopTransactionId();
 	bool	isSubxactId = false;
@@ -4157,7 +4157,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 	 * to see if any tuple has marking for any of the slots, if so, just clear
 	 * the slot information from the tuple.
 	 */
-	for (slot_no = 0; slot_no < MAX_PAGE_TRANS_INFO_SLOTS; slot_no++)
+	for (slot_no = 0; slot_no < ZHEAP_PAGE_TRANS_SLOTS; slot_no++)
 	{
 		uint64	slot_xid_epoch = opaque->transinfo[slot_no].xid_epoch;
 		TransactionId	slot_xid = opaque->transinfo[slot_no].xid;
@@ -4241,7 +4241,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 	 * any alive transaction to which this committed transaction is not visible,
 	 * it can fetch the record from undo and check the visibility.
 	 */
-	for (slot_no = 0; slot_no < MAX_PAGE_TRANS_INFO_SLOTS; slot_no++)
+	for (slot_no = 0; slot_no < ZHEAP_PAGE_TRANS_SLOTS; slot_no++)
 	{
 		if (!TransactionIdIsInProgress(opaque->transinfo[slot_no].xid))
 		{
@@ -5071,11 +5071,15 @@ ZheapInitPage(Page page, Size pageSize)
 	ZHeapPageOpaque	opaque;
 	int				i;
 
-	PageInit(page, pageSize, sizeof(ZHeapPageOpaqueData));
+	/*
+	 * The size of the opaque space depends on the number of transaction
+	 * slots in a page. We set it to default here.
+	 */
+	PageInit(page, pageSize, ZHEAP_PAGE_TRANS_SLOTS * sizeof(TransInfo));
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 
-	for (i = 0; i < MAX_PAGE_TRANS_INFO_SLOTS; i++)
+	for (i = 0; i < ZHEAP_PAGE_TRANS_SLOTS; i++)
 	{
 		opaque->transinfo[i].xid_epoch = 0;
 		opaque->transinfo[i].xid = InvalidTransactionId;

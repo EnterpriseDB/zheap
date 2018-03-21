@@ -55,6 +55,11 @@ sub _new
 	die "Bad wal_blocksize $options->{wal_blocksize}"
 	  unless grep { $_ == $options->{wal_blocksize} }
 	  (1, 2, 4, 8, 16, 32, 64);
+	$options->{trans_slots_per_page} = 4
+	  unless $options->{trans_slots_per_page};    # undef or 0 means default
+	die "Bad trans_slots_per_page $options->{trans_slots_per_page}"
+	  unless grep { $_ == $options->{trans_slots_per_page} }
+		  (1, 2, 4, 8, 16, 31);
 	$options->{wal_segsize} = 16
 	  unless $options->{wal_segsize};      # undef or 0 means default
 	die "Bad wal_segsize $options->{wal_segsize}"
@@ -184,6 +189,8 @@ sub GenerateFiles
 		  $self->{options}->{segsize} * 1024, "\n";
 		print $o "#define XLOG_BLCKSZ ",
 		  1024 * $self->{options}->{wal_blocksize}, "\n";
+		print $o "#define ZHEAP_PAGE_TRANS_SLOTS ",
+		  $self->{options}->{trans_slots_per_page}, "\n";
 
 		if ($self->{options}->{float4byval})
 		{

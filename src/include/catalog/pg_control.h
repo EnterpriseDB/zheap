@@ -227,6 +227,17 @@ typedef struct ControlFileData
 	/* Are data pages protected by checksums? Zero if no checksum version */
 	uint32		data_checksum_version;
 
+	/* Number of transaction slots per zheap page
+	 *
+	 * FIXME: We've added this parameter in control file only to check whether
+	 * cluster and server have been configured with the same value. The value
+	 * of this option can be checked with bin/pg_controldata. To avoid catalog
+	 * changes, we've not added this parameter in pg_control_init. This is a
+	 * temporary parameter required for performance testing of zheap. In future,
+	 * it'll be removed.
+	 */
+	uint32			zheap_page_trans_slots;
+
 	/*
 	 * Random nonce, used in authentication requests that need to proceed
 	 * based on values that are cluster-unique, like a SASL exchange that

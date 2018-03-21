@@ -121,7 +121,7 @@ zheap_page_prune_opt(Relation relation, Buffer buffer)
 	 * For now we choose the simplest option which is to allow pruning if there
 	 * are no open transaction on a page.
 	 */
-	for (slot_no = 0; slot_no < MAX_PAGE_TRANS_INFO_SLOTS; slot_no++)
+	for (slot_no = 0; slot_no < ZHEAP_PAGE_TRANS_SLOTS; slot_no++)
 	{
 		if (TransactionIdIsInProgress(opaque->transinfo[slot_no].xid))
 		{

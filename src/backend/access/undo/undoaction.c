@@ -301,7 +301,7 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 
 	/* Identify the slot number for this transaction */
-	while (slot_no < MAX_PAGE_TRANS_INFO_SLOTS &&
+	while (slot_no < ZHEAP_PAGE_TRANS_SLOTS &&
 		   !(TransactionIdEquals(xid, opaque->transinfo[slot_no].xid)))
 		slot_no++;
 
@@ -310,7 +310,7 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 	 * the process altogether.
 	 */
 	if (opaque->transinfo[slot_no].urec_ptr <= urec_ptr ||
-		slot_no == MAX_PAGE_TRANS_INFO_SLOTS)
+		slot_no == ZHEAP_PAGE_TRANS_SLOTS)
 	{
 		UnlockReleaseBuffer(buffer);
 		heap_close(rel, NoLock);
