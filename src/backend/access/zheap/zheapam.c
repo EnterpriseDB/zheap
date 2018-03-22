@@ -4639,7 +4639,9 @@ fetch_undo_record:
  * ZHeapTupleGetTransInfo - Retrieve transaction information of transaction
  *			that has modified the tuple.
  *
- * nobuflock indicates whether caller has lock on the buffer 'buf'.
+ * nobuflock indicates whether caller has lock on the buffer 'buf'. If nobuflock
+ * is false, we rely on the supplied tuple zhtup to fetch the slot and undo
+ * information. Otherwise, we take buffer lock and fetch the actual tuple.
  */
 void
 ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, uint64 *epoch_xid_out,
@@ -4659,19 +4661,20 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, uint64 *epoch_xid_out,
 	int		trans_slot;
 	bool	is_invalid_slot = false;
 
+	/*
+	 * We are going to access special space in the page to retrieve the
+	 * transaction information and that requires share lock on buffer.
+	 */
 	if (nobuflock)
-	{
-		/*
-		 * We are going to access special space in the page to retrieve the
-		 * transaction information and that requires share lock on buffer.
-		 */
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		page = BufferGetPage(buf);
-		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-		lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
-		Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
 
-		if (!ItemIdIsDeleted(lp))
+	page = BufferGetPage(buf);
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+	Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
+	if (!ItemIdIsDeleted(lp))
+	{
+		if (nobuflock)
 		{
 			/*
 			 * If the tuple is updated such that its transaction slot has
@@ -4682,26 +4685,21 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, uint64 *epoch_xid_out,
 			zhtup->t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 			zhtup->t_len = ItemIdGetLength(lp);
 			tuple = zhtup->t_data;
-			trans_slot = ZHeapTupleHeaderGetXactSlot(tuple);
-			urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
-			if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
-				is_invalid_slot = true;
 		}
-		else
-		{
-			trans_slot = ItemIdGetTransactionSlot(lp);
-			urec_ptr = ZHeapPageGetUndoPtr(trans_slot, opaque);
-			if (ItemIdGetVisibilityInfo(lp) & ITEMID_XACT_INVALID)
-				is_invalid_slot = true;
-		}
-	}
-	else
-	{
-		page = BufferGetPage(buf);
-		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 		trans_slot = ZHeapTupleHeaderGetXactSlot(tuple);
 		urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
 		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+			is_invalid_slot = true;
+	}
+	else
+	{
+		/*
+		 * If it's deleted and pruned, we fetch the slot and undo information
+		 * from the item pointer itself.
+		 */
+		trans_slot = ItemIdGetTransactionSlot(lp);
+		urec_ptr = ZHeapPageGetUndoPtr(trans_slot, opaque);
+		if (ItemIdGetVisibilityInfo(lp) & ITEMID_XACT_INVALID)
 			is_invalid_slot = true;
 	}
 
@@ -4721,8 +4719,8 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, uint64 *epoch_xid_out,
 				TransactionId	oldestXidHavingUndo;
 
 				urec = UndoFetchRecord(urec_ptr,
-									   ItemPointerGetBlockNumber(&zhtup->t_self),
-									   ItemPointerGetOffsetNumber(&zhtup->t_self),
+									   ItemPointerGetBlockNumber(tid),
+									   ItemPointerGetOffsetNumber(tid),
 									   InvalidTransactionId,
 									   ZHeapSatisfyUndoRecord);
 
