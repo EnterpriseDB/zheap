@@ -712,7 +712,8 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 				  TransactionId xid)
 {
 	UndoRecordSize	size;
-	UndoRecPtr		urecptr, next_insert = NULL;
+	UndoRecPtr		urecptr;
+	UndoRecPtr		next_insert = InvalidUndoRecPtr;
 	RelFileNode		rnode;
 	UndoRecordSize  cur_size = 0;
 	BlockNumber		cur_blk;
