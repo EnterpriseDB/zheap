@@ -88,6 +88,29 @@ zheap_xlog_insert(XLogReaderState *record)
 	undorecord.uur_payload.len = 0;
 	undorecord.uur_tuple.len = 0;
 
+	/*
+	 * For speculative insertions, we store the dummy speculative token in the
+	 * undorecord so that, the size of undorecord in DO function matches with
+	 * the size of undorecord in REDO function. This ensures that, for INSERT
+	 * ... ON CONFLICT statements, the assert condition used later in this
+	 * function to ensure that the undo pointer in DO and REDO function remains
+	 * the same is true. However, it might not be useful in the REDO function as
+	 * it is just required in the master node to detect conflicts for insert ...
+	 * on conflict.
+	 */
+	if (xlrec->flags & XLZ_INSERT_IS_SPECULATIVE)
+	{
+		uint32 dummy_specToken = 1;
+
+		undorecord.uur_payload.len = sizeof(uint32);
+		initStringInfo(&undorecord.uur_payload);
+		appendBinaryStringInfo(&undorecord.uur_payload,
+							   (char *) &dummy_specToken,
+							   sizeof(uint32));
+	}
+	else
+		undorecord.uur_payload.len = 0;
+
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, xid);
 	InsertPreparedUndo();
 
