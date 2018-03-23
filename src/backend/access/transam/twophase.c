@@ -915,6 +915,13 @@ typedef struct TwoPhaseFileHeader
 	uint16		gidlen;			/* length of the GID - GID follows the header */
 	XLogRecPtr	origin_lsn;		/* lsn of this record at origin node */
 	TimestampTz origin_timestamp;	/* time of prepare at origin node */
+
+	/*
+	 * We need the locations of start and end undo record pointers when rollbacks
+	 * are to be performed for prepared transactions using zheap relations.
+	 */
+	UndoRecPtr	start_urec_ptr;	/* start undo record pointer */
+	UndoRecPtr	end_urec_ptr;	/* latest undo record pointer */
 } TwoPhaseFileHeader;
 
 /*
@@ -989,7 +996,8 @@ save_state_data(const void *data, uint32 len)
  * Initializes data structure and inserts the 2PC file header record.
  */
 void
-StartPrepare(GlobalTransaction gxact)
+StartPrepare(GlobalTransaction gxact, UndoRecPtr start_urec_ptr,
+			 UndoRecPtr end_urec_ptr)
 {
 	PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
 	PGXACT	   *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
@@ -1020,6 +1028,8 @@ StartPrepare(GlobalTransaction gxact)
 	hdr.database = proc->databaseId;
 	hdr.prepared_at = gxact->prepared_at;
 	hdr.owner = gxact->owner;
+	hdr.start_urec_ptr = start_urec_ptr;
+	hdr.end_urec_ptr = end_urec_ptr;
 	hdr.nsubxacts = xactGetCommittedChildren(&children);
 	hdr.ncommitrels = smgrGetPendingDeletes(true, &commitrels);
 	hdr.nabortrels = smgrGetPendingDeletes(false, &abortrels);
@@ -1452,6 +1462,8 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	RelFileNode *delrels;
 	int			ndelrels;
 	SharedInvalidationMessage *invalmsgs;
+	int			i;
+	UndoRecPtr start_urec_ptr, end_urec_ptr;
 
 	/*
 	 * Validate the GID, and lock the GXACT to ensure that two backends do not
@@ -1488,6 +1500,17 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	bufptr += MAXALIGN(hdr->nabortrels * sizeof(RelFileNode));
 	invalmsgs = (SharedInvalidationMessage *) bufptr;
 	bufptr += MAXALIGN(hdr->ninvalmsgs * sizeof(SharedInvalidationMessage));
+
+	/* save the start and end undo record pointers */
+	start_urec_ptr = hdr->start_urec_ptr;
+	end_urec_ptr = hdr->end_urec_ptr;
+
+	/*
+	 * Perform undo actions, if there are undologs for this transaction.
+	 * We need to perform undo actions while we are still in transaction.
+	 */
+	if (end_urec_ptr != InvalidUndoRecPtr && !isCommit)
+		execute_undo_actions(end_urec_ptr, start_urec_ptr, true);
 
 	/* compute latestXid among all children */
 	latestXid = TransactionIdLatest(xid, hdr->nsubxacts, children);
