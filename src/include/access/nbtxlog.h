@@ -137,7 +137,7 @@ typedef struct xl_btree_delete
 	/* TARGET OFFSET NUMBERS FOLLOW AT THE END */
 } xl_btree_delete;
 
-#define SizeOfBtreeDelete	(offsetof(xl_btree_delete, nitems) + sizeof(int))
+#define SizeOfBtreeDelete	(offsetof(xl_btree_delete, flags) + sizeof(uint8))
 
 /*
  * This is what we need to know about page reuse within btree.

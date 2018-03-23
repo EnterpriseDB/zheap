@@ -25,7 +25,7 @@
 #include "storage/predicate.h"
 
 static void _hash_vacuum_one_page(Relation rel, Buffer metabuf, Buffer buf,
-					  RelFileNode hnode);
+					  Relation heapRel);
 
 /*
  *	_hash_doinsert() -- Handle insertion of a single index tuple.
@@ -138,7 +138,7 @@ restart_insert:
 
 			if (IsBufferCleanupOK(buf))
 			{
-				_hash_vacuum_one_page(rel, metabuf, buf, heapRel->rd_node);
+				_hash_vacuum_one_page(rel, metabuf, buf, heapRel);
 
 				if (PageGetFreeSpace(page) >= itemsz)
 					break;		/* OK, now we have enough space */
@@ -337,7 +337,7 @@ _hash_pgaddmultitup(Relation rel, Buffer buf, IndexTuple *itups,
 
 static void
 _hash_vacuum_one_page(Relation rel, Buffer metabuf, Buffer buf,
-					  RelFileNode hnode)
+					  Relation heapRel)
 {
 	OffsetNumber deletable[MaxOffsetNumber];
 	int			ndeletable = 0;
@@ -394,9 +394,9 @@ _hash_vacuum_one_page(Relation rel, Buffer metabuf, Buffer buf,
 			xl_hash_vacuum_one_page xlrec;
 			XLogRecPtr	recptr;
 
-			xlrec.hnode = hnode;
+			xlrec.hnode = heapRel->rd_node;
 			xlrec.ntuples = ndeletable;
-			xlrec.flags = RelationStorageIsZHeap(rel) ?
+			xlrec.flags = RelationStorageIsZHeap(heapRel) ?
 								XLOG_HASH_VACUUM_RELATION_STORAGE_ZHEAP : 0;
 
 			XLogBeginInsert();

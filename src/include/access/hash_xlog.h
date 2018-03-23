@@ -277,7 +277,7 @@ typedef struct xl_hash_vacuum_one_page
 } xl_hash_vacuum_one_page;
 
 #define SizeOfHashVacuumOnePage \
-	(offsetof(xl_hash_vacuum_one_page, ntuples) + sizeof(int))
+	(offsetof(xl_hash_vacuum_one_page, flags) + sizeof(uint8))
 
 extern void hash_redo(XLogReaderState *record);
 extern void hash_desc(StringInfo buf, XLogReaderState *record);
