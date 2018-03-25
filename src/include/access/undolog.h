@@ -85,8 +85,8 @@ typedef uint64 UndoLogOffset;
 /* printf-family format string for UndoLogOffset. */
 #define UndoLogOffsetFormat UINT64_FORMAT
 
-/* Number of blocks of BLCKSZ in an undo log segment file.  512 = 4MB. */
-#define UNDOSEG_SIZE 512
+/* Number of blocks of BLCKSZ in an undo log segment file.  128 = 1MB. */
+#define UNDOSEG_SIZE 128
 
 /* Size of an undo log segment file in bytes. */
 #define UndoLogSegmentSize ((size_t) BLCKSZ * UNDOSEG_SIZE)
