@@ -6314,12 +6314,9 @@ zheap_fetch(Relation relation,
 	resulttup = ZHeapTupleSatisfiesVisibility(*tuple, snapshot, buffer, &ctid);
 	valid = resulttup ? true : false;
 
-	if (ItemPointerIsValid(&ctid))
-	{
-		/* ctid must be changed only when current tuple in not visible */
-		Assert(!valid);
+	/* Pass back the ctid if the tuple is invisible because it was updated. */
+	if (!valid && ItemPointerIsValid(&ctid))
 		*tid = ctid;
-	}
 
 	/*
 	 * Fixme - Serializable isolation level is not supportted for zheap tuples
@@ -7408,4 +7405,149 @@ ZHeapSatisfyUndoRecord(UnpackedUndoRecord* urec, BlockNumber blkno,
 	}
 
 	return false;
+}
+
+/*
+ *	zheap_get_latest_tid -  get the latest tid of a specified tuple
+ *
+ * Functionally, it serves the same purpose as heap_get_latest_tid(), but it
+ * follows a different way of traversing the ctid chain of updated tuples.
+ */
+void
+zheap_get_latest_tid(Relation relation,
+					 Snapshot snapshot,
+					 ItemPointer tid)
+{
+	BlockNumber blk;
+	ItemPointerData ctid;
+	TransactionId priorXmax;
+	int			tup_len;
+
+	/* this is to avoid Assert failures on bad input */
+	if (!ItemPointerIsValid(tid))
+		return;
+
+	/*
+	 * Since this can be called with user-supplied TID, don't trust the input
+	 * too much.  (RelationGetNumberOfBlocks is an expensive check, so we
+	 * don't check t_ctid links again this way.  Note that it would not do to
+	 * call it just once and save the result, either.)
+	 */
+	blk = ItemPointerGetBlockNumber(tid);
+	if (blk >= RelationGetNumberOfBlocks(relation))
+		elog(ERROR, "block number %u is out of range for relation \"%s\"",
+			 blk, RelationGetRelationName(relation));
+
+	/*
+	 * Loop to chase down ctid links.  At top of loop, ctid is the tuple we
+	 * need to examine, and *tid is the TID we will return if ctid turns out
+	 * to be bogus.
+	 *
+	 * Note that we will loop until we reach the end of the t_ctid chain.
+	 * Depending on the snapshot passed, there might be at most one visible
+	 * version of the row, but we don't try to optimize for that.
+	 */
+	ctid = *tid;
+	priorXmax = InvalidTransactionId;
+	for (;;)
+	{
+		Buffer		buffer;
+		Page		page;
+		OffsetNumber offnum;
+		ItemId		lp;
+		ZHeapTuple	tp;
+		ZHeapTuple	resulttup;
+
+		/*
+		 * Read, pin, and lock the page.
+		 */
+		buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(&ctid));
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+
+		/*
+		 * Check for bogus item number.  This is not treated as an error
+		 * condition because it can happen while following a ctid link. We
+		 * just assume that the prior tid is OK and return it unchanged.
+		 */
+		offnum = ItemPointerGetOffsetNumber(&ctid);
+		if (offnum < FirstOffsetNumber || offnum > PageGetMaxOffsetNumber(page))
+		{
+			UnlockReleaseBuffer(buffer);
+			break;
+		}
+		lp = PageGetItemId(page, offnum);
+		if (!ItemIdIsNormal(lp))
+		{
+			UnlockReleaseBuffer(buffer);
+			break;
+		}
+
+		/*
+		 * We always need to make a copy of zheap tuple; if an older version is
+		 * returned from the undo record, the passed in tuple gets freed.
+		 */
+		tup_len = ItemIdGetLength(lp);
+		tp = palloc(ZHEAPTUPLESIZE + tup_len);
+		tp->t_data = (ZHeapTupleHeader) (((char *) tp) + ZHEAPTUPLESIZE);
+		tp->t_tableOid = RelationGetRelid(relation);
+		tp->t_len = tup_len;
+		tp->t_self = ctid;
+
+		memcpy(tp->t_data, ((ZHeapTupleHeader) PageGetItem(page, lp)),
+			   tup_len);
+
+		/*
+		 * Ensure that the tuple is same as what we are expecting.  If the
+		 * the current or any prior version of tuple doesn't contain the
+		 * effect of priorXmax, then the slot must have been recycled and
+		 * reused for an unrelated tuple.  This implies that the latest
+		 * version of the row was deleted, so we need do nothing.
+		 */
+		if (TransactionIdIsValid(priorXmax) &&
+			!ValidateTuplesXact(tp, snapshot, buffer, priorXmax))
+		{
+			UnlockReleaseBuffer(buffer);
+			break;
+		}
+
+		/*
+		 * Check time qualification of tuple; if visible, set it as the new
+		 * result candidate.
+		 */
+		ItemPointerSetInvalid(&ctid);
+		resulttup = ZHeapTupleSatisfiesVisibility(tp, snapshot, buffer, &ctid);
+
+#if 0
+		/*
+		 * Fixme - Serializable isolation level is not supportted for zheap
+		 * tuples.
+		 */
+		CheckForSerializableConflictOut(resulttup != NULL, relation, tp,
+										buffer, snapshot);
+#endif
+
+		/* Pass back the tuple ctid if it's visible */
+		if (resulttup != NULL)
+			*tid = tp->t_self;
+
+		/* If there's a valid ctid link, follow it, else we're done. */
+		if (!ItemPointerIsValid(&ctid) ||
+			ZHEAP_XID_IS_LOCKED_ONLY(tp->t_data->t_infomask) ||
+			ItemPointerEquals(&tp->t_self, &ctid))
+		{
+			/* If the returned tuple is a copy, free it */
+			if (resulttup != NULL && resulttup != tp)
+				zheap_freetuple(resulttup);
+
+			UnlockReleaseBuffer(buffer);
+			break;
+		}
+
+		/* Get the transaction who modified this tuple */
+		ZHeapTupleGetTransInfo(tp, buffer, NULL, &priorXmax, NULL, NULL,
+							   true);
+
+		UnlockReleaseBuffer(buffer);
+	}							/* end of loop */
 }

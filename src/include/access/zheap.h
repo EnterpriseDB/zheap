@@ -63,6 +63,9 @@ extern void ZheapInitPage(Page page, Size pageSize);
 extern void zheap_multi_insert(Relation relation, ZHeapTuple *tuples,
 								int ntuples, CommandId cid, int options,
 								BulkInsertState bistate);
+extern void zheap_get_latest_tid(Relation relation,
+					 Snapshot snapshot,
+					 ItemPointer tid);
 extern void PageSetUNDO(UnpackedUndoRecord undorecord, Page page, int trans_slot_id,
 						uint32 epoch, TransactionId xid, UndoRecPtr urecptr);
 extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,

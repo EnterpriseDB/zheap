@@ -39,8 +39,8 @@
 
 
 static ZHeapTuple GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
-								   Snapshot snapshot, Buffer buffer,
-								   TransactionId prev_undo_xid);
+				 Snapshot snapshot, Buffer buffer,
+				 ItemPointer ctid, TransactionId prev_undo_xid);
 /*
  * FetchTransInfoFromUndo - Retrieve transaction information of transaction
  *			that has modified the undo tuple.
@@ -246,7 +246,7 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 										undo_tup,
 										snapshot,
 										buffer,
-										xid);
+										NULL, xid);
 			}
 			else
 				return undo_tup;	/* updated before scan started */
@@ -256,13 +256,13 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 									undo_tup,
 									snapshot,
 									buffer,
-									xid);
+									NULL, xid);
 		else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(xid))
 			return GetTupleFromUndo(prev_urec_ptr,
 									undo_tup,
 									snapshot,
 									buffer,
-									xid);
+									NULL, xid);
 		else if (TransactionIdDidCommit(xid))
 			return undo_tup;
 		else
@@ -270,7 +270,7 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 									undo_tup,
 									snapshot,
 									buffer,
-									xid);
+									NULL, xid);
 	}
 	else	/* undo tuple is the root tuple */
 	{
@@ -309,8 +309,9 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
  *  the tuple precedes smallest xid that has undo.
  */
 static ZHeapTuple
-GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup, Snapshot snapshot,
-				 Buffer buffer, TransactionId prev_undo_xid)
+GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
+				 Snapshot snapshot, Buffer buffer,
+				 ItemPointer ctid, TransactionId prev_undo_xid)
 {
 	UnpackedUndoRecord	*urec;
 	ZHeapPageOpaque	opaque;
@@ -359,6 +360,18 @@ fetch_prior_undo_record:
 	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 	prev_urec_ptr = urec->uur_blkprev;
 	xid = urec->uur_prevxid;
+
+	/*
+	 * For non-inplace-updates, ctid needs to be retrieved from undo
+	 * record if required.
+	 */
+	if (ctid)
+	{
+		if (urec->uur_type == UNDO_UPDATE)
+			*ctid = *((ItemPointer) urec->uur_payload.data);
+		else
+			*ctid = undo_tup->t_self;
+	}
 
 	UndoRecordRelease(urec);
 
@@ -851,25 +864,43 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 										zhtup,
 										snapshot,
 										buffer,
-										InvalidTransactionId);
+										ctid, InvalidTransactionId);
 			}
 			else
+			{
+				/*
+				 * For non-inplace-updates, ctid needs to be retrieved from
+				 * undo record if required.
+				 */
+				if (tuple->t_infomask & ZHEAP_UPDATED && ctid)
+					ZHeapTupleGetCtid(zhtup, buffer, ctid);
+
 				return NULL;	/* deleted before scan started */
+			}
 		}
 		else if (XidInMVCCSnapshot(xid, snapshot))
 			return GetTupleFromUndo(urec_ptr,
 									zhtup,
 									snapshot,
 									buffer,
-									InvalidTransactionId);
+									ctid, InvalidTransactionId);
 		else if (TransactionIdDidCommit(xid))
+		{
+			/*
+			 * For non-inplace-updates, ctid needs to be retrieved from undo
+			 * record if required.
+			 */
+			if (tuple->t_infomask & ZHEAP_UPDATED && ctid)
+				ZHeapTupleGetCtid(zhtup, buffer, ctid);
+
 			return NULL;	/* tuple is deleted */
+		}
 		else	/* transaction is aborted */
 			return GetTupleFromUndo(urec_ptr,
 									zhtup,
 									snapshot,
 									buffer,
-									InvalidTransactionId);
+									ctid, InvalidTransactionId);
 	}
 	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
 			 tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
@@ -894,7 +925,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 										zhtup,
 										snapshot,
 										buffer,
-										InvalidTransactionId);
+										ctid, InvalidTransactionId);
 			}
 			else
 				return zhtup;	/* updated before scan started */
@@ -904,7 +935,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 									zhtup,
 									snapshot,
 									buffer,
-									InvalidTransactionId);
+									ctid, InvalidTransactionId);
 		else if (TransactionIdDidCommit(xid))
 			return zhtup;	/* tuple is updated */
 		else	/* transaction is aborted */
@@ -912,7 +943,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 									zhtup,
 									snapshot,
 									buffer,
-									InvalidTransactionId);
+									ctid, InvalidTransactionId);
 	}
 
 	/*
@@ -1376,7 +1407,7 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 									zhtup,
 									snapshot,
 									buffer,
-									InvalidTransactionId);
+									ctid, InvalidTransactionId);
 		else if (TransactionIdDidCommit(xid))
 		{
 			/* tuple is deleted or non-inplace-updated */
@@ -1414,7 +1445,7 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 									zhtup,
 									snapshot,
 									buffer,
-									InvalidTransactionId);
+									ctid, InvalidTransactionId);
 		}
 		else if (TransactionIdDidCommit(xid))
 		{
