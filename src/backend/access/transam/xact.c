@@ -3100,6 +3100,9 @@ AbortCurrentTransaction(void)
 			AbortTransaction();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
+
+			/* Set the flag so that we can perform any pending undo actions */
+			PerformUndoActions = true;
 			break;
 
 			/*
@@ -3728,6 +3731,13 @@ EndTransactionBlock(void)
 					elog(FATAL, "EndTransactionBlock: unexpected state %s",
 						 BlockStateAsString(s->blockState));
 				s = s->parent;
+
+				/*
+				 * We are calculating latest_urec_ptr, even though its a commit
+				 * case.  This is to handle any error during the commit path.
+				 */
+				if (!UndoRecPtrIsValid(latest_urec_ptr))
+					latest_urec_ptr = s->latest_urec_ptr;
 			}
 			if (s->blockState == TBLOCK_INPROGRESS)
 				s->blockState = TBLOCK_END;
@@ -3814,12 +3824,10 @@ EndTransactionBlock(void)
 	 * statement execution.
 	 */
 	if (!result)
-	{
-		TransactionState xact = &TopTransactionStateData;
-		UndoActionStartPtr = latest_urec_ptr;
-		UndoActionEndPtr = xact->start_urec_ptr;
 		PerformUndoActions = true;
-	}
+
+	UndoActionStartPtr = latest_urec_ptr;
+	UndoActionEndPtr = TopTransactionStateData.start_urec_ptr;
 
 	return result;
 }
