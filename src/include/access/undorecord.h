@@ -13,6 +13,7 @@
 #ifndef UNDORECORD_H
 #define UNDORECORD_H
 
+#include "access/undolog.h"
 #include "common/relpath.h"
 #include "lib/stringinfo.h"
 #include "storage/block.h"
