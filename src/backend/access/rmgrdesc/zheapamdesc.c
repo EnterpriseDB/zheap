@@ -73,12 +73,9 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 	}
 	else if (info == XLOG_ZHEAP_INVALID_XACT_SLOT)
 	{
-		xl_undo_header *xlundohdr = (xl_undo_header *) rec;
+		xl_zheap_invalid_xact_slot *xlrec = (xl_zheap_invalid_xact_slot *) rec;
 
-		xl_zheap_invalid_xact_slot *xlrec = (xl_zheap_invalid_xact_slot *)
-									((char *) xlundohdr + SizeOfUndoHeader);
-		appendStringInfo(buf, "noffsets %u nslots %u",
-						 xlrec->nOffsets, xlrec->nCompletedSlots);
+		appendStringInfo(buf, "completed_slots %u", xlrec->nCompletedSlots);
 	}
 	else if (info == XLOG_ZHEAP_LOCK)
 	{

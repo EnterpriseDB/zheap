@@ -56,6 +56,7 @@ extern UnpackedUndoRecord* UndoFetchRecord(UndoRecPtr urp,
 										   BlockNumber blkno,
 										   OffsetNumber offset,
 										   TransactionId xid,
+										   UndoRecPtr *urec_ptr_out,
 										   SatisfyUndoRecordCallback callback);
 /*
  * Release the resources allocated by UndoFetchRecord.

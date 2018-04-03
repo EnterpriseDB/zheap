@@ -107,7 +107,8 @@ extern ZHeapTuple zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer,
 extern void
 ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
                                                TransactionId xid, TransactionId *latestRemovedXid);
-extern void MarkTupleFrozen(Page page, int nFrozenSlots, int *frozen_slots);
+extern void zheap_freeze_or_invalidate_tuples(Page page, int nSlots, int *slots,
+											  bool isFrozen);
 
 extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 									int *completed_slots,

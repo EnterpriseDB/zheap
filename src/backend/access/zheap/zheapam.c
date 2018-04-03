@@ -3525,27 +3525,15 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, ZHeapPageOpaque opaque)
 
 	while(true)
 	{
-		urec = UndoFetchRecord(urec_ptr, blk, offnum, xid, ZHeapSatisfyUndoRecord);
+		urec = UndoFetchRecord(urec_ptr, blk, offnum, xid, NULL, ZHeapSatisfyUndoRecord);
 		if (urec != NULL)
 		{
-			/*
-			 * Skip the undo record for transaction slot reuse, it
-			 * is used only for the purpose of fetching transaction
-			 * information for tuples that point to such slots.
-			 */
-			if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
-			{
-				urec_ptr = urec->uur_blkprev;
-				UndoRecordRelease(urec);
-				continue;
-			}
-
 			/*
 			 * If we have valid undo record, then check if we have
 			 * reached the insert log and return the corresponding
 			 * transaction id.
 			 */
-			else if (urec->uur_type == UNDO_INSERT)
+			if (urec->uur_type == UNDO_INSERT)
 			{
 				result = urec->uur_xid;
 				UndoRecordRelease(urec);
@@ -3960,14 +3948,17 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, uint32 epoch,
 }
 
 /*
- * MarkTupleFrozen - Clear the slot information on the tuples
+ * zheap_freeze_or_invalidate_tuples - Clear the slot information or set
+ *									   invalid_xact flags.
  *
  * 	Process all the tuples on the page and match their trasaction slot with
- *	the input frozen slot array, if tuple is pointing to the frozen slot then
- *	set the tuple slot as ZHTUP_SLOT_FROZEN.
+ *	the input slot array, if tuple is pointing to the slot then set the tuple
+ *  slot as ZHTUP_SLOT_FROZEN if is frozen is true otherwise set
+ *  ZHEAP_INVALID_XACT_SLOT flag on the tuple
  */
 void
-MarkTupleFrozen(Page page, int nFrozenSlots, int *frozen_slots)
+zheap_freeze_or_invalidate_tuples(Page page, int nSlots, int *slots,
+								  bool isFrozen)
 {
 	OffsetNumber offnum, maxoff;
 	int	i;
@@ -3996,18 +3987,34 @@ MarkTupleFrozen(Page page, int nFrozenSlots, int *frozen_slots)
 			trans_slot = ZHeapTupleHeaderGetXactSlot(tup_hdr);
 		}
 
-		for (i = 0; i < nFrozenSlots; i++)
+		for (i = 0; i < nSlots; i++)
 		{
-			/*
-			 * Set transaction slots of tuple as frozen to indicate tuple
-			 * is all visible and mark the deleted itemids as dead.
-			 */
-			if (trans_slot == frozen_slots[i])
+			if (trans_slot == slots[i])
 			{
-				if (ItemIdIsDeleted(itemid))
-					ItemIdSetDead(itemid);
+				/*
+				 * Set transaction slots of tuple as frozen to indicate tuple
+				 * is all visible and mark the deleted itemids as dead.
+				 */
+				if (isFrozen)
+				{
+					if (ItemIdIsDeleted(itemid))
+						ItemIdSetDead(itemid);
+					else
+						ZHeapTupleHeaderSetXactSlot(tup_hdr, ZHTUP_SLOT_FROZEN);
+				}
+				/*
+				 * we just append the invalid xact flag in the tuple/itemid to
+				 * indicate that for this tuple/itemid we need to fetch the
+				 * transaction information from undo record.
+				 */
 				else
-					ZHeapTupleHeaderSetXactSlot(tup_hdr, ZHTUP_SLOT_FROZEN);
+				{
+					if (ItemIdIsDeleted(itemid))
+						ItemIdSetInvalidXact(itemid);
+					else
+						tup_hdr->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+					break;
+				}
 				break;
 			}
 		}
@@ -4084,32 +4091,33 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
  *	conditions:
  *	(a) the xid is committed, all-visible and doesn't have pending rollback
  *	to perform.
- *	(b) if the xid is committed, then write an undo record for that slot.
- *	(c) if the xid is rolledback, then ensure that rollback is performed.
+ *	(b) if the xid is committed, then ensure to mark a special flag on the
+ *	tuples that are modified by that xid on the current page.
+ *	(c) if the xid is rolledback, then ensure that rollback is performed or
+ *	at least undo actions for this page have been replayed.
  *
- *	For committed transactions, there can be two possibilities.  First is
- *	that there are tuples in zheap page that point to the transaction slot of
- *	committed transaction and second is where transaction slot is not pointed
- *	to by any tuple in page.  We simply clear the xid from the transaction slot
- *	for the second case, undo record pointer is kept as it is to ensure that
- *	we don't break the undo chain for that slot.  For the first case, we write
- *	undo record for each of the tuple that points to one of the committed
- *	transaction.  We also mark the tuple indicating that slot for this is
- *	reused.  If we don't do so, then after that slot got reused for some
- *	other unrelated transaction, it might become tricky to traverse the undo
- *	chain.  In such a case, it is quite possible that the particular tuple
- *	has not been modified, but it is still pointing to transaction slot which
- *	has been reused by new transaction and that transaction is still not
- *	committed.  During the visibility check for such a tuple, it can appear
- *	that the tuple is modified by current transaction which is clearly wrong
- *	and can lead to wrong results.  One such case would be when we try to fetch
- *	the commandid for that tuple to check the visibility, it will fetch the
- *	commandid for a different transaction that is already committed.  The basic
- *	principle used here is to ensure that we can always fetch the transaction
- *	information of tuple until it is frozen (committed and all-visible).  The
- *	reason why we don't need to write the undo record for the second case
- *	mentioned above is that we can always retrieve the transaction information
- *	of such a tuple from undo.
+ *	For committed transactions, we simply clear the xid from the transaction
+ *	slot and undo record pointer is kept as it is to ensure that we don't
+ *	break the undo chain for that slot. We also mark the tuples that are
+ *	modified by this xid with a special flag indicating that slot for this is
+ *	reused.  The special flag is just an indication that the transaction
+ *	information of the transaction that has modified the tuple can be
+ *	retrieved from the undo.
+ *
+ *	If we don't do so, then after that slot got reused for some other
+ *	unrelated transaction, it might become tricky to traverse the undo chain.
+ *	In such a case, it is quite possible that the particular tuple has not
+ *	been modified, but it is still pointing to transaction slot which has been
+ *	reused by new transaction and that transaction is still not committed.
+ *	During the visibility check for such a tuple, it can appear that the tuple
+ *	is modified by current transaction which is clearly wrong and can lead to
+ *	wrong results.  One such case would be when we try to fetch the commandid
+ *	for that tuple to check the visibility, it will fetch the commandid for a
+ *	different transaction that is already committed.
+ *
+ *	The basic principle used here is to ensure that we can always fetch the
+ *	transaction information of tuple until it is frozen (committed and
+ *	all-visible).
  *
  *	This also ensures that we are consistent with how other operations work in
  *	zheap i.e the tuple always reflect the current state.
@@ -4122,29 +4130,18 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
  *
  *	This function returns true if it manages to free some transaction slot,
  *	false otherwise.
- *
- *	epoch - Current epoch, caller must have an open transaction from current
- *	epoch, so that it can't be advance, otherwise the decision to freeze the
- *	slots can go wrong.
  */
 static bool
 PageFreezeTransSlots(Relation relation, Buffer buf)
 {
 	Page	page;
 	ZHeapPageOpaque	opaque;
-	UndoRecPtr	urecptr = InvalidUndoRecPtr;
-	UndoRecPtr	prev_urecptr = InvalidUndoRecPtr;
-	UndoRecPtr	slot_latest_urp[ZHEAP_PAGE_TRANS_SLOTS];
-	UnpackedUndoRecord	*slot_urec[ZHEAP_PAGE_TRANS_SLOTS] = {0};
-	UnpackedUndoRecord	*undorecord = NULL;
 	uint64		oldestXidWithEpochHavingUndo;
 	int		slot_no;
 	int		frozen_slots[ZHEAP_PAGE_TRANS_SLOTS];
 	int		nFrozenSlots = 0;
 	int		completed_xact_slots[ZHEAP_PAGE_TRANS_SLOTS];
 	int		nCompletedXactSlots = 0;
-	TransactionId	topxid = GetTopTransactionId();
-	bool	isSubxactId = false;
 
 	oldestXidWithEpochHavingUndo = pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
 
@@ -4181,7 +4178,8 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 		START_CRIT_SECTION();
 
 		/* clear the transaction slot info on tuples */
-		MarkTupleFrozen(page, nFrozenSlots, frozen_slots);
+		zheap_freeze_or_invalidate_tuples(page, nFrozenSlots, frozen_slots,
+										  true);
 
 		/* Initialize the frozen slots. */
 		for (i = 0; i < nFrozenSlots; i++)
@@ -4231,302 +4229,67 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 		return true;
 	}
 
-	if (GetCurrentTransactionId() != topxid)
-		isSubxactId = true;
-
 	/*
 	 * Try to reuse transaction slots of committed transactions. This is just
-	 * like above but we write undo records for each of the slot that can be
-	 * reused.  The undo records are written to ensure that if there is still
-	 * any alive transaction to which this committed transaction is not visible,
-	 * it can fetch the record from undo and check the visibility.
+	 * like above but it will maintain a link to the previous transaction undo
+	 * record in this slot.  This is to ensure that if there is still any
+	 * alive snapshot to which this committed transaction is not visible, it
+	 * can fetch the record from undo and check the visibility.
 	 */
 	for (slot_no = 0; slot_no < ZHEAP_PAGE_TRANS_SLOTS; slot_no++)
 	{
 		if (!TransactionIdIsInProgress(opaque->transinfo[slot_no].xid))
-		{
 			completed_xact_slots[nCompletedXactSlots++] = slot_no;
-			slot_latest_urp[slot_no] = opaque->transinfo[slot_no].urec_ptr;
-
-			/*
-			 * If we are under a subtransaction then just reuse one slot,
-			 * because during the rollback of the subtransaction we will rewind
-			 * the undo insert location and the undo written for invalidating
-			 * the slot will be overwritten. So, it is better to invalidate
-			 * only one slot which our transaction is going to use.
-			 */
-			if (isSubxactId)
-				break;
-		}
 	}
 
 	if (nCompletedXactSlots)
 	{
-		OffsetNumber	*offset_completed_xact_slots;
-		xl_zheap_completed_slot	*slot_info = NULL;
-		xl_zheap_tuple_info	*tuples = NULL;
-		char   *scratch = NULL;
-		int		noffsets = 0;
-		int		i;
-		int		size = 0;
-
-		offset_completed_xact_slots =
-						palloc(sizeof(OffsetNumber) * MaxZHeapTuplesPerPage);
-
-		/*
-		 * Find all the tuples pointing to the transaction slots of committed
-		 * transactions.
-		 */
-		GetCompletedSlotOffsets(page, nCompletedXactSlots,
-								completed_xact_slots,
-								offset_completed_xact_slots,
-								&noffsets);
-
-		if (RelationNeedsWAL(relation))
-		{
-			char   *data;
-
-			/*
-			 * In case full_page_write is not enabled or page image is not
-			 * included in WAL, we can avoid slot and tuple information.
-			 * However, we still allocate the memory for them so that if the
-			 * decision to include page image changes later we have the
-			 * information required for logging.
-			 */
-			size = SizeOfUndoHeader + SizeOfZHeapInvalidXactSlot +
-				   nCompletedXactSlots * sizeof(xl_zheap_completed_slot) +
-				   noffsets * sizeof(xl_zheap_tuple_info);
-
-			data = scratch = palloc0(size);
-
-			/* skip the headers. */
-			data += SizeOfUndoHeader;
-			data += SizeOfZHeapInvalidXactSlot;
-
-			slot_info = (xl_zheap_completed_slot *) data;
-			data += nCompletedXactSlots * sizeof(xl_zheap_completed_slot);
-			tuples = (xl_zheap_tuple_info *) data;
-
-			/*
-			 * Prepare the slot information required to be logged.  This will
-			 * be used to prepare undo record during recovery.
-			 */
-			for (i = 0; i < nCompletedXactSlots; i++)
-			{
-				slot_no = completed_xact_slots[i];
-				slot_info[i].slotno = slot_no;
-				slot_info[i].urp = slot_latest_urp[slot_no];
-				slot_info[i].xid = opaque->transinfo[slot_no].xid;
-			}
-		}
-
-		/* Set the max prepared undo. */
-		if (noffsets > 0)
-		{
-			UndoSetPrepareSize(noffsets);
-			undorecord = (UnpackedUndoRecord *) palloc(noffsets *
-												sizeof(UnpackedUndoRecord));
-		}
-
-		/*
-		 * Write separate undo record for each of the tuple in page that points
-		 * to transaction slot which we are going to mark for reuse.
-		 */
-		for (i = 0; i < noffsets; i++)
-		{
-			ZHeapTupleData	tup;
-			ItemPointerData	ctid;
-			ItemId		itemid;
-			OffsetNumber offnum;
-			int			slotno;
-
-			offnum = offset_completed_xact_slots[i];
-			itemid = PageGetItemId(page, offnum);
-
-			Assert(ItemIdIsUsed(itemid));
-
-			ItemPointerSet(&ctid, BufferGetBlockNumber(buf), offnum);
-
-			/* prepare an undo record */
-			undorecord[i].uur_type = UNDO_INVALID_XACT_SLOT;
-			undorecord[i].uur_info = 0;
-			undorecord[i].uur_prevlen = 0;
-			undorecord[i].uur_relfilenode = relation->rd_node.relNode;
-			undorecord[i].uur_xid = topxid;
-			undorecord[i].uur_tsid = relation->rd_node.spcNode;
-			undorecord[i].uur_fork = MAIN_FORKNUM;
-			undorecord[i].uur_block = BufferGetBlockNumber(buf);
-			undorecord[i].uur_offset = offnum;
-			undorecord[i].uur_payload.len = 0;
-			undorecord[i].uur_tuple.len = 0;
-
-			if (ItemIdIsDeleted(itemid))
-			{
-				slotno = ItemIdGetTransactionSlot(itemid);
-				undorecord[i].uur_prevxid =
-							ZHeapPageGetRawXid(slotno, opaque);
-				undorecord[i].uur_cid = ZHeapPageGetCid(slotno, buf, offnum);
-			}
-			else
-			{
-				tup.t_tableOid = RelationGetRelid(relation);
-				tup.t_data = (ZHeapTupleHeader) PageGetItem(page, itemid);
-				tup.t_len = ItemIdGetLength(itemid);
-				tup.t_self = ctid;
-
-				slotno = ZHeapTupleHeaderGetXactSlot(tup.t_data);
-				undorecord[i].uur_prevxid =
-						ZHeapTupleHeaderGetRawXid(tup.t_data, opaque);
-				undorecord[i].uur_cid = ZHeapTupleGetCid(&tup, buf);
-			}
-
-			prev_urecptr = slot_latest_urp[slotno];
-			undorecord[i].uur_blkprev = prev_urecptr;
-
-			urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERSISTENT,
-										InvalidTransactionId);
-			slot_latest_urp[slotno] = urecptr;
-
-			/* Stores latest undorec for slot for debug log */
-			slot_urec[slotno] = &undorecord[i];
-
-			if (tuples != NULL)
-			{
-				tuples[i].offnum = offnum;
-				tuples[i].slotno = slotno;
-			}
-		}
+		int i;
 
 		/* NO EREPORT(ERROR) from here till changes are logged */
 		START_CRIT_SECTION();
 
-		/* Insert all the prepared undo */
-		if (noffsets > 0)
-			InsertPreparedUndo();
+		/* Mark INVALID_XACT_SLOT flag on the tuple. */
+		zheap_freeze_or_invalidate_tuples(page, nCompletedXactSlots,
+										  completed_xact_slots, false);
 
-		for (i = 0; i < noffsets; i++)
-		{
-			ZHeapTupleData	tup;
-			ItemId		itemid;
-			OffsetNumber offnum;
-
-			offnum = offset_completed_xact_slots[i];
-			itemid = PageGetItemId(page, offnum);
-			Assert(ItemIdIsUsed(itemid));
-
-			/*
-			 * we just append the invalid xact flag in the tuple/itemid to indicate
-			 * that for this tuple/itemid we need to fetch the transaction information
-			 * from undo record.
-			 */
-			if (ItemIdIsDeleted(itemid))
-				ItemIdSetInvalidXact(itemid);
-			else
-			{
-				tup.t_data = (ZHeapTupleHeader) PageGetItem(page, itemid);
-				tup.t_data->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
-			}
-		}
-
-		/* Initialize the completed slots. */
+		/*
+		 * Clear the xid information from the slot but keep the undo record
+		 * pointer as it is so that undo records of the transaction are
+		 * accessible by traversing slot's undo chain even though the slots
+		 * are reused.
+		 */
 		for (i = 0; i < nCompletedXactSlots; i++)
 		{
-			UnpackedUndoRecord	undorec = {0};
-
 			slot_no = completed_xact_slots[i];
-
-			if (slot_urec[slot_no] != NULL)
-				undorec = *(slot_urec[slot_no]);
-
-			PageSetUNDO(undorec, page, slot_no, 0, InvalidTransactionId,
-						slot_latest_urp[slot_no]);
+			opaque->transinfo[slot_no].xid_epoch = 0;
+			opaque->transinfo[slot_no].xid = InvalidTransactionId;
 		}
 
 		MarkBufferDirty(buf);
 
 		/*
 		 * Xlog Stuff
-		 *
-		 * Log all the offsets offset_completed_xact_slots for which we need to
-		 * clear the transaction slot information.
 		 */
 		if (RelationNeedsWAL(relation))
 		{
-			xl_undo_header		*xlundohdr;
-			xl_zheap_invalid_xact_slot *xlrec;
+			xl_zheap_invalid_xact_slot xlrec;
 			XLogRecPtr	recptr;
-			XLogRecPtr	RedoRecPtr;
-			bool		doPageWrites;
-
-			xlundohdr = (xl_undo_header *) scratch;
-			xlrec = (xl_zheap_invalid_xact_slot *) (scratch + SizeOfUndoHeader);
-
-			/*
-			 * Store the information required to generate undo record during
-			 * replay.
-			 */
-			xlundohdr->relfilenode = relation->rd_node.relNode;
-			xlundohdr->tsid = relation->rd_node.spcNode;
-			xlundohdr->urec_ptr = urecptr;
-			xlundohdr->blkprev = prev_urecptr;
-
-			xlrec->nOffsets = noffsets;
-			xlrec->nCompletedSlots = nCompletedXactSlots;
-
-			/*
-			 * If full_page_writes is enabled, then we can rely on the tuple in
-			 * the page to regenerate the undo tuple during recovery as the
-			 * tuple state must be same as now, otherwise we need to store it
-			 * explicitly.
-			 *
-			 * Since we don't yet have the insert lock, doPageWrites could
-			 * change later, but that won't be a problem.  As, if the value of
-			 * doPageWrites is true while forming and assembling the WAL
-			 * record, then we will include the copy of page even if the value
-			 * later changes in XLogInsertRecord.  OTOH, if it is false while
-			 * forming and assembling the WAL records, then we would have to
-			 * anyway include undo tuple in the WAL record which will avoid the
-			 * dependency on full_page_image, so even if doPageWrites changes
-			 * to true later in XLogInsertRecord, we don't need to worry.
-			 */
-			GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
 
 			XLogBeginInsert();
 
-			if (!doPageWrites)
-			{
-				XLogRegisterData(scratch, size);
-				xlrec->flags |= XLZ_HAS_TUPLE_INFO;
-			}
-			else
-			{
-				/*
-				 * Include just undo header and completed slot numbers.
-				 */
-				XLogRegisterData(scratch, SizeOfUndoHeader +
-								 SizeOfZHeapInvalidXactSlot);
+			xlrec.nCompletedSlots = nCompletedXactSlots;
 
-				XLogRegisterData((char *) &(completed_xact_slots),
-								 xlrec->nCompletedSlots * sizeof(int));
-			}
+			XLogRegisterData((char *) &xlrec, SizeOfZHeapInvalidXactSlot);
 
 			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+			XLogRegisterBufData(0, (char *) &completed_xact_slots, nCompletedXactSlots * sizeof(int));
 
 			recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_INVALID_XACT_SLOT);
 			PageSetLSN(page, recptr);
 		}
 
 		END_CRIT_SECTION();
-
-		UnlockReleaseUndoBuffers();
-
-		if (scratch != NULL)
-			pfree(scratch);
-
-		if (noffsets > 0)
-			pfree(undorecord);
-
-		pfree(offset_completed_xact_slots);
 
 		return true;
 	}
@@ -4563,6 +4326,7 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf)
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
 						   InvalidTransactionId,
+						   NULL,
 						   ZHeapSatisfyUndoRecord);
 	if (urec == NULL)
 		return InvalidCommandId;
@@ -4604,24 +4368,12 @@ ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, uint32 *specToken)
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
 	urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(zhtup->t_data, opaque);
 
-fetch_undo_record:
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
 						   InvalidTransactionId,
+						   NULL,
 						   ZHeapSatisfyUndoRecord);
-	/*
-	 * Skip the undo record for transaction slot reuse, it is used only for
-	 * the purpose of fetching transaction information for tuples that point
-	 * to such slots.
-	 */
-	if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
-	{
-		urec_ptr = urec->uur_blkprev;
-		UndoRecordRelease(urec);
-
-		goto fetch_undo_record;
-	}
 
 	/*
 	 * We always expect urec to be valid as it try to fetch speculative token
@@ -4650,14 +4402,13 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, uint64 *epoch_xid_out,
 {
 	ZHeapTupleHeader	tuple = zhtup->t_data;
 	ZHeapPageOpaque		opaque;
-	UnpackedUndoRecord	*urec;
 	UndoRecPtr	urec_ptr;
 	uint64		epoch;
-	TransactionId		xid;
+	TransactionId	xid = InvalidTransactionId;
 	CommandId	cid;
-    ItemId	lp;
-    Page	page;
-    ItemPointer tid = &(zhtup->t_self);
+	ItemId	lp;
+	Page	page;
+	ItemPointer tid = &(zhtup->t_self);
 	int		trans_slot;
 	bool	is_invalid_slot = false;
 
@@ -4712,64 +4463,7 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, uint64 *epoch_xid_out,
 	{
 		if (is_invalid_slot)
 		{
-			uint8	uur_type;
-
-			do
-			{
-				TransactionId	oldestXidHavingUndo;
-
-				urec = UndoFetchRecord(urec_ptr,
-									   ItemPointerGetBlockNumber(tid),
-									   ItemPointerGetOffsetNumber(tid),
-									   InvalidTransactionId,
-									   ZHeapSatisfyUndoRecord);
-
-				oldestXidHavingUndo = GetXidFromEpochXid(
-						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
-
-				/*
-				 * The undo tuple must be visible, if the undo record containing
-				 * the information of the last transaction that has updated the
-				 * tuple is discarded or the transaction that has last updated the
-				 * undo tuple precedes smallest xid that has undo.
-				 *
-				 * Note that we just used xid for comparison with
-				 * oldestXidHavingUndo and the reasons is that alive undo records
-				 * can't be older than 2-billion transactions, so we can use
-				 * TransactionIdPrecedes.  See comments atop file ztqual.c
-				 */
-				if (urec == NULL ||
-					TransactionIdPrecedes(urec->uur_prevxid, oldestXidHavingUndo))
-				{
-					epoch = 0;
-					xid = InvalidTransactionId;
-					cid = InvalidCommandId;
-					urec_ptr = InvalidUndoRecPtr;
-
-					if (urec)
-						UndoRecordRelease(urec);
-					break;
-				}
-
-				/*
-				 * If we reach here, this means the transaction id that has
-				 * last modified this tuple must be in 2-billion xid range
-				 * of oldestXidHavingUndo, so we can get compute its epoch
-				 * as we do for current transaction.
-				 */
-				epoch = GetEpochForXid(urec->uur_prevxid);
-				xid = urec->uur_prevxid;
-				cid = urec->uur_cid;
-				urec_ptr = urec->uur_blkprev;
-				uur_type = urec->uur_type;
-
-				/*
-				 * transaction slot won't change for such a tuple, so we can rely on
-				 * the same from current undo tuple.
-				 */
-
-				UndoRecordRelease(urec);
-			} while (uur_type != UNDO_INVALID_XACT_SLOT);
+			FetchTransInfoFromUndo(zhtup, &epoch, &xid, &cid, &urec_ptr);
 		}
 		else
 		{
@@ -4806,11 +4500,10 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, uint64 *epoch_xid_out,
 		*xid_out = xid;
 	if (cid_out)
 		*cid_out = cid;
-	if (urec_ptr_out)
-		*urec_ptr_out = urec_ptr;
-
 	if (nobuflock)
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	if (urec_ptr_out)
+		*urec_ptr_out = urec_ptr;
 
 	return;
 }
@@ -4839,6 +4532,7 @@ ZHeapPageGetCid(int trans_slot, Buffer buf, OffsetNumber off)
 						   BufferGetBlockNumber(buf),
 						   off,
 						   InvalidTransactionId,
+						   NULL,
 						   ZHeapSatisfyUndoRecord);
 	if (urec == NULL)
 		return InvalidCommandId;
@@ -4866,24 +4560,13 @@ ZHeapPageGetCtid(int trans_slot, Buffer buf, ItemPointer ctid)
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
 
 	urec_ptr = ZHeapPageGetUndoPtr(trans_slot, opaque);
-fetch_undo_record:
+
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(ctid),
 						   ItemPointerGetOffsetNumber(ctid),
 						   InvalidTransactionId,
+						   NULL,
 						   ZHeapSatisfyUndoRecord);
-	/*
-	 * Skip the undo record for transaction slot reuse, it is used only for
-	 * the purpose of fetching transaction information for tuples that point
-	 * to such slots.
-	 */
-	if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
-	{
-		urec_ptr = urec->uur_blkprev;
-		UndoRecordRelease(urec);
-
-		goto fetch_undo_record;
-	}
 
 	/*
 	 * We always expect urec here to valid as it try to fetch ctid of tuples
@@ -4990,11 +4673,11 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		prev_trans_slot_id = trans_slot_id;
 		Assert(prev_trans_slot_id != ZHTUP_SLOT_FROZEN);
 
-fetch_undo_record:
 		urec = UndoFetchRecord(urec_ptr,
 							   ItemPointerGetBlockNumber(&undo_tup->t_self),
 							   ItemPointerGetOffsetNumber(&undo_tup->t_self),
 							   prev_undo_xid,
+							   NULL,
 							   ZHeapSatisfyUndoRecord);
 
 		/*
@@ -5004,37 +4687,20 @@ fetch_undo_record:
 		 */
 		Assert(urec != NULL);
 
-		if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
-		{
-			urec_ptr = urec->uur_blkprev;
-			xid = urec->uur_prevxid;
-			UndoRecordRelease(urec);
-			urec = NULL;
-
-			if (TransactionIdEquals(xid, priorXmax))
-			{
-				valid = true;
-				goto tuple_is_valid;
-			}
-
-			goto fetch_undo_record;
-		}
-
-		/* don't free the tuple passed by caller */
-		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup,
-										   (undo_tup) == (&zhtup) ? false : true);
-		xid = urec->uur_prevxid;
-
-		Assert(!TransactionIdPrecedes(xid, RecentGlobalXmin));
-
-		if (TransactionIdEquals(xid, priorXmax))
+		if (TransactionIdEquals(urec->uur_xid, priorXmax))
 		{
 			valid = true;
 			goto tuple_is_valid;
 		}
 
+		/* don't free the tuple passed by caller */
+		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup,
+										   (undo_tup) == (&zhtup) ? false : true);
+
+		Assert(!TransactionIdPrecedes(urec->uur_prevxid, RecentGlobalXmin));
+
 		trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
-		prev_undo_xid = xid;
+		prev_undo_xid = urec->uur_prevxid;
 
 		/*
 		 * Change the undo chain if the undo tuple is stamped with the different
@@ -6375,6 +6041,7 @@ zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer, ItemPointer tid)
 						   ItemPointerGetBlockNumber(tid),
 						   ItemPointerGetOffsetNumber(tid),
 						   InvalidTransactionId,
+						   NULL,
 						   ZHeapSatisfyUndoRecord);
 
 	/*

@@ -45,52 +45,44 @@ static ZHeapTuple GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
  * FetchTransInfoFromUndo - Retrieve transaction information of transaction
  *			that has modified the undo tuple.
  */
-static void
+void
 FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch, TransactionId *xid,
 					   CommandId *cid, UndoRecPtr *urec_ptr)
 {
 	UnpackedUndoRecord	*urec;
-	TransactionId	undo_tup_xid, oldestXidHavingUndo;
-	uint8	uur_type;
+	UndoRecPtr		urec_ptr_out = InvalidUndoRecPtr;
+	TransactionId	undo_tup_xid;
 
 	undo_tup_xid = *xid;
 
 	/*
 	 * The transaction slot referred by the undo tuple could have been reused
 	 * multiple times, so to ensure that we have fetched the right undo record
-	 * we need to verify that the undo record contains prevxid same as the xid
-	 * that has modified the undo tuple.
+	 * we need to verify that the undo record contains xid same as the xid
+	 * that has modified the tuple.
 	 */
-	do
+	urec = UndoFetchRecord(*urec_ptr,
+						   ItemPointerGetBlockNumber(&undo_tup->t_self),
+						   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+						   undo_tup_xid,
+						   &urec_ptr_out,
+						   ZHeapSatisfyUndoRecord);
+
+	/*
+	 * The undo tuple must be visible, if the undo record containing
+	 * the information of the last transaction that has updated the
+	 * tuple is discarded.
+	 */
+	if (urec == NULL)
 	{
-		urec = UndoFetchRecord(*urec_ptr,
-							   ItemPointerGetBlockNumber(&undo_tup->t_self),
-							   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-							   InvalidTransactionId,
-							   ZHeapSatisfyUndoRecord);
-
-		oldestXidHavingUndo = GetXidFromEpochXid(
-						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
-		/*
-		 * The undo tuple must be visible, if the undo record containing
-		 * the information of the last transaction that has updated the
-		 * tuple is discarded or the transaction that has last updated the
-		 * undo tuple precedes smallest xid that has undo.
-		 */
-		if (urec == NULL ||
-			TransactionIdPrecedes(urec->uur_prevxid, oldestXidHavingUndo))
-		{
-			if (epoch)
-				*epoch = 0;
-			*xid = InvalidTransactionId;
-			*cid = InvalidCommandId;
-			*urec_ptr = InvalidUndoRecPtr;
-
-			if (urec)
-				UndoRecordRelease(urec);
-			break;
-		}
-
+		if (epoch)
+			*epoch = 0;
+		*xid = InvalidTransactionId;
+		*cid = InvalidCommandId;
+		*urec_ptr = InvalidUndoRecPtr;
+	}
+	else
+	{
 		/*
 		 * If we reach here, this means the transaction id that has
 		 * last modified this tuple must be in 2-billion xid range
@@ -98,23 +90,12 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch, TransactionId *xid,
 		 * as we do for current transaction.
 		 */
 		if (epoch)
-			*epoch = GetEpochForXid(urec->uur_prevxid);
-		*xid = urec->uur_prevxid;
+			*epoch = GetEpochForXid(urec->uur_xid);
+		*xid = urec->uur_xid;
 		*cid = urec->uur_cid;
-		*urec_ptr = urec->uur_blkprev;
-		uur_type = urec->uur_type;
-
-		/*
-		 * transaction slot won't change for such a tuple, so we can rely on
-		 * the same from current undo tuple.
-		 */
-
+		*urec_ptr = urec_ptr_out;
 		UndoRecordRelease(urec);
-
-		if ((undo_tup_xid == InvalidTransactionId || undo_tup_xid == *xid)
-			&& uur_type == UNDO_INVALID_XACT_SLOT)
-			break;
-	} while (true);
+	}
 }
 
 /*
@@ -341,20 +322,8 @@ fetch_prior_undo_record:
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
 						   prev_undo_xid,
+						   NULL,
 						   ZHeapSatisfyUndoRecord);
-
-	/*
-	 * Skip the undo record for transaction slot reuse, it is used only for
-	 * the purpose of fetching transaction information for tuples that point
-	 * to such slots.
-	 */
-	if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
-	{
-		urec_ptr = urec->uur_blkprev;
-		UndoRecordRelease(urec);
-
-		goto fetch_prior_undo_record;
-	}
 
 	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, true);
 	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
@@ -535,25 +504,12 @@ GetTupleFromUndoWithOffset(UndoRecPtr urec_ptr, Snapshot snapshot,
 	 * tuple is modified after the scan is started, fetch the prior record
 	 * from undo to see if it is visible.
 	 */
-fetch_undo_record:
 	urec = UndoFetchRecord(urec_ptr,
 						   BufferGetBlockNumber(buffer),
 						   off,
 						   InvalidTransactionId,
+						   NULL,
 						   ZHeapSatisfyUndoRecord);
-
-	/*
-	 * Skip the undo record for transaction slot reuse, it is used only for
-	 * the purpose of fetching transaction information for tuples that point
-	 * to such slots.
-	 */
-	if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
-	{
-		urec_ptr = urec->uur_blkprev;
-		UndoRecordRelease(urec);
-
-		goto fetch_undo_record;
-	}
 
 	/* need to ensure that undo record contains complete tuple */
 	Assert(urec->uur_type == UNDO_DELETE || urec->uur_type == UNDO_UPDATE);
@@ -624,20 +580,8 @@ fetch_prior_undo_record:
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
 						   prev_undo_xid,
+						   NULL,
 						   ZHeapSatisfyUndoRecord);
-
-	/*
-	 * Skip the undo record for transaction slot reuse, it is used only for
-	 * the purpose of fetching transaction information for tuples that point
-	 * to such slots.
-	 */
-	if (urec->uur_type == UNDO_INVALID_XACT_SLOT)
-	{
-		urec_ptr = urec->uur_blkprev;
-		UndoRecordRelease(urec);
-
-		goto fetch_prior_undo_record;
-	}
 
 	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, free_zhtup);
 	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);

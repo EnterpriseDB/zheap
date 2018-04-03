@@ -59,7 +59,8 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 
 		/* Fetch the undo record for given undo_recptr. */
 		uur = UndoFetchRecord(undo_recptr, InvalidBlockNumber,
-							  InvalidOffsetNumber, InvalidTransactionId, NULL);
+							  InvalidOffsetNumber, InvalidTransactionId,
+							  NULL, NULL);
 
 		Assert(uur != NULL);
 
@@ -94,6 +95,7 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 																InvalidBlockNumber,
 																InvalidOffsetNumber,
 																InvalidTransactionId,
+																NULL,
 																NULL);
 				from_urecptr = UndoGetPrevUndoRecptr(next_urecptr, next_urec->uur_prevlen);
 				UndoRecordRelease(next_urec);
@@ -115,7 +117,7 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 			UndoRecordRelease(uur);
 			uur = NULL;
 			StartTransactionCommand();
-			execute_undo_actions(from_urecptr, undo_recptr, true);
+			execute_undo_actions(from_urecptr, undo_recptr, true, false);
 			CommitTransactionCommand();
 		}
 

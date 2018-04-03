@@ -25,6 +25,9 @@
 #define ZHeapTupleSatisfiesVisibility(tuple, snapshot, buffer, ctid) \
 	((*(snapshot)->zsatisfies) (tuple, snapshot, buffer, ctid))
 
+extern void FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch,
+								   TransactionId *xid, CommandId *cid,
+								   UndoRecPtr *urec_ptr);
 /* Fetch CTID information stored in undo */
 extern void ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid,
 								TransactionId *xid, CommandId *cid);

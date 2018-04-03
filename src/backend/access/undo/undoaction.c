@@ -26,8 +26,7 @@
 #include "miscadmin.h"
 
 static void execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
-					 TransactionId xid, BlockNumber blkno, bool blk_chain_complete,
-					bool nopartial);
+					 TransactionId xid, BlockNumber blkno, bool blk_chain_complete);
 static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
 									  TransactionId xid);
 
@@ -37,10 +36,16 @@ static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
  * from_urecptr - undo record pointer from where to start applying undo action.
  * to_urecptr	- undo record pointer upto which point apply undo action.
  * nopartial	- true if rollback is for complete transaction.
+ * rewind		- whether to rewind the insert location of the undo log or not.
+ *				  Only the backend executed the transaction can rewind, but
+ *				  any other process e.g. undo worker should not rewind it.
+ *				  Because, if the backend have already inserted new undo records
+ *				  for the next transaction and if we rewind then we will loose
+ *				  the undo record inserted for the new transaction.
  */
 void
 execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
-					 bool nopartial)
+					 bool nopartial, bool rewind)
 {
 	UnpackedUndoRecord *uur = NULL;
 	UndoRecPtr	urec_ptr;
@@ -76,7 +81,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 
 		/* Fetch the undo record for given undo_recptr. */
 		uur = UndoFetchRecord(urec_ptr, InvalidBlockNumber,
-							  InvalidOffsetNumber, InvalidTransactionId, NULL);
+						 InvalidOffsetNumber, InvalidTransactionId, NULL, NULL);
 		/*
 		 * If the record is already discarded by undo worker,
 		 * then we cannot fetch record successfully.
@@ -127,12 +132,12 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		if (!more_undo && nopartial)
 		{
 			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-									  xid, prev_block, true, nopartial);
+									  xid, prev_block, true);
 		}
 		else
 		{
 			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-									  xid, prev_block, false, nopartial);
+									  xid, prev_block, false);
 		}
 
 		/* release the undo records for which action has been replayed */
@@ -173,8 +178,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	if (list_length(luur))
 	{
 		execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-								xid, prev_block, nopartial ? true : false,
-								nopartial);
+								xid, prev_block, nopartial ? true : false);
 
 		/* release the undo records for which action has been replayed */
 		while (luur)
@@ -185,22 +189,28 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		}
 	}
 
-	if (!nopartial)
+	if (rewind)
 	{
-		 /* Read the prevlen from the first record of this transaction. */
+		/* Read the prevlen from the first record of this transaction. */
 		uur = UndoFetchRecord(to_urecptr, InvalidBlockNumber,
-							  InvalidOffsetNumber, InvalidTransactionId, NULL);
-		Assert(uur != NULL);
+							  InvalidOffsetNumber, InvalidTransactionId,
+							  NULL, NULL);
+		/*
+		 * If undo is already discarded before we rewind, then do nothing.
+		 */
+		if (uur == NULL)
+			return;
+
 
 		/*
-		 * Rewind the insert location to start of this transaction.  This is
-		 * to avoid reapplying some intermediate undo. We do not need to wal
-		 * log this information here, because if the system crash before we
-		 * rewind the insert pointer then after recovery we can identify
-		 * whether the undo is already applied or not from the slot undo record
-		 * pointer. Also set the correct prevlen value (what we have fetched
-		 * from the undo).
-		 */
+		* Rewind the insert location to start of this transaction.  This is
+		* to avoid reapplying some intermediate undo. We do not need to wal
+		* log this information here, because if the system crash before we
+		* rewind the insert pointer then after recovery we can identify
+		* whether the undo is already applied or not from the slot undo record
+		* pointer. Also set the correct prevlen value (what we have fetched
+		* from the undo).
+		*/
 		UndoLogRewind(to_urecptr, uur->uur_prevlen);
 
 		UndoRecordRelease(uur);
@@ -267,7 +277,7 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
 static void
 execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 						  TransactionId xid, BlockNumber blkno,
-						  bool blk_chain_complete, bool nopartial)
+						  bool blk_chain_complete)
 {
 	ListCell   *l_iter;
 	Relation	rel;
@@ -353,6 +363,7 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 					ZHeapTupleHeader zhtup;
 					Size		offset = 0;
 					uint32		undo_tup_len;
+					int			trans_slot;
 
 					/* Copy the entire tuple from undo. */
 					lp = PageGetItemId(page, uur->uur_offset);
@@ -366,12 +377,23 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 					memcpy(zhtup,
 						   (ZHeapTupleHeader) &uur->uur_tuple.data[offset],
 						   undo_tup_len);
+					trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
+
+					/*
+					 * If the transaction slot to which tuple point got reused
+					 * by this time, then we need to mark the tuple with a
+					 * special flag.  See comments atop PageFreezeTransSlots.
+					 */
+					if (trans_slot != ZHTUP_SLOT_FROZEN ||
+						uur->uur_prevxid != opaque->transinfo[trans_slot].xid)
+						zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
 				}
 				break;
 			case UNDO_XID_LOCK_ONLY:
 				{
 					ItemId		lp;
 					ZHeapTupleHeader zhtup, undo_tup_hdr;
+					int			trans_slot;
 
 					/* Copy the entire tuple from undo. */
 					lp = PageGetItemId(page, uur->uur_offset);
@@ -386,29 +408,17 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 					zhtup->t_infomask2 = undo_tup_hdr->t_infomask2;
 					zhtup->t_infomask = undo_tup_hdr->t_infomask;
 					zhtup->t_hoff = undo_tup_hdr->t_hoff;
-				}
-				break;
-			case UNDO_INVALID_XACT_SLOT:
-				/*
-				 * If we are rewinding the undo log insert location then apply
-				 * the undo action for invalid xact slot.  Refer detailed
-				 * comments in PageFreezeTransSlots.
-				 */
-				if (!nopartial)
-				{
-					ItemId		lp;
-					ZHeapTupleHeader zhtup;
 
-					lp = PageGetItemId(page, uur->uur_offset);
+					trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
 
-					/* Reset the invalid xact flag from the tuple/itemid. */
-					if (ItemIdIsDeleted(lp))
-						ItemIdResetInvalidXact(lp);
-					else
-					{
-						zhtup = (ZHeapTupleHeader) PageGetItem(page, lp);
-						zhtup->t_infomask &= ~ZHEAP_INVALID_XACT_SLOT;
-					}
+					/*
+					 * If the transaction slot to which tuple point got reused
+					 * by this time, then we need to mark the tuple with a
+					 * special flag.  See comments atop PageFreezeTransSlots.
+					 */
+					if (trans_slot != ZHTUP_SLOT_FROZEN ||
+						uur->uur_prevxid != opaque->transinfo[trans_slot].xid)
+						zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
 				}
 				break;
 			default:
@@ -416,14 +426,17 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 		}
 	}
 
-	/* update the transaction slot */
+	/*
+	 * If the undo chain for the block is complete then set the xid in the slot
+	 * as InvalidTransactionId.  But, rewind the slot urec_ptr to the previous
+	 * urec_ptr in the slot.  This is to make sure if any transaction reuse the
+	 * transaction slot and rollback then put back the previous transaction's
+	 * urec_ptr.
+	 */
 	if (blk_chain_complete)
-	{
 		opaque->transinfo[slot_no].xid = InvalidTransactionId;
-		opaque->transinfo[slot_no].urec_ptr = InvalidUndoRecPtr;
-	}
-	else
-		opaque->transinfo[slot_no].urec_ptr = urec_ptr;
+
+	opaque->transinfo[slot_no].urec_ptr = urec_ptr;
 
 	MarkBufferDirty(buffer);
 

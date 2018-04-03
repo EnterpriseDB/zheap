@@ -1086,14 +1086,21 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode)
  * indicated by the previous pointer of undo tuple written by transaction 501.
  * Start the search from urp.  Caller need to call UndoRecordRelease to release the
  * resources allocated by this function.
+ *
+ * urec_ptr_out is undo record pointer of the qualified undo record if valid
+ * pointer is passed.
  */
 UnpackedUndoRecord*
 UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
-				TransactionId xid, SatisfyUndoRecordCallback callback)
+				TransactionId xid, UndoRecPtr *urec_ptr_out,
+				SatisfyUndoRecordCallback callback)
 {
 	RelFileNode		 rnode, prevrnode = {0};
 	UnpackedUndoRecord *urec = NULL;
 	int	logno;
+
+	if (urec_ptr_out)
+		*urec_ptr_out = InvalidUndoRecPtr;
 
 	urec = palloc0(sizeof(UnpackedUndoRecord));
 
@@ -1192,6 +1199,8 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 		urp = urec->uur_blkprev;
 	}
 
+	if (urec_ptr_out)
+		*urec_ptr_out = urp;
 	return urec;
 }
 
