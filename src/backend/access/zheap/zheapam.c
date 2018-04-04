@@ -1251,23 +1251,18 @@ zheap_tuple_updated:
 		xlrec.flags = all_visible_cleared ? XLZ_DELETE_ALL_VISIBLE_CLEARED : 0;
 
 		/*
-		 * If full_page_writes is enabled, then we can rely on the tuple in
-		 * the page to regenerate the undo tuple during recovery as the tuple
-		 * state must be same as now, otherwise we need to store it
-		 * explicitly.
+		 * If full_page_writes is enabled, and the buffer image is not
+		 * included in the WAL then we can rely on the tuple in the page to
+		 * regenerate the undo tuple during recovery as the tuple state must
+		 * be same as now, otherwise we need to store it explicitly.
 		 *
-		 * Since we don't yet have the insert lock, doPageWrites could change
-		 * later, but that won't be a problem.  As, if the value of doPageWrites
-		 * is true while forming and assembling the WAL record, then we will
-		 * include the copy of page even if the value later changes in
-		 * XLogInsertRecord.  OTOH, if it is false while forming and assembling
-		 * the WAL records, then we would have to anyway include undo tuple in the
-		 * WAL record which will avoid the dependency on full_page_image, so even
-		 * if doPageWrites changes to true later in XLogInsertRecord, we don't
-		 * need to worry.
+		 * Since we don't yet have the insert lock, including the page
+		 * image decision could change later and in that case we need prepare
+		 * the WAL record again.
 		 */
+prepare_xlog:
 		GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
-		if (!doPageWrites)
+		if (!doPageWrites || XLogCheckBufferNeedsBackup(buffer))
 		{
 			xlrec.flags |= XLZ_HAS_DELETE_UNDOTUPLE;
 
@@ -1283,7 +1278,7 @@ zheap_tuple_updated:
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
 		XLogRegisterData((char *) &xlrec, SizeOfZHeapDelete);
-		if (!doPageWrites)
+		if (xlrec.flags & XLZ_HAS_DELETE_UNDOTUPLE)
 		{
 			XLogRegisterData((char *) &xlhdr, SizeOfZHeapHeader);
 			/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
@@ -1296,8 +1291,10 @@ zheap_tuple_updated:
 		/* filtering by origin on a row level is much more efficient */
 		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
-		recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_DELETE);
-
+		recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_DELETE,
+									RedoRecPtr, doPageWrites);
+		if (recptr == InvalidXLogRecPtr)
+			goto prepare_xlog;
 		PageSetLSN(page, recptr);
 	}
 
@@ -2315,23 +2312,15 @@ log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 	}
 
 	/*
-	 * If full_page_writes is enabled, then we can rely on the tuple in
-	 * the page to regenerate the undo tuple during recovery as the tuple
-	 * state must be same as now, otherwise we need to store it
-	 * explicitly.
-	 *
-	 * Since we don't yet have the insert lock, doPageWrites could change
-	 * later, but that won't be a problem.  As, if the value of doPageWrites
-	 * is true while forming and assembling the WAL record, then we will
-	 * include the copy of page even if the value later changes in
-	 * XLogInsertRecord.  OTOH, if it is false while forming and assembling
-	 * the WAL records, then we would have to anyway include undo tuple in the
-	 * WAL record which will avoid the dependency on full_page_image, so even
-	 * if doPageWrites changes to true later in XLogInsertRecord, we don't
-	 * need to worry.
+	 * If full_page_writes is enabled, and the buffer image is not
+	 * included in the WAL then we can rely on the tuple in the page to
+	 * regenerate the undo tuple during recovery.  For detail comments related
+	 * to handling of full_page_writes get changed at run time, refer comments
+	 * in zheap_delete.
 	 */
+prepare_xlog:
 	GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
-	if (!doPageWrites)
+	if (!doPageWrites || XLogCheckBufferNeedsBackup(oldbuf))
 	{
 		xlrec.flags |= XLZ_HAS_UPDATE_UNDOTUPLE;
 
@@ -2345,7 +2334,7 @@ log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 	XLogRegisterData((char *) &xlrec, SizeOfZHeapUpdate);
 	if (!inplace_update)
 		XLogRegisterData((char *) &xlnewundohdr, SizeOfUndoHeader);
-	if (!doPageWrites)
+	if (xlrec.flags & XLZ_HAS_UPDATE_UNDOTUPLE)
 	{
 		XLogRegisterData((char *) &xlundotuphdr, SizeOfZHeapHeader);
 		/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
@@ -2418,7 +2407,9 @@ log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 	/* filtering by origin on a row level is much more efficient */
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
-	recptr = XLogInsert(RM_ZHEAP_ID, info);
+	recptr = XLogInsertExtended(RM_ZHEAP_ID, info, RedoRecPtr, doPageWrites);
+	if (recptr == InvalidXLogRecPtr)
+		goto prepare_xlog;
 
 	return recptr;
 }
