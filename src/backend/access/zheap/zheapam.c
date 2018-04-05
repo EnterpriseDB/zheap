@@ -2046,9 +2046,14 @@ reacquire_buffer:
 			   (char *) newtup->t_data + SizeofZHeapTupleHeader,
 			   newtup->t_len - SizeofZHeapTupleHeader);
 
-		/* copy everything in infomask apart from visibility flags */
-		oldtup.t_data->t_infomask |= (newtup->t_data->t_infomask
-									  & ~ZHEAP_VIS_STATUS_MASK);
+		/*
+		 * Copy everything from new tuple in infomask apart from visibility
+		 * flags.
+		 */
+		oldtup.t_data->t_infomask = oldtup.t_data->t_infomask &
+											ZHEAP_VIS_STATUS_MASK;
+		oldtup.t_data->t_infomask |= (newtup->t_data->t_infomask &
+										~ZHEAP_VIS_STATUS_MASK);
 		/* also update the tuple length and self pointer */
 		oldtup.t_len = newtup->t_len;
 		ItemPointerCopy(&oldtup.t_self, &newtup->t_self);
