@@ -1102,7 +1102,7 @@ hash_xlog_vacuum_get_latestRemovedXid(XLogReaderState *record)
 			ztup.t_len = ItemIdGetLength(hitemid);
 			ztup.t_tableOid = InvalidOid;
 			ztup.t_data = NULL;
-			ZHeapTupleGetTransInfo(&ztup, hbuffer, NULL, &xid, NULL, NULL,
+			ZHeapTupleGetTransInfo(&ztup, hbuffer, NULL, NULL, &xid, NULL, NULL,
 								   false);
 			if (TransactionIdDidCommit(xid) &&
 				TransactionIdFollows(xid, latestRemovedXid))
@@ -1126,8 +1126,8 @@ hash_xlog_vacuum_get_latestRemovedXid(XLogReaderState *record)
 				{
 					TransactionId	xid;
 
-					ZHeapTupleGetTransInfo(&ztup, hbuffer, NULL, &xid, NULL, NULL,
-										   false);
+					ZHeapTupleGetTransInfo(&ztup, hbuffer, NULL, NULL, &xid,
+										   NULL, NULL, false);
 					ZHeapTupleHeaderAdvanceLatestRemovedXid(ztuphdr, xid, &latestRemovedXid);
 				}
 			}

@@ -106,7 +106,7 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch, TransactionId *xid,
  */
 void
 ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
-						 CommandId *cid)
+					CommandId *cid)
 {
 	ZHeapPageOpaque	opaque;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
@@ -783,8 +783,8 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction info */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, &xid, &cid, &urec_ptr,
-						   false);
+	ZHeapTupleGetTransInfo(zhtup, buffer, NULL, &epoch_xid, &xid, &cid,
+						   &urec_ptr, false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -1041,6 +1041,8 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
  *
  *	ctid - returns the ctid of visible tuple if the tuple is either deleted or
  *	updated.  ctid needs to be retrieved from undo tuple.
+ *	trans_slot - returns the transaction slot of the transaction that has
+ *	modified the visible tuple.
  *	xid - returns the xid that has modified the visible tuple.
  *	cid - returns the cid of visible tuple.
  *	lock_allowed - allow caller to lock the tuple if it is in-place updated
@@ -1049,9 +1051,10 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
  */
 HTSU_Result
 ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
-						  Buffer buffer, ItemPointer ctid, TransactionId *xid,
-						  CommandId *cid, bool free_zhtup, bool lock_allowed,
-						  Snapshot snapshot, bool *in_place_updated_or_locked)
+						  Buffer buffer, ItemPointer ctid, int *trans_slot,
+						  TransactionId *xid, CommandId *cid, bool free_zhtup,
+						  bool lock_allowed, Snapshot snapshot,
+						  bool *in_place_updated_or_locked)
 {
 	ZHeapPageOpaque	opaque;
 	ZHeapTupleHeader tuple = zhtup->t_data;
@@ -1066,8 +1069,8 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction info */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, xid, cid, &urec_ptr,
-						   false);
+	ZHeapTupleGetTransInfo(zhtup, buffer, trans_slot, &epoch_xid, xid, cid,
+						   &urec_ptr, false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -1280,7 +1283,7 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin, Buffer buffer)
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, &xid, NULL, NULL,
+	ZHeapTupleGetTransInfo(zhtup, buffer, NULL, &epoch_xid, &xid, NULL, NULL,
 						   false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
@@ -1329,7 +1332,7 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, &xid, NULL, &urec_ptr,
+	ZHeapTupleGetTransInfo(zhtup, buffer, NULL, &epoch_xid, &xid, NULL, &urec_ptr,
 						   false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
@@ -1472,7 +1475,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	snapshot->speculativeToken = 0;
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, &xid, NULL, NULL,
+	ZHeapTupleGetTransInfo(zhtup, buffer, NULL, &epoch_xid, &xid, NULL, NULL,
 						   false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
@@ -1622,7 +1625,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &epoch_xid, xid, NULL, NULL,
+	ZHeapTupleGetTransInfo(zhtup, buffer, NULL, &epoch_xid, xid, NULL, NULL,
 						   false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||

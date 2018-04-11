@@ -257,7 +257,8 @@ ExecCheckZHeapTupleVisible(EState *estate,
 		 * visible to our snapshot.  (This would happen, for example, if
 		 * conflicting keys are proposed for insertion in a single command.)
 		 */
-		ZHeapTupleGetTransInfo(tuple, buffer, NULL, &xid, NULL, NULL, false);
+		ZHeapTupleGetTransInfo(tuple, buffer, NULL, NULL, &xid, NULL, NULL,
+							   false);
 		if (!TransactionIdIsCurrentTransactionId(xid))
 			ereport(ERROR,
 					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
@@ -1861,7 +1862,8 @@ ExecOnConflictZUpdate(ModifyTableState *mtstate,
 			 * that for SQL MERGE, an exception must be raised in the event of
 			 * an attempt to update the same row twice.
 			 */
-			ZHeapTupleGetTransInfo(&tuple, buffer, NULL, &xid, NULL, NULL, true);
+			ZHeapTupleGetTransInfo(&tuple, buffer, NULL, NULL, &xid, NULL,
+								   NULL, true);
 			if (TransactionIdIsCurrentTransactionId(xid))
 				ereport(ERROR,
 						(errcode(ERRCODE_CARDINALITY_VIOLATION),

@@ -301,9 +301,9 @@ extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
 extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf);
 extern CommandId ZHeapPageGetCid(int trans_slot, Buffer buf, OffsetNumber off);
 extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
-						uint64 *epoch_xid_out, TransactionId *xid_out,
-						CommandId *cid_out, UndoRecPtr *urec_ptr_out,
-						bool nobuflock);
+						int *trans_slot, uint64 *epoch_xid_out,
+						TransactionId *xid_out, CommandId *cid_out,
+						UndoRecPtr *urec_ptr_out, bool nobuflock);
 extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer ctid);
 extern void ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, uint32 *specToken);
 extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, ItemPointer ctid);

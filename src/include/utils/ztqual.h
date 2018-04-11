@@ -39,8 +39,8 @@ extern ZHeapTuple ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot,
 									   Buffer buffer, bool *all_dead);
 extern HTSU_Result ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup,
 						CommandId curcid, Buffer buffer, ItemPointer ctid,
-						TransactionId *xid, CommandId *cid, bool free_zhtup,
-						bool lock_allowed, Snapshot snapshot,
+						int *trans_slot, TransactionId *xid, CommandId *cid,
+						bool free_zhtup, bool lock_allowed, Snapshot snapshot,
 						bool *in_place_updated_or_locked);
 extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin,
 								   Buffer buffer);
