@@ -68,6 +68,7 @@ extern void zheap_get_latest_tid(Relation relation,
 					 ItemPointer tid);
 extern void PageSetUNDO(UnpackedUndoRecord undorecord, Page page, int trans_slot_id,
 						uint32 epoch, TransactionId xid, UndoRecPtr urecptr);
+extern int PageGetTransactionSlot(Buffer buf, uint32 epoch, TransactionId xid);
 extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
 						TransactionId xid, TransactionId *latestRemovedXid);
 extern void zheap_page_prune_opt(Relation relation, Buffer buffer);
@@ -124,7 +125,7 @@ ZHeapSatisfyUndoRecord(UnpackedUndoRecord* uurec, BlockNumber blkno,
 								OffsetNumber offset, TransactionId xid);
 extern bool
 ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
-				   TransactionId priorXmax);
+					TransactionId priorXmax, bool nobuflock);
 /*
  * Given a page, it stores contiguous ranges of free offsets that can be
  * used/reused in the same page. This is used in zheap_multi_insert to decide

@@ -29,6 +29,12 @@
 /* we use frozen slot to indicate that the tuple is all visible now */
 #define	ZHTUP_SLOT_FROZEN	0x01F
 
+typedef struct ZMultiLockMember
+{
+	TransactionId xid;
+	LockTupleMode mode;
+} ZMultiLockMember;
+
 /*
  * Heap tuple header.  To avoid wasting space, the fields should be
  * laid out in such a way as to avoid structure padding.
@@ -90,15 +96,16 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define ZHEAP_XID_SHR_LOCK	(ZHEAP_XID_NOKEY_EXCL_LOCK | ZHEAP_XID_KEYSHR_LOCK)
 #define ZHEAP_XID_EXCL_LOCK		0x0400	/* tuple was updated and key cols
 										 * modified, or tuple deleted */
-
-#define ZHEAP_INVALID_XACT_SLOT	0x0800	/* transaction slot on tuple got reused */
-#define ZHEAP_SPECULATIVE_INSERT	0x1000 /* tuple insertion is a speculative
+#define ZHEAP_MULTI_LOCKERS		0x0800	/* tuple was locked by multiple
+										 * lockers */
+#define ZHEAP_INVALID_XACT_SLOT	0x1000	/* transaction slot on tuple got reused */
+#define ZHEAP_SPECULATIVE_INSERT	0x2000 /* tuple insertion is a speculative
 											* insertion and can be taken back */
 
 #define ZHEAP_LOCK_MASK		(ZHEAP_XID_KEYSHR_LOCK | ZHEAP_XID_NOKEY_EXCL_LOCK | \
 							 ZHEAP_XID_SHR_LOCK | ZHEAP_XID_EXCL_LOCK)
 
-#define ZHEAP_VIS_STATUS_MASK	0x0FF0	/* mask for visibility bits (5 ~ 12 bits) */
+#define ZHEAP_VIS_STATUS_MASK	0x1FF0	/* mask for visibility bits (5 ~ 13 bits) */
 
 /*
  * Use these to test whether a particular lock is applied to a tuple
@@ -125,9 +132,24 @@ typedef ZHeapTupleData *ZHeapTuple;
 	((infomask) & ZHEAP_XID_LOCK_ONLY) != 0 \
 )
 
+#define ZHeapTupleHasMultiLockers(infomask) \
+( \
+	((infomask) & ZHEAP_MULTI_LOCKERS) != 0 \
+)
+
 #define ZHeapTupleIsInPlaceUpdated(infomask) \
 ( \
   (infomask & ZHEAP_INPLACE_UPDATED) != 0 \
+)
+
+#define ZHeapTupleIsUpdated(infomask) \
+( \
+  (infomask & ZHEAP_UPDATED) != 0 \
+)
+
+#define ZHeapTupleHasInvalidXact(infomask) \
+( \
+	(infomask & ZHEAP_INVALID_XACT_SLOT) != 0 \
 )
 
 #define ZHeapTupleHeaderIsSpeculative(tup) \
@@ -192,8 +214,6 @@ do { \
 #define ZHeapTupleDeleted(tup_data) \
 		((tup_data->t_infomask & (ZHEAP_DELETED | ZHEAP_UPDATED)) != 0)
 
-#define ZHeapTupleHasInvalidXact(tup_data) \
-		((tup_data->t_infomask & ZHEAP_INVALID_XACT_SLOT) != 0)
 
 
 #define ZHeapTupleHeaderGetRawEpoch(tup, opaque) \
@@ -219,6 +239,11 @@ do { \
 #define ZHeapPageGetRawEpoch(slot, opaque) \
 ( \
 	opaque->transinfo[slot].xid_epoch \
+)
+
+#define ZHeapPageGetRawUndoPtr(slot, opaque) \
+( \
+	opaque->transinfo[slot].urec_ptr \
 )
 
 #define IsZHeapTupleModified(t_infomask) \

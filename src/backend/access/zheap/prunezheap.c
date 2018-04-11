@@ -383,7 +383,7 @@ zheap_page_prune_execute(Buffer buffer, OffsetNumber *deleted, int ndeleted,
 
 		if (ZHeapTupleDeleted(tup))
 			vis_info = ITEMID_DELETED;
-		if (ZHeapTupleHasInvalidXact(tup))
+		if (ZHeapTupleHasInvalidXact(tup->t_infomask))
 			vis_info |= ITEMID_XACT_INVALID;
 
 		/*

@@ -344,6 +344,10 @@ fetch_prior_undo_record:
 
 	UndoRecordRelease(urec);
 
+	/* If undo is discarded, then current tuple is visible. */
+	if (urec == NULL)
+		return zhtup;
+
 	/*
 	 * Change the undo chain if the undo tuple is stamped with the different
 	 * transaction.
@@ -768,6 +772,12 @@ result_available:
  *	the latest transaction that has operated on tuple is shown as in-progress
  *	by the snapshot or is started after the snapshot was taken or is current
  *	transaction and the changes are made by current command.
+ *
+ *	For multilockers, the strongest locker information is always present on
+ *	the tuple.  So for updaters, we don't need anything special as the tuple
+ *	visibility will be determined based on the transaction information present
+ *	on tuple.  For the lockers only case, we need to determine if the original
+ *	inserter is visible to snapshot.
  */
 ZHeapTuple
 ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
@@ -1038,6 +1048,11 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
  *	However, there is a notable difference in the way to determine visibility
  *	of tuples.  We need to traverse undo record chains to determine the
  *	visibility of tuple.
+ *
+ *	For multilockers, the visibility can be determined by the information
+ *	present on tuple.  See ZHeapTupleSatisfiesMVCC.  Also, this API returns
+ *	HeapTupleMayBeUpdated, if the strongest locker is committed which means
+ *	the caller need to take care of waiting for other lockers in such a case.
  *
  *	ctid - returns the ctid of visible tuple if the tuple is either deleted or
  *	updated.  ctid needs to be retrieved from undo tuple.
@@ -1606,6 +1621,9 @@ ZHeapTuple
 ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer,
 					   ItemPointer ctid)
 {
+	/* Callers can expect ctid to be populated. */
+	if (ZHeapTupleIsUpdated(zhtup->t_data->t_infomask) && ctid)
+		ZHeapTupleGetCtid(zhtup, buffer, ctid);
 	return zhtup;
 }
 

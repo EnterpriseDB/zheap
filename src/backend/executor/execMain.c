@@ -2915,7 +2915,7 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 			 * reused for an unrelated tuple.  This implies that the latest
 			 * version of the row was deleted, so we need do nothing.
 			 */
-			if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax))
+			if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax, true))
 			{
 				ReleaseBuffer(buffer);
 				return NULL;
@@ -3055,7 +3055,7 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 		}
 
 		/* Ensure that the tuple is same as what we are expecting as above. */
-		if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax))
+		if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax, true))
 		{
 			ReleaseBuffer(buffer);
 			return NULL;
@@ -3270,6 +3270,13 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 					ZHeapTuple zTuple;
 					ItemPointer	tid = (ItemPointer) DatumGetPointer(datum);
 
+					/*
+					 * After fetching the tuple with SnapshotAny and releasing
+					 * buffer lock, tuple slot can be reused by totally unrelated
+					 * tuple due to Rollback/Pruning.  We are safe here as
+					 * zheap_fetch will make a copy of tuple and after this the
+					 * tuple will be used only for checking the qualification.
+					 */
 					if (!zheap_fetch(erm->relation, SnapshotAny, tid, &zTuple,
 									 &buffer, false, NULL))
 						elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");

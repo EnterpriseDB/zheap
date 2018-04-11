@@ -189,10 +189,6 @@ lnext:
 			Page	page;
 			ItemId	lp;
 
-			if (lockmode == LockTupleNoKeyExclusive ||
-				lockmode == LockTupleKeyShare)
-				elog(ERROR, "unsupported rowmark type for zheap");
-
 			/*
 			 * FIXME : We need to take the buffer lock and get the tuple
 			 * length which is duplication work done in zheap_lock_tuple.
@@ -389,6 +385,12 @@ lnext:
 			{
 				ZHeapTuple zTuple;
 
+				/*
+				 * After fetching the tuple with SnapshotAny and releasing
+				 * buffer lock, tuple slot can be reused by totally unrelated
+				 * tuple due to Rollback/Pruning.  We are safe here as the
+				 * tuple we are trying to fetch here is locked by us.
+				 */
 				if (!zheap_fetch(erm->relation, SnapshotAny, &erm->curCtid, &zTuple,
 								 &buffer, false, NULL))
 					elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");

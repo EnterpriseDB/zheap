@@ -106,7 +106,18 @@ of all the active transactions on a page.  We will always mark the tuple with
 the strongest lock mode that might be present, just as is done in the current
 heap, so that we can cheaply detect whether there is a potential conflict.  If
 there is, we must get information about all the locks from undo in order to
-decide whether there is an actual conflict.
+decide whether there is an actual conflict.  The tuple will always contain
+either the strongest locker information or if all the lockers are of same
+strength, then it will contain the latest locker information.  Whenever there
+is more than one locker operating on a tuple, we set the multi-locker bit on a
+tuple to indicate that the tuple has multiple lockers. Note, that we clear the
+multi-locker bit lazily (which means when we decide to wait for all the
+lockers to go away and there is no more locker alive on the tuple).  During
+Rollback operation, we retain the strongest locker information on the tuple
+if there are multiple lockers on a tuple. This is because the conflict
+detection mechanism works based on strongest locker.  Now, even if we want to
+remove strongest locker information, we don't have second strongest locker
+information handy.
 
 Copy: Similar to insert, we need to store the corresponding TID (block number,
 offset number) for a tuple in undo to identify the same during undo replay. But,

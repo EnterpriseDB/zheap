@@ -928,7 +928,10 @@ zheap_xlog_lock(XLogReaderState *record)
 	tup_hdr = (char *) xlrec + SizeOfZHeapLock;
 
 	/* prepare an undo record */
-	undorecord.uur_type = UNDO_XID_LOCK_ONLY;
+	if (ZHeapTupleHasMultiLockers(xlrec->infomask))
+		undorecord.uur_type = UNDO_XID_MULTI_LOCK_ONLY;
+	else
+		undorecord.uur_type = UNDO_XID_LOCK_ONLY;
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;
 	undorecord.uur_relfilenode = xlundohdr->relfilenode;

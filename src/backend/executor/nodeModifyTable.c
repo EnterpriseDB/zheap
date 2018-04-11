@@ -1068,6 +1068,12 @@ ldelete:;
 			else
 			{
 				deltuple.t_self = *tupleid;
+				/*
+				 * After fetching the tuple with SnapshotAny and releasing
+				 * buffer lock, tuple slot can be reused by totally unrelated
+				 * tuple due to Rollback/Pruning.  We are safe here as the
+				 * tuple we are trying to fetch here is deleted by us.
+				 */
 				if (RelationStorageIsZHeap(resultRelationDesc) ?
 					(found = zheap_fetch(resultRelationDesc, SnapshotAny, tupleid, &zdeltuple,
 										&delbuffer, false, NULL)) :

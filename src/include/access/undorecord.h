@@ -28,7 +28,8 @@ typedef enum undorectype
 	UNDO_DELETE,
 	UNDO_INPLACE_UPDATE,
 	UNDO_UPDATE,
-	UNDO_XID_LOCK_ONLY
+	UNDO_XID_LOCK_ONLY,
+	UNDO_XID_MULTI_LOCK_ONLY
 } undorectype;
 
 /*

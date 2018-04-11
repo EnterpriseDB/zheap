@@ -364,11 +364,14 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 					Size		offset = 0;
 					uint32		undo_tup_len;
 					int			trans_slot;
+					uint16		infomask;
 
 					/* Copy the entire tuple from undo. */
 					lp = PageGetItemId(page, uur->uur_offset);
 					Assert(ItemIdIsNormal(lp));
 					zhtup = (ZHeapTupleHeader) PageGetItem(page, lp);
+					infomask = zhtup->t_infomask;
+					trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
 
 					undo_tup_len = *((uint32 *) &uur->uur_tuple.data[offset]);
 					ItemIdChangeLen(lp, undo_tup_len);
@@ -377,49 +380,87 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 					memcpy(zhtup,
 						   (ZHeapTupleHeader) &uur->uur_tuple.data[offset],
 						   undo_tup_len);
-					trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
 
 					/*
-					 * If the transaction slot to which tuple point got reused
-					 * by this time, then we need to mark the tuple with a
-					 * special flag.  See comments atop PageFreezeTransSlots.
+					 * We always need to retain the strongest locker
+					 * information on the the tuple (as part of infomask and
+					 * infomask2) if there are multiple lockers on a tuple.
+					 * This is because the conflict detection mechanism works
+					 * based on strongest locker.  See
+					 * zheap_update/zheap_delete.  Now, even if we want to
+					 * remove strongest locker information, we don't have
+					 * second strongest locker information handy.
 					 */
-					if (trans_slot != ZHTUP_SLOT_FROZEN ||
-						uur->uur_prevxid != opaque->transinfo[trans_slot].xid)
-						zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+					if (ZHeapTupleHasMultiLockers(infomask))
+					{
+						ZHeapTupleHeaderSetXactSlot(zhtup, trans_slot);
+						zhtup->t_infomask |= ZHEAP_MULTI_LOCKERS;
+						zhtup->t_infomask &= ~(zhtup->t_infomask & ZHEAP_LOCK_MASK);
+						zhtup->t_infomask |= infomask & ZHEAP_LOCK_MASK;
+
+						/*
+						 * If the tuple originally has INVALID_XACT_SLOT set,
+						 * then we need to retain it as that must be the information
+						 * of strongest locker.
+						 */
+						if (ZHeapTupleHasInvalidXact(infomask))
+							zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+					}
+					else
+					{
+						/*
+						 * If the transaction slot to which tuple point got reused
+						 * by this time, then we need to mark the tuple with a
+						 * special flag.  See comments atop PageFreezeTransSlots.
+						 */
+						if (trans_slot != ZHTUP_SLOT_FROZEN ||
+							uur->uur_prevxid != opaque->transinfo[trans_slot].xid)
+							zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+					}
 				}
 				break;
 			case UNDO_XID_LOCK_ONLY:
 				{
 					ItemId		lp;
 					ZHeapTupleHeader zhtup, undo_tup_hdr;
-					int			trans_slot;
+					uint16		infomask;
 
 					/* Copy the entire tuple from undo. */
 					lp = PageGetItemId(page, uur->uur_offset);
 					Assert(ItemIdIsNormal(lp));
 					zhtup = (ZHeapTupleHeader) PageGetItem(page, lp);
+					infomask = zhtup->t_infomask;
 
 					/*
 					 * Override the tuple header values with values retrieved
-					 * from undo record.
+					 * from undo record except when there are multiple
+					 * lockers.  In such cases, we want to retain the strongest
+					 * locker information present in infomask and infomask2.
 					 */
 					undo_tup_hdr = (ZHeapTupleHeader) uur->uur_tuple.data;
-					zhtup->t_infomask2 = undo_tup_hdr->t_infomask2;
-					zhtup->t_infomask = undo_tup_hdr->t_infomask;
 					zhtup->t_hoff = undo_tup_hdr->t_hoff;
 
-					trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
+					if (!(ZHeapTupleHasMultiLockers(infomask)))
+					{
+						int			trans_slot;
 
-					/*
-					 * If the transaction slot to which tuple point got reused
-					 * by this time, then we need to mark the tuple with a
-					 * special flag.  See comments atop PageFreezeTransSlots.
-					 */
-					if (trans_slot != ZHTUP_SLOT_FROZEN ||
-						uur->uur_prevxid != opaque->transinfo[trans_slot].xid)
-						zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+						zhtup->t_infomask2 = undo_tup_hdr->t_infomask2;
+						zhtup->t_infomask = undo_tup_hdr->t_infomask;
+
+						trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
+
+						/*
+						 * If the transaction slot to which tuple point got reused
+						 * by this time, then we need to mark the tuple with a
+						 * special flag.  See comments atop PageFreezeTransSlots.
+						 */
+						if (trans_slot != ZHTUP_SLOT_FROZEN ||
+							uur->uur_prevxid != opaque->transinfo[trans_slot].xid)
+							zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+					}
 				}
+				break;
+			case UNDO_XID_MULTI_LOCK_ONLY:
 				break;
 			default:
 				elog(ERROR, "unsupported undo record type");
