@@ -40,6 +40,43 @@ extern void ZGetMultiLockInfo(uint16 old_infomask, TransactionId tup_xid,
 				  int tup_trans_slot, TransactionId add_to_xid,
 				  uint16 *new_infomask, int *new_trans_slot,
 				  LockTupleMode *mode, bool *old_tuple_has_update);
-extern inline LockTupleMode get_old_lock_mode(uint16 infomask);
+
+static inline LockTupleMode get_old_lock_mode(uint16 infomask)
+{
+	LockTupleMode	old_lock_mode;
+
+	/*
+	 * Normally, if the tuple is not marked as locked only, it should not
+	 * contain any locker information. But, during rollback of (in-)update/delete,
+	 * we retain the multilocker information. See execute_undo_actions_page for
+	 * details.
+	 */
+	if (ZHEAP_XID_IS_LOCKED_ONLY(infomask) || !IsZHeapTupleModified(infomask))
+	{
+		if (ZHEAP_XID_IS_KEYSHR_LOCKED(infomask))
+			old_lock_mode = LockTupleKeyShare;
+		else if (ZHEAP_XID_IS_SHR_LOCKED(infomask))
+			old_lock_mode = LockTupleShare;
+		else if (ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask))
+			old_lock_mode = LockTupleNoKeyExclusive;
+		else if (ZHEAP_XID_IS_EXCL_LOCKED(infomask))
+			old_lock_mode = LockTupleExclusive;
+		else
+		{
+			/* LOCK_ONLY can't be present alone */
+			Assert(false);
+		}
+	}
+	else
+	{
+		/* it's an update, but which kind? */
+		if (infomask & ZHEAP_XID_EXCL_LOCK)
+			old_lock_mode = LockTupleExclusive;
+		else
+			old_lock_mode = LockTupleNoKeyExclusive;
+	}
+
+	return old_lock_mode;
+}
 
 #endif   /* ZMULTILOCKER_H */
