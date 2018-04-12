@@ -59,6 +59,8 @@ extern HTSU_Result zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 					Buffer *buffer, HeapUpdateFailureData *hufd);
 extern void zheap_finish_speculative(Relation relation, ZHeapTuple tuple);
 extern void zheap_abort_speculative(Relation relation, ZHeapTuple tuple);
+extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
+									  uint32 epoch, TransactionId xid);
 extern void ZheapInitPage(Page page, Size pageSize);
 extern void zheap_multi_insert(Relation relation, ZHeapTuple *tuples,
 								int ntuples, CommandId cid, int options,
@@ -69,12 +71,18 @@ extern void zheap_get_latest_tid(Relation relation,
 extern void PageSetUNDO(UnpackedUndoRecord undorecord, Page page, int trans_slot_id,
 						uint32 epoch, TransactionId xid, UndoRecPtr urecptr);
 extern int PageGetTransactionSlot(Buffer buf, uint32 epoch, TransactionId xid);
-extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
-						TransactionId xid, TransactionId *latestRemovedXid);
 extern void zheap_page_prune_opt(Relation relation, Buffer buffer);
+extern int zheap_page_prune_guts(Relation relation, Buffer buffer,
+								 TransactionId OldestXmin, bool report_stats,
+								 TransactionId *latestRemovedXid);
 extern void zheap_page_prune_execute(Buffer buffer, OffsetNumber *deleted,
 								int ndeleted, OffsetNumber *nowdead, int ndead,
 								OffsetNumber *nowunused, int nunused);
+extern XLogRecPtr log_zheap_clean(Relation reln, Buffer buffer,
+								  OffsetNumber *nowdeleted, int ndeleted,
+								  OffsetNumber *nowdead, int ndead,
+								  OffsetNumber *nowunused, int nunused,
+								  TransactionId latestRemovedXid);
 
 /* Zheap scan related API's */
 extern void zheapgetpage(HeapScanDesc scan, BlockNumber page);
@@ -105,9 +113,8 @@ extern bool zheap_fetch_undo(Relation relation, Snapshot snapshot,
 				Relation stats_relation);
 extern ZHeapTuple zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer,
 										ItemPointer tid);
-extern void
-ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
-                                               TransactionId xid, TransactionId *latestRemovedXid);
+extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
+						TransactionId xid, TransactionId *latestRemovedXid);
 extern void zheap_freeze_or_invalidate_tuples(Page page, int nSlots, int *slots,
 											  bool isFrozen);
 
@@ -138,5 +145,21 @@ typedef struct ZHeapFreeOffsetRanges
 	OffsetNumber endOffset[MaxOffsetNumber];
 	int nranges;
 } ZHeapFreeOffsetRanges;
+
+/* inline functions */
+/*
+ * PageGetUNDO - Get the undo record pointer for a given transaction slot.
+ */
+static inline UndoRecPtr
+PageGetUNDO(Page page, int trans_slot_id)
+{
+	ZHeapPageOpaque	opaque;
+
+	Assert(trans_slot_id != InvalidXactSlotId);
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+	return opaque->transinfo[trans_slot_id].urec_ptr;
+}
 
 #endif   /* ZHEAP_H */

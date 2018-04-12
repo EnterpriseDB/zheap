@@ -3340,9 +3340,13 @@ RelationSetNewRelfilenode(Relation relation, char persistence,
 	HeapTuple	tuple;
 	Form_pg_class classform;
 
-	/* Indexes, sequences must have Invalid frozenxid; other rels must not */
+	/*
+	 * Indexes, sequences, zheap relations must have Invalid frozenxid; other
+	 * rels must not
+	 */
 	Assert((relation->rd_rel->relkind == RELKIND_INDEX ||
-			relation->rd_rel->relkind == RELKIND_SEQUENCE) ?
+			relation->rd_rel->relkind == RELKIND_SEQUENCE ||
+			RelationStorageIsZHeap(relation)) ?
 		   freezeXid == InvalidTransactionId :
 		   TransactionIdIsNormal(freezeXid));
 	Assert(TransactionIdIsNormal(freezeXid) == MultiXactIdIsValid(minmulti));

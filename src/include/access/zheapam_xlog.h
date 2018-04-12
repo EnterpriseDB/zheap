@@ -55,6 +55,7 @@
  * these, too.
  */
 #define XLOG_ZHEAP_CONFIRM		0x00
+#define XLOG_ZHEAP_UNUSED		0x10
 
 /* common undo record related info */
 typedef struct xl_undo_header
@@ -239,6 +240,7 @@ typedef struct xl_multi_insert_ztuple
  */
 typedef struct xl_zheap_clean
 {
+
 	TransactionId latestRemovedXid;
 	uint16          ndeleted;
 	uint16          ndead;
@@ -246,6 +248,17 @@ typedef struct xl_zheap_clean
 } xl_zheap_clean;
 
 #define SizeOfZHeapClean (offsetof(xl_zheap_clean, ndead) + sizeof(uint16))
+
+typedef struct xl_zheap_unused
+{
+
+	TransactionId latestRemovedXid;
+	uint16          nunused;
+	uint8			trans_slot_id;
+	/* OFFSET NUMBERS are in the block reference 0 */
+} xl_zheap_unused;
+
+#define SizeOfZHeapUnused (offsetof(xl_zheap_unused, trans_slot_id) + sizeof(uint8))
 
 /* This is what we need to know about confirmation of speculative insertion */
 /*

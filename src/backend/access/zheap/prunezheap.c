@@ -55,8 +55,6 @@ typedef struct
 	bool		marked[1200 + 1];
 }			ZPruneState;
 
-static int zheap_page_prune_guts(Relation relation, Buffer buffer,
-					  TransactionId OldestXmin, TransactionId *latestRemovedXid);
 static int zheap_prune_item(Relation relation, Buffer buffer,
 				 OffsetNumber rootoffnum, TransactionId OldestXmin,
 				 ZPruneState * prstate);
@@ -172,7 +170,7 @@ zheap_page_prune_opt(Relation relation, Buffer buffer)
 	if (!ZPageIsPrunable(page))
 		return;
 
-	(void) zheap_page_prune_guts(relation, buffer, OldestXmin, &ignore);
+	(void) zheap_page_prune_guts(relation, buffer, OldestXmin, true, &ignore);
 }
 
 /*
@@ -183,14 +181,17 @@ zheap_page_prune_opt(Relation relation, Buffer buffer)
  * OldestXmin is the cutoff XID used to distinguish whether tuples are DEAD
  * or RECENTLY_DEAD (see ZHeapTupleSatisfiesVacuum).
  *
- * Send the number of reclaimed tuples to pgstats.
+ * If report_stats is true then we send the number of reclaimed tuples to
+ * pgstats.  (This must be false during vacuum, since vacuum will send its own
+ * own new total to pgstats, and we don't want this delta applied on top of
+ * that.)
  *
  * Returns the number of tuples deleted from the page and sets
  * latestRemovedXid.
  */
-static int
+int
 zheap_page_prune_guts(Relation relation, Buffer buffer, TransactionId OldestXmin,
-					  TransactionId *latestRemovedXid)
+					  bool report_stats, TransactionId *latestRemovedXid)
 {
 	int			ndeleted = 0;
 	Page		page = BufferGetPage(buffer);
@@ -232,7 +233,7 @@ zheap_page_prune_guts(Relation relation, Buffer buffer, TransactionId OldestXmin
 			ItemIdIsDeleted(itemid))
 			continue;
 
-		/* Process this item or chain of items */
+		/* Process this item */
 		ndeleted += zheap_prune_item(relation, buffer, offnum,
 									 OldestXmin,
 									 &prstate);
@@ -273,37 +274,14 @@ zheap_page_prune_guts(Relation relation, Buffer buffer, TransactionId OldestXmin
 		 */
 		if (RelationNeedsWAL(relation))
 		{
-			XLogRecPtr      recptr;
-			xl_zheap_clean	xl_rec;
+			XLogRecPtr	recptr;
 
-			xl_rec.latestRemovedXid = prstate.latestRemovedXid;
-			xl_rec.ndeleted = prstate.ndeleted;
-			xl_rec.ndead = prstate.ndead;
-			XLogBeginInsert();
-			XLogRegisterData((char *) &xl_rec, SizeOfZHeapClean);
-			XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+			recptr = log_zheap_clean(relation, buffer,
+									 prstate.nowdeleted, prstate.ndeleted,
+									 prstate.nowdead, prstate.ndead,
+									 prstate.nowunused, prstate.nunused,
+									 prstate.latestRemovedXid);
 
-			/*
-			 * The OffsetNumber arrays are not actually in the buffer, but we pretend
-			 * that they are.  When XLogInsert stores the whole buffer, the offset
-			 * arrays need not be stored too.  Note that even if all three arrays are
-			 * empty, we want to expose the buffer as a candidate for whole-page
-			 * storage, since this record type implies a defragmentation operation
-			 * even if no item pointers changed state.
-			 */
-			if (prstate.ndeleted > 0)
-				XLogRegisterBufData(0, (char *) prstate.nowdeleted,
-							prstate.ndeleted * sizeof(OffsetNumber) * 2);
-
-			if (prstate.ndead > 0)
-				XLogRegisterBufData(0, (char *) prstate.nowdead,
-							prstate.ndead * sizeof(OffsetNumber));
-
-			if (prstate.nunused > 0)
-				XLogRegisterBufData(0, (char *) prstate.nowunused,
-							prstate.nunused * sizeof(OffsetNumber));
-
-			recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_CLEAN);
 			PageSetLSN(BufferGetPage(buffer), recptr);
 		}
 	}
@@ -334,7 +312,7 @@ zheap_page_prune_guts(Relation relation, Buffer buffer, TransactionId OldestXmin
 	 * minus ndead, because we don't want to count a now-DEAD item or a
 	 * now-DELETED item as a deletion for this purpose.
 	 */
-	if (ndeleted > (prstate.ndead + prstate.ndeleted))
+	if (report_stats && ndeleted > (prstate.ndead + prstate.ndeleted))
 		pgstat_update_heap_dead_tuples(relation, ndeleted - (prstate.ndead + prstate.ndeleted));
 
 	*latestRemovedXid = prstate.latestRemovedXid;
@@ -417,7 +395,7 @@ zheap_page_prune_execute(Buffer buffer, OffsetNumber *deleted, int ndeleted,
 	 * Finally, repair any fragmentation, and update the page's hint bit about
 	 * whether it has free pointers.
 	 */
-	PageRepairFragmentation(page);
+	ZPageRepairFragmentation(page);
 }
 
 /*
@@ -547,4 +525,58 @@ zheap_prune_record_deleted(ZPruneState * prstate, OffsetNumber offnum)
 	prstate->ndeleted++;
 	Assert(!prstate->marked[offnum]);
 	prstate->marked[offnum] = true;
+}
+
+/*
+ * log_zheap_clean - Perform XLogInsert for a zheap-clean operation.
+ *
+ * Caller must already have modified the buffer and marked it dirty.
+ *
+ * We also include latestRemovedXid, which is the greatest XID present in
+ * the removed tuples. That allows recovery processing to cancel or wait
+ * for long standby queries that can still see these tuples.
+ */
+XLogRecPtr
+log_zheap_clean(Relation reln, Buffer buffer,
+				OffsetNumber *nowdeleted, int ndeleted,
+				OffsetNumber *nowdead, int ndead,
+				OffsetNumber *nowunused, int nunused,
+				TransactionId latestRemovedXid)
+{
+	XLogRecPtr      recptr;
+	xl_zheap_clean	xl_rec;
+
+	/* Caller should not call me on a non-WAL-logged relation */
+	Assert(RelationNeedsWAL(reln));
+
+	xl_rec.latestRemovedXid = latestRemovedXid;
+	xl_rec.ndeleted = ndeleted;
+	xl_rec.ndead = ndead;
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xl_rec, SizeOfZHeapClean);
+	XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+
+	/*
+	 * The OffsetNumber arrays are not actually in the buffer, but we pretend
+	 * that they are.  When XLogInsert stores the whole buffer, the offset
+	 * arrays need not be stored too.  Note that even if all three arrays are
+	 * empty, we want to expose the buffer as a candidate for whole-page
+	 * storage, since this record type implies a defragmentation operation
+	 * even if no item pointers changed state.
+	 */
+	if (ndeleted > 0)
+		XLogRegisterBufData(0, (char *) nowdeleted,
+					ndeleted * sizeof(OffsetNumber) * 2);
+
+	if (ndead > 0)
+		XLogRegisterBufData(0, (char *) nowdead,
+					ndead * sizeof(OffsetNumber));
+
+	if (nunused > 0)
+		XLogRegisterBufData(0, (char *) nowunused,
+					nunused * sizeof(OffsetNumber));
+
+	recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_CLEAN);
+
+	return recptr;
 }

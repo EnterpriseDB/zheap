@@ -462,6 +462,30 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 				break;
 			case UNDO_XID_MULTI_LOCK_ONLY:
 				break;
+			case UNDO_ITEMID_UNUSED:
+				{
+					int item_count, i;
+					OffsetNumber *unused;
+
+					unused = ((OffsetNumber *) uur->uur_payload.data);
+					item_count = (uur->uur_payload.len / sizeof(OffsetNumber));
+
+					/*
+					 * We need to preserve all the unused items in heap so
+					 * that they can't be reused till the corresponding index
+					 * entries are removed.  So, marking them dead is
+					 * a sufficient indication for the index to remove the
+					 * entry in index.
+					 */
+					for (i = 0; i < item_count; i++)
+					{
+						ItemId		itemid;
+
+						itemid = PageGetItemId(page, unused[i]);
+						ItemIdSetDead(itemid);
+					}
+				}
+				break;
 			default:
 				elog(ERROR, "unsupported undo record type");
 		}

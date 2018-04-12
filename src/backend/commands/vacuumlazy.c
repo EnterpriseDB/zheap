@@ -44,6 +44,7 @@
 #include "access/transam.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
+#include "access/zhtup.h"
 #include "catalog/storage.h"
 #include "commands/dbcommands.h"
 #include "commands/progress.h"
@@ -111,35 +112,6 @@
  */
 #define PREFETCH_SIZE			((BlockNumber) 32)
 
-typedef struct LVRelStats
-{
-	/* hasindex = true means two-pass strategy; false means one-pass */
-	bool		hasindex;
-	/* Overall statistics about rel */
-	BlockNumber old_rel_pages;	/* previous value of pg_class.relpages */
-	BlockNumber rel_pages;		/* total number of pages */
-	BlockNumber scanned_pages;	/* number of pages we examined */
-	BlockNumber pinskipped_pages;	/* # of pages we skipped due to a pin */
-	BlockNumber frozenskipped_pages;	/* # of frozen pages we skipped */
-	BlockNumber tupcount_pages; /* pages whose tuples we counted */
-	double		old_live_tuples;	/* previous value of pg_class.reltuples */
-	double		new_rel_tuples; /* new estimated total # of tuples */
-	double		new_live_tuples;	/* new estimated total # of live tuples */
-	double		new_dead_tuples;	/* new estimated total # of dead tuples */
-	BlockNumber pages_removed;
-	double		tuples_deleted;
-	BlockNumber nonempty_pages; /* actually, last nonempty page + 1 */
-	/* List of TIDs of tuples we intend to delete */
-	/* NB: this list is ordered by TID address */
-	int			num_dead_tuples;	/* current # of entries */
-	int			max_dead_tuples;	/* # slots allocated in array */
-	ItemPointer dead_tuples;	/* array of ItemPointerData */
-	int			num_index_scans;
-	TransactionId latestRemovedXid;
-	bool		lock_waiter_detected;
-} LVRelStats;
-
-
 /* A few variables that don't seem worth passing around as parameters */
 static int	elevel = -1;
 
@@ -156,21 +128,11 @@ static void lazy_scan_heap(Relation onerel, int options,
 			   bool aggressive);
 static void lazy_vacuum_heap(Relation onerel, LVRelStats *vacrelstats);
 static bool lazy_check_needs_freeze(Buffer buf, bool *hastup);
-static void lazy_vacuum_index(Relation indrel,
-				  IndexBulkDeleteResult **stats,
-				  LVRelStats *vacrelstats);
-static void lazy_cleanup_index(Relation indrel,
-				   IndexBulkDeleteResult *stats,
-				   LVRelStats *vacrelstats);
 static int lazy_vacuum_page(Relation onerel, BlockNumber blkno, Buffer buffer,
 				 int tupindex, LVRelStats *vacrelstats, Buffer *vmbuffer);
-static bool should_attempt_truncation(LVRelStats *vacrelstats);
-static void lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats);
 static BlockNumber count_nondeletable_pages(Relation onerel,
 						 LVRelStats *vacrelstats);
 static void lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks);
-static void lazy_record_dead_tuple(LVRelStats *vacrelstats,
-					   ItemPointer itemptr);
 static bool lazy_tid_reaped(ItemPointer itemptr, void *state);
 static int	vac_cmp_itemptr(const void *left, const void *right);
 static bool heap_page_is_all_visible(Relation rel, Buffer buf,
@@ -1688,7 +1650,7 @@ lazy_check_needs_freeze(Buffer buf, bool *hastup)
  *		Delete all the index entries pointing to tuples listed in
  *		vacrelstats->dead_tuples, and update running statistics.
  */
-static void
+void
 lazy_vacuum_index(Relation indrel,
 				  IndexBulkDeleteResult **stats,
 				  LVRelStats *vacrelstats)
@@ -1720,7 +1682,7 @@ lazy_vacuum_index(Relation indrel,
 /*
  *	lazy_cleanup_index() -- do post-vacuum cleanup for one index relation.
  */
-static void
+void
 lazy_cleanup_index(Relation indrel,
 				   IndexBulkDeleteResult *stats,
 				   LVRelStats *vacrelstats)
@@ -1796,7 +1758,7 @@ lazy_cleanup_index(Relation indrel,
  * called for before we actually do it.  If you change the logic here, be
  * careful to depend only on fields that lazy_scan_heap updates on-the-fly.
  */
-static bool
+bool
 should_attempt_truncation(LVRelStats *vacrelstats)
 {
 	BlockNumber possibly_freeable;
@@ -1814,7 +1776,7 @@ should_attempt_truncation(LVRelStats *vacrelstats)
 /*
  * lazy_truncate_heap - try to truncate off any empty pages at the end
  */
-static void
+void
 lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats)
 {
 	BlockNumber old_rel_pages = vacrelstats->rel_pages;
@@ -2056,6 +2018,17 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats)
 			 * this page.  We formerly thought that DEAD tuples could be
 			 * thrown away, but that's not so, because we'd not have cleaned
 			 * out their index entries.
+			 *
+			 * XXX - This function is used by both heap and zheap and the
+			 * behavior must be same in both the cases.  However, for zheap,
+			 * there could be some unused items that contain pending xact
+			 * information for the current transaction.  It is okay to
+			 * truncate such pages as even if the transaction rolled back
+			 * after this point, we won't be reclaiming the truncated pages
+			 * or making the unused items back to dead.  We can add Assert
+			 * to check if the pending xact is the current transaction, but to
+			 * do that we need some storage engine specific check which seems
+			 * too much for the purpose for which it is required.
 			 */
 			if (ItemIdIsUsed(itemid))
 			{
@@ -2119,7 +2092,7 @@ lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks)
 /*
  * lazy_record_dead_tuple - remember one deletable tuple
  */
-static void
+void
 lazy_record_dead_tuple(LVRelStats *vacrelstats,
 					   ItemPointer itemptr)
 {

@@ -31,6 +31,7 @@
 
 #include "access/htup_details.h"
 #include "access/multixact.h"
+#include "access/reloptions.h"
 #include "access/sysattr.h"
 #include "access/transam.h"
 #include "access/xact.h"
@@ -922,6 +923,7 @@ AddNewRelationTuple(Relation pg_class_desc,
 					Datum reloptions)
 {
 	Form_pg_class new_rel_reltup;
+	StdRdOptions *rdopts;
 
 	/*
 	 * first we update some of the information in our uncataloged relation's
@@ -954,10 +956,16 @@ AddNewRelationTuple(Relation pg_class_desc,
 			break;
 	}
 
-	/* Initialize relfrozenxid and relminmxid */
-	if (relkind == RELKIND_RELATION ||
-		relkind == RELKIND_MATVIEW ||
-		relkind == RELKIND_TOASTVALUE)
+	rdopts = (StdRdOptions *) heap_reloptions(relkind, reloptions, false);
+
+	/*
+	 * Initialize relfrozenxid and relminmxid.  The relations stored in zheap
+	 * doesn't need to perform freeze.
+	 */
+	if ((relkind == RELKIND_RELATION ||
+		 relkind == RELKIND_MATVIEW ||
+		 relkind == RELKIND_TOASTVALUE) &&
+		(!RelationStorageOptIsZHeap(relkind, rdopts)))
 	{
 		/*
 		 * Initialize to the minimum XID that could put tuples in the table.

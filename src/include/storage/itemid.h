@@ -46,6 +46,8 @@ typedef ItemIdData *ItemId;
  */
 #define ITEMID_DELETED	0x0001	/* Item is deleted */
 #define	ITEMID_XACT_INVALID	0x0002	/* transaction slot on tuple got reused */
+#define	ITEMID_XACT_PENDING	0x0003	/* transaction that has marked item as
+									 * unused is pending */
 #define VISIBILTY_MASK	0x007F	/* 7 bits (1..7) for visibility mask */
 #define XACT_SLOT		0x7F80	/* 8 bits (8..15) of offset for transaction slot */
 #define XACT_SLOT_MASK	0x0007	/* 7 - mask to retrieve transaction slot */
@@ -188,6 +190,23 @@ typedef uint16 ItemLength;
 )
 
 /*
+ * ItemIdSetUnusedExtended
+ *		Set the item identifier to be UNUSED, with transaction slot
+ *		information.  The most significant 8 bits in offset are used to store
+ *		transaction slot information.  Such an item doesn't have any storage.
+ *		We don't allow such an item to be reused till the transaction that has
+ *		marked it as UNUSED is committed. Beware of multiple evaluations of
+ *		itemId!
+ */
+#define ItemIdSetUnusedExtended(itemId, trans_slot) \
+( \
+	(itemId)->lp_flags = LP_UNUSED, \
+	(itemId)->lp_off = ((itemId)->lp_off & ~VISIBILTY_MASK) | ITEMID_XACT_PENDING, \
+	(itemId)->lp_off = ((itemId)->lp_off & ~XACT_SLOT) | trans_slot << XACT_SLOT_MASK, \
+	(itemId)->lp_len = 0 \
+)
+
+/*
  * ItemIdSetDeleted
  *		Set the item identifier to be Deleted, with the specified visibility
  *		info and transaction slot info.  The most significant 8 bits are used
@@ -224,6 +243,9 @@ typedef uint16 ItemLength;
  */
 #define ItemIdGetVisibilityInfo(itemId) \
    ((itemId)->lp_off & VISIBILTY_MASK)
+
+#define ItemIdHasPendingXact(itemId) \
+   (((itemId)->lp_off & VISIBILTY_MASK) & ITEMID_XACT_PENDING)
 
 /*
  * ItemIdSetDead

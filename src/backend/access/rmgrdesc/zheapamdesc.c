@@ -82,7 +82,7 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 		xl_undo_header *xlundohdr = (xl_undo_header *) rec;
 		xl_zheap_lock *xlrec = (xl_zheap_lock *) ((char *) xlundohdr + SizeOfUndoHeader);
 
-		appendStringInfo(buf, "off %u, xid %u, trans_slot_id %u ",
+		appendStringInfo(buf, "off %u, xid %u, trans_slot_id %u",
 						 xlrec->offnum, xlrec->prev_xid, xlrec->trans_slot_id);
 	}
 }
@@ -99,6 +99,15 @@ zheap2_desc(StringInfo buf, XLogReaderState *record)
 		xl_zheap_confirm *xlrec = (xl_zheap_confirm *) rec;
 
 		appendStringInfo(buf, "off %u: flags %u", xlrec->offnum, xlrec->flags);
+	}
+	else if (info == XLOG_ZHEAP_UNUSED)
+	{
+		xl_undo_header *xlundohdr = (xl_undo_header *) rec;
+		xl_zheap_unused *xlrec = (xl_zheap_unused *) ((char *) xlundohdr + SizeOfUndoHeader);
+
+		appendStringInfo(buf, "remxid %u, trans_slot_id %u, blkprev %lu",
+						 xlrec->latestRemovedXid, xlrec->trans_slot_id,
+						 xlundohdr->blkprev);
 	}
 }
 
@@ -156,6 +165,9 @@ zheap2_identify(uint8 info)
 	{
 		case XLOG_ZHEAP_CONFIRM:
 			id = "CONFIRM";
+			break;
+		case XLOG_ZHEAP_UNUSED:
+			id = "UNUSED";
 			break;
 	}
 

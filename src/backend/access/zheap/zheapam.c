@@ -90,10 +90,7 @@ zheap_beginscan_internal(Relation relation, Snapshot snapshot,
 						 bool is_samplescan,
 						 bool temp_snap);
 
-static int PageReserveTransactionSlot(Relation relation, Buffer buf,
-						uint32 epoch, TransactionId xid);
 static bool PageFreezeTransSlots(Relation relation, Buffer buf);
-static inline UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
 static void RelationPutZHeapTuple(Relation relation, Buffer buffer,
 								  ZHeapTuple tuple);
 static XLogRecPtr log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
@@ -2459,7 +2456,12 @@ reacquire_buffer:
 	if (have_tuple_lock)
 		UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 
-	pgstat_count_heap_update(relation, use_inplace_update);
+	/*
+	 * As of now, we only count non-inplace updates as that are required to
+	 * decide whether to trigger autovacuum.
+	 */
+	if (!use_inplace_update)
+		pgstat_count_heap_update(relation, false);
 
 	data_alignment_zheap = 1;
 
@@ -4915,21 +4917,6 @@ ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
  */
 
 /*
- * PageGetUNDO - Get the undo record pointer for a given transaction slot.
- */
-static inline UndoRecPtr
-PageGetUNDO(Page page, int trans_slot_id)
-{
-	ZHeapPageOpaque	opaque;
-
-	Assert(trans_slot_id != InvalidXactSlotId);
-
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-
-	return opaque->transinfo[trans_slot_id].urec_ptr;
-}
-
-/*
  * PageSetUNDO - Set the transaction information pointer for a given
  *		transaction slot.
  */
@@ -4981,7 +4968,7 @@ PageGetTransactionSlot(Buffer buf, uint32 epoch, TransactionId xid)
  *	has some slot that contains the transaction info or there is an empty
  *	slot or it manages to reuse some existing slot; otherwise retruns false.
  */
-static int
+int
 PageReserveTransactionSlot(Relation relation, Buffer buf, uint32 epoch,
 						   TransactionId xid)
 {
@@ -5051,11 +5038,19 @@ zheap_freeze_or_invalidate_tuples(Page page, int nSlots, int *slots,
 
 		itemid = PageGetItemId(page, offnum);
 
-		if (!ItemIdIsUsed(itemid) || ItemIdIsDead(itemid))
+		if (ItemIdIsDead(itemid))
 			continue;
 
-		if (ItemIdIsDeleted(itemid))
+		if (!ItemIdIsUsed(itemid))
+		{
+			if (!ItemIdHasPendingXact(itemid))
+				continue;
 			trans_slot = ItemIdGetTransactionSlot(itemid);
+		}
+		else if (ItemIdIsDeleted(itemid))
+		{
+			trans_slot = ItemIdGetTransactionSlot(itemid);
+		}
 		else
 		{
 			tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
@@ -5072,19 +5067,51 @@ zheap_freeze_or_invalidate_tuples(Page page, int nSlots, int *slots,
 				 */
 				if (isFrozen)
 				{
-					if (ItemIdIsDeleted(itemid))
+					if (!ItemIdIsUsed(itemid))
+					{
+						/* This must be unused entry which has xact information. */
+						Assert(ItemIdHasPendingXact(itemid));
+
+						/*
+						 * The pending xact must be commited if the corresponding
+						 * slot is being marked as frozen.  So, clear the pending
+						 * xact and transaction slot information from itemid.
+						 */
+						ItemIdSetUnused(itemid);
+					}
+					else if (ItemIdIsDeleted(itemid))
+					{
+						/*
+						 * The deleted item must not be visible to anyone if the
+						 * corresponding slot is being marked as frozen.  So,
+						 * marking it as dead.
+						 */
 						ItemIdSetDead(itemid);
+					}
 					else
 						ZHeapTupleHeaderSetXactSlot(tup_hdr, ZHTUP_SLOT_FROZEN);
 				}
-				/*
-				 * we just append the invalid xact flag in the tuple/itemid to
-				 * indicate that for this tuple/itemid we need to fetch the
-				 * transaction information from undo record.
-				 */
 				else
 				{
-					if (ItemIdIsDeleted(itemid))
+					/*
+					 * We just append the invalid xact flag in the tuple/itemid to
+					 * indicate that for this tuple/itemid we need to fetch the
+					 * transaction information from undo record.  Also, we
+					 * ensure to clear the transaction information from unused
+					 * itemid.
+					 */
+					if (!ItemIdIsUsed(itemid))
+					{
+						/* This must be unused entry which has xact information. */
+						Assert(ItemIdHasPendingXact(itemid));
+
+						/*
+						 * The pending xact is commited.  So, clear the pending xact
+						 * and transaction slot information from itemid.
+						 */
+						ItemIdSetUnused(itemid);
+					}
+					else if (ItemIdIsDeleted(itemid))
 						ItemIdSetInvalidXact(itemid);
 					else
 						tup_hdr->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
@@ -5123,10 +5150,16 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 
 		itemid = PageGetItemId(page, offnum);
 
-		if (!ItemIdIsUsed(itemid) || ItemIdIsDead(itemid))
+		if (ItemIdIsDead(itemid))
 			continue;
 
-		if (ItemIdIsDeleted(itemid))
+		if (!ItemIdIsUsed(itemid))
+		{
+			if (!ItemIdHasPendingXact(itemid))
+				continue;
+			trans_slot = ItemIdGetTransactionSlot(itemid);
+		}
+		else if (ItemIdIsDeleted(itemid))
 		{
 			if ((ItemIdGetVisibilityInfo(itemid) & ITEMID_XACT_INVALID))
 				continue;
@@ -7245,7 +7278,9 @@ ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
  * ZPageAddItemExtended - Add an item to a zheap page.
  *
  *	This is similar to PageAddItemExtended except for max tuples that can
- *	be accomodated on a page and alignment for each item.
+ *	be accomodated on a page and alignment for each item.  It also
+ *	additionally handles the itemids that are marked as unused, but still
+ *	can't be reused.
  */
 OffsetNumber
 ZPageAddItemExtended(Page page,
@@ -7307,6 +7342,8 @@ ZPageAddItemExtended(Page page,
 		/* if no free slot, we'll put it at limit (1st open slot) */
 		if (PageHasFreeLinePointers(phdr))
 		{
+			bool	hasPendingXact = false;
+
 			/*
 			 * Look for "recyclable" (unused) ItemId.  We check for no storage
 			 * as well, just to be paranoid --- unused items should never have
@@ -7316,9 +7353,37 @@ ZPageAddItemExtended(Page page,
 			{
 				itemId = PageGetItemId(phdr, offsetNumber);
 				if (!ItemIdIsUsed(itemId) && !ItemIdHasStorage(itemId))
+				{
+					/*
+					 * We allow Unused entries to be reused only if there is no
+					 * transaction information for the entry or the transaction
+					 * is committed.
+					 */
+					if (ItemIdHasPendingXact(itemId))
+					{
+						TransactionId	xid;
+						ZHeapPageOpaque	opaque;
+
+						opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+						/*
+						 * Here, we are relying on the transaction information in
+						 * slot as if the corresponding slot has been reused, then
+						 * transaction information from the entry would have been
+						 * cleared.  See PageFreezeTransSlots.
+						 */
+						xid = ZHeapPageGetRawXid(ItemIdGetTransactionSlot(itemId), opaque);
+						if (TransactionIdIsValid(xid) &&
+							!TransactionIdDidCommit(xid))
+						{
+							hasPendingXact = true;
+							continue;
+						}
+					}
 					break;
+				}
 			}
-			if (offsetNumber >= limit)
+			if (offsetNumber >= limit && !hasPendingXact)
 			{
 				/* the hint is wrong, so reset it */
 				PageClearHasFreeLinePointers(phdr);
@@ -7409,8 +7474,8 @@ ZPageAddItemExtended(Page page,
  *		Returns the size of the free (allocatable) space on a zheap page,
  *		reduced by the space needed for a new line pointer.
  *
- * This is same as PageGetZHeapFreeSpace except for max tuples that can
- * be accomodated on a page.
+ * This is same as PageGetHeapFreeSpace except for max tuples that can
+ * be accomodated on a page or the way unused items are dealt.
  */
 Size
 PageGetZHeapFreeSpace(Page page)
@@ -7436,7 +7501,11 @@ PageGetZHeapFreeSpace(Page page)
 				{
 					ItemId		lp = PageGetItemId(page, offnum);
 
-					if (!ItemIdIsUsed(lp))
+					/*
+					 * The unused items that have pending xact information
+					 * can't be reused.
+					 */
+					if (!ItemIdIsUsed(lp) && !ItemIdHasPendingXact(lp))
 						break;
 				}
 
@@ -8202,6 +8271,15 @@ ZHeapSatisfyUndoRecord(UnpackedUndoRecord* urec, BlockNumber blkno,
 
 				if (offset >= start_offset && offset <= end_offset)
 					return true;
+			}
+			break;
+		case UNDO_ITEMID_UNUSED:
+			{
+				/*
+				 * We don't expect to check the visibility of any unused item,
+				 * but the undo record of same can be present in chain which
+				 * we need to ignore.
+				 */
 			}
 			break;
 		default:

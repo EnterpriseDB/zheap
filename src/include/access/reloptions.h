@@ -245,6 +245,16 @@ typedef struct
 	((optstruct)->member == 0 ? NULL : \
 	 (char *)(optstruct) + (optstruct)->member)
 
+#define RelationStorageOptIsZHeap(relkind, rd_options) \
+	(rd_options &&	\
+	(relkind == RELKIND_RELATION ||	\
+	 relkind == RELKIND_MATVIEW ||	\
+	 relkind == RELKIND_PARTITIONED_TABLE ||	\
+	 relkind == RELKIND_TOASTVALUE) && \
+	((StdRdOptions *) rd_options)->relstorage_offset != 0 ?	\
+		 pg_strcasecmp((char *) rd_options +								\
+			((StdRdOptions *) rd_options)->relstorage_offset, \
+			RELSTORAGE_ZHEAP) == 0 : false) \
 
 extern relopt_kind add_reloption_kind(void);
 extern void add_bool_reloption(bits32 kinds, const char *name, const char *desc,

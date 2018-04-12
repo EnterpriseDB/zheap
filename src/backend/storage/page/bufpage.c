@@ -26,7 +26,6 @@
 
 /* GUC variable */
 bool		ignore_checksum_failure = false;
-#define	MaxTuplesPerPage Max(MaxHeapTuplesPerPage, MaxZHeapTuplesPerPageAlign0)
 
 
 /* ----------------------------------------------------------------
@@ -484,7 +483,7 @@ PageRepairFragmentation(Page page)
 	Offset		pd_lower = ((PageHeader) page)->pd_lower;
 	Offset		pd_upper = ((PageHeader) page)->pd_upper;
 	Offset		pd_special = ((PageHeader) page)->pd_special;
-	itemIdSortData itemidbase[MaxTuplesPerPage];
+	itemIdSortData itemidbase[MaxHeapTuplesPerPage];
 	itemIdSort	itemidptr;
 	ItemId		lp;
 	int			nline,
@@ -541,6 +540,163 @@ PageRepairFragmentation(Page page)
 			/* Unused entries should have lp_len = 0, but make sure */
 			ItemIdSetUnused(lp);
 			nunused++;
+		}
+	}
+
+	nstorage = itemidptr - itemidbase;
+	if (nstorage == 0)
+	{
+		/* Page is completely empty, so just reset it quickly */
+		((PageHeader) page)->pd_upper = pd_special;
+	}
+	else
+	{
+		/* Need to compact the page the hard way */
+		if (totallen > (Size) (pd_special - pd_lower))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("corrupted item lengths: total %u, available space %u",
+							(unsigned int) totallen, pd_special - pd_lower)));
+
+		compactify_tuples(itemidbase, nstorage, page);
+	}
+
+	/* Set hint bit for PageAddItem */
+	if (nunused > 0)
+		PageSetHasFreeLinePointers(page);
+	else
+		PageClearHasFreeLinePointers(page);
+}
+
+/*
+ * ZPageRepairFragmentation
+ *
+ * Frees fragmented space on a page.
+ *
+ * The basic idea is same as PageRepairFragmentation, but here we additionally
+ * deal with unused items that can't be immediately reclaimed.
+ */
+void
+ZPageRepairFragmentation(Page page)
+{
+	Offset		pd_lower = ((PageHeader) page)->pd_lower;
+	Offset		pd_upper = ((PageHeader) page)->pd_upper;
+	Offset		pd_special = ((PageHeader) page)->pd_special;
+	itemIdSortData itemidbase[MaxZHeapTuplesPerPageAlign0];
+	itemIdSort	itemidptr;
+	ItemId		lp;
+	int			nline,
+				nstorage,
+				nunused;
+	int			i;
+	Size		totallen;
+
+	/*
+	 * It's worth the trouble to be more paranoid here than in most places,
+	 * because we are about to reshuffle data in (what is usually) a shared
+	 * disk buffer.  If we aren't careful then corrupted pointers, lengths,
+	 * etc could cause us to clobber adjacent disk buffers, spreading the data
+	 * loss further.  So, check everything.
+	 */
+	if (pd_lower < SizeOfPageHeaderData ||
+		pd_lower > pd_upper ||
+		pd_upper > pd_special ||
+		pd_special > BLCKSZ ||
+		pd_special != MAXALIGN(pd_special))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("corrupted page pointers: lower = %u, upper = %u, special = %u",
+						pd_lower, pd_upper, pd_special)));
+
+	nline = PageGetMaxOffsetNumber(page);
+
+	/*
+	 * If there are any tuples which are inplace updated or deleted by any
+	 * open transactions we shall not compactify the page contents, otherwise,
+	 * rollback of those transactions will not be possible.
+	 */
+	for (i = FirstOffsetNumber; i <= nline; i++)
+	{
+		lp = PageGetItemId(page, i);
+		if (ItemIdIsUsed(lp) && ItemIdHasStorage(lp))
+		{
+			ZHeapTupleHeader tup;
+
+			tup = (ZHeapTupleHeader) PageGetItem(page, lp);
+
+			if (!(tup->t_infomask & ZHEAP_DELETED ||
+				  tup->t_infomask & ZHEAP_INPLACE_UPDATED))
+				continue;
+
+			if (!ZHeapTupleHasInvalidXact(tup->t_infomask))
+			{
+				ZHeapPageOpaque opaque;
+				int			trans_slot;
+				trans_slot = ZHeapTupleHeaderGetXactSlot(tup);
+				if (trans_slot == ZHTUP_SLOT_FROZEN)
+					continue;
+
+				opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+				if (TransactionIdIsInProgress(opaque->transinfo[trans_slot].xid))
+					return;
+			}
+		}
+	}
+
+	/*
+	 * Run through the line pointer array and collect data about live items.
+	 */
+	itemidptr = itemidbase;
+	nunused = totallen = 0;
+	for (i = FirstOffsetNumber; i <= nline; i++)
+	{
+		lp = PageGetItemId(page, i);
+		if (ItemIdIsUsed(lp))
+		{
+			if (ItemIdHasStorage(lp))
+			{
+				itemidptr->offsetindex = i - 1;
+				itemidptr->itemoff = ItemIdGetOffset(lp);
+				if (unlikely(itemidptr->itemoff < (int) pd_upper ||
+							 itemidptr->itemoff >= (int) pd_special))
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("corrupted item pointer: %u",
+									itemidptr->itemoff)));
+				itemidptr->alignedlen = MAXALIGN(ItemIdGetLength(lp));
+				totallen += itemidptr->alignedlen;
+				itemidptr++;
+			}
+		}
+		else
+		{
+			nunused++;
+
+			/*
+			 * We allow Unused entries to be reused only if there is no
+			 * transaction information for the entry or the transaction
+			 * is committed.
+			 */
+			if (ItemIdHasPendingXact(lp))
+			{
+				TransactionId	xid;
+				ZHeapPageOpaque	opaque;
+
+				opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+				/*
+				 * Here, we are relying on the transaction information in
+				 * slot as if the corresponding slot has been reused, then
+				 * transaction information from the entry would have been
+				 * cleared.  See PageFreezeTransSlots.
+				 */
+				xid = ZHeapPageGetRawXid(ItemIdGetTransactionSlot(lp), opaque);
+				if (!TransactionIdDidCommit(xid))
+					continue;
+			}
+
+			/* Unused entries should have lp_len = 0, but make sure */
+			ItemIdSetUnused(lp);
 		}
 	}
 

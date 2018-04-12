@@ -28,6 +28,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
+#include "access/reloptions.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "catalog/namespace.h"
@@ -1259,14 +1260,30 @@ vac_update_datfrozenxid(void)
 	while ((classTup = systable_getnext(scan)) != NULL)
 	{
 		Form_pg_class classForm = (Form_pg_class) GETSTRUCT(classTup);
+		StdRdOptions *rdopts;
+		Datum	datum;
+		bool	isnull;
+		bool	storage_is_zheap = false;
+
+		datum = SysCacheGetAttr(RELOID, classTup, Anum_pg_class_reloptions,
+								&isnull);
+
+		if (!isnull)
+		{
+			rdopts = (StdRdOptions *) heap_reloptions(classForm->relkind,
+										datum, false);
+			storage_is_zheap = RelationStorageOptIsZHeap(classForm->relkind,
+														 rdopts);
+		}
 
 		/*
 		 * Only consider relations able to hold unfrozen XIDs (anything else
 		 * should have InvalidTransactionId in relfrozenxid anyway.)
 		 */
-		if (classForm->relkind != RELKIND_RELATION &&
-			classForm->relkind != RELKIND_MATVIEW &&
-			classForm->relkind != RELKIND_TOASTVALUE)
+		if ((classForm->relkind != RELKIND_RELATION &&
+			 classForm->relkind != RELKIND_MATVIEW &&
+			 classForm->relkind != RELKIND_TOASTVALUE) ||
+			storage_is_zheap)
 			continue;
 
 		Assert(TransactionIdIsNormal(classForm->relfrozenxid));
@@ -1671,22 +1688,6 @@ vacuum_rel(Oid relid, RangeVar *relation, int options, VacuumParams *params)
 	}
 
 	/*
-	 * Check if it's a zheap relation. We don't support vacuum for zheap
-	 * relations.
-	 */
-	if (RelationStorageIsZHeap(onerel))
-	{
-		relation_close(onerel, lmode);
-		PopActiveSnapshot();
-		CommitTransactionCommand();
-		ereport(LOG,
-				(errmsg("skipping \"%s\" --- cannot vacuum zheap tables",
-						RelationGetRelationName(onerel))));
-
-		/* But, return true so that ANALYZE can go ahead */
-		return true;
-	}
-	/*
 	 * Get a session-level lock too. This will protect our access to the
 	 * relation across multiple transactions, so that we can vacuum the
 	 * relation's TOAST table (if any) secure in the knowledge that no one is
@@ -1738,7 +1739,12 @@ vacuum_rel(Oid relid, RangeVar *relation, int options, VacuumParams *params)
 		cluster_rel(relid, InvalidOid, cluster_options);
 	}
 	else
-		lazy_vacuum_rel(onerel, options, params, vac_strategy);
+	{
+		if (RelationStorageIsZHeap(onerel))
+			lazy_vacuum_zheap_rel(onerel, options, params, vac_strategy);
+		else
+			lazy_vacuum_rel(onerel, options, params, vac_strategy);
+	}
 
 	/* Roll back any GUC changes executed by index functions */
 	AtEOXact_GUC(false, save_nestlevel);

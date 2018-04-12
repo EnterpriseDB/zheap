@@ -1317,6 +1317,117 @@ zheap_xlog_confirm(XLogReaderState *record)
 		UnlockReleaseBuffer(buffer);
 }
 
+/*
+ * Handles XLOG_ZHEAP_UNUSED record type
+ */
+static void
+zheap_xlog_unused(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_undo_header	*xlundohdr;
+	xl_zheap_unused *xlrec;
+	UnpackedUndoRecord	undorecord;
+	UndoRecPtr	urecptr;
+	TransactionId	xid = XLogRecGetXid(record);
+	uint16	i, uncnt;
+	Buffer		buffer;
+	OffsetNumber *unused;
+	Size		freespace = 0;
+	RelFileNode rnode;
+	BlockNumber blkno;
+	XLogRedoAction action;
+
+	xlundohdr = (xl_undo_header *) XLogRecGetData(record);
+	xlrec = (xl_zheap_unused *) ((char *) xlundohdr + SizeOfUndoHeader);
+	/* extract the information related to unused offsets */
+	unused = (OffsetNumber *) ((char *) xlrec + SizeOfZHeapUnused);
+	uncnt = xlrec->nunused;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+
+	/*
+	 * We're about to remove tuples. In Hot Standby mode, ensure that there's
+	 * no queries running for which the removed tuples are still visible.
+	 *
+	 * Not all ZHEAP_UNUSED records remove tuples with xids, so we only want to
+	 * conflict on the records that cause MVCC failures for user queries. If
+	 * latestRemovedXid is invalid, skip conflict processing.
+	 */
+	if (InHotStandby && TransactionIdIsValid(xlrec->latestRemovedXid))
+		ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid, rnode);
+
+	/* prepare an undo record */
+	undorecord.uur_type = UNDO_ITEMID_UNUSED;
+	undorecord.uur_info = 0;
+	undorecord.uur_prevlen = 0;
+	undorecord.uur_relfilenode = xlundohdr->relfilenode;
+	undorecord.uur_prevxid = xid;
+	undorecord.uur_xid = xid;
+	undorecord.uur_cid = FirstCommandId;
+	undorecord.uur_tsid = xlundohdr->tsid;
+	undorecord.uur_fork = MAIN_FORKNUM;
+	undorecord.uur_blkprev = xlundohdr->blkprev;
+	undorecord.uur_block = blkno;
+	undorecord.uur_offset = 0;
+	undorecord.uur_tuple.len = 0;
+	undorecord.uur_payload.len = uncnt * sizeof(OffsetNumber);
+	undorecord.uur_payload.data = 
+			(char *) palloc(uncnt * sizeof(OffsetNumber));
+	memcpy(undorecord.uur_payload.data,
+		   (char *) unused,
+		   undorecord.uur_payload.len);
+
+	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, xid);
+	InsertPreparedUndo();
+
+	/*
+	 * undo should be inserted at same location as it was during the actual
+	 * insert (DO operation).
+	 */
+	Assert (urecptr == xlundohdr->urec_ptr);
+
+	/*
+	 * If we have a full-page image, restore it (using a cleanup lock) and
+	 * we're done.
+	 */
+	action = XLogReadBufferForRedoExtended(record, 0, RBM_NORMAL, true,
+										   &buffer);
+	if (action == BLK_NEEDS_REDO)
+	{
+		Page		page = (Page) BufferGetPage(buffer);
+
+		Assert(uncnt >= 0);
+
+		for (i = 0; i < uncnt; i++)
+		{
+			ItemId		itemid;
+
+			itemid = PageGetItemId(page, unused[i]);
+			ItemIdSetUnusedExtended(itemid, xlrec->trans_slot_id);
+		}
+		ZPageRepairFragmentation(page);
+
+		freespace = PageGetZHeapFreeSpace(page); /* needed to update FSM below */
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+
+	UnlockReleaseUndoBuffers();
+
+	/*
+	 * Update the FSM as well.
+	 *
+	 * XXX: Don't do this if the page was restored from full page image. We
+	 * don't bother to update the FSM in that case, it doesn't need to be
+	 * totally accurate anyway.
+	 */
+	if (action == BLK_NEEDS_REDO)
+		XLogRecordPageWithFreeSpace(rnode, blkno, freespace);
+}
+
 void
 zheap_redo(XLogReaderState *record)
 {
@@ -1362,6 +1473,9 @@ zheap2_redo(XLogReaderState *record)
 	{
 		case XLOG_ZHEAP_CONFIRM:
 			zheap_xlog_confirm(record);
+			break;
+		case XLOG_ZHEAP_UNUSED:
+			zheap_xlog_unused(record);
 			break;
 		default:
 			elog(PANIC, "zheap2_redo: unknown op code %u", info);
