@@ -68,6 +68,10 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 							int tupindex, LVRelStats *vacrelstats);
 static void
 lazy_space_zalloc(LVRelStats *vacrelstats, BlockNumber relblocks);
+static void
+lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
+				Relation *Irel, int nindexes,
+				BufferAccessStrategy vac_strategy, bool aggressive);
 
 /*
  *	lazy_vacuum_zpage() -- free dead tuples on a page
@@ -287,7 +291,7 @@ reacquire_slot:
  *		If there are no indexes then we can reclaim line pointers without
  *		writting any undo;
  */
-void
+static void
 lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 				Relation *Irel, int nindexes,
 				BufferAccessStrategy vac_strategy, bool aggressive)
@@ -803,7 +807,7 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 							 get_namespace_name(RelationGetNamespace(onerel)),
 							 RelationGetRelationName(onerel),
 							 vacrelstats->num_index_scans);
-			appendStringInfo(&buf, _("pages: %u removed, %u remain, %u\n"),
+			appendStringInfo(&buf, _("pages: %u removed, %u remain\n"),
 							 vacrelstats->pages_removed,
 							 vacrelstats->rel_pages);
 			appendStringInfo(&buf,
