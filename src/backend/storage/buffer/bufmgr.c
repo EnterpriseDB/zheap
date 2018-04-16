@@ -619,10 +619,12 @@ ReadBuffer(Relation reln, BlockNumber blockNum)
  * valid, the page is zeroed instead of throwing an error. This is intended
  * for non-critical data, where the caller is prepared to repair errors.
  *
- * In RBM_ZERO_AND_LOCK mode, if the page isn't in buffer cache already, it's
+ * In RBM_ZERO mode, if the page isn't in buffer cache already, it's
  * filled with zeros instead of reading it from disk.  Useful when the caller
  * is going to fill the page from scratch, since this saves I/O and avoids
  * unnecessary failure if the page-on-disk has corrupt page headers.
+ *
+ * In RBM_ZERO_AND_LOCK mode, the page is zeroed and also locked.
  * The page is returned locked to ensure that the caller has a chance to
  * initialize the page before it's made visible to others.
  * Caution: do not use this mode to read a page that is beyond the relation's
@@ -874,7 +876,9 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 * Read in the page, unless the caller intends to overwrite it and
 		 * just wants us to allocate a buffer.
 		 */
-		if (mode == RBM_ZERO_AND_LOCK || mode == RBM_ZERO_AND_CLEANUP_LOCK)
+		if (mode == RBM_ZERO ||
+			mode == RBM_ZERO_AND_LOCK ||
+			mode == RBM_ZERO_AND_CLEANUP_LOCK)
 			MemSet((char *) bufBlock, 0, BLCKSZ);
 		else
 		{

@@ -119,6 +119,7 @@ static UnpackedUndoRecord* UndoGetOneRecord(UnpackedUndoRecord *urec,
 static void PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr);
 static void UndoRecordUpdateTransInfo(void);
 static int InsertFindBufferSlot(RelFileNode rnode, BlockNumber blk,
+								ReadBufferMode rbm,
 								UndoPersistence persistence);
 static bool IsPrevTxnUndoDiscarded(UndoLogControl *log,
 								   UndoRecPtr prev_xact_urp);
@@ -688,6 +689,7 @@ PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr)
 		UnlockReleaseBuffer(buffer);
 
 		bufidx = InsertFindBufferSlot(rnode, cur_blk,
+									  RBM_NORMAL,
 									  log->meta.persistence);
 		prev_txn_undo_record.starting_pos = readptr - (char *) page;
 		prev_txn_undo_record.prev_txn_undo_buffers[prev_txn_undo_record.num_blocks] = bufidx;
@@ -699,6 +701,7 @@ PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr)
 		{
 			cur_blk++;
 			bufidx = InsertFindBufferSlot(rnode, cur_blk,
+										  RBM_NORMAL,
 										  log->meta.persistence);
 			prev_txn_undo_record.prev_txn_undo_buffers[prev_txn_undo_record.num_blocks] = bufidx;
 			prev_txn_undo_record.num_blocks++;
@@ -798,9 +801,19 @@ UndoRecordSetInfo(UnpackedUndoRecord *uur)
 /*
  * Find the block number in undo buffer array, if it's present then just return
  * its index otherwise search the buffer and insert an entry.
+ *
+ * Undo log insertions are append-only.  If the caller is writing new data
+ * that begins exactly at the beginning of a page, then there cannot be any
+ * useful data after that point.  In that case RBM_ZERO can be passed in as
+ * rbm so that we can skip a useless read of a disk block.  In all other
+ * cases, RBM_NORMAL should be passed in, to read the page in if it doesn't
+ * happen to be already in the buffer pool.
  */
 static int
-InsertFindBufferSlot(RelFileNode rnode, BlockNumber blk, UndoPersistence persistence)
+InsertFindBufferSlot(RelFileNode rnode,
+					 BlockNumber blk,
+					 ReadBufferMode rbm,
+					 UndoPersistence persistence)
 {
 	int 	i;
 	Buffer 	buffer;
@@ -824,7 +837,7 @@ InsertFindBufferSlot(RelFileNode rnode, BlockNumber blk, UndoPersistence persist
 		buffer = ReadBufferWithoutRelcache(rnode,
 										   UndoLogForkNum,
 										   blk,
-										   RBM_NORMAL,
+										   rbm,
 										   NULL,
 										   RelPersistenceForUndoPersistence(persistence));
 		undo_buffer[buffer_idx].buf = buffer;
@@ -879,6 +892,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	int				bufidx;
 	bool			need_start_undo = false;
 	bool			first_rec_in_recovery;
+	ReadBufferMode	rbm;
 
 	/* Already reached maximum prepared limit. */
 	if (prepare_idx == max_prepare_undo)
@@ -979,9 +993,19 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	UndoRecPtrAssignRelFileNode(rnode, urecptr);
 	starting_byte = UndoRecPtrGetPageOffset(urecptr);
 
+	/*
+	 * If we happen to be writing the very first byte into this page, then
+	 * there is no need to read from disk.
+	 */
+	if (starting_byte == UndoLogBlockHeaderSize)
+		rbm = RBM_ZERO;
+	else
+		rbm = RBM_NORMAL;
+
 	do
 	{
-		bufidx = InsertFindBufferSlot(rnode, cur_blk, log->meta.persistence);
+		bufidx = InsertFindBufferSlot(rnode, cur_blk, rbm,
+									  log->meta.persistence);
 		if (cur_size == 0)
 			cur_size = BLCKSZ - starting_byte;
 		else
@@ -995,6 +1019,12 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 
 		/* Undo record can not fit into this block so go to the next block. */
 		cur_blk++;
+
+		/*
+		 * If we need more pages they'll be all new so we can definitely skip
+		 * reading from disk.
+		 */
+		rbm = RBM_ZERO;
 	} while (cur_size < size);
 
 	/*
