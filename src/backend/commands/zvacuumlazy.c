@@ -654,7 +654,7 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 	int			usecs;
 	double		read_rate,
 				write_rate;
-	bool		aggressive;		/* should we scan all unfrozen pages? */
+	bool		aggressive = false;	/* should we scan all unfrozen pages? */
 	BlockNumber new_rel_pages;
 	double		new_rel_tuples;
 	double		new_live_tuples;
