@@ -1688,6 +1688,23 @@ vacuum_rel(Oid relid, RangeVar *relation, int options, VacuumParams *params)
 	}
 
 	/*
+	 * Check if it's a zheap relation. We don't support vacuum full for zheap
+	 * relations.
+	 */
+	if (RelationStorageIsZHeap(onerel) && (options & VACOPT_FULL))
+	{
+		relation_close(onerel, lmode);
+		PopActiveSnapshot();
+		CommitTransactionCommand();
+		ereport(LOG,
+				(errmsg("skipping \"%s\" --- cannot vacuum full zheap tables",
+				RelationGetRelationName(onerel))));
+
+		/* But, return true so that ANALYZE can go ahead */
+		return true;
+	}
+
+	/*
 	 * Get a session-level lock too. This will protect our access to the
 	 * relation across multiple transactions, so that we can vacuum the
 	 * relation's TOAST table (if any) secure in the knowledge that no one is
