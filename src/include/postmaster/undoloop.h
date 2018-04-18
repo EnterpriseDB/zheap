@@ -43,4 +43,30 @@ extern void execute_undo_actions(UndoRecPtr from_urecptr,
  */
 extern void	recover_undo_pages();
 
+/*
+ * To increase the efficiency of the zheap system, we create a hash table for
+ * the rollbacks. All the rollback requests exceeding certain threshold, are
+ * pushed to this table. Undo worker starts reading the entries from this hash
+ * table one at a time, performs undo actions related to the respective xid and
+ * removes them from the hash table. This way backend is free from performing the
+ * undo actions in case of heavy rollbacks. The data structures and the routines
+ * required for this infrastructure are as follows.
+ */
+
+/* This is the data structure for each hash table entry for rollbacks. */
+typedef struct RollbackHashEntry
+{
+	TransactionId xid;
+	UndoRecPtr start_urec_ptr;
+	UndoRecPtr end_urec_ptr;
+} RollbackHashEntry;
+
+extern bool RollbackHTIsFull(void);
+
+/* To push the rollback requests from backend to the respective hash table */
+extern bool PushRollbackReq(TransactionId, UndoRecPtr, UndoRecPtr);
+
+/* To perform the undo actions reading from the hash table */
+extern void RollbackFromHT(bool *hibernate);
+
 #endif   /* _UNDOLOOP_H */

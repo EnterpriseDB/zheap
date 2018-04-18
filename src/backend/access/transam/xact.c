@@ -3228,6 +3228,10 @@ void
 XactPerformUndoActionsIfPending()
 {
 	TransactionState s = CurrentTransactionState;
+	TransactionId xid = s->transactionId;
+	uint64 rollback_size = 0;
+	bool new_xact = true, result = false;
+	UndoRecPtr parent_latest_urec_ptr;
 
 	if (!PerformUndoActions)
 		return;
@@ -3240,48 +3244,56 @@ XactPerformUndoActionsIfPending()
 	}
 
 	/*
-	 * If there is no transaction is running then start a new transaction and
-	 * execute undo actions, otherwise we execute undo actions under parent
-	 * transaction.
+	 * Execute undo actions under parent transaction, if any. Otherwise start
+	 * a new transaction.
 	 */
-	if (GetTopTransactionIdIfAny() == InvalidTransactionId)
+	if (GetTopTransactionIdIfAny() != InvalidTransactionId)
 	{
-		TransactionState xact;
-
-		/* Start a new transaction for performing the rollback */
-		StartTransactionCommand();
-		xact = CurrentTransactionState;
-
-		/*
-		 * Store the previous transactions start and end undo record pointers
-		 * into this transaction's state so that if there is some error while
-		 * performing undo actions we can restart from begining.
-		 */
-		xact->start_urec_ptr = UndoActionEndPtr;
-		xact->latest_urec_ptr = UndoActionStartPtr;
-		/* execute the undo actions */
-		execute_undo_actions(UndoActionStartPtr, UndoActionEndPtr, true, true);
-		CommitTransactionCommand();
-		PerformUndoActions = false;
+		parent_latest_urec_ptr = s->latest_urec_ptr;
+		new_xact = false;
 	}
-	else
+
+	/*
+	 * If this is a large rollback request then push it to undo-worker
+	 * through RollbackHT, undo-worker will perform it's undo actions later.
+	 */
+	rollback_size = UndoActionStartPtr - UndoActionEndPtr;
+
+	if (rollback_size >= rollback_overflow_size * 1024 * 1024)
+		result = PushRollbackReq(xid, UndoActionStartPtr, UndoActionEndPtr);
+
+	else if (!result)
 	{
-		UndoRecPtr parent_latest_urec_ptr = s->latest_urec_ptr;
+		if (new_xact)
+		{
+			TransactionState xact;
 
-		/*
-		 * Save the latest_urec_ptr in the parent state so that we can rollback
-		 * from the parent transaction in case of error while applying undo
-		 * actions.
-		 */
-		s->latest_urec_ptr = UndoActionStartPtr;
+			/* Start a new transaction for performing the rollback */
+			StartTransactionCommand();
+			xact = CurrentTransactionState;
 
-		execute_undo_actions(UndoActionStartPtr, UndoActionEndPtr, false, true);
+			/*
+			 * Store the previous transactions start and end undo record pointers
+			 * into this transaction's state so that if there is some error while
+			 * performing undo actions we can restart from begining.
+			 */
+			xid = xact->transactionId;
+			xact->start_urec_ptr = UndoActionEndPtr;
+			xact->latest_urec_ptr = UndoActionStartPtr;
+		}
 
-		PerformUndoActions = false;
+		execute_undo_actions(UndoActionStartPtr, UndoActionEndPtr, new_xact, true);
 
-		/* Restore parent's state. */
-		s->latest_urec_ptr = parent_latest_urec_ptr;
+		if (new_xact)
+			CommitTransactionCommand();
+		else
+		{
+			/* Restore parent's state. */
+			s->latest_urec_ptr = parent_latest_urec_ptr;
+		}
 	}
+
+	PerformUndoActions = false;
 }
 
 /*
@@ -3943,7 +3955,21 @@ UserAbortTransactionBlock(void)
 
 	/* execute the undo actions, but we should be inside current transaction */
 	if (latest_urec_ptr && (CurrentTransactionState->state == TRANS_INPROGRESS))
-		execute_undo_actions(latest_urec_ptr, s->start_urec_ptr, true, true);
+	{
+		uint64 size = latest_urec_ptr - s->start_urec_ptr;
+		bool result = false;
+
+		/*
+		 * If this is a large rollback request then push it to undo-worker
+		 * through RollbackHT, undo-worker will perform it's undo actions later.
+		 */
+		if (size >= rollback_overflow_size * 1024 * 1024)
+			result = PushRollbackReq(s->transactionId, s->start_urec_ptr,
+									 latest_urec_ptr);
+		if (!result)
+			execute_undo_actions(latest_urec_ptr, s->start_urec_ptr, true,
+								 true);
+	}
 	else
 	{
 		/*

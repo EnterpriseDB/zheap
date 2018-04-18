@@ -27,6 +27,7 @@
 #include "storage/procarray.h"
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
+#include "postmaster/undoloop.h"
 
 static void undoworker_sigterm_handler(SIGNAL_ARGS);
 
@@ -107,6 +108,12 @@ UndoWorkerMain(Datum main_arg)
 		OldestXmin = GetOldestXmin(NULL, true);
 		oldestXidHavingUndo = GetXidFromEpochXid(
 						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+
+		/*
+		 * Before discarding anything, check if there are some pending
+		 * rollback requests and satisfy them first.
+		 */
+		RollbackFromHT(&hibernate);
 
 		/*
 		 * Discard UNDO's if xid < OldestXmin and

@@ -153,6 +153,7 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
 		size = add_size(size, BackendRandomShmemSize());
+		size = add_size(size, RollbackHTSize());
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif
@@ -227,6 +228,7 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 	SUBTRANSShmemInit();
 	MultiXactShmemInit();
 	InitBufferPool();
+	InitRollbackHashTable();
 
 	/*
 	 * Set up lock manager

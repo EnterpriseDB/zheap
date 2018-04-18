@@ -1510,7 +1510,18 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	 * We need to perform undo actions while we are still in transaction.
 	 */
 	if (end_urec_ptr != InvalidUndoRecPtr && !isCommit)
-		execute_undo_actions(end_urec_ptr, start_urec_ptr, true, true);
+	{
+		uint64	rollback_size = 0;
+		bool	result = false;
+
+		rollback_size = end_urec_ptr - start_urec_ptr;
+
+		if (rollback_size >= rollback_overflow_size * 1024 * 1024)
+			result = PushRollbackReq(xid, end_urec_ptr, start_urec_ptr);
+
+		if (!result)
+			execute_undo_actions(end_urec_ptr, start_urec_ptr, true, true);
+	}
 
 	/* compute latestXid among all children */
 	latestXid = TransactionIdLatest(xid, hdr->nsubxacts, children);

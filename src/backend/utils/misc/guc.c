@@ -2804,6 +2804,16 @@ static struct config_int ConfigureNamesInt[] =
 		5000, 1, INT_MAX,
 		NULL, NULL, NULL
 	},
+	{
+		{"rollback_overflow_size", PGC_USERSET, RESOURCES_MEM,
+			gettext_noop("Rollbacks greater than this size are done lazily"),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&rollback_overflow_size,
+		64, 0, MAX_KILOBYTES,
+		NULL, NULL, NULL
+	},
 
 	{
 		{"wal_segment_size", PGC_INTERNAL, PRESET_OPTIONS,

@@ -24,11 +24,19 @@
 #include "storage/bufmgr.h"
 #include "utils/relfilenodemap.h"
 #include "miscadmin.h"
+#include "storage/shmem.h"
+#include "access/undodiscard.h"
+#include "utils/hsearch.h"
+
+#define ROLLBACK_HT_SIZE	1024
 
 static void execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 					 TransactionId xid, BlockNumber blkno, bool blk_chain_complete);
 static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
 									  TransactionId xid);
+
+/* This is the hash table to store all the rollabck requests. */
+static HTAB *RollbackHT;
 
 /*
  * execute_undo_actions - Execute the undo actions
@@ -531,4 +539,152 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 	UnlockReleaseBuffer(buffer);
 
 	heap_close(rel, NoLock);
+}
+
+/*
+ * To return the size of the hash-table for rollbacks.
+ */
+int
+RollbackHTSize(void)
+{
+	return ROLLBACK_HT_SIZE;
+}
+
+/*
+ * To initialize the hash-table for rollbacks in shared memory
+ * for the given size.
+ */
+void
+InitRollbackHashTable(void)
+{
+	int ht_size = RollbackHTSize();
+	HASHCTL info;
+	MemSet(&info, 0, sizeof(info));
+
+	info.keysize = sizeof(TransactionId);
+	info.entrysize = sizeof(RollbackHashEntry);
+	info.hash = tag_hash;
+
+	RollbackHT = ShmemInitHash("Undo actions Lookup Table",
+								ht_size, ht_size, &info,
+								HASH_ELEM | HASH_FUNCTION);
+}
+
+/*
+ * To push the rollback requests from backend to the hash-table.
+ * Return true if the request is successfully added, else false
+ * and the caller may execute undo actions itself.
+ */
+bool
+PushRollbackReq(TransactionId hash_key,
+				UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr)
+{
+	bool found = false;
+	RollbackHashEntry *rh;
+
+	Assert(UndoRecPtrIsValid(start_urec_ptr));
+
+	/* If there is no space to accomodate new request, then we can't proceed. */
+	if (RollbackHTIsFull())
+		return false;
+
+	if(!UndoRecPtrIsValid(end_urec_ptr))
+	{
+		UndoLogNumber logno = UndoRecPtrGetLogNo(start_urec_ptr);
+		end_urec_ptr = UndoLogGetLastXactStartPoint(logno);
+	}
+
+	LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
+
+	rh = (RollbackHashEntry *) hash_search(RollbackHT, &hash_key,
+										   HASH_ENTER_NULL, &found);
+	if (!rh)
+		return false;
+
+	/* We shouldn't try to push the same rollback request again. */
+	Assert(!found);
+
+	rh->start_urec_ptr = start_urec_ptr;
+	rh->end_urec_ptr = end_urec_ptr;
+
+	LWLockRelease(RollbackHTLock);
+
+	return true;
+}
+
+/*
+ * To perform the undo actions for the transactions whose rollback
+ * requests are in hash table. Sequentially, scan the hash-table
+ * and perform the undo-actions for the respective transactions.
+ * Once, the undo-actions are applied, remove the entry from the
+ * hash table.
+ */
+void
+RollbackFromHT(bool *hibernate)
+{
+	UndoRecPtr start[ROLLBACK_HT_SIZE];
+	UndoRecPtr end[ROLLBACK_HT_SIZE];
+	TransactionId hash_key[ROLLBACK_HT_SIZE];
+	RollbackHashEntry *rh;
+	HASH_SEQ_STATUS status;
+	bool found;
+	int i = 0;
+
+	/* Fetch the rollback requests */
+	LWLockAcquire(RollbackHTLock, LW_SHARED);
+	hash_seq_init(&status, RollbackHT);
+	while (RollbackHT != NULL &&
+		  (rh = (RollbackHashEntry *) hash_seq_search(&status)) != NULL)
+	{
+		start[i] = rh->start_urec_ptr;
+		end[i] = rh->end_urec_ptr;
+		hash_key[i++] = rh->xid;
+	}
+	LWLockRelease(RollbackHTLock);
+
+	/* Don't sleep, if there is work to do. */
+	if (i > 0)
+		*hibernate = false;
+
+	/* Execute the rollback requests */
+	while(--i >= 0)
+	{
+		Assert(UndoRecPtrIsValid(start[i]));
+		Assert(UndoRecPtrIsValid(end[i]));
+
+		StartTransactionCommand();
+		execute_undo_actions(end[i], start[i], true, false);
+		CommitTransactionCommand();
+
+		LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
+		(void) hash_search(RollbackHT, &hash_key[i], HASH_REMOVE, &found);
+		LWLockRelease(RollbackHTLock);
+	}
+}
+
+/*
+ * To check if the rollback requests in the hash table are all
+ * completed or not. This is required because we don't not want to
+ * expose RollbackHT in xact.c, where it is required to ensure
+ * that we push the resuests only when there is some space in
+ * the hash-table.
+ */
+bool
+RollbackHTIsFull(void)
+{
+	RollbackHashEntry *rh;
+	HASH_SEQ_STATUS status;
+	bool result = true;
+
+	LWLockAcquire(RollbackHTLock, LW_SHARED);
+	hash_seq_init(&status, RollbackHT);
+
+	if (hash_get_num_entries(RollbackHT) == 0 ||
+		((rh = (RollbackHashEntry *) hash_seq_search(&status)) != NULL))
+		result =  false;
+
+	hash_seq_term(&status);
+	LWLockRelease(RollbackHTLock);
+
+	return result;
 }

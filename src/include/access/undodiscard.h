@@ -29,5 +29,11 @@
  */
 extern void UndoDiscard(TransactionId xmin, bool *hibernate);
 
+/* To calculate the size of the hash table size for rollabcks. */
+extern int RollbackHTSize(void);
+
+/* To initialize the hash table in shared memory for rollbacks. */
+extern void InitRollbackHashTable(void);
+
 #endif   /* UNDODISCARD_H */
 
