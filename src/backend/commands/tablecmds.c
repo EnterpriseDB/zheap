@@ -7625,6 +7625,23 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			break;
 	}
 
+	if (RelationStorageIsZHeap(rel) && !RelationStorageIsZHeap(pkrel))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("zheap table \"%s\" cannot reference heap table"
+						" \"%s\"", RelationGetRelationName(rel),
+						RelationGetRelationName(pkrel))));
+	}
+	else if (!RelationStorageIsZHeap(rel) && RelationStorageIsZHeap(pkrel))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("heap table \"%s\" cannot reference zheap table"
+						" \"%s\"", RelationGetRelationName(rel),
+						RelationGetRelationName(pkrel))));
+	}
+
 	/*
 	 * Look up the referencing attributes to make sure they exist, and record
 	 * their attnums and type OIDs.
@@ -8832,12 +8849,36 @@ validateForeignKeyConstraint(char *conname,
 	 * ereport(ERROR) and that's that.
 	 */
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = heap_beginscan(rel, snapshot, 0, NULL);
+	if (RelationStorageIsZHeap(rel))
+		scan = zheap_beginscan(rel, snapshot, 0, NULL);
+	else
+		scan = heap_beginscan(rel, snapshot, 0, NULL);
 
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while (true)
 	{
 		FunctionCallInfoData fcinfo;
 		TriggerData trigdata;
+
+		if (RelationStorageIsZHeap(rel))
+		{
+			ZHeapTuple	zTuple;
+
+			/*
+			 * We scan the zheap page in page mode. Hence, the buffer will be
+			 * set to InvalidBuffer in scan. If a buffer needs to be accessed
+			 * for the corresponding tuple, it has to be read again.
+			 */
+			zTuple = zheap_getnext(scan, ForwardScanDirection);
+			if (zTuple)
+				tuple = zheap_to_heap(zTuple, rel->rd_att);
+			else
+				tuple = NULL;
+		}
+		else
+			tuple = heap_getnext(scan, ForwardScanDirection);
+
+		if (tuple == NULL)
+			break;
 
 		/*
 		 * Make a call to the trigger function

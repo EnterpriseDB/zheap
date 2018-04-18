@@ -33,6 +33,7 @@
 #include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
+#include "access/zheap.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_operator.h"
@@ -259,6 +260,7 @@ RI_FKey_check(TriggerData *trigdata)
 	RI_QueryKey qkey;
 	SPIPlanPtr	qplan;
 	int			i;
+	bool		release_buf = false;
 
 	/*
 	 * Get arguments.
@@ -278,6 +280,18 @@ RI_FKey_check(TriggerData *trigdata)
 	}
 
 	/*
+	 * For zheap, it's possible that the buffer corresponding to the triggered
+	 * tuple is set to invalid. See validateForeignKeyConstraint for details.
+	 */
+	if (BufferIsInvalid(new_row_buf))
+	{
+		Assert (RelationStorageIsZHeap(trigdata->tg_relation));
+		new_row_buf = ReadBuffer(trigdata->tg_relation,
+								 ItemPointerGetBlockNumber(&(new_row->t_self)));
+		release_buf = true;
+	}
+
+	/*
 	 * We should not even consider checking the row if it is no longer valid,
 	 * since it was either deleted (so the deferred check should be skipped)
 	 * or updated (in which case only the latest version of the row should be
@@ -286,12 +300,44 @@ RI_FKey_check(TriggerData *trigdata)
 	 * should be holding pin, but not lock.
 	 */
 	LockBuffer(new_row_buf, BUFFER_LOCK_SHARE);
-	if (!HeapTupleSatisfiesVisibility(new_row, SnapshotSelf, new_row_buf))
+	if (RelationStorageIsZHeap(trigdata->tg_relation))
+	{
+		Page				page;
+		ItemId				lp;
+		ItemPointer			tid;
+		ZHeapTupleData		zhtup;
+
+		tid = &(new_row->t_self);
+		page = BufferGetPage(new_row_buf);
+		lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+
+		/*
+		 * Since the current transaction has inserted/updated the tuple, it
+		 * can't be deleted.
+		 */
+		Assert(ItemIdIsNormal(lp));
+
+		zhtup.t_tableOid = RelationGetRelid(trigdata->tg_relation);
+		zhtup.t_data = (ZHeapTupleHeader) PageGetItem((Page) page, lp);
+		zhtup.t_len = ItemIdGetLength(lp);
+		zhtup.t_self = *tid;
+
+		if (!ZHeapTupleSatisfiesVisibility(&zhtup, SnapshotSelf, new_row_buf, tid))
+		{
+			LockBuffer(new_row_buf, BUFFER_LOCK_UNLOCK);
+			if (release_buf)
+				ReleaseBuffer(new_row_buf);
+			return PointerGetDatum(NULL);
+		}
+	}
+	else if (!HeapTupleSatisfiesVisibility(new_row, SnapshotSelf, new_row_buf))
 	{
 		LockBuffer(new_row_buf, BUFFER_LOCK_UNLOCK);
 		return PointerGetDatum(NULL);
 	}
 	LockBuffer(new_row_buf, BUFFER_LOCK_UNLOCK);
+	if (release_buf)
+		ReleaseBuffer(new_row_buf);
 
 	/*
 	 * Get the relation descriptors of the FK and PK tables.
@@ -1613,7 +1659,15 @@ RI_FKey_fk_upd_check_required(Trigger *trigger, Relation fk_rel,
 			 * INSERT RI trigger will not do anything; so we had better do the
 			 * UPDATE check.  (We could skip this if we knew the INSERT
 			 * trigger already fired, but there is no easy way to know that.)
+			 *
+			 * For zheap relations, we don't have zheap tuple. Hence, we
+			 * can't get the transaction information. So, we always add the
+			 * trigger event. This is just an optimization check to skip some
+			 * trigger events. Hence, it should not affect the output behaviour.
 			 */
+			if (RelationStorageIsZHeap(fk_rel))
+				return true;
+
 			if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(old_row->t_data)))
 				return true;
 
@@ -1651,7 +1705,15 @@ RI_FKey_fk_upd_check_required(Trigger *trigger, Relation fk_rel,
 			 * INSERT RI trigger will not do anything; so we had better do the
 			 * UPDATE check.  (We could skip this if we knew the INSERT
 			 * trigger already fired, but there is no easy way to know that.)
+			 *
+			 * For zheap relations, we don't have zheap tuple. Hence, we
+			 * can't get the transaction information. So, we always add the
+			 * trigger event. This is just an optimization check to skip some
+			 * trigger events. Hence, it should not affect the output behaviour.
 			 */
+			if (RelationStorageIsZHeap(fk_rel))
+				return true;
+
 			if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(old_row->t_data)))
 				return true;
 
@@ -2162,13 +2224,6 @@ ri_FetchConstraintInfo(Trigger *trigger, Relation trig_rel, bool rel_is_pk)
 				 errmsg("no pg_constraint entry for trigger \"%s\" on table \"%s\"",
 						trigger->tgname, RelationGetRelationName(trig_rel)),
 				 errhint("Remove this referential integrity trigger and its mates, then do ALTER TABLE ADD CONSTRAINT.")));
-
-	if (RelationStorageIsZHeap(trig_rel))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("foreign key not supported on zheap table \"%s\"",
-						RelationGetRelationName(trig_rel)),
-				 errhint("Remove the foreign constraint and re-create the table..")));
 
 	/* Find or create a hashtable entry for the constraint */
 	riinfo = ri_LoadConstraintInfo(constraintOid);
