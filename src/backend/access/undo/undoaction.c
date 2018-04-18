@@ -344,6 +344,14 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 			case UNDO_INSERT:
 				{
 					undo_action_insert(rel, page, uur->uur_offset, xid);
+
+					/*
+					 * In zheap_xlog_insert we see insert of first and only
+					 * tuple on the page we re-initialize the page. Force
+					 * pruning on insert or multi insert to satisfy wal
+					 * consistency check on standby.
+					 */
+					PageRepairFragmentation(page);
 				}
 				break;
 			case UNDO_MULTI_INSERT:
@@ -361,6 +369,12 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 					{
 						undo_action_insert(rel, page, iter_offset, xid);
 					}
+
+					/*
+					 * Similarly as in UNDO_INSERT force pruning to satisfy wal
+					 * consistency check.
+					 */
+					PageRepairFragmentation(page);
 				}
 				break;
 			case UNDO_DELETE:
