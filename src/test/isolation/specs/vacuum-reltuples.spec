@@ -5,6 +5,9 @@
 # Expected result in second permutation is 20 tuples rather than 21 as
 # for the others, because vacuum should leave the previous result
 # (from before the insert) in place.
+# In zheap, the result should be 21 since we don't have to take cleanup
+# lock for vaccuming the relation. Hence, the vacuum command won't skip
+# the buffer even when another backend holds a pin on the same.
 
 setup {
     create table smalltbl
