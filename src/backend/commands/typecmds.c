@@ -2366,9 +2366,9 @@ AlterDomainNotNull(List *names, bool notNull)
 			snapshot = RegisterSnapshot(GetLatestSnapshot());
 
 			if (RelationStorageIsZHeap(testrel))
-				scan = heap_beginscan(testrel, snapshot, 0, NULL);
-			else
 				scan = zheap_beginscan(testrel, snapshot, 0, NULL);
+			else
+				scan = heap_beginscan(testrel, snapshot, 0, NULL);
 
 			while (true)
 			{
@@ -2787,9 +2787,9 @@ validateDomainConstraint(Oid domainoid, char *ccbin)
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
 
 		if (RelationStorageIsZHeap(testrel))
-			scan = heap_beginscan(testrel, snapshot, 0, NULL);
-		else
 			scan = zheap_beginscan(testrel, snapshot, 0, NULL);
+		else
+			scan = heap_beginscan(testrel, snapshot, 0, NULL);
 
 		while (true)
 		{
