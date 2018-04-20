@@ -33,6 +33,7 @@
 
 #include "access/htup_details.h"
 #include "access/xact.h"
+#include "access/zheaputils.h"
 #include "catalog/binary_upgrade.h"
 #include "catalog/catalog.h"
 #include "catalog/heap.h"
@@ -2363,10 +2364,31 @@ AlterDomainNotNull(List *names, bool notNull)
 
 			/* Scan all tuples in this relation */
 			snapshot = RegisterSnapshot(GetLatestSnapshot());
-			scan = heap_beginscan(testrel, snapshot, 0, NULL);
-			while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+
+			if (RelationStorageIsZHeap(testrel))
+				scan = heap_beginscan(testrel, snapshot, 0, NULL);
+			else
+				scan = zheap_beginscan(testrel, snapshot, 0, NULL);
+
+			while (true)
 			{
 				int			i;
+
+				if (RelationStorageIsZHeap(testrel))
+				{
+					ZHeapTuple	zTuple;
+
+					zTuple = zheap_getnext(scan, ForwardScanDirection);
+					if (zTuple)
+						tuple = zheap_to_heap(zTuple, testrel->rd_att);
+					else
+						tuple = NULL;
+				}
+				else
+					tuple = heap_getnext(scan, ForwardScanDirection);
+
+				if (tuple == NULL)
+					break;
 
 				/* Test attributes that are of the domain */
 				for (i = 0; i < rtc->natts; i++)
@@ -2763,10 +2785,31 @@ validateDomainConstraint(Oid domainoid, char *ccbin)
 
 		/* Scan all tuples in this relation */
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
-		scan = heap_beginscan(testrel, snapshot, 0, NULL);
-		while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+
+		if (RelationStorageIsZHeap(testrel))
+			scan = heap_beginscan(testrel, snapshot, 0, NULL);
+		else
+			scan = zheap_beginscan(testrel, snapshot, 0, NULL);
+
+		while (true)
 		{
 			int			i;
+
+			if (RelationStorageIsZHeap(testrel))
+			{
+				ZHeapTuple	zTuple;
+
+				zTuple = zheap_getnext(scan, ForwardScanDirection);
+				if (zTuple)
+					tuple = zheap_to_heap(zTuple, testrel->rd_att);
+				else
+					tuple = NULL;
+			}
+			else
+				tuple = heap_getnext(scan, ForwardScanDirection);
+
+			if (tuple == NULL)
+				break;
 
 			/* Test attributes that are of the domain */
 			for (i = 0; i < rtc->natts; i++)
