@@ -1143,7 +1143,8 @@ zheap_tuple_updated:
 		Assert(result == HeapTupleSelfUpdated ||
 			   result == HeapTupleUpdated ||
 			   result == HeapTupleBeingUpdated);
-		Assert(IsZHeapTupleModified(zheaptup.t_data->t_infomask));
+		Assert(ItemIdIsDeleted(lp) ||
+			   IsZHeapTupleModified(zheaptup.t_data->t_infomask));
 
 		hufd->ctid = ctid;
 		hufd->xmax = tup_xid;
@@ -1836,7 +1837,8 @@ zheap_tuple_updated:
 		Assert(result == HeapTupleSelfUpdated ||
 			   result == HeapTupleUpdated ||
 			   result == HeapTupleBeingUpdated);
-		Assert(IsZHeapTupleModified(oldtup.t_data->t_infomask));
+		Assert(ItemIdIsDeleted(lp) ||
+			   IsZHeapTupleModified(oldtup.t_data->t_infomask));
 
 		hufd->ctid = ctid;
 		hufd->xmax = tup_xid;
@@ -3416,7 +3418,8 @@ failed:
 	{
 		Assert(result == HeapTupleSelfUpdated || result == HeapTupleUpdated ||
 			   result == HeapTupleWouldBlock);
-		Assert(IsZHeapTupleModified(zhtup.t_data->t_infomask));
+		Assert(ItemIdIsDeleted(lp) ||
+			   IsZHeapTupleModified(zhtup.t_data->t_infomask));
 
 		hufd->ctid = ctid;
 		hufd->xmax = tup_xid;
