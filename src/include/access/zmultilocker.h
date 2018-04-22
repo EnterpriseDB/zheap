@@ -64,7 +64,7 @@ static inline LockTupleMode get_old_lock_mode(uint16 infomask)
 		else
 		{
 			/* LOCK_ONLY can't be present alone */
-			Assert(false);
+			pg_unreachable();
 		}
 	}
 	else

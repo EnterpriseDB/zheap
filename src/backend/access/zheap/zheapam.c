@@ -3777,7 +3777,7 @@ lock_tuple:
 					else
 					{
 						/* LOCK_ONLY can't be present alone */
-						Assert(false);
+						pg_unreachable();
 					}
 				}
 				else
