@@ -1496,6 +1496,14 @@ tblspc_redo(XLogReaderState *record)
 	{
 		xl_tblspc_drop_rec *xlrec = (xl_tblspc_drop_rec *) XLogRecGetData(record);
 
+		/* This shouldn't be able to fail in recovery. */
+		LWLockAcquire(TablespaceCreateLock, LW_EXCLUSIVE);
+		if (!DropUndoLogsInTablespace(xlrec->ts_id))
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("tablespace cannot be dropped because it contains non-empty undo logs")));
+		LWLockRelease(TablespaceCreateLock);
+
 		/*
 		 * If we issued a WAL record for a drop tablespace it implies that
 		 * there were no files in it at all when the DROP was done. That means
