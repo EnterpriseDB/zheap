@@ -1231,6 +1231,7 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 	char	path[MAXPGPATH];
 	int		num_logs;
 	int		fd;
+	pg_crc32c crc;
 
 	/*
 	 * We acquire UndoLogLock to prevent any undo logs from being created or
@@ -1287,15 +1288,23 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", path)));
 
-	/* Write out range of active log numbers. */
+	/* Compute header checksum. */
+	INIT_CRC32C(crc);
+	COMP_CRC32C(crc, &low_logno, sizeof(low_logno));
+	COMP_CRC32C(crc, &high_logno, sizeof(high_logno));
+	FIN_CRC32C(crc);
+
+	/* Write out range of active log numbers + crc. */
 	if ((write(fd, &low_logno, sizeof(low_logno)) != sizeof(low_logno)) ||
-		(write(fd, &high_logno, sizeof(high_logno)) != sizeof(high_logno)))
+		(write(fd, &high_logno, sizeof(high_logno)) != sizeof(high_logno)) ||
+		(write(fd, &crc, sizeof(crc)) != sizeof(crc)))
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not write to file \"%s\": %m", path)));
 
 	/* Write out the meta data for all undo logs in that range. */
 	data = (char *) serialized;
+	INIT_CRC32C(crc);
 	while (serialized_size > 0)
 	{
 		ssize_t written;
@@ -1305,9 +1314,17 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not write to file \"%s\": %m", path)));
+		COMP_CRC32C(crc, data, written);
 		serialized_size -= written;
 		data += written;
 	}
+	FIN_CRC32C(crc);
+
+	if (write(fd, &crc, sizeof(crc)) != sizeof(crc))
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not write to file \"%s\": %m", path)));
+
 
 	/* Flush file and directory entry. */
 	pg_fsync(fd);
@@ -1327,6 +1344,8 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 	char	path[MAXPGPATH];
 	int		logno;
 	int		fd;
+	pg_crc32c crc;
+	pg_crc32c new_crc;
 
 	/* If initdb is calling, there is no file to read yet. */
 	if (IsBootstrapProcessingMode())
@@ -1343,10 +1362,22 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 	if ((read(fd, &shared->low_logno, sizeof(shared->low_logno))
 		 != sizeof(shared->low_logno)) ||
 		(read(fd, &shared->high_logno, sizeof(shared->high_logno))
-		 != sizeof(shared->high_logno)))
+		 != sizeof(shared->high_logno)) ||
+		(read(fd, &crc, sizeof(crc)) != sizeof(crc)))
 		elog(ERROR, "pg_undo file \"%s\" is corrupted", path);
 
+	/* Verify the header checksum. */
+	INIT_CRC32C(new_crc);
+	COMP_CRC32C(new_crc, &shared->low_logno, sizeof(shared->low_logno));
+	COMP_CRC32C(new_crc, &shared->high_logno, sizeof(shared->high_logno));
+	FIN_CRC32C(new_crc);
+
+	if (crc != new_crc)
+		elog(ERROR,
+			 "pg_undo file \"%s\" has incorrect checksum", path);
+
 	/* Initialize all the logs and set up the freelist. */
+	INIT_CRC32C(new_crc);
 	for (logno = shared->low_logno; logno < shared->high_logno; ++logno)
 	{
 		UndoLogControl *log;
@@ -1360,6 +1391,7 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 		if (read(fd, &log->meta, sizeof(log->meta)) != sizeof(log->meta))
 			elog(ERROR, "corrupted pg_undo meta data in file \"%s\": %m",
 				 path);
+		COMP_CRC32C(new_crc, &log->meta, sizeof(log->meta));
 
 		/*
 		 * If there are any segment files between the discard and end pointers
@@ -1405,6 +1437,15 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 			shared->free_lists[log->meta.persistence] = logno;
 		}
 	}
+	FIN_CRC32C(new_crc);
+
+	/* Verify body checksum. */
+	if (read(fd, &crc, sizeof(crc)) != sizeof(crc))
+		elog(ERROR, "pg_undo file \"%s\" is corrupted", path);
+	if (crc != new_crc)
+		elog(ERROR,
+			 "pg_undo file \"%s\" has incorrect checksum", path);
+
 	CloseTransientFile(fd);
 }
 
