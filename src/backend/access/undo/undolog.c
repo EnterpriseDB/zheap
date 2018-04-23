@@ -105,13 +105,6 @@ typedef struct UndoLogSharedData
 	UndoLogNumber high_logno; /* one past the highest logno */
 
 	/*
-	 * If a checkpoint overlaps with the creation of a new undo log, we'll
-	 * need these to detect the first modification after a checkpoint.
-	 */
-	XLogRecPtr	checkpoint_lsn;
-	bool		checkpoint_in_progress;
-
-	/*
 	 * Array of DSM handles pointing to the arrays of UndoLogControl objects.
 	 * We don't expect there to be many banks active at a time -- usually 1 or
 	 * 2, but we need random access by log number so we arrange them into
@@ -161,8 +154,6 @@ static void extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end);
 static void undo_log_before_exit(int code, Datum value);
 static void forget_undo_buffers(int logno, UndoLogOffset old_discard,
 								UndoLogOffset new_discard);
-static void undolog_attach_xid(TransactionId xid, int logno);
-static inline void prepare_to_modify_undo_log(UndoLogControl *log);
 
 PG_FUNCTION_INFO_V1(pg_stat_get_undo_logs);
 
@@ -361,7 +352,6 @@ UndoLogSetLastXactStartPoint(UndoRecPtr point)
 	UndoLogControl *log = get_undo_log_by_number(logno);
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	prepare_to_modify_undo_log(log);
 	log->meta.last_xact_start = UndoRecPtrGetOffset(point);
 	LWLockRelease(&log->mutex);
 }
@@ -401,7 +391,6 @@ UndoLogSetPrevLen(UndoLogNumber logno, uint16 prevlen)
 	Assert(log != NULL);
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	prepare_to_modify_undo_log(log);
 	log->meta.prevlen = prevlen;
 	LWLockRelease(&log->mutex);
 }
@@ -458,7 +447,7 @@ IsTransactionFirstRec(TransactionId xid)
 	if (log == NULL)
 		elog(ERROR, "cannot find undo log number %d for xid %u", logno, xid);
 
-	return log->meta.is_first_rec;
+	return log->is_first_rec;
 }
 
 /*
@@ -503,8 +492,7 @@ detach_current_undo_log()
 	MyUndoLogState.logno = InvalidUndoLogNumber;
 
 	log->pid = InvalidPid;
-	log->meta.xid = InvalidTransactionId;
-	/* TODO: implications for checkpoint?  need to do something? */
+	log->xid = InvalidTransactionId;
 
 	/*
 	 * XXX: If it's almost completely full, mark it as retired somehow rather
@@ -662,7 +650,6 @@ extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end)
 	 * needs more analysis.
 	 */
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	prepare_to_modify_undo_log(log);
 	if (log->meta.end < end)
 		log->meta.end = end;
 	LWLockRelease(&log->mutex);
@@ -709,6 +696,7 @@ UndoRecPtr
 UndoLogAllocate(size_t size, UndoPersistence level)
 {
 	UndoLogControl *log = MyUndoLogState.log;
+	bool	need_attach_wal_record = false;
 	bool	is_xid_change = false;
 	UndoLogOffset new_insert;
 
@@ -767,18 +755,19 @@ UndoLogAllocate(size_t size, UndoPersistence level)
 	 * UndoLogAllocateInRecovery knows how to replay this undo space
 	 * allocation.
 	 */
-	if (log->meta.xid != GetTopTransactionId())
+	if (log->xid != GetTopTransactionId())
 		is_xid_change = true;
 
-	if (is_xid_change)
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	if (log->need_attach_wal_record || is_xid_change)
 	{
-		LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-		prepare_to_modify_undo_log(log);
-		log->meta.xid = GetTopTransactionId();
-		LWLockRelease(&log->mutex);
+		need_attach_wal_record = true;
+		log->xid = GetTopTransactionId();
+		log->need_attach_wal_record = false;
 	}
+	LWLockRelease(&log->mutex);
 
-	if (is_xid_change)
+	if (need_attach_wal_record)
 	{
 		xl_undolog_attach xlrec;
 
@@ -858,7 +847,7 @@ UndoLogAllocateInRecovery(TransactionId xid, size_t size,
 	 * By this time we have allocated a undo log in transaction so after this
 	 * it will not be first undo record for the transaction.
 	 */
-	log->meta.is_first_rec = false;
+	log->is_first_rec = false;
 	return MakeUndoRecPtr(logno, log->meta.insert);
 }
 
@@ -886,7 +875,6 @@ UndoLogAdvance(UndoRecPtr insertion_point, size_t size)
 	Assert(UndoRecPtrGetOffset(insertion_point) == log->meta.insert);
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	prepare_to_modify_undo_log(log);
 	log->meta.insert = UndoLogOffsetPlusUsableBytes(log->meta.insert, size);
 	LWLockRelease(&log->mutex);
 }
@@ -932,7 +920,6 @@ UndoLogDiscard(UndoRecPtr discard_point, TransactionId xid)
 			 logno);
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	prepare_to_modify_undo_log(log);
 	if (discard > log->meta.insert)
 		elog(ERROR, "cannot move discard point past insert point");
 	old_discard = log->meta.discard;
@@ -1072,7 +1059,6 @@ UndoLogDiscard(UndoRecPtr discard_point, TransactionId xid)
 
 	/* Update shmem to show the new discard and end pointers. */
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	prepare_to_modify_undo_log(log);
 	log->meta.discard = discard;
 	log->meta.end = end;
 	LWLockRelease(&log->mutex);
@@ -1128,7 +1114,7 @@ UndoLogGetNextInsertPtr(UndoLogNumber logno, TransactionId xid)
 
 	LWLockAcquire(&log->mutex, LW_SHARED);
 	insert = log->meta.insert;
-	logxid = log->meta.xid;
+	logxid = log->xid;
 	LWLockRelease(&log->mutex);
 
 	if (TransactionIdIsValid(logxid) && !TransactionIdEquals(logxid, xid))
@@ -1148,7 +1134,6 @@ UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen)
 	UndoLogOffset	insert = UndoRecPtrGetOffset(insert_urp);
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	prepare_to_modify_undo_log(log);
 	log->meta.insert = insert;
 	log->meta.prevlen = prevlen;
 
@@ -1219,47 +1204,6 @@ CleanUpUndoCheckPointFiles(XLogRecPtr checkPointRedo)
 }
 
 /*
- * Called with true just before the redo point is selected for a checkpoint.
- * Called with false if the checkpoint doesn't go ahead.  This sets the
- * checkpoint_in_progress flag in all active undo logs, so that future calls
- * to prepare_to_modify_undo_log() and CheckPointUndoLogs() capture
- * the contents of 'meta' as of the moment of the redo point.
- */
-void
-UndoLogCheckPointInProgress(bool checkpoint_in_progress)
-{
-	UndoLogSharedData *shared = MyUndoLogState.shared;
-	UndoLogNumber low_logno;
-	UndoLogNumber high_logno;
-	UndoLogNumber logno;
-	UndoRecPtr redo = GetRedoRecPtr();
-
-	/* TODO: special handling for logs created while checkpoint in progress  */
-
-	LWLockAcquire(UndoLogLock, LW_SHARED);
-	MyUndoLogState.shared->checkpoint_in_progress = checkpoint_in_progress;
-	if (checkpoint_in_progress)
-		MyUndoLogState.shared->checkpoint_lsn = redo;
-	low_logno = shared->low_logno;
-	high_logno = shared->high_logno;
-	for (logno = low_logno; logno != high_logno; ++logno)
-	{
-		UndoLogControl *log;
-
-		log = get_undo_log_by_number(logno);
-		if (log == NULL) /* XXX can this happen? */
-			continue;
-
-		LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-		log->checkpoint_in_progress = checkpoint_in_progress;
-		if (checkpoint_in_progress)
-			log->checkpoint_lsn = redo;
-		LWLockRelease(&log->mutex);
-	}
-	LWLockRelease(UndoLogLock);
-}
-
-/*
  * Write out the undo log meta data to the pg_undo directory.  The actual
  * contents of undo logs is in shared buffers and therefore handled by
  * CheckPointBuffers(), but here we record the table of undo logs and their
@@ -1317,18 +1261,8 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 
 			/* Capture snapshot while holding the mutex. */
 			LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-			if (log->checkpoint_in_progress)
-			{
-				/*
-				 * There were no calls to prepare_to_modify_undo_log() after
-				 * the redo point was chosen, so the current state is the
-				 * state that applied at the moment of the redo point.
-				 */
-				log->checkpoint_meta = log->meta;
-				log->checkpoint_lsn = checkPointRedo;
-				log->checkpoint_in_progress = false;
-			}
-			serialized[logno] = log->checkpoint_meta;
+			log->need_attach_wal_record = true;
+			memcpy(&serialized[logno], &log->meta, sizeof(UndoLogMetaData));
 			LWLockRelease(&log->mutex);
 		}
 	}
@@ -1414,11 +1348,9 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 		log = get_undo_log_by_number(logno);
 
 		/* Read in the meta data for this undo log. */
-		if (read(fd, &log->checkpoint_meta, sizeof(log->checkpoint_meta))
-			!= sizeof(log->checkpoint_meta))
+		if (read(fd, &log->meta, sizeof(log->meta)) != sizeof(log->meta))
 			elog(ERROR, "corrupted pg_undo meta data in file \"%s\": %m",
 				 path);
-		log->meta = log->checkpoint_meta;
 
 		/*
 		 * If there are any segment files between the discard and insert
@@ -1445,18 +1377,13 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 										segno * UndoLogSegmentSize);
 		}
 
-		/*
-		 * If a any transactions are in progress, we need to associate them
-		 * with the appropriate undo log.
-		 */
-		if (log->meta.xid != InvalidPid)
-			undolog_attach_xid(log->meta.xid, logno);
 
 		/*
 		 * Set up the rest of the control object.  During recovery, all active
 		 * undo logs go on the free list.
 		 */
 		log->pid = InvalidPid;
+		log->xid = InvalidTransactionId;
 		log->next_free = shared->free_list;
 		shared->free_list = logno;
 	}
@@ -1625,16 +1552,9 @@ attach_undo_log(void)
 		Assert(log->meta.discard == 0);
 		Assert(log->meta.insert == 0);
 		Assert(log->meta.end == 0);
-		Assert(log->meta.xid == InvalidTransactionId);
 		Assert(log->pid == 0);
+		Assert(log->xid == 0);
 		Assert(log->next_free == 0);
-
-		/*
-		 * In the unlikely event that we're creating an undo log while a
-		 * checkpoint is beginning, we'll need these.
-		 */
-		log->checkpoint_in_progress = MyUndoLogState.shared->checkpoint_in_progress;
-		log->checkpoint_lsn = MyUndoLogState.shared->checkpoint_lsn;
 
 		/*
 		 * The insert and discard pointers start after the first block's
@@ -1670,7 +1590,7 @@ attach_undo_log(void)
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->pid = MyProcPid;
-	log->meta.xid = GetTopTransactionId();
+	log->xid = GetTopTransactionId();
 	log->need_attach_wal_record = true;
 	LWLockRelease(&log->mutex);
 
@@ -1795,10 +1715,10 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
 				 MakeUndoRecPtr(logno, log->meta.end));
 		values[4] = CStringGetTextDatum(buffer);
-		if (log->meta.xid == InvalidTransactionId)
+		if (log->xid == InvalidTransactionId)
 			nulls[5] = true;
 		else
-			values[5] = TransactionIdGetDatum(log->meta.xid);
+			values[5] = TransactionIdGetDatum(log->xid);
 		if (log->pid == InvalidPid)
 			nulls[6] = true;
 		else
@@ -1847,7 +1767,6 @@ undolog_xlog_extend(XLogReaderState *record)
 	extend_undo_log(xlrec->logno, xlrec->end);
 }
 
-
 /*
  * replay the association of an xid with a specific undo log
  */
@@ -1863,12 +1782,18 @@ undolog_xlog_attach(XLogReaderState *record)
 	if (log == NULL)
 		elog(ERROR, "cannot attach to unknown undo log %u", xlrec->logno);
 
+	/*
+	 * Update the insertion point.  While this races against a checkpoint,
+	 * XLOG_UNDOLOG_ATTACH always wins because it must be correct for any
+	 * subsequent data appended by this transaction, so we can simply
+	 * overwrite it here.
+	 */
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->meta.insert = xlrec->insert;
 	log->meta.last_xact_start = xlrec->last_xact_start;
 	log->meta.prevlen = xlrec->prevlen;
-	log->meta.xid = xlrec->xid;
-	log->meta.is_first_rec = xlrec->is_first_rec;
+	log->xid = xlrec->xid;
+	log->is_first_rec = xlrec->is_first_rec;
 	log->pid = MyProcPid; /* show as recovery process */
 	LWLockRelease(&log->mutex);
 
@@ -1903,12 +1828,9 @@ undolog_xlog_discard(XLogReaderState *record)
 	xl_undolog_discard *xlrec = (xl_undolog_discard *) XLogRecGetData(record);
 	UndoLogControl *log;
 	UndoLogOffset discard;
-	UndoLogOffset old_discard;
 	UndoLogOffset end;
 	UndoLogOffset old_segment_begin;
 	UndoLogOffset new_segment_begin;
-	BlockNumber old_blockno;
-	BlockNumber blockno;
 	RelFileNode rnode = {0};
 	char	dir[MAXPGPATH];
 
@@ -1936,7 +1858,7 @@ undolog_xlog_discard(XLogReaderState *record)
 	 */
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	old_discard = discard = log->meta.discard;
+	discard = log->meta.discard;
 	end = log->meta.end;
 	LWLockRelease(&log->mutex);
 
@@ -1964,7 +1886,7 @@ undolog_xlog_discard(XLogReaderState *record)
 							   log->meta.tablespace, recycle_path);
 			if (rename(discard_path, recycle_path) == 0)
 			{
-				elog(LOG, "recycled undo segment \"%s\" -> \"%s\"", discard_path, recycle_path); /* XXX: remove me */
+				elog(NOTICE, "renamed undo segment \"%s\" -> \"%s\"", discard_path, recycle_path); /* XXX: remove me */
 				end += UndoLogSegmentSize;
 			}
 			else
@@ -1976,7 +1898,7 @@ undolog_xlog_discard(XLogReaderState *record)
 		else
 		{
 			if (unlink(discard_path) == 0)
-				elog(LOG, "unlinked undo segment \"%s\"", discard_path); /* XXX: remove me */
+				elog(NOTICE, "unlinked \"%s\"", discard_path); /* XXX: remove me */
 			else
 				elog(LOG, "could not unlink \"%s\": %m", discard_path);
 		}
@@ -1994,16 +1916,8 @@ undolog_xlog_discard(XLogReaderState *record)
 	UndoLogDirectory(log->meta.tablespace, dir);
 	fsync_fname(dir, true);
 
-	/* Drop buffers. */
-	UndoRecPtrAssignRelFileNode(rnode, MakeUndoRecPtr(xlrec->logno, old_discard));
-	old_blockno = old_discard / BLCKSZ;
-	blockno = xlrec->discard / BLCKSZ;
-	while (old_blockno < blockno)
-		ForgetBuffer(rnode, UndoLogForkNum, old_blockno++);
-
 	/* Update shmem. */
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	prepare_to_modify_undo_log(log);
 	log->meta.discard = xlrec->discard;
 	log->meta.end = end;
 	LWLockRelease(&log->mutex);
@@ -2047,41 +1961,6 @@ undolog_redo(XLogReaderState *record)
 			break;
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);
-	}
-}
-
-/*
- * Before modifying the contents of log->meta, we have to check if it needs to
- * be backed up for CheckPointUndoLogs() to write out to disk later.
- */
-static inline void
-prepare_to_modify_undo_log(UndoLogControl *log)
-{
-	Assert(LWLockHeldByMeInMode(&log->mutex, LW_EXCLUSIVE));
-
-	if (unlikely(log->checkpoint_in_progress))
-	{
-		XLogRecPtr redo_point;
-
-		/*
-		 * Capture the current state for CheckPointUndoLogs(), in case this
-		 * state turns out to be the active state at the moment of the redo
-		 * point.
-		 */
-		log->checkpoint_meta = log->meta;
-
-		/* Check if the redo point has been chosen yet. */
-		redo_point = GetRedoRecPtr();
-		if (log->checkpoint_lsn < redo_point)
-		{
-			/*
-			 * We're now past the redo point, so log->checkpoint_meta
-			 * contains the data that will be written out by
-			 * CheckPointUndoLogs().
-			 */
-			log->checkpoint_lsn = redo_point;
-			log->checkpoint_in_progress = false;
-		}
 	}
 }
 

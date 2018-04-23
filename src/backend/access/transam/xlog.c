@@ -8816,13 +8816,6 @@ CreateCheckPoint(int flags)
 	CheckpointStats.ckpt_start_t = GetCurrentTimestamp();
 
 	/*
-	 * Let UNDO log manager prepare for checkpoint.  This has to happen before
-	 * we determine the REDO pointer.  This shouldn't be in a critical section
-	 * because it might allocate memory.
-	 */
-	UndoLogCheckPointInProgress(true);
-
-	/*
 	 * Use a critical section to force system panic if we have trouble.
 	 */
 	START_CRIT_SECTION();
@@ -8881,10 +8874,8 @@ CreateCheckPoint(int flags)
 		if (last_important_lsn == ControlFile->checkPoint)
 		{
 			WALInsertLockRelease();
-			END_CRIT_SECTION();
-			/* TODO: what if this raises an error? */
-			UndoLogCheckPointInProgress(false);
 			LWLockRelease(CheckpointLock);
+			END_CRIT_SECTION();
 			ereport(DEBUG1,
 					(errmsg("checkpoint skipped because system is idle")));
 			return;
@@ -9391,8 +9382,6 @@ CreateRestartPoint(int flags)
 		LWLockRelease(CheckpointLock);
 		return false;
 	}
-
-	UndoLogCheckPointInProgress(true);
 
 	/*
 	 * Update the shared RedoRecPtr so that the startup process can calculate

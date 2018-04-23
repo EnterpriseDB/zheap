@@ -153,8 +153,6 @@ typedef struct UndoLogMetaData
 	UndoLogOffset end;				/* one past end of highest segment */
 	UndoLogOffset discard;			/* oldest data needed (tail) */
 	UndoLogOffset last_xact_start;	/* last transactions start undo offset */
-	bool		is_first_rec;		/* is this the first record of the xid */
-	TransactionId xid;				/* transaction ID */
 
 	/*
 	 * last undo record's length. We need to save this in undo meta and WAL
@@ -187,13 +185,11 @@ typedef struct UndoLogControl
 {
 	UndoLogNumber logno;
 	UndoLogMetaData meta;			/* current meta-data */
-	UndoLogMetaData checkpoint_meta;	/* snapshot for next checkpoint */
-	XLogRecPtr	checkpoint_lsn;
-	bool		checkpoint_in_progress;
 	bool	need_attach_wal_record;	/* need_attach_wal_record */
 	pid_t		pid;				/* InvalidPid for unattached */
 	LWLock	mutex;					/* protects the above */
-
+	TransactionId xid;
+	bool	is_first_rec;
 	/* State used by undo workers. */
 	TransactionId	oldest_xid;		/* cache of oldest transaction's xid */
 	uint32		oldest_xidepoch;
@@ -223,7 +219,6 @@ extern void UndoLogSegmentPath(UndoLogNumber logno, int segno, Oid tablespace,
 							   char *path);
 
 /* Checkpointing interfaces. */
-extern void UndoLogCheckPointInProgress(bool checkpoint_in_progress);
 extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
 							   XLogRecPtr priorCheckPointRedo);
 
