@@ -23,6 +23,7 @@
 #include "access/undolog.h"
 #include "access/undolog_xlog.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "access/xlogreader.h"
 #include "catalog/catalog.h"
 #include "catalog/pg_tablespace.h"
@@ -501,19 +502,65 @@ allocate_empty_undo_segment(UndoLogNumber logno, Oid tablespace,
 	 * It's also possible that it exists but is too short, in which case
 	 * we'll write the rest.  We don't really care what's in the file, we
 	 * just want to make sure that the filesystem has allocated physical
-	 * blocks for it, so that non-COW filesystems will report ENOSPACE now
+	 * blocks for it, so that non-COW filesystems will report ENOSPC now
 	 * rather than later when the space is needed and we'll avoid creating
 	 * files with holes.
 	 */
 	fd = OpenTransientFile(path, O_RDWR | O_CREAT | PG_BINARY);
 	if (fd < 0 && tablespace != 0)
 	{
-		char parent[MAXPGPATH];
+		char undo_path[MAXPGPATH];
 
 		/* Try creating the undo directory for this tablespace. */
-		UndoLogDirectory(tablespace, parent);
-		if (mkdir(parent, S_IRWXU) != 0 && errno != EEXIST)
-			elog(ERROR, "could not create directory \"%s\": %m", parent);
+		UndoLogDirectory(tablespace, undo_path);
+		if (mkdir(undo_path, S_IRWXU) != 0 && errno != EEXIST)
+		{
+			char	   *parentdir;
+
+			if (errno != ENOENT || !InRecovery)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not create directory \"%s\": %m",
+								undo_path)));
+
+			/*
+			 * In recovery, it's possible that the tablespace directory
+			 * doesn't exist because a later WAL record removed the whole
+			 * tablespace.  In that case we create a regular directory to
+			 * stand in for it.  This is similar to the logic in
+			 * TablespaceCreateDbspace().
+			 */
+
+			/* create two parents up if not exist */
+			parentdir = pstrdup(undo_path);
+			get_parent_directory(parentdir);
+			get_parent_directory(parentdir);
+			/* Can't create parent and it doesn't already exist? */
+			if (mkdir(parentdir, S_IRWXU) < 0 && errno != EEXIST)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not create directory \"%s\": %m",
+								parentdir)));
+			pfree(parentdir);
+
+			/* create one parent up if not exist */
+			parentdir = pstrdup(undo_path);
+			get_parent_directory(parentdir);
+			/* Can't create parent and it doesn't already exist? */
+			if (mkdir(parentdir, S_IRWXU) < 0 && errno != EEXIST)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not create directory \"%s\": %m",
+								parentdir)));
+			pfree(parentdir);
+
+			if (mkdir(undo_path, S_IRWXU) != 0 && errno != EEXIST)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not create directory \"%s\": %m",
+								undo_path)));
+		}
+
 		fd = OpenTransientFile(path, O_RDWR | O_CREAT | PG_BINARY);
 	}
 	if (fd < 0)
@@ -544,6 +591,16 @@ allocate_empty_undo_segment(UndoLogNumber logno, Oid tablespace,
 	pfree(zeroes);
 
 	elog(LOG, "created undo segment \"%s\"", path); /* XXX: remove me */
+}
+
+/*
+ * Create a new undo segment, when it is unexpectedly not present.
+ */
+void
+UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno)
+{
+	Assert(InRecovery);
+	allocate_empty_undo_segment(logno, tablespace, segno * UndoLogSegmentSize);
 }
 
 /*
@@ -1410,7 +1467,6 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 	for (logno = shared->low_logno; logno < shared->high_logno; ++logno)
 	{
 		UndoLogControl *log;
-		int		segno;
 
 		/* Get a zero-initialized control objects. */
 		ensure_undo_log_number(logno);
@@ -1421,38 +1477,6 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 			elog(ERROR, "corrupted pg_undo meta data in file \"%s\": %m",
 				 path);
 		COMP_CRC32C(new_crc, &log->meta, sizeof(log->meta));
-
-		/*
-		 * If there are any segment files between the discard and end pointers
-		 * that don't exist on disk as expected, then create new empty files.
-		 * If we are restarting after a crash, segment files that were present
-		 * at the moment of the checkpoint might be missing now because later
-		 * WAL records will discard them.
-		 *
-		 * TODO: This doesn't work for tablespaces that were later dropped!
-		 * FIXME
-		 */
-		if (log->meta.status == UNDO_LOG_STATUS_ACTIVE)
-		{
-			for (segno = log->meta.discard / UndoLogSegmentSize;
-				 segno < log->meta.end / UndoLogSegmentSize;
-				 ++segno)
-			{
-				struct stat	stat_buffer;
-				char	path[MAXPGPATH];
-				int		rc;
-
-				UndoLogSegmentPath(logno, segno, log->meta.tablespace, path);
-				rc = stat(path, &stat_buffer);
-				if (rc == 0 && stat_buffer.st_size == UndoLogSegmentSize)
-					continue;
-				if (rc != 0 && errno != ENOENT)
-					elog(ERROR, "could not stat \"%s\": %m", path);
-				allocate_empty_undo_segment(logno, log->meta.tablespace,
-											segno * UndoLogSegmentSize);
-			}
-		}
-
 
 		/*
 		 * At normal start-up, or during recovery, all active undo logs start

@@ -16,6 +16,7 @@
 #include "postgres.h"
 
 #include "access/undolog.h"
+#include "access/xlog.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgwriter.h"
@@ -162,7 +163,6 @@ undofile_read(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 					(errcode_for_file_access(),
 					 errmsg("could not read block %u in file \"%s\": %m",
 							blocknum, FilePathName(file))));
-		/* TODO think about whether we have to tolerate short reads like mdread */
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("could not read block %u in file \"%s\": read only %d of %d bytes",
@@ -244,9 +244,6 @@ undofile_writeback(SMgrRelation reln, ForkNumber forknum,
 		int		nflush;
 
 		file = undofile_get_segment_file(reln, blocknum / UNDOSEG_SIZE);
-
-		/* TODO handle case where segment doesn't exist? */
-		Assert(file > 0);
 
 		/* compute number of desired writes within the current segment */
 		nflush = Min(nblocks,
@@ -525,7 +522,23 @@ static File undofile_get_segment_file(SMgrRelation reln, int segno)
 		state->mru_file =
 			undofile_open_segment_file(reln->smgr_rnode.node.relNode,
 									   reln->smgr_rnode.node.spcNode,
-									   segno, false);
+									   segno, InRecovery);
+		if (InRecovery && state->mru_file <= 0)
+		{
+			/*
+			 * If in recovery, we may be trying to access a file that will
+			 * later be unlinked.  Tolerate missing files, creating a new
+			 * zero-filled file as required.
+			 */
+			UndoLogNewSegment(reln->smgr_rnode.node.relNode,
+							  reln->smgr_rnode.node.spcNode,
+							  segno);
+			state->mru_file =
+				undofile_open_segment_file(reln->smgr_rnode.node.relNode,
+										   reln->smgr_rnode.node.spcNode,
+										   segno, false);
+			Assert(state->mru_file > 0);
+		}
 		state->mru_segno = segno;
 	}
 
