@@ -23,6 +23,7 @@
 #define XLOG_UNDOLOG_ATTACH		0x20
 #define XLOG_UNDOLOG_DISCARD	0x30
 #define XLOG_UNDOLOG_REWIND		0x40
+#define XLOG_UNDOLOG_META		0x50
 
 /* Create a new undo log. */
 typedef struct xl_undolog_create
@@ -43,22 +44,6 @@ typedef struct xl_undolog_attach
 {
 	TransactionId xid;
 	UndoLogNumber logno;
-	UndoLogOffset insert;
-	UndoLogOffset last_xact_start;
-
-	/*
-	 * last undo record's length. We need to WAL log so that the first undo
-	 * record after the restart can get this value properly.  This will be used
-	 * going to the previous record of the transaction during rollback. In case
-	 * the transaction have done some operation before checkpoint and remaining
-	 * after checkpoint in such case if we can't get the previous record
-	 * prevlen which which before checkpoint we can not properly rollback.
-	 * And, undo worker is also fetch this value when rolling back the last
-	 * transaction in the undo log for locating the last undo record of the
-	 * transaction.
-	 */
-	uint16		  prevlen;
-	bool		  is_first_rec;
 } xl_undolog_attach;
 
 /* Discard space, and possibly destroy or recycle undo log segments. */

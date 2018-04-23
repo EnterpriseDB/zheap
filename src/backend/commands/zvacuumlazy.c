@@ -150,6 +150,9 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 	UndoRecPtr	urecptr, prev_urecptr;
 	int			i, uncnt = 0;
 	int		trans_slot_id;
+	xl_undolog_meta undometa;
+	XLogRecPtr	RedoRecPtr;
+	bool		doPageWrites;
 
 	for (; tupindex < vacrelstats->num_dead_tuples; tupindex++)
 	{
@@ -211,7 +214,8 @@ reacquire_slot:
 	undorecord.uur_payload.len = uncnt * sizeof(OffsetNumber);
 	undorecord.uur_payload.data = (char *) palloc(uncnt * sizeof(OffsetNumber));
 
-	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT, InvalidTransactionId);
+	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT,
+								InvalidTransactionId, &undometa);
 
 	START_CRIT_SECTION();
 
@@ -252,14 +256,27 @@ reacquire_slot:
 		xl_rec.latestRemovedXid = vacrelstats->latestRemovedXid;
 		xl_rec.nunused = uncnt;
 		xl_rec.trans_slot_id = trans_slot_id;
+prepare_xlog:
+		GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
 		XLogRegisterData((char *) &xl_rec, SizeOfZHeapUnused);
+
+		/*
+		 * WAL-LOG undolog meta data if this is the fisrt WAL after the
+		 * checkpoint.
+		 */
+		LogUndoMetaData(&undometa);
+
 		XLogRegisterData((char *) unused, uncnt * sizeof(OffsetNumber));
 		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
 
-		recptr = XLogInsert(RM_ZHEAP2_ID, XLOG_ZHEAP_UNUSED);
+		recptr = XLogInsertExtended(RM_ZHEAP2_ID, XLOG_ZHEAP_UNUSED, RedoRecPtr,
+									doPageWrites);
+		if (recptr == InvalidXLogRecPtr)
+			goto prepare_xlog;
+
 		PageSetLSN(page, recptr);
 	}
 

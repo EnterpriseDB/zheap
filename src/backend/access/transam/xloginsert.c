@@ -459,7 +459,8 @@ XLogInsert(RmgrId rmid, uint8 info)
 		rdt = XLogRecordAssemble(rmid, info, RedoRecPtr, doPageWrites,
 								 &fpw_lsn);
 
-		EndPos = XLogInsertRecord(rdt, fpw_lsn, curinsert_flags);
+		EndPos = XLogInsertRecord(rdt, fpw_lsn, InvalidXLogRecPtr,
+								  curinsert_flags);
 	} while (EndPos == InvalidXLogRecPtr);
 
 	XLogResetInsertion();
@@ -517,7 +518,7 @@ XLogInsertExtended(RmgrId rmid, uint8 info, XLogRecPtr RedoRecPtr,
 	rdt = XLogRecordAssemble(rmid, info, RedoRecPtr, doPageWrites,
 							 &fpw_lsn);
 
-	EndPos = XLogInsertRecord(rdt, fpw_lsn, curinsert_flags);
+	EndPos = XLogInsertRecord(rdt, fpw_lsn, RedoRecPtr, curinsert_flags);
 
 	XLogResetInsertion();
 

@@ -153,6 +153,7 @@ typedef struct UndoLogMetaData
 	UndoLogOffset end;				/* one past end of highest segment */
 	UndoLogOffset discard;			/* oldest data needed (tail) */
 	UndoLogOffset last_xact_start;	/* last transactions start undo offset */
+	bool	is_first_rec;
 
 	/*
 	 * last undo record's length. We need to save this in undo meta and WAL
@@ -168,6 +169,14 @@ typedef struct UndoLogMetaData
 	 */
 	uint16	prevlen;
 } UndoLogMetaData;
+
+/* Record the undo log number used for a transaction. */
+typedef struct xl_undolog_meta
+{
+	UndoLogMetaData	meta;
+	UndoLogNumber	logno;
+	TransactionId	xid;
+} xl_undolog_meta;
 
 #ifndef FRONTEND
 
@@ -185,11 +194,11 @@ typedef struct UndoLogControl
 {
 	UndoLogNumber logno;
 	UndoLogMetaData meta;			/* current meta-data */
+	XLogRecPtr      lsn;
 	bool	need_attach_wal_record;	/* need_attach_wal_record */
 	pid_t		pid;				/* InvalidPid for unattached */
 	LWLock	mutex;					/* protects the above */
 	TransactionId xid;
-	bool	is_first_rec;
 	/* State used by undo workers. */
 	TransactionId	oldest_xid;		/* cache of oldest transaction's xid */
 	uint32		oldest_xidepoch;
@@ -202,7 +211,9 @@ typedef struct UndoLogControl
 #endif
 
 /* Space management. */
-extern UndoRecPtr UndoLogAllocate(size_t size, UndoPersistence level);
+extern UndoRecPtr UndoLogAllocate(size_t size,
+								  UndoPersistence level,
+								  xl_undolog_meta *undometa);
 extern UndoRecPtr UndoLogAllocateInRecovery(TransactionId xid,
 											size_t size,
 											UndoPersistence level);
@@ -244,6 +255,9 @@ extern UndoLogNumber LogNumberFromXid(TransactionId xid);
 extern bool IsTransactionFirstRec(TransactionId xid);
 extern void UndoLogSetPrevLen(UndoLogNumber logno, uint16 prevlen);
 extern uint16 UndoLogGetPrevLen(UndoLogNumber logno);
+extern bool NeedUndoMetaLog(XLogRecPtr redo_point);
+extern void UndoLogSetLSN(XLogRecPtr lsn);
+extern void LogUndoMetaData(xl_undolog_meta *xlrec);
 /* Redo interface. */
 extern void undolog_redo(XLogReaderState *record);
 

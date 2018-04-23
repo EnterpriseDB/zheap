@@ -717,7 +717,7 @@ UndoSetPrepareSize(int max_prepare)
  */
 UndoRecPtr
 PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
-				  TransactionId xid)
+				  TransactionId xid, xl_undolog_meta *undometa)
 {
 	UndoLogControl *log;
 	UndoRecordSize	size;
@@ -784,7 +784,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	if (InRecovery)
 		urecptr = UndoLogAllocateInRecovery(xid, size, upersistence);
 	else
-		urecptr = UndoLogAllocate(size, upersistence);
+		urecptr = UndoLogAllocate(size, upersistence, undometa);
 
 	log = UndoLogGet(UndoRecPtrGetLogNo(urecptr));
 	Assert(AmAttachedToUndoLog(log) || InRecovery);

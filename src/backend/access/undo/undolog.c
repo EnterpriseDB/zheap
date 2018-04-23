@@ -447,7 +447,7 @@ IsTransactionFirstRec(TransactionId xid)
 	if (log == NULL)
 		elog(ERROR, "cannot find undo log number %d for xid %u", logno, xid);
 
-	return log->is_first_rec;
+	return log->meta.is_first_rec;
 }
 
 /*
@@ -693,7 +693,7 @@ extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end)
  * and an insertion point within a buffer page using the macros above.
  */
 UndoRecPtr
-UndoLogAllocate(size_t size, UndoPersistence level)
+UndoLogAllocate(size_t size, UndoPersistence level, xl_undolog_meta *undometa)
 {
 	UndoLogControl *log = MyUndoLogState.log;
 	bool	need_attach_wal_record = false;
@@ -773,14 +773,17 @@ UndoLogAllocate(size_t size, UndoPersistence level)
 
 		xlrec.xid = GetTopTransactionId();
 		xlrec.logno = MyUndoLogState.logno;
-		xlrec.insert = log->meta.insert;
-		xlrec.last_xact_start = log->meta.last_xact_start;
-		xlrec.is_first_rec = is_xid_change;
-		xlrec.prevlen = log->meta.prevlen;
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
 		XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_ATTACH);
+	}
+
+	if (undometa)
+	{
+		undometa->meta = log->meta;
+		undometa->logno = MyUndoLogState.logno;
+		undometa->xid = log->xid;
 	}
 
 	return MakeUndoRecPtr(MyUndoLogState.logno, log->meta.insert);
@@ -847,7 +850,7 @@ UndoLogAllocateInRecovery(TransactionId xid, size_t size,
 	 * By this time we have allocated a undo log in transaction so after this
 	 * it will not be first undo record for the transaction.
 	 */
-	log->is_first_rec = false;
+	log->meta.is_first_rec = false;
 	return MakeUndoRecPtr(logno, log->meta.insert);
 }
 
@@ -1391,6 +1394,60 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 }
 
 /*
+ * WAL-LOG undo log meta data information before inserting the first WAL after
+ * the checkpoint for any undo log.
+ */
+void
+LogUndoMetaData(xl_undolog_meta *xlrec)
+{
+	XLogRecPtr	RedoRecPtr;
+	bool		doPageWrites;
+	XLogRecPtr	recptr;
+
+prepare_xlog:
+	GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
+
+	if (NeedUndoMetaLog(RedoRecPtr))
+	{
+		XLogBeginInsert();
+		XLogRegisterData((char *) xlrec, sizeof(xl_undolog_meta));
+		recptr = XLogInsertExtended(RM_UNDOLOG_ID, XLOG_UNDOLOG_META,
+									RedoRecPtr, doPageWrites);
+		if (recptr == InvalidXLogRecPtr)
+			goto prepare_xlog;
+
+		UndoLogSetLSN(recptr);
+	}
+}
+
+/*
+ * Check whether we need to log undolog meta or not.
+ */
+bool
+NeedUndoMetaLog(XLogRecPtr redo_point)
+{
+	UndoLogControl *log = MyUndoLogState.log;
+
+	if (log->lsn <= redo_point)
+		return true;
+
+	return false;
+}
+
+/*
+ * Update the WAL lsn in the undo.  This is to test whether we need to include
+ * the xid to logno mapping information in the next WAL or not.
+ */
+void
+UndoLogSetLSN(XLogRecPtr lsn)
+{
+	UndoLogControl *log = MyUndoLogState.log;
+
+	Assert(AmAttachedToUndoLog(log));
+	log->lsn = lsn;
+}
+
+/*
  * Get an UndoLogControl pointer for a given logno.  This may require
  * attaching to a DSM segment if it isn't already attached in this backend.
  * Return NULL if there is no such logno because it has been entirely
@@ -1605,7 +1662,7 @@ attach_undo_log(void)
  * lost, so we need to manage that explicitly.
  */
 static void
-undolog_attach_xid(TransactionId xid, int logno)
+undolog_attach_xid(TransactionId xid, UndoLogNumber logno)
 {
 	uint16		high_bits;
 	uint16		low_bits;
@@ -1774,6 +1831,17 @@ static void
 undolog_xlog_attach(XLogReaderState *record)
 {
 	xl_undolog_attach *xlrec = (xl_undolog_attach *) XLogRecGetData(record);
+
+	undolog_attach_xid(xlrec->xid, xlrec->logno);
+}
+
+/*
+ * replay undo log meta-data image
+ */
+static void
+undolog_xlog_meta(XLogReaderState *record)
+{
+	xl_undolog_meta *xlrec = (xl_undolog_meta *) XLogRecGetData(record);
 	UndoLogControl *log;
 
 	undolog_attach_xid(xlrec->xid, xlrec->logno);
@@ -1784,16 +1852,13 @@ undolog_xlog_attach(XLogReaderState *record)
 
 	/*
 	 * Update the insertion point.  While this races against a checkpoint,
-	 * XLOG_UNDOLOG_ATTACH always wins because it must be correct for any
+	 * XLOG_UNDOLOG_META always wins because it must be correct for any
 	 * subsequent data appended by this transaction, so we can simply
 	 * overwrite it here.
 	 */
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	log->meta.insert = xlrec->insert;
-	log->meta.last_xact_start = xlrec->last_xact_start;
-	log->meta.prevlen = xlrec->prevlen;
+	log->meta = xlrec->meta;
 	log->xid = xlrec->xid;
-	log->is_first_rec = xlrec->is_first_rec;
 	log->pid = MyProcPid; /* show as recovery process */
 	LWLockRelease(&log->mutex);
 
@@ -1958,6 +2023,9 @@ undolog_redo(XLogReaderState *record)
 			break;
 		case XLOG_UNDOLOG_REWIND:
 			undolog_xlog_rewind(record);
+			break;
+		case XLOG_UNDOLOG_META:
+			undolog_xlog_meta(record);
 			break;
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);
