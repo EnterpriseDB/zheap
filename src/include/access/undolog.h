@@ -31,13 +31,42 @@ typedef uint64 UndoRecPtr;
 /* The type used for undo record lengths. */
 typedef uint16 UndoRecordSize;
 
-/* Undo log persistence levels. */
+/* Undo log statuses. */
 typedef enum
 {
-	UNDO_PERSISTENT = RELPERSISTENCE_PERMANENT,
-	UNDO_UNLOGGED = RELPERSISTENCE_UNLOGGED,
-	UNDO_TEMP = RELPERSISTENCE_TEMP
+	UNDO_LOG_STATUS_UNUSED = 0,
+	UNDO_LOG_STATUS_ACTIVE,
+	UNDO_LOG_STATUS_EXHAUSTED,
+	UNDO_LOG_STATUS_DROPPED
+} UndoLogStatus;
+
+/*
+ * Undo log persistence levels.  These have a one-to-one correspondence with
+ * relpersistence values, but are small integers so that we can use them as an
+ * index into the "logs" and "lognos" arrays.
+ */
+typedef enum
+{
+	UNDO_PERMANENT = 0,
+	UNDO_UNLOGGED = 1,
+	UNDO_TEMP = 2
 } UndoPersistence;
+
+#define UndoPersistenceLevels 3
+
+/*
+ * Convert from relpersistence ('p', 'u', 't') to an UndoPersistence
+ * enumerator.
+ */
+#define UndoPersistenceForRelPersistence(rp)						\
+	((rp) == RELPERSISTENCE_PERMANENT ? UNDO_PERMANENT :			\
+	 (rp) == RELPERSISTENCE_UNLOGGED ? UNDO_UNLOGGED : UNDO_TEMP)
+
+/*
+ * Get the appropriate UndoPersistence value from a Relation.
+ */
+#define UndoPersistenceForRelation(rel)									\
+	(UndoPersistenceForRelPersistence((rel)->rd_rel->relpersistence))
 
 /* Type for offsets within undo logs */
 typedef uint64 UndoLogOffset;
@@ -133,6 +162,17 @@ typedef int UndoLogNumber;
 /* Find out which tablespace the given undo log location is backed by. */
 extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
 
+/*
+ * TODO: Currently we convert UndoRecPtr directly to RelFileNode using the
+ * macro below and then we use that to get a buffer with
+ * ReadBufferWithoutRelcache().  But that interface doesn't give us a safe way
+ * to pass RBM_ZERO_AND_LOCK into ReadBufferWithoutRelcache().  Instead of
+ * this, we need an UndoLogGetBuffer() function that would automatically do
+ * that when it know that it's safe to do that.  Or something.  The point
+ * being that we don't want to bother reading in undo data that we haven't
+ * even written out yet -- because it's after the insert point.
+ */
+
 /* Populate a RelFileNode from an UndoRecPtr. */
 #define UndoRecPtrAssignRelFileNode(rfn, urp)			\
 	do													\
@@ -148,7 +188,9 @@ extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
  */
 typedef struct UndoLogMetaData
 {
+	UndoLogStatus status;
 	Oid		tablespace;
+	UndoPersistence persistence;	/* permanent, unlogged, temp? */
 	UndoLogOffset insert;			/* next insertion point (head) */
 	UndoLogOffset end;				/* one past end of highest segment */
 	UndoLogOffset discard;			/* oldest data needed (tail) */
@@ -216,8 +258,10 @@ extern UndoRecPtr UndoLogAllocate(size_t size,
 								  xl_undolog_meta *undometa);
 extern UndoRecPtr UndoLogAllocateInRecovery(TransactionId xid,
 											size_t size,
-											UndoPersistence level);
-extern void UndoLogAdvance(UndoRecPtr insertion_point, size_t size);
+											UndoPersistence persistence);
+extern void UndoLogAdvance(UndoRecPtr insertion_point,
+						   size_t size,
+						   UndoPersistence persistence);
 extern void UndoLogDiscard(UndoRecPtr discard_point, TransactionId xid);
 extern bool UndoLogIsDiscarded(UndoRecPtr point);
 
@@ -228,6 +272,13 @@ extern Size UndoLogShmemSize(void);
 extern void UndoLogInit(void);
 extern void UndoLogSegmentPath(UndoLogNumber logno, int segno, Oid tablespace,
 							   char *path);
+extern void ResetUnloggedUndoLogs(void);
+
+/* Interface use by tablespace.c. */
+extern bool DropUndoLogsInTablespace(Oid tablespace);
+
+/* GUC interfaces. */
+extern void assign_undo_tablespaces(const char *newval, void *extra);
 
 /* Checkpointing interfaces. */
 extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
@@ -246,12 +297,11 @@ extern void UndoLogGetDirtySegmentRange(UndoLogNumber logno,
 extern void UndoLogSetHighestSyncedSegment(UndoLogNumber logno, int segno);
 extern void UndoLogSetLastXactStartPoint(UndoRecPtr point);
 extern UndoRecPtr UndoLogGetLastXactStartPoint(UndoLogNumber logno);
-extern UndoRecPtr UndoLogGetCurrentLocation(void);
+extern UndoRecPtr UndoLogGetCurrentLocation(UndoPersistence persistence);
 extern UndoRecPtr UndoLogGetFirstValidRecord(UndoLogNumber logno);
 extern UndoRecPtr UndoLogGetNextInsertPtr(UndoLogNumber logno,
 										  TransactionId xid);
 extern void UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen);
-extern UndoLogNumber LogNumberFromXid(TransactionId xid);
 extern bool IsTransactionFirstRec(TransactionId xid);
 extern void UndoLogSetPrevLen(UndoLogNumber logno, uint16 prevlen);
 extern uint16 UndoLogGetPrevLen(UndoLogNumber logno);

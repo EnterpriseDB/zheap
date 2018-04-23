@@ -37,10 +37,13 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
+#include "storage/procarray.h"
 #include "storage/shmem.h"
 #include "storage/standby.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/varlena.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -97,8 +100,7 @@
  */
 typedef struct UndoLogSharedData
 {
-	UndoLogNumber free_list;
-	UndoLogNumber attached_list;
+	UndoLogNumber free_lists[UndoPersistenceLevels];
 	int low_bankno; /* the lowest bank */
 	int high_bankno; /* one past the highest bank */
 	UndoLogNumber low_logno; /* the lowest logno */
@@ -122,13 +124,10 @@ struct
 	UndoLogSharedData *shared;
 
 	/*
-	 * The control object for the undo log that this backend is currently
-	 * attached to, or NULL if not attached.
+	 * The control object for the undo logs that this backend is currently
+	 * attached to at each persistence level.
 	 */
-	UndoLogControl *log;
-
-	/* For assertions only, the log number of the undo log. */
-	UndoLogNumber logno;
+	UndoLogControl *logs[UndoPersistenceLevels];
 
 	/*
 	 * The address where each bank of control objects is mapped into memory in
@@ -138,22 +137,34 @@ struct
 	UndoLogControl *banks[1 << UndoLogBankBits];
 
 	/*
+	 * If the undo_tablespaces GUC changes we'll remember to examine it and
+	 * attach to a new undo log using this flag.
+	 */
+	bool			need_to_choose_tablespace;
+
+	/*
 	 * During recovery, the startup process maintains a mapping of xid to undo
 	 * log number, instead of using 'log' above.  This is not used in regular
 	 * backends and can be in backend-private memory so long as recovery is
-	 * single-process.
+	 * single-process.  This map references UNDO_PERMANENT logs only, since
+	 * temporary and unlogged relations don't have WAL to replay.
 	 */
 	UndoLogNumber **xidToLogNumber;
 } MyUndoLogState;
 
+/* GUC variables */
+char	   *undo_tablespaces = NULL;
+
 static UndoLogControl *get_undo_log_by_number(UndoLogNumber logno);
 static void ensure_undo_log_number(UndoLogNumber logno);
-static void attach_undo_log(void);
-static void detach_current_undo_log(void);
+static void attach_undo_log(UndoPersistence level, Oid tablespace);
+static void detach_current_undo_log(UndoPersistence level, bool exhausted);
 static void extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end);
 static void undo_log_before_exit(int code, Datum value);
 static void forget_undo_buffers(int logno, UndoLogOffset old_discard,
-								UndoLogOffset new_discard);
+								UndoLogOffset new_discard,
+								bool drop_tail);
+static bool choose_undo_tablespace(bool force_detach, Oid *oid);
 
 PG_FUNCTION_INFO_V1(pg_stat_get_undo_logs);
 
@@ -181,6 +192,7 @@ UndoLogShmemInit(void)
 	if (!IsUnderPostmaster)
 	{
 		UndoLogSharedData *shared = MyUndoLogState.shared;
+		int		i;
 
 		Assert(!found);
 
@@ -189,7 +201,8 @@ UndoLogShmemInit(void)
 		 * logs that were known at last checkpoint.
 		 */
 		memset(shared, 0, sizeof(*shared));
-		shared->free_list = InvalidUndoLogNumber;
+		for (i = 0; i < UndoPersistenceLevels; ++i)
+			shared->free_lists[i] = InvalidUndoLogNumber;
 		shared->low_bankno = 0;
 		shared->high_bankno = 0;
 	}
@@ -414,35 +427,24 @@ UndoLogGetPrevLen(UndoLogNumber logno)
 }
 
 /*
- * To retrieve log number from xid.
- */
-UndoLogNumber
-LogNumberFromXid(TransactionId xid)
-{
-	uint16		high_bits = UndoLogGetXidHigh(xid);
-	uint16		low_bits = UndoLogGetXidLow(xid);
-	UndoLogNumber logno;
-
-	if (InRecovery)
-		logno = MyUndoLogState.xidToLogNumber[high_bits][low_bits];
-	else
-		logno =  MyUndoLogState.logno;
-
-	return logno;
-}
-
-/*
  * Is this record is the first record for any transaction.
  */
 bool
 IsTransactionFirstRec(TransactionId xid)
 {
+	uint16		high_bits = UndoLogGetXidHigh(xid);
+	uint16		low_bits = UndoLogGetXidLow(xid);
 	UndoLogNumber logno;
 	UndoLogControl *log;
 
 	Assert(InRecovery);
 
-	logno = LogNumberFromXid(xid);
+	if (MyUndoLogState.xidToLogNumber == NULL)
+		elog(ERROR, "xid to undo log number map not initialized");
+	if (MyUndoLogState.xidToLogNumber[high_bits] == NULL)
+		elog(ERROR, "cannot find undo log number for xid %u", xid);
+
+	logno = MyUndoLogState.xidToLogNumber[high_bits][low_bits];
 	log = get_undo_log_by_number(logno);
 	if (log == NULL)
 		elog(ERROR, "cannot find undo log number %d for xid %u", logno, xid);
@@ -451,66 +453,46 @@ IsTransactionFirstRec(TransactionId xid)
 }
 
 /*
- * Fetch the current undo record location.  We need to ensure that undo log
- * is attached as the caller of this function can call it at the very begining
- * of a transaction.
- */
-UndoRecPtr
-UndoLogGetCurrentLocation(void)
-{
-	UndoLogControl *log = MyUndoLogState.log;
-	uint64 current_insert_loc = 0;
-
-	/* Ensure that we are attached to an undo log. */
-	if (unlikely(log == NULL))
-	{
-		attach_undo_log();
-		log = MyUndoLogState.log;
-	}
-
-	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	current_insert_loc = log->meta.insert;
-	LWLockRelease(&log->mutex);
-
-	return MakeUndoRecPtr(MyUndoLogState.logno, current_insert_loc);
-}
-
-/*
  * Detach from the undo log we are currently attached to, returning it to the
  * free list if it still has space.
  */
 static void
-detach_current_undo_log()
+detach_current_undo_log(UndoPersistence persistence, bool exhausted)
 {
 	UndoLogSharedData *shared = MyUndoLogState.shared;
-	UndoLogControl *log = MyUndoLogState.log;
-	UndoLogNumber logno = MyUndoLogState.logno;
+	UndoLogControl *log = MyUndoLogState.logs[persistence];
 
 	Assert(log != NULL);
 
-	MyUndoLogState.log = NULL;
-	MyUndoLogState.logno = InvalidUndoLogNumber;
+	MyUndoLogState.logs[persistence] = NULL;
 
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->pid = InvalidPid;
 	log->xid = InvalidTransactionId;
+	if (exhausted)
+		log->meta.status = UNDO_LOG_STATUS_EXHAUSTED;
+	LWLockRelease(&log->mutex);
 
-	/*
-	 * XXX: If it's almost completely full, mark it as retired somehow rather
-	 * than putting in in the freelist.
-	 */
-
-	/* Push back onto the freelist. */
-	LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
-	log->next_free = shared->free_list;
-	shared->free_list = logno;
-	LWLockRelease(UndoLogLock);
+	/* Push back onto the appropriate freelist. */
+	if (!exhausted)
+	{
+		LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
+		log->next_free = shared->free_lists[persistence];
+		shared->free_lists[persistence] = log->logno;
+		LWLockRelease(UndoLogLock);
+	}
 }
 
 static void
 undo_log_before_exit(int code, Datum arg)
 {
-	if (MyUndoLogState.log != NULL)
-		detach_current_undo_log();
+	int		i;
+
+	for (i = 0; i < UndoPersistenceLevels; ++i)
+	{
+		if (MyUndoLogState.logs[i] != NULL)
+			detach_current_undo_log(i, false);
+	}
 }
 
 /*
@@ -541,6 +523,16 @@ allocate_empty_undo_segment(UndoLogNumber logno, Oid tablespace,
 	 * files with holes.
 	 */
 	fd = OpenTransientFile(path, O_RDWR | O_CREAT | PG_BINARY);
+	if (fd < 0 && tablespace != 0)
+	{
+		char parent[MAXPGPATH];
+
+		/* Try creating the undo directory for this tablespace. */
+		UndoLogDirectory(tablespace, parent);
+		if (mkdir(parent, S_IRWXU) != 0 && errno != EEXIST)
+			elog(ERROR, "could not create directory \"%s\": %m", parent);
+		fd = OpenTransientFile(path, O_RDWR | O_CREAT | PG_BINARY);
+	}
 	if (fd < 0)
 		elog(ERROR, "could not create new file \"%s\": %m", path);
 	if (fstat(fd, &stat_buffer) < 0)
@@ -587,13 +579,7 @@ extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end)
 	Assert(log != NULL);
 	Assert(log->meta.end % UndoLogSegmentSize == 0);
 	Assert(new_end % UndoLogSegmentSize == 0);
-	Assert(MyUndoLogState.log == log || InRecovery);
-
-	/* Create (pseudo) database directory if it doesn't exist. */
-	if (log->meta.tablespace != InvalidOid &&
-		log->meta.tablespace != DEFAULTTABLESPACE_OID)
-		TablespaceCreateDbspace(log->meta.tablespace, UndoLogDatabaseOid,
-								false /* TODO: redo flag */);
+	Assert(MyUndoLogState.logs[log->meta.persistence] == log || InRecovery);
 
 	/*
 	 * Create all the segments needed to increase 'end' to the requested
@@ -693,22 +679,71 @@ extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end)
  * and an insertion point within a buffer page using the macros above.
  */
 UndoRecPtr
-UndoLogAllocate(size_t size, UndoPersistence level, xl_undolog_meta *undometa)
+UndoLogAllocate(size_t size, UndoPersistence persistence, xl_undolog_meta *undometa)
 {
-	UndoLogControl *log = MyUndoLogState.log;
-	bool	need_attach_wal_record = false;
-	bool	is_xid_change = false;
+	UndoLogControl *log = MyUndoLogState.logs[persistence];
 	UndoLogOffset new_insert;
 
- retry:
+	/*
+	 * We may need to attach to an undo log, either because this is the first
+	 * time this backend as needed to write to an undo log at all or because
+	 * the undo_tablespaces GUC was changed.  When doing that, we'll need
+	 * interlocking against tablespaces being concurrently dropped.
+	 */
 
-	/* Ensure that we are attached to an undo log. */
-	if (unlikely(log == NULL))
+ retry:
+	/* See if we need to check the undo_tablespaces GUC. */
+	if (unlikely(MyUndoLogState.need_to_choose_tablespace || log == NULL))
 	{
-		attach_undo_log();
-		log = MyUndoLogState.log;
-		/* Start of a new transaction */
-		is_xid_change = true;
+		Oid		tablespace;
+		bool	need_to_unlock;
+
+		need_to_unlock =
+			choose_undo_tablespace(MyUndoLogState.need_to_choose_tablespace,
+								   &tablespace);
+		attach_undo_log(persistence, tablespace);
+		if (need_to_unlock)
+			LWLockRelease(TablespaceCreateLock);
+		log = MyUndoLogState.logs[persistence];
+		MyUndoLogState.need_to_choose_tablespace = false;
+	}
+
+	/*
+	 * If this is the first time we've allocated undo log space in this
+	 * transaction, we'll record the xid->undo log association so that it can
+	 * be replayed correctly.
+	 */
+	if (log->xid != GetTopTransactionId())
+	{
+		xl_undolog_attach xlrec;
+
+		LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+		/*
+		 * While we have the lock, check if we have been forcibly detached by
+		 * DROP TABLESPACE.  That can only happen between transactions (see
+		 * DetachUndoLogsInsTablespace()) so we only have to check for it
+		 * in this branch.
+		 */
+		if (log->pid == InvalidPid)
+		{
+			LWLockRelease(&log->mutex);
+			log = NULL;
+			goto retry;
+		}
+		log->xid = GetTopTransactionId();
+		log->meta.is_first_rec = true;
+		LWLockRelease(&log->mutex);
+
+		/* Skip the attach record for unlogged and temporary tables. */
+		if (persistence == UNDO_PERMANENT)
+		{
+			xlrec.xid = GetTopTransactionId();
+			xlrec.logno = log->logno;
+
+			XLogBeginInsert();
+			XLogRegisterData((char *) &xlrec, sizeof(xlrec));
+			XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_ATTACH);
+		}
 	}
 
 	/*
@@ -735,58 +770,28 @@ UndoLogAllocate(size_t size, UndoPersistence level, xl_undolog_meta *undometa)
 			 * caller or later the undo worker deal with a transaction being
 			 * split over two undo logs?
 			 */
-			log = MyUndoLogState.log = NULL;
-			detach_current_undo_log();
+			log = NULL;
+			detach_current_undo_log(persistence, true);
 			goto retry;
 		}
 		/*
 		 * Extend the end of this undo log to cover new_insert (in other words
 		 * round up to the segment size).
 		 */
-		extend_undo_log(MyUndoLogState.logno,
+		extend_undo_log(log->logno,
 						new_insert + UndoLogSegmentSize -
 						new_insert % UndoLogSegmentSize);
 		Assert(new_insert <= log->meta.end);
 	}
 
-	/*
-	 * If we haven't already done so since the last checkpoint, associate the
-	 * current transaction ID with this undo log, so that
-	 * UndoLogAllocateInRecovery knows how to replay this undo space
-	 * allocation.
-	 */
-	if (log->xid != GetTopTransactionId())
-		is_xid_change = true;
-
-	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	if (log->need_attach_wal_record || is_xid_change)
-	{
-		need_attach_wal_record = true;
-		log->xid = GetTopTransactionId();
-		log->need_attach_wal_record = false;
-	}
-	LWLockRelease(&log->mutex);
-
-	if (need_attach_wal_record)
-	{
-		xl_undolog_attach xlrec;
-
-		xlrec.xid = GetTopTransactionId();
-		xlrec.logno = MyUndoLogState.logno;
-
-		XLogBeginInsert();
-		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
-		XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_ATTACH);
-	}
-
 	if (undometa)
 	{
 		undometa->meta = log->meta;
-		undometa->logno = MyUndoLogState.logno;
+		undometa->logno = log->logno;
 		undometa->xid = log->xid;
 	}
 
-	return MakeUndoRecPtr(MyUndoLogState.logno, log->meta.insert);
+	return MakeUndoRecPtr(log->logno, log->meta.insert);
 }
 
 /*
@@ -851,6 +856,7 @@ UndoLogAllocateInRecovery(TransactionId xid, size_t size,
 	 * it will not be first undo record for the transaction.
 	 */
 	log->meta.is_first_rec = false;
+
 	return MakeUndoRecPtr(logno, log->meta.insert);
 }
 
@@ -861,7 +867,7 @@ UndoLogAllocateInRecovery(TransactionId xid, size_t size,
  * recovery.
  */
 void
-UndoLogAdvance(UndoRecPtr insertion_point, size_t size)
+UndoLogAdvance(UndoRecPtr insertion_point, size_t size, UndoPersistence persistence)
 {
 	UndoLogControl *log = NULL;
 	UndoLogNumber	logno = UndoRecPtrGetLogNo(insertion_point) ;
@@ -871,10 +877,10 @@ UndoLogAdvance(UndoRecPtr insertion_point, size_t size)
 	 * more.
 	 */
 	log = (InRecovery) ? get_undo_log_by_number(logno)
-						: MyUndoLogState.log;
+		: MyUndoLogState.logs[persistence];
 
 	Assert(log != NULL);
-	Assert(InRecovery || logno == MyUndoLogState.logno);
+	Assert(InRecovery || logno == log->logno);
 	Assert(UndoRecPtrGetOffset(insertion_point) == log->meta.insert);
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
@@ -939,7 +945,7 @@ UndoLogDiscard(UndoRecPtr discard_point, TransactionId xid)
 	 * buffers from the buffer pool before removing files, otherwise a
 	 * concurrent session might try to write the block to evict the buffer.
 	 */
-	forget_undo_buffers(logno, old_discard, discard);
+	forget_undo_buffers(logno, old_discard, discard, false);
 
 	/*
 	 * Check if we crossed a segment boundary and need to do some synchronous
@@ -1356,39 +1362,48 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 				 path);
 
 		/*
-		 * If there are any segment files between the discard and insert
-		 * pointers that don't exist on disk as expected, then create new
-		 * empty files.  If we are restarting after a crash, segment files
-		 * that were present at the moment of the checkpoint might be missing
-		 * now because later WAL records will discard them.
+		 * If there are any segment files between the discard and end pointers
+		 * that don't exist on disk as expected, then create new empty files.
+		 * If we are restarting after a crash, segment files that were present
+		 * at the moment of the checkpoint might be missing now because later
+		 * WAL records will discard them.
+		 *
+		 * TODO: This doesn't work for tablespaces that were later dropped!
+		 * FIXME
 		 */
-		for (segno = log->meta.discard / UndoLogSegmentSize;
-			 segno <= log->meta.insert / UndoLogSegmentSize;
-			 ++segno)
+		if (log->meta.status == UNDO_LOG_STATUS_ACTIVE)
 		{
-			struct stat	stat_buffer;
-			char	path[MAXPGPATH];
-			int		rc;
+			for (segno = log->meta.discard / UndoLogSegmentSize;
+				 segno < log->meta.end / UndoLogSegmentSize;
+				 ++segno)
+			{
+				struct stat	stat_buffer;
+				char	path[MAXPGPATH];
+				int		rc;
 
-			UndoLogSegmentPath(logno, segno, log->meta.tablespace, path);
-			rc = stat(path, &stat_buffer);
-			if (rc == 0 && stat_buffer.st_size == UndoLogSegmentSize)
-				continue;
-			if (rc != 0 && errno != ENOENT)
-				elog(ERROR, "could not stat \"%s\": %m", path);
-			allocate_empty_undo_segment(logno, log->meta.tablespace,
-										segno * UndoLogSegmentSize);
+				UndoLogSegmentPath(logno, segno, log->meta.tablespace, path);
+				rc = stat(path, &stat_buffer);
+				if (rc == 0 && stat_buffer.st_size == UndoLogSegmentSize)
+					continue;
+				if (rc != 0 && errno != ENOENT)
+					elog(ERROR, "could not stat \"%s\": %m", path);
+				allocate_empty_undo_segment(logno, log->meta.tablespace,
+											segno * UndoLogSegmentSize);
+			}
 		}
 
 
 		/*
-		 * Set up the rest of the control object.  During recovery, all active
-		 * undo logs go on the free list.
+		 * At normal start-up, or during recovery, all active undo logs start
+		 * out on the appropriate free list.
 		 */
 		log->pid = InvalidPid;
 		log->xid = InvalidTransactionId;
-		log->next_free = shared->free_list;
-		shared->free_list = logno;
+		if (log->meta.status == UNDO_LOG_STATUS_ACTIVE)
+		{
+			log->next_free = shared->free_lists[log->meta.persistence];
+			shared->free_lists[log->meta.persistence] = logno;
+		}
 	}
 	CloseTransientFile(fd);
 }
@@ -1426,7 +1441,7 @@ prepare_xlog:
 bool
 NeedUndoMetaLog(XLogRecPtr redo_point)
 {
-	UndoLogControl *log = MyUndoLogState.log;
+	UndoLogControl *log = MyUndoLogState.logs[UNDO_PERMANENT];
 
 	if (log->lsn <= redo_point)
 		return true;
@@ -1441,7 +1456,7 @@ NeedUndoMetaLog(XLogRecPtr redo_point)
 void
 UndoLogSetLSN(XLogRecPtr lsn)
 {
-	UndoLogControl *log = MyUndoLogState.log;
+	UndoLogControl *log = MyUndoLogState.logs[UNDO_PERMANENT];
 
 	Assert(AmAttachedToUndoLog(log));
 	log->lsn = lsn;
@@ -1552,43 +1567,50 @@ ensure_undo_log_number(UndoLogNumber logno)
  * Attach to an undo log, possibly creating or recycling one.
  */
 static void
-attach_undo_log(void)
+attach_undo_log(UndoPersistence persistence, Oid tablespace)
 {
 	UndoLogSharedData *shared = MyUndoLogState.shared;
-	UndoLogControl *log;
+	UndoLogControl *log = NULL;
 	UndoLogNumber logno;
+	UndoLogNumber *place;
 
 	Assert(!InRecovery);
-	Assert(MyUndoLogState.log == NULL);
-
-	/* undorecord.c needs to clean up some private state. */
-	UndoRecordOnUndoLogChange(UNDO_PERSISTENT);
-
-	/*
-	 * We have to acquire a lock to attach to a log.
-	 *
-	 * XXX We could have partitioned freelists to decrease contention, and
-	 * then make backends attach and detach aggressively so that we settle on
-	 * a smallish number of undo logs.  Or we could remain attached until
-	 * session end, hogging a whole log per backend but not needing to
-	 * communicate much.
-	 */
+	Assert(MyUndoLogState.logs[persistence] == NULL);
 
 	LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
-	if (shared->free_list != InvalidUndoLogNumber)
-	{
-		logno = shared->free_list;
 
-		/* Pop first free undo log slot from list. */
-		log = get_undo_log_by_number(logno);
-		if (log == NULL)
+	/*
+	 * For now we have a simple linked list of unattached undo logs for each
+	 * persistence level.  We'll grovel though it to find something for the
+	 * tablespace you asked for.  If you're not using multiple tablespaces
+	 * it'll be able to pop one off the front.  We might need a hash table
+	 * keyed by tablespace if this simple scheme turns out to be too slow when
+	 * using many tablespaces and many undo logs, but that seems like an
+	 * unusual use case not worth optimizing for.
+	 */
+	place = &shared->free_lists[persistence];
+	while (*place != InvalidUndoLogNumber)
+	{
+		UndoLogControl *candidate = get_undo_log_by_number(*place);
+
+		if (candidate == NULL)
 			elog(ERROR, "corrupted undo log freelist");
-		shared->free_list = log->next_free;
+		if (candidate->meta.tablespace == tablespace)
+		{
+			logno = *place;
+			log = candidate;
+			*place = candidate->next_free;
+			break;
+		}
+		place = &candidate->next_free;
 	}
-	else
-	{
-		/* All existing undo logs are busy.  Create a new one. */
 
+	/*
+	 * All existing undo logs for this tablespace and persistence level are
+	 * busy, so we'll have to create a new one.
+	 */
+	if (log == NULL)
+	{
 		if (shared->high_logno > (1 << UndoLogNumberBits))
 		{
 			/*
@@ -1605,13 +1627,13 @@ attach_undo_log(void)
 		/* Get new zero-filled UndoLogControl object. */
 		log = get_undo_log_by_number(logno);
 
+		Assert(log->meta.persistence == 0);
 		Assert(log->meta.tablespace == InvalidOid);
 		Assert(log->meta.discard == 0);
 		Assert(log->meta.insert == 0);
 		Assert(log->meta.end == 0);
 		Assert(log->pid == 0);
 		Assert(log->xid == 0);
-		Assert(log->next_free == 0);
 
 		/*
 		 * The insert and discard pointers start after the first block's
@@ -1621,7 +1643,9 @@ attach_undo_log(void)
 		log->meta.insert = UndoLogBlockHeaderSize;
 		log->meta.discard = UndoLogBlockHeaderSize;
 
-		/* TODO: Choose log->meta.tablespace */
+		log->meta.tablespace = tablespace;
+		log->meta.persistence = persistence;
+		log->meta.status = UNDO_LOG_STATUS_ACTIVE;
 
 		/* Move the high log number pointer past this one. */
 		++shared->high_logno;
@@ -1632,6 +1656,7 @@ attach_undo_log(void)
 
 			xlrec.logno = logno;
 			xlrec.tablespace = log->meta.tablespace;
+			xlrec.persistence = log->meta.persistence;
 
 			XLogBeginInsert();
 			XLogRegisterData((char *) &xlrec, sizeof(xlrec));
@@ -1639,7 +1664,7 @@ attach_undo_log(void)
 		}
 
 		/*
-		 * This undo log has no segments.  UndoLogPrepare will create the
+		 * This undo log has no segments.  UndoLogAllocate will create the
 		 * first one on demand.
 		 */
 	}
@@ -1647,12 +1672,11 @@ attach_undo_log(void)
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->pid = MyProcPid;
-	log->xid = GetTopTransactionId();
+	log->xid = InvalidTransactionId;
 	log->need_attach_wal_record = true;
 	LWLockRelease(&log->mutex);
 
-	MyUndoLogState.logno = logno;
-	MyUndoLogState.log = log;
+	MyUndoLogState.logs[persistence] = log;
 }
 
 /*
@@ -1699,10 +1723,402 @@ undolog_attach_xid(TransactionId xid, UndoLogNumber logno)
 	MyUndoLogState.xidToLogNumber[high_bits][low_bits] = logno;
 }
 
+/* check_hook: validate new undo_tablespaces */
+bool
+check_undo_tablespaces(char **newval, void **extra, GucSource source)
+{
+	char	   *rawname;
+	List	   *namelist;
+
+	/* Need a modifiable copy of string */
+	rawname = pstrdup(*newval);
+
+	/*
+	 * Parse string into list of identifiers, just to check for
+	 * well-formedness (unfortunateley we can't validate the names in the
+	 * catalog yet).
+	 */
+	if (!SplitIdentifierString(rawname, ',', &namelist))
+	{
+		/* syntax error in name list */
+		GUC_check_errdetail("List syntax is invalid.");
+		pfree(rawname);
+		list_free(namelist);
+		return false;
+	}
+
+	/*
+	 * Make sure we aren't already in a transaction that has been assigned an
+	 * XID.  This ensures we don't detach from an undo log that we might have
+	 * started writing undo data into for this transaction.
+	 */
+	if (GetTopTransactionIdIfAny() != InvalidTransactionId)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 (errmsg("undo_tablespaces cannot be changed while a transaction is in progress"))));
+	list_free(namelist);
+
+	return true;
+}
+
+/* assign_hook: do extra actions as needed */
+void
+assign_undo_tablespaces(const char *newval, void *extra)
+{
+	/*
+	 * This is normally called only when GetTopTransactionIdIfAny() ==
+	 * InvalidTransactionId (because you can't change undo_tablespaces in the
+	 * middle of a transaction that's been asigned an xid), but we can't
+	 * assert that because it's also called at the end of a transaction that's
+	 * rolling back, to reset the GUC if it was set inside the transaction.
+	 */
+
+	/* Tell UndoLogAllocate() to reexamine undo_tablespaces. */
+	MyUndoLogState.need_to_choose_tablespace = true;
+}
+
+static bool
+choose_undo_tablespace(bool force_detach, Oid *tablespace)
+{
+	char   *rawname;
+	List   *namelist;
+	bool	need_to_unlock;
+	int		length;
+	int		i;
+
+	/* We need a modifiable copy of string. */
+	rawname = pstrdup(undo_tablespaces);
+
+	/* Break string into list of identifiers. */
+	if (!SplitIdentifierString(rawname, ',', &namelist))
+		elog(ERROR, "undo_tablespaces is unexpectedly malformed");
+
+	length = list_length(namelist);
+	if (length == 0 ||
+		(length == 1 && ((char *) linitial(namelist))[0] == '\0'))
+	{
+		/*
+		 * If it's an empty string, then we'll use the default tablespace.  No
+		 * locking is required because it can't be dropped.
+		 */
+		*tablespace = DEFAULTTABLESPACE_OID;
+		need_to_unlock = false;
+	}
+	else
+	{
+		/*
+		 * Choose an OID using our pid, so that if several backends have the
+		 * same multi-tablespace setting they'll spread out.  We could easily
+		 * do better than this if more serious load balancing is judged
+		 * useful.
+		 */
+		int		index = MyProcPid % length;
+		int		first_index = index;
+		Oid		oid = InvalidOid;
+
+		/*
+		 * Take the tablespace create/drop lock while we look the name up.
+		 * This prevents the tablespace from being dropped while we're trying
+		 * to resolve the name, or while the called is trying to create an
+		 * undo log in it.  The caller will have to release this lock.
+		 */
+		LWLockAcquire(TablespaceCreateLock, LW_EXCLUSIVE);
+		for (;;)
+		{
+			const char *name = list_nth(namelist, index);
+
+			oid = get_tablespace_oid(name, true);
+			if (oid == InvalidOid)
+			{
+				/* Unknown tablespace, try the next one. */
+				index = (index + 1) % length;
+				/*
+				 * But if we've tried them all, it's time to complain.  We'll
+				 * arbitrarily complain about the last one we tried in the
+				 * error message.
+				 */
+				if (index == first_index)
+					ereport(ERROR,
+							(errcode(ERRCODE_UNDEFINED_OBJECT),
+							 errmsg("tablespace \"%s\" does not exist", name),
+							 errhint("Create the tablespace or set undo_tablespaces to a valid or empty list.")));
+				continue;
+			}
+			if (oid == GLOBALTABLESPACE_OID)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("undo logs cannot be placed in pg_global tablespace")));
+			/* If we got here we succeeded in finding one. */
+			break;
+		}
+
+		Assert(oid != InvalidOid);
+		*tablespace = oid;
+		need_to_unlock = true;
+	}
+
+	/*
+	 * If we came here because the user changed undo_tablesaces, then detach
+	 * from any undo logs we happen to be attached to.
+	 */
+	if (force_detach)
+	{
+		for (i = 0; i < UndoPersistenceLevels; ++i)
+		{
+			UndoLogControl *log = MyUndoLogState.logs[i];
+			UndoLogSharedData *shared = MyUndoLogState.shared;
+
+			if (log != NULL)
+			{
+				LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+				log->pid = InvalidPid;
+				log->xid = InvalidTransactionId;
+				LWLockRelease(&log->mutex);
+
+				LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
+				log->next_free = shared->free_lists[i];
+				shared->free_lists[i] = log->logno;
+				LWLockRelease(UndoLogLock);
+
+				MyUndoLogState.logs[i] = NULL;
+			}
+		}
+	}
+
+	return need_to_unlock;
+}
+
+bool
+DropUndoLogsInTablespace(Oid tablespace)
+{
+	DIR *dir;
+	char undo_path[MAXPGPATH];
+	UndoLogNumber low_logno;
+	UndoLogNumber high_logno;
+	UndoLogNumber logno;
+	UndoLogSharedData *shared = MyUndoLogState.shared;
+	int		i;
+
+	Assert(LWLockHeldByMe(TablespaceCreateLock));
+	Assert(tablespace != DEFAULTTABLESPACE_OID);
+
+	LWLockAcquire(UndoLogLock, LW_SHARED);
+	low_logno = shared->low_logno;
+	high_logno = shared->high_logno;
+	LWLockRelease(UndoLogLock);
+
+	/* First, try to kick everyone off any undo logs in this tablespace. */
+	for (logno = low_logno; logno < high_logno; ++logno)
+	{
+		UndoLogControl *log = get_undo_log_by_number(logno);
+		bool ok;
+		bool return_to_freelist = false;
+
+		/* Skip undo logs in other tablespaces. */
+		if (log->meta.tablespace != tablespace)
+			continue;
+
+		/* Check if this undo log can be forcibly detached. */
+		LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+		if (log->meta.discard == log->meta.insert &&
+			(log->xid == InvalidTransactionId ||
+			 !TransactionIdIsInProgress(log->xid)))
+		{
+			log->xid = InvalidTransactionId;
+			if (log->pid != InvalidPid)
+			{
+				log->pid = InvalidPid;
+				return_to_freelist = true;
+			}
+			ok = true;
+		}
+		else
+		{
+			/*
+			 * There is data we need in this undo log.  We can't force it to
+			 * be detached.
+			 */
+			ok = false;
+		}
+		LWLockRelease(&log->mutex);
+
+		/* If we failed, then give up now and report failure. */
+		if (!ok)
+			return false;
+
+		/*
+		 * Put this undo log back on the appropriate free-list.  No one can
+		 * attach to it while we hold TablespaceCreateLock, but if we return
+		 * earlier in a future go around this loop, we need the undo log to
+		 * remain usable.  We'll remove all appropriate logs from the
+		 * free-lists in a separate step below.
+		 */
+		if (return_to_freelist)
+		{
+			LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
+			log->next_free = shared->free_lists[log->meta.persistence];
+			shared->free_lists[log->meta.persistence] = logno;
+			LWLockRelease(UndoLogLock);
+		}
+	}
+
+	/*
+	 * We detached all backends from undo logs in this tablespace, and no one
+	 * can attach to any non-default-tablespace undo logs while we hold
+	 * TablespaceCreateLock.  We can now drop the undo logs.
+	 */
+	for (logno = low_logno; logno < high_logno; ++logno)
+	{
+		UndoLogControl *log = get_undo_log_by_number(logno);
+
+		/* Skip undo logs in other tablespaces. */
+		if (log->meta.tablespace != tablespace)
+			continue;
+
+		/*
+		 * Make sure no buffers remain.  When that is done by UndoDiscard(),
+		 * the final page is left in shared_buffers because it may contain
+		 * data, or at least be needed again very soon.  Here we need to drop
+		 * even that page from the buffer pool.
+		 */
+		forget_undo_buffers(logno, log->meta.discard, log->meta.discard, true);
+
+		/*
+		 * TODO: For now we drop the undo log, meaning that it will never be
+		 * used again.  That wastes the rest of its address space.  Instead,
+		 * we should put it onto a special list of 'offline' undo logs, ready
+		 * to be reactivated in some other tablespace.  Then we can keep the
+		 * unused portion of its address space.
+		 */
+
+		/* Log the dropping operation.  TODO: WAL */
+
+		LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+		log->meta.status = UNDO_LOG_STATUS_DROPPED;
+		LWLockRelease(&log->mutex);
+	}
+
+	/* TODO: flush WAL?  revisit */
+	/* Unlink all undo segment files in this tablespace. */
+	UndoLogDirectory(tablespace, undo_path);
+
+	dir = AllocateDir(undo_path);
+	if (dir != NULL)
+	{
+		struct dirent *de;
+
+		while ((de = ReadDirExtended(dir, undo_path, LOG)) != NULL)
+		{
+			char segment_path[MAXPGPATH];
+
+			if (strcmp(de->d_name, ".") == 0 ||
+				strcmp(de->d_name, "..") == 0)
+				continue;
+			snprintf(segment_path, sizeof(segment_path), "%s/%s",
+					 undo_path, de->d_name);
+			if (unlink(segment_path) < 0)
+				elog(LOG, "couldn't unlink file \"%s\": %m", segment_path);
+		}
+		FreeDir(dir);
+	}
+
+	/* Remove all dropped undo logs from the free-lists. */
+	LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
+	for (i = 0; i < UndoPersistenceLevels; ++i)
+	{
+		UndoLogControl *log;
+		UndoLogNumber *place;
+
+		place = &shared->free_lists[i];
+		while (*place != InvalidUndoLogNumber)
+		{
+			log = get_undo_log_by_number(*place);
+			if (log->meta.status == UNDO_LOG_STATUS_DROPPED)
+				*place = log->next_free;
+			else
+				place = &log->next_free;
+		}
+	}
+	LWLockRelease(UndoLogLock);
+
+	return true;
+}
+
+void
+ResetUnloggedUndoLogs(void)
+{
+	UndoLogNumber low_logno;
+	UndoLogNumber high_logno;
+	UndoLogNumber logno;
+	UndoLogSharedData *shared = MyUndoLogState.shared;
+
+	LWLockAcquire(UndoLogLock, LW_SHARED);
+	low_logno = shared->low_logno;
+	high_logno = shared->high_logno;
+	LWLockRelease(UndoLogLock);
+
+	/* TODO: figure out if locking is needed here */
+
+	for (logno = low_logno; logno < high_logno; ++logno)
+	{
+		UndoLogControl *log = get_undo_log_by_number(logno);
+		DIR	   *dir;
+		struct dirent *de;
+		char	undo_path[MAXPGPATH];
+		char	segment_prefix[MAXPGPATH];
+		size_t	segment_prefix_size;
+
+		if (log->meta.persistence != UNDO_UNLOGGED)
+			continue;
+
+		/* Scan the directory for files belonging to this undo log. */
+		snprintf(segment_prefix, sizeof(segment_prefix), "%06X.", logno);
+		segment_prefix_size = strlen(segment_prefix);
+		UndoLogDirectory(log->meta.tablespace, undo_path);
+		dir = AllocateDir(undo_path);
+		if (dir == NULL)
+			continue;
+		while ((de = ReadDirExtended(dir, undo_path, LOG)) != NULL)
+		{
+			char segment_path[MAXPGPATH];
+
+			if (strncmp(de->d_name, segment_prefix, segment_prefix_size) != 0)
+				continue;
+			snprintf(segment_path, sizeof(segment_path), "%s/%s",
+					 undo_path, de->d_name);
+			elog(LOG, "unlinked undo segment \"%s\"", segment_path); /* XXX: remove me */
+			if (unlink(segment_path) < 0)
+				elog(LOG, "couldn't unlink file \"%s\": %m", segment_path);
+		}
+		FreeDir(dir);
+
+		/*
+		 * We have no segment files.  Set all pointers to the current end
+		 * pointer, so we'll create the next segment from there as soon as we
+		 * need it.
+		 *
+		 * TODO: Should we rewind to zero instead, so we can reuse that (now)
+		 * unreferenced address space?
+		 */
+		log->meta.insert = log->meta.discard = log->meta.end;
+
+		/*
+		 * TODO: Here we need to call forget_undo_buffers() to nuke anything
+		 * in shared buffers that might have resulted from replaying WAL,
+		 * which will cause later checkpoints to fail when they can't find a
+		 * file to write buffers to.  But we can't, because we don't know the
+		 * true discard and end pointers here.  Ahh, that's not right.  There
+		 * can be no such WAL, because unlogged relations shouldn't be logging
+		 * anything.  So the fact that they are is a bug elsewhere in zheap
+		 * code?
+		 */
+	}
+}
+
 Datum
 pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 {
-#define PG_STAT_GET_UNDO_LOGS_COLS 8
+#define PG_STAT_GET_UNDO_LOGS_COLS 9
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
@@ -1712,6 +2128,8 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 	UndoLogNumber high_logno;
 	UndoLogNumber logno;
 	UndoLogSharedData *shared = MyUndoLogState.shared;
+	char *tablespace_name = NULL;
+	Oid last_tablespace = InvalidOid;
 
 	/* check to see if caller supports us returning a tuplestore */
 	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
@@ -1751,6 +2169,7 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 		char buffer[17];
 		Datum values[PG_STAT_GET_UNDO_LOGS_COLS];
 		bool nulls[PG_STAT_GET_UNDO_LOGS_COLS] = { false };
+		Oid tablespace;
 
 		if (log == NULL)
 			continue;
@@ -1761,29 +2180,63 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 		 * copying them.
 		 */
 		LWLockAcquire(&log->mutex, LW_SHARED);
+
+		if (log->meta.status == UNDO_LOG_STATUS_DROPPED)
+		{
+			LWLockRelease(&log->mutex);
+			continue;
+		}
+
 		values[0] = ObjectIdGetDatum((Oid) logno);
-		values[1] = ObjectIdGetDatum(log->meta.tablespace);
+		values[1] = CStringGetTextDatum(
+			log->meta.persistence == UNDO_PERMANENT ? "permanent" :
+			log->meta.persistence == UNDO_UNLOGGED ? "unlogged" :
+			log->meta.persistence == UNDO_TEMP ? "temporary" : "<uknown>");
+		tablespace = log->meta.tablespace;
+
 		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
 				 MakeUndoRecPtr(logno, log->meta.discard));
-		values[2] = CStringGetTextDatum(buffer);
-		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
-				 MakeUndoRecPtr(logno, log->meta.insert));
 		values[3] = CStringGetTextDatum(buffer);
 		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
-				 MakeUndoRecPtr(logno, log->meta.end));
+				 MakeUndoRecPtr(logno, log->meta.insert));
 		values[4] = CStringGetTextDatum(buffer);
+		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
+				 MakeUndoRecPtr(logno, log->meta.end));
+		values[5] = CStringGetTextDatum(buffer);
 		if (log->xid == InvalidTransactionId)
-			nulls[5] = true;
-		else
-			values[5] = TransactionIdGetDatum(log->xid);
-		if (log->pid == InvalidPid)
 			nulls[6] = true;
 		else
-			values[6] = Int32GetDatum((int64) log->pid);
+			values[6] = TransactionIdGetDatum(log->xid);
+		if (log->pid == InvalidPid)
+			nulls[7] = true;
+		else
+			values[7] = Int32GetDatum((int64) log->pid);
 		LWLockRelease(&log->mutex);
+
+		/*
+		 * Deal with potentially slow tablespace name lookup without the lock.
+		 * Avoid making multiple calls to that expensive function for the
+		 * common case of repeating tablespace.
+		 */
+		if (tablespace != last_tablespace)
+		{
+			if (tablespace_name)
+				pfree(tablespace_name);
+			tablespace_name = get_tablespace_name(tablespace);
+			last_tablespace = tablespace;
+		}
+		if (tablespace_name)
+		{
+			values[2] = CStringGetTextDatum(tablespace_name);
+			nulls[2] = false;
+		}
+		else
+			nulls[2] = true;
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
+	if (tablespace_name)
+		pfree(tablespace_name);
 	tuplestore_donestoring(tupstore);
 
 	return (Datum) 0;
@@ -1803,6 +2256,8 @@ undolog_xlog_create(XLogReaderState *record)
 	ensure_undo_log_number(xlrec->logno);
 
 	log = get_undo_log_by_number(xlrec->logno);
+	log->meta.status = UNDO_LOG_STATUS_ACTIVE;
+	log->meta.persistence = xlrec->persistence;
 	log->meta.tablespace = xlrec->tablespace;
 	log->meta.insert = UndoLogBlockHeaderSize;
 	log->meta.discard = UndoLogBlockHeaderSize;
@@ -1862,16 +2317,26 @@ undolog_xlog_meta(XLogReaderState *record)
 	log->pid = MyProcPid; /* show as recovery process */
 	LWLockRelease(&log->mutex);
 
-	MyUndoLogState.log = log;
+	/*
+	 * TODO: We should never see an attach record for a persistence level
+	 * other than UNDO_PERMANENT, right?  That is, we should probably suppress
+	 * them and then assert that we never get them here.
+	 */
+
+	MyUndoLogState.logs[log->meta.persistence] = log;
 }
 
 /*
  * Drop all buffers for the given undo log, from the old_discard to up
- * new_discard, not including the buffer that holds new_discard.
+ * new_discard.  If drop_tail is true, also drop the buffer that holds
+ * new_discard; this is used when dropping undo logs completely via DROP
+ * TABLESPACE.  If it is false, then the final buffer is not dropped because
+ * it may contain data.
+ *
  */
 static void
 forget_undo_buffers(int logno, UndoLogOffset old_discard,
-					UndoLogOffset new_discard)
+					UndoLogOffset new_discard, bool drop_tail)
 {
 	BlockNumber old_blockno;
 	BlockNumber new_blockno;
@@ -1880,6 +2345,8 @@ forget_undo_buffers(int logno, UndoLogOffset old_discard,
 	UndoRecPtrAssignRelFileNode(rnode, MakeUndoRecPtr(logno, old_discard));
 	old_blockno = old_discard / BLCKSZ;
 	new_blockno = new_discard / BLCKSZ;
+	if (drop_tail)
+		++new_blockno;
 	while (old_blockno < new_blockno)
 		ForgetBuffer(rnode, UndoLogForkNum, old_blockno++);
 }
@@ -1928,7 +2395,7 @@ undolog_xlog_discard(XLogReaderState *record)
 	LWLockRelease(&log->mutex);
 
 	/* Drop buffers before we remove/recycle any files. */
-	forget_undo_buffers(xlrec->logno, discard, xlrec->discard);
+	forget_undo_buffers(xlrec->logno, discard, xlrec->discard, false);
 
 	/* Rewind to the start of the segment. */
 	old_segment_begin = discard - discard % UndoLogSegmentSize;
@@ -2038,5 +2505,12 @@ undolog_redo(XLogReaderState *record)
 bool
 AmAttachedToUndoLog(UndoLogControl *log)
 {
-	return MyUndoLogState.log == log;
+	int		i;
+
+	for (i = 0; i < UndoPersistenceLevels; ++i)
+	{
+		if (MyUndoLogState.logs[i] == log)
+			return true;
+	}
+	return false;
 }

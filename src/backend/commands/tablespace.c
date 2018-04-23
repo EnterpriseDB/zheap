@@ -483,6 +483,20 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 	LWLockAcquire(TablespaceCreateLock, LW_EXCLUSIVE);
 
 	/*
+	 * Drop the undo logs in this tablespace.  This will fail (without
+	 * dropping anything) if there are undo logs that we can't afford to drop
+	 * because they contain non-discarded data or a transaction is in
+	 * progress.  Since we hold TablespaceCreateLock, no other session will be
+	 * able to attach to an undo log in this tablespace (or any tablespace
+	 * except default) concurrently.
+	 */
+	if (!DropUndoLogsInTablespace(tablespaceoid))
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("tablespace \"%s\" cannot be dropped because it contains non-empty undo logs",
+						tablespacename)));
+
+	/*
 	 * Try to remove the physical infrastructure.
 	 */
 	if (!destroy_tablespace_directories(tablespaceoid, false))

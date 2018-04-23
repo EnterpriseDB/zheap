@@ -214,8 +214,10 @@ reacquire_slot:
 	undorecord.uur_payload.len = uncnt * sizeof(OffsetNumber);
 	undorecord.uur_payload.data = (char *) palloc(uncnt * sizeof(OffsetNumber));
 
-	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERSISTENT,
-								InvalidTransactionId, &undometa);
+	urecptr = PrepareUndoInsert(&undorecord,
+								UndoPersistenceForRelation(onerel),
+								InvalidTransactionId,
+								&undometa);
 
 	START_CRIT_SECTION();
 

@@ -47,7 +47,7 @@ static UndoRecordPayload work_payload;
  * transaction try to prepare an undo record we will check if its txid not the
  * same as prev_txid then we will insert the start undo record.
  */
-static TransactionId	prev_txid = InvalidTransactionId;
+static TransactionId	prev_txid[UndoPersistenceLevels] = { 0 };
 
 /* Undo block number to buffer mapping. */
 typedef struct UndoBuffers
@@ -765,8 +765,8 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	 * will be updated while preparing the first undo record of the next
 	 * transaction.
 	 */
-
-	if (prev_txid != txid && (!InRecovery || IsTransactionFirstRec(txid)))
+	if (prev_txid[upersistence] != txid &&
+		(!InRecovery || IsTransactionFirstRec(txid)))
 		need_start_undo = true;
 
  resize:
@@ -811,18 +811,18 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	 * If transaction id is switched then update the previous transaction's
 	 * start undo record.
 	 */
-	if (need_start_undo && txid != prev_txid)
+	if (need_start_undo && txid != prev_txid[upersistence])
 	{
 		UndoRecordUpdateTransactionInfo(urecptr);
 
 		/* Remember the current transaction's xid. */
-		prev_txid = txid;
+		prev_txid[upersistence] = txid;
 
 		/* Store the current transaction's start undorecptr in the undo log. */
 		UndoLogSetLastXactStartPoint(urecptr);
 	}
 
-	UndoLogAdvance(urecptr, size);
+	UndoLogAdvance(urecptr, size, upersistence);
 	cur_blk = UndoRecPtrGetBlockNum(urecptr);
 	UndoRecPtrAssignRelFileNode(rnode, urecptr);
 	starting_byte = UndoRecPtrGetPageOffset(urecptr);
@@ -1250,5 +1250,5 @@ UndoRecordRelease(UnpackedUndoRecord *urec)
 void
 UndoRecordOnUndoLogChange(UndoPersistence persistence)
 {
-	prev_txid = InvalidTransactionId;
+	prev_txid[persistence] = InvalidTransactionId;
 }
