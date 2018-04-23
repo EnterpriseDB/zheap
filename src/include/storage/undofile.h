@@ -44,4 +44,7 @@ extern void undofile_pre_ckpt(void);
 extern void undofile_sync(void);
 extern void undofile_post_ckpt(void);
 
+/* Functions used by undolog.c. */
+extern void undofile_forgetsync(Oid logno, Oid tablespace, int segno);
+
 #endif

@@ -40,6 +40,7 @@
 #include "storage/procarray.h"
 #include "storage/shmem.h"
 #include "storage/standby.h"
+#include "storage/undofile.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
@@ -321,29 +322,6 @@ UndoLogNext(UndoLogControl *log)
 
 		return get_undo_log_by_number(log->logno + 1);
 	}
-}
-
-/*
- * Get an instantaneous snapshot of the range of segments that might be dirty,
- * for checkpointing purposes.
- *
- * XXX Currently this claims that the current segment is dirty, whether or not
- * it's actually been written to recently.  Could do better.
- */
-void
-UndoLogGetDirtySegmentRange(UndoLogNumber logno,
-							int *low_segno, int *high_segno)
-{
-	/* TODO write me */
-}
-
-/*
- * Record that all segments up to 'segno' have been flushed to disk.
- */
-void
-UndoLogSetHighestSyncedSegment(UndoLogNumber logno, int segno)
-{
-	/* TODO write me */
 }
 
 /*
@@ -1040,6 +1018,14 @@ UndoLogDiscard(UndoRecPtr discard_point, TransactionId xid)
 		while (pointer < new_segno * UndoLogSegmentSize)
 		{
 			char	discard_path[MAXPGPATH];
+
+			/*
+			 * Before removing the file, make sure that undofile_sync knows
+			 * that it might be missing.
+			 */
+			undofile_forgetsync(log->logno,
+								log->meta.tablespace,
+								pointer / UndoLogSegmentSize);
 
 			UndoLogSegmentPath(logno, pointer / UndoLogSegmentSize,
 							   log->meta.tablespace, discard_path);
@@ -2582,6 +2568,14 @@ undolog_xlog_discard(XLogReaderState *record)
 	while (old_segment_begin < new_segment_begin)
 	{
 		char	discard_path[MAXPGPATH];
+
+		/*
+		 * Before removing the file, make sure that undofile_sync knows that
+		 * it might be missing.
+		 */
+		undofile_forgetsync(log->logno,
+							log->meta.tablespace,
+							end / UndoLogSegmentSize);
 
 		UndoLogSegmentPath(xlrec->logno, old_segment_begin / UndoLogSegmentSize,
 						   log->meta.tablespace, discard_path);

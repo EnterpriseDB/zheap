@@ -108,6 +108,7 @@ extern void smgrwriteback(SMgrRelation reln, ForkNumber forknum,
 extern BlockNumber smgrnblocks(SMgrRelation reln, ForkNumber forknum);
 extern void smgrtruncate(SMgrRelation reln, ForkNumber forknum,
 			 BlockNumber nblocks);
+extern void smgrrequestsync(RelFileNode rnode, ForkNumber forknum, int segno);
 extern void smgrimmedsync(SMgrRelation reln, ForkNumber forknum);
 extern void smgrpreckpt(void);
 extern void smgrsync(void);
@@ -136,6 +137,7 @@ extern void mdwriteback(SMgrRelation reln, ForkNumber forknum,
 extern BlockNumber mdnblocks(SMgrRelation reln, ForkNumber forknum);
 extern void mdtruncate(SMgrRelation reln, ForkNumber forknum,
 		   BlockNumber nblocks);
+extern void mdrequestsync(RelFileNode rnode, ForkNumber forknum, int segno);
 extern void mdimmedsync(SMgrRelation reln, ForkNumber forknum);
 extern void mdpreckpt(void);
 extern void mdsync(void);
@@ -163,14 +165,13 @@ extern void undofile_writeback(SMgrRelation reln, ForkNumber forknum,
 extern BlockNumber undofile_nblocks(SMgrRelation reln, ForkNumber forknum);
 extern void undofile_truncate(SMgrRelation reln, ForkNumber forknum,
 		   BlockNumber nblocks);
+extern void undofile_requestsync(RelFileNode rnode, ForkNumber forknum, int segno);
 extern void undofile_immedsync(SMgrRelation reln, ForkNumber forknum);
 extern void undofile_preckpt(void);
 extern void undofile_sync(void);
 extern void undofile_postckpt(void);
 
 extern void SetForwardFsyncRequests(void);
-extern void RememberFsyncRequest(RelFileNode rnode, ForkNumber forknum,
-					 BlockNumber segno);
 extern void ForgetRelationFsyncRequests(RelFileNode rnode, ForkNumber forknum);
 extern void ForgetDatabaseFsyncRequests(Oid dbid);
 extern void DropRelationFiles(RelFileNode *delrels, int ndelrels, bool isRedo);

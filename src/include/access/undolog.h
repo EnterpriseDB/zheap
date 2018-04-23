@@ -289,9 +289,6 @@ extern bool AmAttachedToUndoLog(UndoLogControl *log);
 
 #endif
 
-extern void UndoLogGetDirtySegmentRange(UndoLogNumber logno,
-										int *low_segno, int *high_segno);
-extern void UndoLogSetHighestSyncedSegment(UndoLogNumber logno, int segno);
 extern void UndoLogSetLastXactStartPoint(UndoRecPtr point);
 extern UndoRecPtr UndoLogGetLastXactStartPoint(UndoLogNumber logno);
 extern UndoRecPtr UndoLogGetCurrentLocation(UndoPersistence persistence);

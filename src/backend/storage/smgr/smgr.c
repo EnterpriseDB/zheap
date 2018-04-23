@@ -58,6 +58,8 @@ typedef struct f_smgr
 	BlockNumber (*smgr_nblocks) (SMgrRelation reln, ForkNumber forknum);
 	void		(*smgr_truncate) (SMgrRelation reln, ForkNumber forknum,
 								  BlockNumber nblocks);
+	void		(*smgr_requestsync) (RelFileNode rnode, ForkNumber forknum,
+									 int segno);
 	void		(*smgr_immedsync) (SMgrRelation reln, ForkNumber forknum);
 	void		(*smgr_pre_ckpt) (void);	/* may be NULL */
 	void		(*smgr_sync) (void);	/* may be NULL */
@@ -81,12 +83,13 @@ static const f_smgr smgrsw[] = {
 		.smgr_writeback = mdwriteback,
 		.smgr_nblocks = mdnblocks,
 		.smgr_truncate = mdtruncate,
+		.smgr_requestsync = mdrequestsync,
 		.smgr_immedsync = mdimmedsync,
 		.smgr_pre_ckpt = mdpreckpt,
 		.smgr_sync = mdsync,
 		.smgr_post_ckpt = mdpostckpt
 	},
-	/* undo storage */
+	/* undo logs */
 	{
 		.smgr_init = undofile_init,
 		.smgr_shutdown = undofile_shutdown,
@@ -101,6 +104,7 @@ static const f_smgr smgrsw[] = {
 		.smgr_writeback = undofile_writeback,
 		.smgr_nblocks = undofile_nblocks,
 		.smgr_truncate = undofile_truncate,
+		.smgr_requestsync = undofile_requestsync,
 		.smgr_immedsync = undofile_immedsync,
 		.smgr_pre_ckpt = undofile_preckpt,
 		.smgr_sync = undofile_sync,
@@ -110,6 +114,14 @@ static const f_smgr smgrsw[] = {
 
 static const int NSmgr = lengthof(smgrsw);
 
+/*
+ * In ancient Postgres the catalog entry for each relation controlled the
+ * choice of storage manager implementation.  Now we have only md.c for
+ * regular relations, and undofile.c for undo log storage in the undolog
+ * pseudo-database.
+ */
+#define SmgrWhichForRelFileNode(rfn)			\
+	((rfn).dbNode == 9 ? 1 : 0)
 
 /*
  * Each backend has a hashtable that stores all extant SMgrRelation objects.
@@ -206,16 +218,8 @@ smgropen(RelFileNode rnode, BackendId backend)
 		reln->smgr_fsm_nblocks = InvalidBlockNumber;
 		reln->smgr_vm_nblocks = InvalidBlockNumber;
 
-		/*
-		 * In ancient Postgres the catalog entry for each relation controlled
-		 * the choice of storage manager implementation.  Now we have only
-		 * md.c for regular relations, and undofile.c for undo log storage in
-		 * the undolog pseudo-database.
-		 */
-		if (rnode.dbNode == 9)
-			reln->smgr_which = 1;	/* use undofile.c implementation */
-		else
-			reln->smgr_which = 0;	/* use md.c implementation */
+		/* Which storage manager implementation? */
+		reln->smgr_which = SmgrWhichForRelFileNode(rnode);
 
 		/* mark it not open */
 		for (forknum = 0; forknum <= MAX_FORKNUM; forknum++)
@@ -755,6 +759,14 @@ smgrtruncate(SMgrRelation reln, ForkNumber forknum, BlockNumber nblocks)
 	 * Do the truncation.
 	 */
 	smgrsw[reln->smgr_which].smgr_truncate(reln, forknum, nblocks);
+}
+
+/*
+ *	smgrrequestsync() -- Enqueue a request for smgrsync() to flush data.
+ */
+void smgrrequestsync(RelFileNode rnode, ForkNumber forknum, int segno)
+{
+	smgrsw[SmgrWhichForRelFileNode(rnode)].smgr_requestsync(rnode, forknum, segno);
 }
 
 /*
