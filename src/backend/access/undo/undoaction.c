@@ -343,15 +343,34 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 		{
 			case UNDO_INSERT:
 				{
+					int			i,
+								nline;
+					ItemId		lp;
+					bool		need_init = true;
+
 					undo_action_insert(rel, page, uur->uur_offset, xid);
+
+					nline = PageGetMaxOffsetNumber(page);
+
+					for (i = FirstOffsetNumber; i <= nline; i++)
+					{
+						lp = PageGetItemId(page, i);
+						if (ItemIdIsUsed(lp) || ItemIdHasPendingXact(lp))
+						{
+							need_init = false;
+							break;
+						}
+					}
 
 					/*
 					 * In zheap_xlog_insert we see insert of first and only
 					 * tuple on the page we re-initialize the page. Force
-					 * pruning on insert or multi insert to satisfy wal
+					 * ZheapInitPage on insert or multi insert rollback if
+					 * all line pointers in it is unused to satisfy wal
 					 * consistency check on standby.
 					 */
-					PageRepairFragmentation(page);
+					if (need_init)
+						ZheapInitPage(page, (Size)BLCKSZ);
 				}
 				break;
 			case UNDO_MULTI_INSERT:
@@ -359,6 +378,10 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 					OffsetNumber	start_offset;
 					OffsetNumber	end_offset;
 					OffsetNumber	iter_offset;
+					int				i,
+									nline;
+					ItemId			lp;
+					bool			need_init = true;
 
 					start_offset = ((OffsetNumber *) uur->uur_payload.data)[0];
 					end_offset = ((OffsetNumber *) uur->uur_payload.data)[1];
@@ -370,11 +393,26 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 						undo_action_insert(rel, page, iter_offset, xid);
 					}
 
+					nline = PageGetMaxOffsetNumber(page);
+					for (i = FirstOffsetNumber; i <= nline; i++)
+					{
+						lp = PageGetItemId(page, i);
+						if (ItemIdIsUsed(lp) || ItemIdHasPendingXact(lp))
+						{
+							need_init = false;
+							break;
+						}
+					}
+
 					/*
-					 * Similarly as in UNDO_INSERT force pruning to satisfy wal
-					 * consistency check.
+					 * In zheap_xlog_insert we see insert of first and only
+					 * tuple on the page we re-initialize the page. Force
+					 * ZheapInitPage on insert or multi insert rollback if
+					 * all line pointers in it is unused to satisfy wal
+					 * consistency check on standby.
 					 */
-					PageRepairFragmentation(page);
+					if (need_init)
+						ZheapInitPage(page, (Size)BLCKSZ);
 				}
 				break;
 			case UNDO_DELETE:
