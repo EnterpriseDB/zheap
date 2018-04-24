@@ -3074,6 +3074,21 @@ check_tup_satisfies_update:
 				require_sleep = false;
 			}
 
+			/*
+			 * Also take care of cases when page is pruned after we release
+			 * the buffer lock. For this we check if ItemId is not deleted
+			 * and refresh the tuple offset position in page.  If TID is
+			 * already delete marked due to pruning, then get new ctid, so
+			 * that we can lock the new tuple.
+			 */
+			if (ItemIdIsDeleted(lp))
+			{
+				ctid = *tid;
+				ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
+				result = HeapTupleUpdated;
+				goto failed;
+			}
+
 		}
 
 		/*
