@@ -787,7 +787,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 		urecptr = UndoLogAllocate(size, upersistence);
 
 	log = UndoLogGet(UndoRecPtrGetLogNo(urecptr));
-	Assert(AmAttachedToUndoLog(log));
+	Assert(AmAttachedToUndoLog(log) || InRecovery);
 
 	/*
 	 * If we've rewound all the way back to the start of the transaction by
