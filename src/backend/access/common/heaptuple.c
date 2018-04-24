@@ -1547,19 +1547,35 @@ bool
 slot_getsysattr(TupleTableSlot *slot, int attnum,
 				Datum *value, bool *isnull)
 {
-	HeapTuple	tuple = slot->tts_tuple;
+	HeapTuple	tuple = NULL;
+	ZHeapTuple	ztuple = NULL;
+
+	if (slot->tts_ztuple)
+		ztuple = slot->tts_ztuple;
+	else
+		tuple = slot->tts_tuple;
 
 	Assert(attnum < 0);			/* else caller error */
-	if (tuple == NULL ||
-		tuple == &(slot->tts_minhdr))
+	
+	if (tuple != NULL && tuple != &(slot->tts_minhdr))
+	{
+		*value = heap_getsysattr(tuple, attnum, slot->tts_tupleDescriptor,
+								 isnull);
+		return true;
+	}
+	else if (ztuple != NULL)
+	{
+		*value = zheap_getsysattr(ztuple, slot->tts_buffer, attnum,
+								  slot->tts_tupleDescriptor, isnull);
+		return true;
+	}
+	else
 	{
 		/* No physical tuple, or minimal tuple, so fail */
 		*value = (Datum) 0;
 		*isnull = true;
-		return false;
+		return false;		
 	}
-	*value = heap_getsysattr(tuple, attnum, slot->tts_tupleDescriptor, isnull);
-	return true;
 }
 
 /*
