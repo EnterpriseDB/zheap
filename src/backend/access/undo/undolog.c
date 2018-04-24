@@ -74,6 +74,12 @@
  */
 #define UndoLogXidLowBits 16
 
+/*
+ * Number of high bits.
+ */
+#define UndoLogXidHighBits \
+	(sizeof(TransactionId) * CHAR_BIT - UndoLogXidLowBits)
+
 /* Extract the upper bits of an xid, for undo log mapping purposes. */
 #define UndoLogGetXidHigh(xid) ((xid) >> UndoLogXidLowBits)
 
@@ -149,7 +155,13 @@ struct
 	 * single-process.  This map references UNDO_PERMANENT logs only, since
 	 * temporary and unlogged relations don't have WAL to replay.
 	 */
-	UndoLogNumber **xidToLogNumber;
+	UndoLogNumber **xid_map;
+
+	/*
+	 * The slot for the oldest xids still running.  We advance this during
+	 * checkpoints to free up chunks of the map.
+	 */
+	uint16			xid_map_oldest_chunk;
 } MyUndoLogState;
 
 /* GUC variables */
@@ -165,6 +177,7 @@ static void forget_undo_buffers(int logno, UndoLogOffset old_discard,
 								UndoLogOffset new_discard,
 								bool drop_tail);
 static bool choose_undo_tablespace(bool force_detach, Oid *oid);
+static void undolog_xid_map_gc(void);
 
 PG_FUNCTION_INFO_V1(pg_stat_get_undo_logs);
 
@@ -439,12 +452,12 @@ IsTransactionFirstRec(TransactionId xid)
 
 	Assert(InRecovery);
 
-	if (MyUndoLogState.xidToLogNumber == NULL)
+	if (MyUndoLogState.xid_map == NULL)
 		elog(ERROR, "xid to undo log number map not initialized");
-	if (MyUndoLogState.xidToLogNumber[high_bits] == NULL)
+	if (MyUndoLogState.xid_map[high_bits] == NULL)
 		elog(ERROR, "cannot find undo log number for xid %u", xid);
 
-	logno = MyUndoLogState.xidToLogNumber[high_bits][low_bits];
+	logno = MyUndoLogState.xid_map[high_bits][low_bits];
 	log = get_undo_log_by_number(logno);
 	if (log == NULL)
 		elog(ERROR, "cannot find undo log number %d for xid %u", logno, xid);
@@ -832,11 +845,11 @@ UndoLogAllocateInRecovery(TransactionId xid, size_t size,
 	 * first call to UndoLogAllocate for this xid after the most recent
 	 * checkpoint.
 	 */
-	if (MyUndoLogState.xidToLogNumber == NULL)
+	if (MyUndoLogState.xid_map == NULL)
 		elog(ERROR, "xid to undo log number map not initialized");
-	if (MyUndoLogState.xidToLogNumber[high_bits] == NULL)
+	if (MyUndoLogState.xid_map[high_bits] == NULL)
 		elog(ERROR, "cannot find undo log number for xid %u", xid);
-	logno = MyUndoLogState.xidToLogNumber[high_bits][low_bits];
+	logno = MyUndoLogState.xid_map[high_bits][low_bits];
 	if (logno == InvalidUndoLogNumber)
 		elog(ERROR, "cannot find undo log number for xid %u", xid);
 
@@ -1345,6 +1358,7 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 		pfree(serialized);
 
 	CleanUpUndoCheckPointFiles(priorCheckPointRedo);
+	undolog_xid_map_gc();
 }
 
 void
@@ -1733,13 +1747,51 @@ attach_undo_log(UndoPersistence persistence, Oid tablespace)
 }
 
 /*
+ * Free chunks of the xid/undo log map that relate to transactions that are no
+ * longer running.  This is run at each checkpoint.
+ */
+static void
+undolog_xid_map_gc(void)
+{
+	UndoLogNumber **xid_map = MyUndoLogState.xid_map;
+	TransactionId oldest_xid;
+	uint16 new_oldest_chunk;
+	uint16 oldest_chunk;
+
+	if (xid_map == NULL)
+		return;
+
+	/*
+	 * During crash recovery, it may not be possible to call GetOldestXmin()
+	 * yet because latestCompletedXid is invalid.
+	 */
+	if (!TransactionIdIsNormal(ShmemVariableCache->latestCompletedXid))
+		return;
+
+	oldest_xid = GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT);
+	new_oldest_chunk = UndoLogGetXidHigh(oldest_xid);
+	oldest_chunk = MyUndoLogState.xid_map_oldest_chunk;
+
+	while (oldest_chunk != new_oldest_chunk)
+	{
+		if (xid_map[oldest_chunk])
+		{
+			pfree(xid_map[oldest_chunk]);
+			xid_map[oldest_chunk] = NULL;
+		}
+		oldest_chunk = (oldest_chunk + 1) % (1 << UndoLogXidHighBits);
+	}
+	MyUndoLogState.xid_map_oldest_chunk = new_oldest_chunk;
+}
+
+/*
  * Associate a xid with an undo log, during recovery.  In a primary server,
  * this isn't necessary because backends know which undo log they're attached
  * to.  During recovery, the natural association between backends and xids is
  * lost, so we need to manage that explicitly.
  */
 static void
-undolog_attach_xid(TransactionId xid, UndoLogNumber logno)
+undolog_xid_map_add(TransactionId xid, UndoLogNumber logno)
 {
 	uint16		high_bits;
 	uint16		low_bits;
@@ -1747,33 +1799,27 @@ undolog_attach_xid(TransactionId xid, UndoLogNumber logno)
 	high_bits = UndoLogGetXidHigh(xid);
 	low_bits = UndoLogGetXidLow(xid);
 
-	if (unlikely(MyUndoLogState.xidToLogNumber == NULL))
+	if (unlikely(MyUndoLogState.xid_map == NULL))
 	{
 		/* First time through.  Create mapping array. */
-		MyUndoLogState.xidToLogNumber =
+		MyUndoLogState.xid_map =
 			MemoryContextAllocZero(TopMemoryContext,
 								   sizeof(UndoLogNumber *) *
 								   (1 << (32 - UndoLogXidLowBits)));
+		MyUndoLogState.xid_map_oldest_chunk = high_bits;
 	}
 
-	if (unlikely(MyUndoLogState.xidToLogNumber[high_bits] == NULL))
+	if (unlikely(MyUndoLogState.xid_map[high_bits] == NULL))
 	{
 		/* This bank of mappings doesn't exist yet.  Create it. */
-		MyUndoLogState.xidToLogNumber[high_bits] =
+		MyUndoLogState.xid_map[high_bits] =
 			MemoryContextAllocZero(TopMemoryContext,
 								   sizeof(UndoLogNumber) *
 								   (1 << UndoLogXidLowBits));
-
-		/*
-		 * TODO: When we replay a checkpoint record (or some other periodic
-		 * occasion) we should blow away all banks of mappings that are
-		 * outside the range of active xids.  Then on typical systems we'll
-		 * have only one or two banks allocated at a time.
-		 */
 	}
 
 	/* Associate this xid with this undo log number. */
-	MyUndoLogState.xidToLogNumber[high_bits][low_bits] = logno;
+	MyUndoLogState.xid_map[high_bits][low_bits] = logno;
 }
 
 /* check_hook: validate new undo_tablespaces */
@@ -2341,7 +2387,7 @@ undolog_xlog_attach(XLogReaderState *record)
 	xl_undolog_attach *xlrec = (xl_undolog_attach *) XLogRecGetData(record);
 	UndoLogControl *log;
 
-	undolog_attach_xid(xlrec->xid, xlrec->logno);
+	undolog_xid_map_add(xlrec->xid, xlrec->logno);
 
 	/*
 	 * Whatever follows is the first record for this transaction.  Zheap will
@@ -2360,7 +2406,7 @@ undolog_xlog_meta(XLogReaderState *record)
 	xl_undolog_meta *xlrec = (xl_undolog_meta *) XLogRecGetData(record);
 	UndoLogControl *log;
 
-	undolog_attach_xid(xlrec->xid, xlrec->logno);
+	undolog_xid_map_add(xlrec->xid, xlrec->logno);
 
 	log = get_undo_log_by_number(xlrec->logno);
 	if (log == NULL)
