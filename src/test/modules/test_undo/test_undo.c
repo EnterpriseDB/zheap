@@ -1,6 +1,7 @@
 #include "postgres.h"
 
 #include "access/undolog.h"
+#include "catalog/pg_class.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -57,7 +58,7 @@ undo_allocate(PG_FUNCTION_ARGS)
 	int size = PG_GETARG_INT32(0);
 	UndoRecPtr undo_ptr;
 
-	undo_ptr = UndoLogAllocate(size, RELPERSISTENCE_PERMANENT);
+	undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT, NULL);
 
 	PG_RETURN_TEXT_P(undo_rec_ptr_to_text(undo_ptr));
 }
@@ -76,7 +77,7 @@ undo_advance(PG_FUNCTION_ARGS)
 	UndoRecPtr undo_ptr = undo_rec_ptr_from_text(PG_GETARG_TEXT_PP(0));
 	int size = PG_GETARG_INT32(1);
 
-	UndoLogAdvance(undo_ptr, size);
+	UndoLogAdvance(undo_ptr, size, UNDO_PERMANENT);
 
 	PG_RETURN_VOID();
 }
@@ -115,7 +116,7 @@ undo_append_file(PG_FUNCTION_ARGS)
 	lseek(fd, 0, SEEK_SET);
 
 	/* Allocate undo log space. */
-	start_undo_ptr = UndoLogAllocate(size, RELPERSISTENCE_PERMANENT);
+	start_undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT, NULL);
 
 	elog(NOTICE, "will copy %zu bytes into undo log", size);
 
@@ -168,7 +169,8 @@ undo_append_file(PG_FUNCTION_ARGS)
 									  UndoLogForkNum,
 									  UndoRecPtrGetBlockNum(insert_undo_ptr),
 									  RBM_NORMAL,
-									  NULL);
+									  NULL,
+									  RELPERSISTENCE_PERMANENT);
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buffer);
 		if (this_chunk_offset == UndoLogBlockHeaderSize)
@@ -188,7 +190,7 @@ undo_append_file(PG_FUNCTION_ARGS)
 	}
 
 	/* Advance the undo log insert point.  No need to consider headers. */
-	UndoLogAdvance(start_undo_ptr, size);
+	UndoLogAdvance(start_undo_ptr, size, UNDO_PERMANENT);
 
 	/*
 	 * We'd leak a file descriptor if code above raised an error, but not
@@ -242,7 +244,8 @@ undo_extract_file(PG_FUNCTION_ARGS)
 									  UndoLogForkNum,
 									  UndoRecPtrGetBlockNum(undo_ptr),
 									  RBM_NORMAL,
-									  NULL);
+									  NULL,
+									  RELPERSISTENCE_PERMANENT);
 		LockBuffer(buffer, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buffer);
 		memcpy(data, page + this_chunk_offset, this_chunk_size);
@@ -296,7 +299,7 @@ undo_append(PG_FUNCTION_ARGS)
 	size = VARSIZE_ANY_EXHDR(input);
 
 	/* Allocate undo log space for our data. */
-	start_undo_ptr = UndoLogAllocate(size, RELPERSISTENCE_PERMANENT);
+	start_undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT, NULL);
 
 	elog(NOTICE, "will copy %zu bytes into undo log at " UndoRecPtrFormat,
 		 size, start_undo_ptr);
@@ -334,7 +337,8 @@ undo_append(PG_FUNCTION_ARGS)
 									  UndoLogForkNum,
 									  UndoRecPtrGetBlockNum(insert_undo_ptr),
 									  RBM_NORMAL,
-									  NULL);
+									  NULL,
+									  RELPERSISTENCE_PERMANENT);
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buffer);
 		if (this_chunk_offset == UndoLogBlockHeaderSize)
@@ -355,7 +359,7 @@ undo_append(PG_FUNCTION_ARGS)
 	}
 
 	/* Advance the undo log insert point.  No need to consider headers. */
-	UndoLogAdvance(start_undo_ptr, size);
+	UndoLogAdvance(start_undo_ptr, size, UNDO_PERMANENT);
 
 	PG_RETURN_TEXT_P(undo_rec_ptr_to_text(start_undo_ptr));
 }
@@ -406,7 +410,8 @@ undo_dump(PG_FUNCTION_ARGS)
 									  UndoLogForkNum,
 									  UndoRecPtrGetBlockNum(undo_ptr),
 									  RBM_NORMAL,
-									  NULL);
+									  NULL,
+									  RELPERSISTENCE_PERMANENT);
 		LockBuffer(buffer, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buffer);
 		memcpy(data, page + this_chunk_offset, this_chunk_size);
@@ -454,8 +459,8 @@ undo_foreground_discard_test(PG_FUNCTION_ARGS)
 		UndoRecPtr undo_ptr;
 
 		/* Allocate some space. */
-		undo_ptr = UndoLogAllocate(size, RELPERSISTENCE_PERMANENT);
-		UndoLogAdvance(undo_ptr, size);
+		undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT, NULL);
+		UndoLogAdvance(undo_ptr, size, UNDO_PERMANENT);
 
 		/* Discard the space that we just allocated. */
 		UndoLogDiscard(undo_ptr + size, InvalidTransactionId);
