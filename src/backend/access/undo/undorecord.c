@@ -776,8 +776,8 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	 * will be updated while preparing the first undo record of the next
 	 * transaction.
 	 */
-	if (prev_txid[upersistence] != txid &&
-		(!InRecovery || IsTransactionFirstRec(txid)))
+	if ((!InRecovery && prev_txid[upersistence] != txid) ||
+		(InRecovery && IsTransactionFirstRec(txid)))
 		need_start_undo = true;
 
  resize:
@@ -822,7 +822,9 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	 * If transaction id is switched then update the previous transaction's
 	 * start undo record.
 	 */
-	if (need_start_undo && txid != prev_txid[upersistence])
+	if (need_start_undo &&
+		((!InRecovery && prev_txid[upersistence] != txid) ||
+		 (InRecovery && IsTransactionFirstRec(txid))))
 	{
 		UndoRecordUpdateTransactionInfo(urecptr);
 

@@ -2286,8 +2286,16 @@ static void
 undolog_xlog_attach(XLogReaderState *record)
 {
 	xl_undolog_attach *xlrec = (xl_undolog_attach *) XLogRecGetData(record);
+	UndoLogControl *log;
 
 	undolog_attach_xid(xlrec->xid, xlrec->logno);
+
+	/*
+	 * Whatever follows is the first record for this transaction.  Zheap will
+	 * use this to add UREC_INFO_TRANSACTION.
+	 */
+	log = get_undo_log_by_number(xlrec->logno);
+	log->meta.is_first_rec = true;
 }
 
 /*
