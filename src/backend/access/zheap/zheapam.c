@@ -7011,7 +7011,11 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 
 	/* check for unused or dead items */
 	if (!(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp)))
+	{
+		if (all_dead)
+			*all_dead = true;
 		return NULL;
+	}
 
 	/*
 	 * If the record is deleted, its place in the page might have been taken
