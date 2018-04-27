@@ -2426,7 +2426,7 @@ undolog_xlog_discard(XLogReaderState *record)
 							   log->meta.tablespace, recycle_path);
 			if (rename(discard_path, recycle_path) == 0)
 			{
-				elog(NOTICE, "renamed undo segment \"%s\" -> \"%s\"", discard_path, recycle_path); /* XXX: remove me */
+				elog(LOG, "recycled undo segment \"%s\" -> \"%s\"", discard_path, recycle_path); /* XXX: remove me */
 				end += UndoLogSegmentSize;
 			}
 			else
@@ -2438,7 +2438,7 @@ undolog_xlog_discard(XLogReaderState *record)
 		else
 		{
 			if (unlink(discard_path) == 0)
-				elog(NOTICE, "unlinked \"%s\"", discard_path); /* XXX: remove me */
+				elog(LOG, "unlinked undo segment \"%s\"", discard_path); /* XXX: remove me */
 			else
 				elog(LOG, "could not unlink \"%s\": %m", discard_path);
 		}
