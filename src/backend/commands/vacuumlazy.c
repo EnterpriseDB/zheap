@@ -85,15 +85,6 @@
 #define VACUUM_TRUNCATE_LOCK_TIMEOUT			5000	/* ms */
 
 /*
- * When a table has no indexes, vacuum the FSM after every 8GB, approximately
- * (it won't be exact because we only vacuum FSM after processing a heap page
- * that has some removable tuples).  When there are indexes, this is ignored,
- * and we vacuum FSM after each index/heap cleaning pass.
- */
-#define VACUUM_FSM_EVERY_PAGES \
-	((BlockNumber) (((uint64) 8 * 1024 * 1024 * 1024) / BLCKSZ))
-
-/*
  * Guesstimation of number of dead tuples per page.  This is used to
  * provide an upper limit to memory allocated when vacuuming small
  * tables.

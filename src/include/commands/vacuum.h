@@ -24,6 +24,14 @@
 #include "storage/lock.h"
 #include "utils/relcache.h"
 
+/*
+ * When a table has no indexes, vacuum the FSM after every 8GB, approximately
+ * (it won't be exact because we only vacuum FSM after processing a heap/zheap
+ * page that has some removable tuples).  When there are indexes, this is
+ * ignored, and we vacuum FSM after each index/heap cleaning pass.
+ */
+#define VACUUM_FSM_EVERY_PAGES \
+	((BlockNumber) (((uint64) 8 * 1024 * 1024 * 1024) / BLCKSZ))
 
 /*----------
  * ANALYZE builds one of these structs for each attribute (column) that is
