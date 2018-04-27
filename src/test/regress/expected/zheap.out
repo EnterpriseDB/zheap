@@ -26,7 +26,6 @@ CREATE TABLE t1_zheap
  Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
 --------+---------+-----------+----------+---------+---------+--------------+-------------
  a      | integer |           |          |         | plain   |              | 
-Options: storage_engine=zheap
 
 -- Should throw error
 CREATE TABLE t1_invalid
