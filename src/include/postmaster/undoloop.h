@@ -27,7 +27,7 @@ TransactionId latestRecentGlobalXmin;
  * user mode.
  */
 extern void execute_undo_actions(UndoRecPtr from_urecptr,
-			UndoRecPtr to_urecptr, bool nopartial, bool rewind);
+			UndoRecPtr to_urecptr, bool nopartial, bool rewind, bool rellock);
 
 /*
  * This function will be responsible to truncate the undo logs

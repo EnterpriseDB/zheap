@@ -3282,7 +3282,7 @@ XactPerformUndoActionsIfPending()
 			xact->latest_urec_ptr = UndoActionStartPtr;
 		}
 
-		execute_undo_actions(UndoActionStartPtr, UndoActionEndPtr, new_xact, true);
+		execute_undo_actions(UndoActionStartPtr, UndoActionEndPtr, new_xact, true, true);
 
 		if (new_xact)
 			CommitTransactionCommand();
@@ -3968,7 +3968,7 @@ UserAbortTransactionBlock(void)
 									 latest_urec_ptr);
 		if (!result)
 			execute_undo_actions(latest_urec_ptr, s->start_urec_ptr, true,
-								 true);
+								 true, false);
 	}
 	else
 	{
@@ -4379,7 +4379,7 @@ RollbackToSavepoint(const char *name)
 	/* execute the undo actions */
 	if (latest_urec_ptr && (s->state == TRANS_INPROGRESS))
 	{
-		execute_undo_actions(latest_urec_ptr, start_urec_ptr, false, true);
+		execute_undo_actions(latest_urec_ptr, start_urec_ptr, false, true, false);
 		xact->latest_urec_ptr = InvalidUndoRecPtr;
 	}
 	else
@@ -4604,7 +4604,7 @@ RollbackAndReleaseCurrentSubTransaction(void)
 		 * transaction in case of error while applying the undo actions.
 		 */
 		s->latest_urec_ptr = latest_urec_ptr;
-		execute_undo_actions(latest_urec_ptr, start_urec_ptr, false, true);
+		execute_undo_actions(latest_urec_ptr, start_urec_ptr, false, true, false);
 
 		/* Restore parent state. */
 		s->latest_urec_ptr = parent_latest_urec_ptr;

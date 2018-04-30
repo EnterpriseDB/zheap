@@ -1520,7 +1520,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 			result = PushRollbackReq(xid, end_urec_ptr, start_urec_ptr);
 
 		if (!result)
-			execute_undo_actions(end_urec_ptr, start_urec_ptr, true, true);
+			execute_undo_actions(end_urec_ptr, start_urec_ptr, true, true, false);
 	}
 
 	/* compute latestXid among all children */

@@ -31,7 +31,8 @@
 #define ROLLBACK_HT_SIZE	1024
 
 static void execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
-					 TransactionId xid, BlockNumber blkno, bool blk_chain_complete);
+					 TransactionId xid, BlockNumber blkno,
+					 bool blk_chain_complete, bool norellock);
 static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
 									  TransactionId xid);
 
@@ -50,10 +51,18 @@ static HTAB *RollbackHT;
  *				  Because, if the backend have already inserted new undo records
  *				  for the next transaction and if we rewind then we will loose
  *				  the undo record inserted for the new transaction.
+ * 	rellock	  -	  if the caller already has the lock on the required relation,
+ *				  then this flag is false, i.e. we do not need to acquire any
+ *				  lock here. If the flag is true then we need to acquire lock
+ *				  here itself, because caller will not be having any lock.
+ *				  When we are performing undo actions for prepared transactions,
+ *			      or for rollback to savepoint, we need not to lock as we already
+ *				  have the lock on the table. In cases like error or when
+ *				  rollbacking from the undo worker we need to have proper locks.
  */
 void
 execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
-					 bool nopartial, bool rewind)
+					 bool nopartial, bool rewind, bool rellock)
 {
 	UnpackedUndoRecord *uur = NULL;
 	UndoRecPtr	urec_ptr;
@@ -140,12 +149,12 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		if (!more_undo && nopartial)
 		{
 			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-									  xid, prev_block, true);
+									  xid, prev_block, true, rellock);
 		}
 		else
 		{
 			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-									  xid, prev_block, false);
+									  xid, prev_block, false, rellock);
 		}
 
 		/* release the undo records for which action has been replayed */
@@ -186,7 +195,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	if (list_length(luur))
 	{
 		execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
-								xid, prev_block, nopartial ? true : false);
+								xid, prev_block, nopartial ? true : false, rellock);
 
 		/* release the undo records for which action has been replayed */
 		while (luur)
@@ -281,11 +290,19 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
  *				rolling back the complete transaction then we need to apply the
  *				undo action for UNDO_INVALID_XACT_SLOT also because in such
  *				case we will rewind the insert undo location.
+ *	rellock	  -	if the caller already has the lock on the required relation,
+ *				then this flag is false, i.e. we do not need to acquire any
+ *				lock here. If the flag is true then we need to acquire lock
+ *				here itself, because caller will not be having any lock.
+ *				When we are performing undo actions for prepared transactions,
+ *				or for rollback to savepoint, we need not to lock as we already
+ *				have the lock on the table. In cases like error or when
+ *				rollbacking from the undo worker we need to have proper locks.
  */
 static void
 execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 						  TransactionId xid, BlockNumber blkno,
-						  bool blk_chain_complete)
+						  bool blk_chain_complete, bool rellock)
 {
 	ListCell   *l_iter;
 	Relation	rel;
@@ -309,7 +326,10 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 	 * If the action is executed by backend as a result of rollback, we must
 	 * already have an appropriate lock on relation.
 	 */
-	rel = heap_open(reloid, RowExclusiveLock);
+	if (rellock)
+		rel = heap_open(reloid, RowExclusiveLock);
+	else
+		rel = heap_open(reloid, NoLock);
 
 	buffer = ReadBuffer(rel, blkno);
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
@@ -705,7 +725,7 @@ RollbackFromHT(bool *hibernate)
 		Assert(UndoRecPtrIsValid(end[i]));
 
 		StartTransactionCommand();
-		execute_undo_actions(end[i], start[i], true, false);
+		execute_undo_actions(end[i], start[i], true, false, RowExclusiveLock);
 		CommitTransactionCommand();
 
 		LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
