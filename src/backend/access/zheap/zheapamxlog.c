@@ -1082,14 +1082,14 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		undorecord[i].uur_offset = 0;
 		undorecord[i].uur_tuple.len = 0;
 		undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
-		undorecord[i].uur_payload.data = (char *)palloc(2 * sizeof(OffsetNumber));
 		urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERMANENT, xid, NULL);
 
-		memcpy(undorecord[i].uur_payload.data,
-			   (char *) data,
-			   undorecord[i].uur_payload.len);
-		data += undorecord[i].uur_payload.len;
+		initStringInfo(&undorecord[i].uur_payload);
+		appendBinaryStringInfo(&undorecord[i].uur_payload,
+									   (char *) data,
+									   2 * sizeof(OffsetNumber));
 
+		data += undorecord[i].uur_payload.len;
 	}
 	elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
 		 nranges, blkno);

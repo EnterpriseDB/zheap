@@ -8045,12 +8045,12 @@ reacquire_buffer:
 			undorecord[i].uur_tuple.len = 0;
 			undorecord[i].uur_offset = 0;
 			undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
-			undorecord[i].uur_payload.data = (char *)palloc(2 * sizeof(OffsetNumber));
 
 			urecptr = PrepareUndoInsert(&undorecord[i],
 										UndoPersistenceForRelation(relation),
 										InvalidTransactionId,
 										undometa_fetched ? NULL : &undometa);
+			initStringInfo(&undorecord[i].uur_payload);
 			undometa_fetched = true;
 		}
 		Assert(UndoRecPtrIsValid(urecptr));
@@ -8064,7 +8064,7 @@ reacquire_buffer:
 		nthispage = 0;
 		for (i = 0; i < zfree_offset_ranges->nranges; i++)
 		{
-			OffsetNumber offnum;
+			OffsetNumber offnum, endoffnum;
 			for (offnum = zfree_offset_ranges->startOffset[i];
 				 offnum <= zfree_offset_ranges->endOffset[i]; offnum++)
 			{
@@ -8109,10 +8109,15 @@ reacquire_buffer:
 			 * offnum - 1. There is no harm in doing the same for previous undo
 			 * records as well.
 			 */
-			((OffsetNumber *)undorecord[i].uur_payload.data)[0] = zfree_offset_ranges->startOffset[i];
-			((OffsetNumber *)undorecord[i].uur_payload.data)[1] = offnum - 1;
+			endoffnum = offnum - 1;
+			appendBinaryStringInfo(&undorecord[i].uur_payload,
+										   (char *) &zfree_offset_ranges->startOffset[i],
+										   sizeof(OffsetNumber));
+			appendBinaryStringInfo(&undorecord[i].uur_payload,
+										  (char *) &endoffnum,
+										   sizeof(OffsetNumber));
 			elog(DEBUG1, "start offset: %d, end offset: %d",
-				 zfree_offset_ranges->startOffset[i], offnum - 1);
+				 zfree_offset_ranges->startOffset[i], endoffnum);
 		}
 
 		if (PageIsAllVisible(page))
