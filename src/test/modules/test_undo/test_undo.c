@@ -1,5 +1,6 @@
 #include "postgres.h"
 
+#include "access/transam.h"
 #include "access/undolog.h"
 #include "catalog/pg_class.h"
 #include "fmgr.h"
