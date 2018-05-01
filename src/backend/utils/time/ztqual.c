@@ -325,6 +325,10 @@ fetch_prior_undo_record:
 						   NULL,
 						   ZHeapSatisfyUndoRecord);
 
+	/* If undo is discarded, then current tuple is visible. */
+	if (urec == NULL)
+		return zhtup;
+
 	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, true);
 	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 	prev_urec_ptr = urec->uur_blkprev;
@@ -343,10 +347,6 @@ fetch_prior_undo_record:
 	}
 
 	UndoRecordRelease(urec);
-
-	/* If undo is discarded, then current tuple is visible. */
-	if (urec == NULL)
-		return zhtup;
 
 	/*
 	 * Change the undo chain if the undo tuple is stamped with the different
@@ -586,6 +586,13 @@ fetch_prior_undo_record:
 						   prev_undo_xid,
 						   NULL,
 						   ZHeapSatisfyUndoRecord);
+
+	/* If undo is discarded, then current tuple is visible. */
+	if (urec == NULL)
+	{
+		result = true;
+		goto result_available;
+	}
 
 	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, free_zhtup);
 	trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
