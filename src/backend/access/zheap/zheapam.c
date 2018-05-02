@@ -4107,6 +4107,9 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		xlrec.offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
 		xlrec.infomask = zhtup->t_data->t_infomask;
 		xlrec.trans_slot_id = new_trans_slot_id;
+		xlrec.flags = 0;
+		if (new_trans_slot_id != trans_slot_id)
+			xlrec.flags |= XLZ_LOCK_TRANS_SLOT_FOR_UREC;
 
 prepare_xlog:
 		/* LOG undolog meta if this is the first WAL after the checkpoint. */
@@ -4129,6 +4132,8 @@ prepare_xlog:
 		XLogRegisterData((char *) undorecord.uur_tuple.data,
 						 SizeofZHeapTupleHeader);
 		XLogRegisterData((char *) &mode, sizeof(LockTupleMode));
+		if (xlrec.flags & XLZ_LOCK_TRANS_SLOT_FOR_UREC)
+			XLogRegisterData((char *) &trans_slot_id, sizeof(trans_slot_id));
 
 		recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK, RedoRecPtr,
 									doPageWrites);

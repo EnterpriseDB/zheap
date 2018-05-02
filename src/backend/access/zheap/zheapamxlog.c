@@ -906,6 +906,7 @@ zheap_xlog_lock(XLogReaderState *record)
 	ItemId  lp = NULL;
 	TransactionId	xid = XLogRecGetXid(record);
 	uint32	xid_epoch = GetEpochForXid(xid);
+	int		*trans_slot_for_urec = NULL;
 
 	xlrec = (xl_zheap_lock *) ((char *) xlundohdr + SizeOfUndoHeader);
 
@@ -960,6 +961,10 @@ zheap_xlog_lock(XLogReaderState *record)
 						   (char *) (tup_hdr + SizeofZHeapTupleHeader),
 						   sizeof(LockTupleMode));
 
+	if (xlrec->flags & XLZ_LOCK_TRANS_SLOT_FOR_UREC)
+		trans_slot_for_urec = (int *) ((char *) tup_hdr +
+							SizeofZHeapTupleHeader + sizeof(LockTupleMode));
+
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
 	InsertPreparedUndo();
 
@@ -976,7 +981,12 @@ zheap_xlog_lock(XLogReaderState *record)
 		ZHeapTupleHeaderSetXactSlot(zheaptup.t_data, xlrec->trans_slot_id);
 		zheaptup.t_data->t_infomask = xlrec->infomask;
 
-		PageSetUNDO(undorecord, page, xlrec->trans_slot_id, xid_epoch, xid, urecptr);
+		if (trans_slot_for_urec)
+			PageSetUNDO(undorecord, page, *trans_slot_for_urec, xid_epoch,
+						xid, urecptr);
+		else
+			PageSetUNDO(undorecord, page, xlrec->trans_slot_id, xid_epoch,
+						xid, urecptr);
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);

@@ -77,19 +77,6 @@ typedef struct xl_undo_header
 #define XLZ_INSERT_CONTAINS_NEW_TUPLE			(1<<3)
 
 /*
- * xl_zheap_update flag values, 8 bits are available.
- */
-/* PD_ALL_VISIBLE was cleared */
-#define XLZ_UPDATE_OLD_ALL_VISIBLE_CLEARED		(1<<0)
-/* PD_ALL_VISIBLE was cleared in the 2nd page */
-#define XLZ_UPDATE_NEW_ALL_VISIBLE_CLEARED		(1<<1)
-#define XLZ_UPDATE_PREFIX_FROM_OLD				(1<<2)
-#define XLZ_UPDATE_SUFFIX_FROM_OLD				(1<<3)
-#define	XLZ_NON_INPLACE_UPDATE					(1<<4)
-#define	XLZ_HAS_UPDATE_UNDOTUPLE				(1<<5)
-
-
-/*
  * NOTE: t_hoff could be recomputed, but we may as well store it because
  * it will come for free due to alignment considerations.
  */
@@ -139,6 +126,18 @@ typedef struct xl_zheap_delete
 #define SizeOfZHeapDelete	(offsetof(xl_zheap_delete, flags) + sizeof(uint8))
 
 /*
+ * xl_zheap_update flag values, 8 bits are available.
+ */
+/* PD_ALL_VISIBLE was cleared */
+#define XLZ_UPDATE_OLD_ALL_VISIBLE_CLEARED		(1<<0)
+/* PD_ALL_VISIBLE was cleared in the 2nd page */
+#define XLZ_UPDATE_NEW_ALL_VISIBLE_CLEARED		(1<<1)
+#define XLZ_UPDATE_PREFIX_FROM_OLD				(1<<2)
+#define XLZ_UPDATE_SUFFIX_FROM_OLD				(1<<3)
+#define	XLZ_NON_INPLACE_UPDATE					(1<<4)
+#define	XLZ_HAS_UPDATE_UNDOTUPLE				(1<<5)
+
+/*
  * This is what we need to know about update|inplace_update
  *
  * Backup blk 0: new page
@@ -184,6 +183,11 @@ typedef struct xl_zheap_invalid_xact_slot
 
 #define SizeOfZHeapInvalidXactSlot (offsetof(xl_zheap_invalid_xact_slot, nCompletedSlots) + sizeof(uint16))
 
+/*
+ * xl_zheap_lock flag values, 8 bits are available.
+ */
+#define XLZ_LOCK_TRANS_SLOT_FOR_UREC			(1<<0)
+
 /* This is what we need to know about zheap lock tuple. */
 typedef struct xl_zheap_lock
 {
@@ -193,9 +197,10 @@ typedef struct xl_zheap_lock
 	OffsetNumber    offnum;		/* locked tuple's offset */
 	uint16	infomask;	/* lock mode */
 	uint8   trans_slot_id;		/* transaction slot id */
+	uint8	flags;
 } xl_zheap_lock;
 
-#define SizeOfZHeapLock    (offsetof(xl_zheap_lock, trans_slot_id) + sizeof(uint8))
+#define SizeOfZHeapLock    (offsetof(xl_zheap_lock, flags) + sizeof(uint8))
 
 /*
  * This is what we need to know about a multi-insert.
