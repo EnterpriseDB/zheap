@@ -741,6 +741,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	int				index = 0;
 	int				bufidx;
 	bool			need_start_undo = false;
+	bool			first_rec_in_recovery;
 
 	/* Already reached maximum prepared limit. */
 	if (prepare_idx == max_prepare_undo)
@@ -776,8 +777,9 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	 * will be updated while preparing the first undo record of the next
 	 * transaction.
 	 */
+	first_rec_in_recovery = InRecovery && IsTransactionFirstRec(txid);
 	if ((!InRecovery && prev_txid[upersistence] != txid) ||
-		(InRecovery && IsTransactionFirstRec(txid)))
+		first_rec_in_recovery)
 		need_start_undo = true;
 
  resize:
@@ -824,7 +826,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	 */
 	if (need_start_undo &&
 		((!InRecovery && prev_txid[upersistence] != txid) ||
-		 (InRecovery && IsTransactionFirstRec(txid))))
+		 first_rec_in_recovery))
 	{
 		UndoRecordUpdateTransactionInfo(urecptr);
 
