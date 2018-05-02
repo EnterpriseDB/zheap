@@ -949,12 +949,16 @@ zheap_xlog_lock(XLogReaderState *record)
 	undorecord.uur_blkprev = xlundohdr->blkprev;
 	undorecord.uur_block = ItemPointerGetBlockNumber(&target_tid);
 	undorecord.uur_offset = ItemPointerGetOffsetNumber(&target_tid);
-	undorecord.uur_payload.len = 0;
 
+	initStringInfo(&undorecord.uur_payload);
 	initStringInfo(&undorecord.uur_tuple);
 	appendBinaryStringInfo(&undorecord.uur_tuple,
 						   tup_hdr,
 						   SizeofZHeapTupleHeader);
+
+	appendBinaryStringInfo(&undorecord.uur_payload,
+						   (char *) (tup_hdr + SizeofZHeapTupleHeader),
+						   sizeof(LockTupleMode));
 
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
 	InsertPreparedUndo();
@@ -982,6 +986,7 @@ zheap_xlog_lock(XLogReaderState *record)
 
 	/* be tidy */
 	pfree(undorecord.uur_tuple.data);
+	pfree(undorecord.uur_payload.data);
 
 	UnlockReleaseUndoBuffers();
 	FreeFakeRelcacheEntry(reln);

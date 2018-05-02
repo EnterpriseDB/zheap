@@ -4128,6 +4128,7 @@ prepare_xlog:
 		 */
 		XLogRegisterData((char *) undorecord.uur_tuple.data,
 						 SizeofZHeapTupleHeader);
+		XLogRegisterData((char *) &mode, sizeof(LockTupleMode));
 
 		recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK, RedoRecPtr,
 									doPageWrites);
