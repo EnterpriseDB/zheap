@@ -451,15 +451,20 @@ zheap_xlog_update(XLogReaderState *record)
 		Size	datalen;
 		char	*data;
 
-		data = (char *) xlrec + SizeOfZHeapUpdate;
-		memcpy((char *) &xlhdr, data, SizeOfZHeapHeader);
-		data += SizeOfZHeapHeader;
-
 		/* There is an additional undo header for non-inplace-update. */
 		if (inplace_update)
+		{
+			data = (char *) xlrec + SizeOfZHeapUpdate;
 			datalen = recordlen - SizeOfUndoHeader - SizeOfZHeapUpdate - SizeOfZHeapHeader;
+		}
 		else
+		{
+			data = (char *) xlrec + SizeOfZHeapUpdate + SizeOfUndoHeader;
 			datalen = recordlen - (2 * SizeOfUndoHeader) - SizeOfZHeapUpdate - SizeOfZHeapHeader;
+		}
+
+		memcpy((char *) &xlhdr, data, SizeOfZHeapHeader);
+		data += SizeOfZHeapHeader;			
 
 		zhtup = &tbuf.hdr;
 		MemSet((char *) zhtup, 0, SizeofZHeapTupleHeader);
