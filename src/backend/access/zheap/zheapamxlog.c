@@ -1350,6 +1350,7 @@ zheap_xlog_unused(XLogReaderState *record)
 	UnpackedUndoRecord	undorecord;
 	UndoRecPtr	urecptr;
 	TransactionId	xid = XLogRecGetXid(record);
+	uint32	xid_epoch = GetEpochForXid(xid);
 	uint16	i, uncnt;
 	Buffer		buffer;
 	OffsetNumber *unused;
@@ -1426,6 +1427,8 @@ zheap_xlog_unused(XLogReaderState *record)
 			itemid = PageGetItemId(page, unused[i]);
 			ItemIdSetUnusedExtended(itemid, xlrec->trans_slot_id);
 		}
+		PageSetUNDO(undorecord, page, xlrec->trans_slot_id, xid_epoch, xid,
+					urecptr);
 		ZPageRepairFragmentation(page);
 
 		freespace = PageGetZHeapFreeSpace(page); /* needed to update FSM below */
