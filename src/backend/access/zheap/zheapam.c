@@ -7770,9 +7770,6 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 				 * that the version is visible to current snapshot.  In practise,
 				 * we don't need to traverse many prior versions, so let's be tidy.
 				 */
-				if (free_zhtup)
-					zheap_freetuple(zhtup);
-
 				undo_tup_len = *((uint32 *) &urec->uur_tuple.data[offset]);
 
 				undo_tup = palloc(ZHEAPTUPLESIZE + undo_tup_len);
@@ -7788,6 +7785,9 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 				offset += sizeof(Oid);
 
 				memcpy(undo_tup->t_data, (ZHeapTupleHeader) &urec->uur_tuple.data[offset], undo_tup_len);
+
+				if (free_zhtup)
+					zheap_freetuple(zhtup);
 			}
 			break;
 		default:
