@@ -60,7 +60,8 @@ extern HTSU_Result zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 extern void zheap_finish_speculative(Relation relation, ZHeapTuple tuple);
 extern void zheap_abort_speculative(Relation relation, ZHeapTuple tuple);
 extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
-									  uint32 epoch, TransactionId xid);
+									  uint32 epoch, TransactionId xid,
+									  UndoRecPtr *urec_ptr);
 extern void ZheapInitPage(Page page, Size pageSize);
 extern void zheap_multi_insert(Relation relation, ZHeapTuple *tuples,
 								int ntuples, CommandId cid, int options,
@@ -145,21 +146,5 @@ typedef struct ZHeapFreeOffsetRanges
 	OffsetNumber endOffset[MaxOffsetNumber];
 	int nranges;
 } ZHeapFreeOffsetRanges;
-
-/* inline functions */
-/*
- * PageGetUNDO - Get the undo record pointer for a given transaction slot.
- */
-static inline UndoRecPtr
-PageGetUNDO(Page page, int trans_slot_id)
-{
-	ZHeapPageOpaque	opaque;
-
-	Assert(trans_slot_id != InvalidXactSlotId);
-
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-
-	return opaque->transinfo[trans_slot_id].urec_ptr;
-}
 
 #endif   /* ZHEAP_H */

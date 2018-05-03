@@ -181,7 +181,8 @@ reacquire_slot:
 	 * operation.  It will be costly to wait for getting the slot, but we do
 	 * that by releasing the buffer lock.
 	 */
-	trans_slot_id = PageReserveTransactionSlot(onerel, buffer, epoch, xid);
+	trans_slot_id = PageReserveTransactionSlot(onerel, buffer, epoch, xid,
+											   &prev_urecptr);
 
 	if (trans_slot_id == InvalidXactSlotId)
 	{
@@ -194,8 +195,6 @@ reacquire_slot:
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		goto reacquire_slot;
 	}
-
-	prev_urecptr = PageGetUNDO(page, trans_slot_id);
 
 	/* prepare an undo record */
 	undorecord.uur_type = UNDO_ITEMID_UNUSED;
