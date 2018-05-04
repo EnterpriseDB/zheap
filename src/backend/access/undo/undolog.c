@@ -1282,6 +1282,7 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 	/* Dump into a file under pg_undo. */
 	snprintf(path, MAXPGPATH, "pg_undo/%016" INT64_MODIFIER "X",
 			 checkPointRedo);
+	pgstat_report_wait_start(WAIT_EVENT_UNDO_CHECKPOINT_WRITE);
 	fd = OpenTransientFile(path, O_RDWR | O_CREAT | PG_BINARY);
 	if (fd < 0)
 		ereport(ERROR,
@@ -1327,9 +1328,11 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 
 
 	/* Flush file and directory entry. */
+	pgstat_report_wait_start(WAIT_EVENT_UNDO_CHECKPOINT_SYNC);
 	pg_fsync(fd);
 	CloseTransientFile(fd);
 	fsync_fname("pg_undo", true);
+	pgstat_report_wait_end();
 
 	if (serialized)
 		pfree(serialized);
@@ -1354,6 +1357,7 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 	/* Open the pg_undo file corresponding to the given checkpoint. */
 	snprintf(path, MAXPGPATH, "pg_undo/%016" INT64_MODIFIER "X",
 			 checkPointRedo);
+	pgstat_report_wait_start(WAIT_EVENT_UNDO_CHECKPOINT_READ);
 	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
 	if (fd < 0)
 		elog(ERROR, "cannot open undo checkpoint snapshot \"%s\": %m", path);
@@ -1447,6 +1451,7 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 			 "pg_undo file \"%s\" has incorrect checksum", path);
 
 	CloseTransientFile(fd);
+	pgstat_report_wait_end();
 }
 
 /*
