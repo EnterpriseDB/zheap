@@ -1647,6 +1647,30 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
          <entry>Waiting for a write of a two phase state file.</entry>
         </row>
         <row>
+         <entry><literal>UndoCheckpointRead</literal></entry>
+         <entry>Waiting for a read from an undo checkpoint file.</entry>
+        </row>
+        <row>
+         <entry><literal>UndoCheckpointSync</literal></entry>
+         <entry>Waiting for changes to an undo checkpoint file to reach stable storage.</entry>
+        </row>
+        <row>
+         <entry><literal>UndoCheckpointWrite</literal></entry>
+         <entry>Waiting for a write to an undo checkpoint file.</entry>
+        </row>
+         <row>
+         <entry><literal>UndoFileRead</literal></entry>
+         <entry>Waiting for a read from an undo data file.</entry>
+        </row>
+        <row>
+         <entry><literal>UndoFileSync</literal></entry>
+         <entry>Waiting for changes to an undo data file to reach stable storage.</entry>
+        </row>
+        <row>
+         <entry><literal>UndoFileWrite</literal></entry>
+         <entry>Waiting for a write to an undo data file.</entry>
+        </row>
+        <row>
          <entry><literal>WALBootstrapSync</literal></entry>
          <entry>Waiting for WAL to reach stable storage during bootstrapping.</entry>
         </row>
