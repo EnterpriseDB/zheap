@@ -725,7 +725,7 @@ RollbackFromHT(bool *hibernate)
 		Assert(UndoRecPtrIsValid(end[i]));
 
 		StartTransactionCommand();
-		execute_undo_actions(end[i], start[i], true, false, RowExclusiveLock);
+		execute_undo_actions(end[i], start[i], true, false, true);
 		CommitTransactionCommand();
 
 		LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
