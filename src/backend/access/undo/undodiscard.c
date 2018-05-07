@@ -117,7 +117,7 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 			UndoRecordRelease(uur);
 			uur = NULL;
 			StartTransactionCommand();
-			execute_undo_actions(from_urecptr, undo_recptr, true, false, RowExclusiveLock);
+			execute_undo_actions(from_urecptr, undo_recptr, true, false, true);
 			CommitTransactionCommand();
 		}
 
