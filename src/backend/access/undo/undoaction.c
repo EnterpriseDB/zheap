@@ -488,14 +488,25 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 					}
 					else
 					{
-						/*
-						 * If the transaction slot to which tuple point got reused
-						 * by this time, then we need to mark the tuple with a
-						 * special flag.  See comments atop PageFreezeTransSlots.
-						 */
-						if (trans_slot != ZHTUP_SLOT_FROZEN ||
+						if (TransactionIdEquals(uur->uur_prevxid,
+												FrozenTransactionId))
+						{
+							/*
+							 * If the previous xid is frozen, then we can safely
+							 * mark the tuple as frozen.
+							 */
+							ZHeapTupleHeaderSetXactSlot(zhtup, ZHTUP_SLOT_FROZEN);
+						}
+						else if (trans_slot != ZHTUP_SLOT_FROZEN &&
 							uur->uur_prevxid != opaque->transinfo[trans_slot].xid)
+						{
+							/*
+							 * If the transaction slot to which tuple point got reused
+							 * by this time, then we need to mark the tuple with a
+							 * special flag.  See comments atop PageFreezeTransSlots.
+							 */
 							zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+						}
 					}
 				}
 				break;
@@ -529,14 +540,25 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 
 						trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
 
-						/*
-						 * If the transaction slot to which tuple point got reused
-						 * by this time, then we need to mark the tuple with a
-						 * special flag.  See comments atop PageFreezeTransSlots.
-						 */
-						if (trans_slot != ZHTUP_SLOT_FROZEN ||
+						if (TransactionIdEquals(uur->uur_prevxid,
+												FrozenTransactionId))
+						{
+							/*
+							 * If the previous xid is frozen, then we can safely
+							 * mark the tuple as frozen.
+							 */
+							ZHeapTupleHeaderSetXactSlot(zhtup, ZHTUP_SLOT_FROZEN);
+						}
+						else if (trans_slot != ZHTUP_SLOT_FROZEN &&
 							uur->uur_prevxid != opaque->transinfo[trans_slot].xid)
+						{
+							/*
+							 * If the transaction slot to which tuple point got reused
+							 * by this time, then we need to mark the tuple with a
+							 * special flag.  See comments atop PageFreezeTransSlots.
+							 */
 							zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+						}
 					}
 				}
 				break;
