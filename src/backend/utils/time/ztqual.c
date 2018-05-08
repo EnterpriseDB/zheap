@@ -1489,6 +1489,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	TransactionId	xid;
 	uint64			epoch_xid;
+	UndoRecPtr		urec_ptr;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
@@ -1497,7 +1498,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	snapshot->speculativeToken = 0;
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, NULL, &epoch_xid, &xid, NULL, NULL,
+	ZHeapTupleGetTransInfo(zhtup, buffer, NULL, &epoch_xid, &xid, NULL, &urec_ptr,
 						   false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
@@ -1541,12 +1542,9 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		}
 		else	/* transaction is aborted */
 		{
-			/*
-			 * Fixme - Here we need to fetch the tuple from undo, something similar
-			 * to GetTupleFromUndo but for DirtySnapshots.
-			 */
-			elog(ERROR, "ROLLBACK pending in zheap table");
-			return NULL;
+			/* Here we need to fetch the tuple from undo */
+			return GetTupleFromUndo(urec_ptr, zhtup, snapshot, buffer, ctid,
+									InvalidTransactionId);
 		}
 	}
 	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
@@ -1573,12 +1571,9 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 			return zhtup;	/* tuple is updated by someone else */
 		else	/* transaction is aborted */
 		{
-			/*
-			 * Fixme - Here we need to fetch the tuple from undo, something similar
-			 * to GetTupleFromUndo but for DirtySnapshots.
-			 */
-			elog(ERROR, "ROLLBACK pending in zheap table");
-			return NULL;
+			/* Here we need to fetch the tuple from undo. */
+			return GetTupleFromUndo(urec_ptr, zhtup, snapshot, buffer, ctid,
+									InvalidTransactionId);
 		}
 	}
 
