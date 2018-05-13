@@ -45,7 +45,6 @@ Quite a bit.  Currently unsupported features include:
 - Serializable isolation
 - CLUSTER
 - VACUUM FULL
-- TID scans
 - Index-only scans
 - Insert .. On Conflict
 - Toast tables:  We would like to store toast table data in zheap, but this is
@@ -55,22 +54,6 @@ that this feature is not supported.
 works.  There is a partial implementation of Select .. For Share where only
 one locker is allowed.  Any further usage of locking modes will result in an
 error.
-- Foreign keys: This work is dependent on tuple locking (Key Share Locks).
-Currently, it will return Error.
-- Vacuum/Autovacuum: We think that for delete-marked indexes we might not need
-vacuum, but we still need it for indexes that doesn't support delete-marking.
-Here, the idea is that by using undo technology we can change
-three-pass-vacuum to two-pass-vacuum.  Currently any attempt to vacuum zheap
-will return error.
-- Insert .. On Conflict: The design is similar to current heap such that we
-use the speculative token to detect conflicts and then take the action as
-defined in command.  The implementation difference is that we store the
-speculative token in undo instead of in the tuple header (CTID). This work is
-in progress.  Currently we return Error if user tries to use this feature.
-- Rollback prepared transactions: The main work required for this feature is
-to store ‘from and to’ undo record locations to perform rollbacks.  The work
-for this is in progress.  We have not blocked it, so the result will
-unpredictable.
 
 Tools
 - pg_undo_dump similar to pg_wal_dump:  We would like to develop this utility
