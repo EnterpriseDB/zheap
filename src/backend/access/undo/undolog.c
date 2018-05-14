@@ -57,7 +57,8 @@
  * UndoLogControl objects into many smaller arrays, called banks, and find our
  * way to an UndoLogControl object in O(1) complexity in two steps.
  */
-#define UndoLogBankBits 14 /* 2^14 entries = a 64KB banks array */
+#define UndoLogBankBits 14
+#define UndoLogBanks (1 << UndoLogBankBits)
 
 /* Extract the undo bank number from an undo log number (upper bits). */
 #define UndoLogNoGetBankNo(logno)				\
@@ -118,7 +119,7 @@ typedef struct UndoLogSharedData
 	 * 2, but we need random access by log number so we arrange them into
 	 * 'banks'.
 	 */
-	dsm_handle banks[1 << UndoLogBankBits];
+	dsm_handle banks[UndoLogBanks];
 } UndoLogSharedData;
 
 /*
@@ -135,12 +136,20 @@ struct
 	 */
 	UndoLogControl *logs[UndoPersistenceLevels];
 
+	/* The DSM segments used to hold banks of control objects. */
+	dsm_segment *bank_segments[UndoLogBanks];
+
 	/*
 	 * The address where each bank of control objects is mapped into memory in
 	 * this backend.  We map banks into memory on demand, and (for now) they
 	 * stay mapped in until every backend that mapped them exits.
 	 */
-	UndoLogControl *banks[1 << UndoLogBankBits];
+	UndoLogControl *banks[UndoLogBanks];
+
+	/*
+	 * The lowest log number that might currently be mapped into this backend.
+	 */
+	int				low_logno;
 
 	/*
 	 * If the undo_tablespaces GUC changes we'll remember to examine it and
@@ -178,6 +187,7 @@ static void forget_undo_buffers(int logno, UndoLogOffset old_discard,
 								bool drop_tail);
 static bool choose_undo_tablespace(bool force_detach, Oid *oid);
 static void undolog_xid_map_gc(void);
+static void undolog_bank_gc(void);
 
 PG_FUNCTION_INFO_V1(pg_stat_get_undo_logs);
 
@@ -1254,6 +1264,36 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 	pg_crc32c crc;
 
 	/*
+	 * Take this opportunity to check if we can free up any DSM segments and
+	 * also some entries in the checkpoint file by forgetting about entirely
+	 * discarded undo logs.  Otherwise both would eventually grow large.
+	 */
+	LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
+	while (shared->low_logno < shared->high_logno)
+	{
+		UndoLogControl *log;
+
+		log = get_undo_log_by_number(shared->low_logno);
+		if (log->meta.status != UNDO_LOG_STATUS_DISCARDED)
+			break;
+
+		/*
+		 * If this was the last slot in a bank, the bank is no longer needed.
+		 * The shared memory will be given back to the operating system once
+		 * every attached backend runs undolog_bank_gc().
+		 */
+		if (UndoLogNoGetSlotNo(shared->low_logno + 1) == 0)
+			shared->banks[UndoLogNoGetBankNo(shared->low_logno)] =
+				DSM_HANDLE_INVALID;
+
+		++shared->low_logno;
+	}
+	LWLockRelease(UndoLogLock);
+
+	/* Detach from any banks that we don't need if low_logno advanced. */
+	undolog_bank_gc();
+
+	/*
 	 * We acquire UndoLogLock to prevent any undo logs from being created or
 	 * discarded while we build a snapshot of them.  This isn't expected to
 	 * take long on a healthy system because the number of active logs should
@@ -1276,12 +1316,7 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 		serialized_size = sizeof(UndoLogMetaData) * num_logs;
 		serialized = (UndoLogMetaData *) palloc0(serialized_size);
 
-		/*
-		 * TODO: Here we should try to increase low_logno by spinning through
-		 * the existing range looking for logs that are marked retired, so
-		 * that we can make the file smaller.
-		 */
-		for (logno = shared->low_logno; logno != shared->high_logno; ++logno)
+		for (logno = low_logno; logno != high_logno; ++logno)
 		{
 			UndoLogControl *log;
 
@@ -1552,6 +1587,7 @@ get_undo_log_by_number(UndoLogNumber logno)
 			segment = dsm_attach(shared->banks[bankno]);
 			if (segment != NULL)
 			{
+				MyUndoLogState.bank_segments[bankno] = segment;
 				MyUndoLogState.banks[bankno] = dsm_segment_address(segment);
 				dsm_pin_mapping(segment);
 			}
@@ -1782,6 +1818,40 @@ undolog_xid_map_gc(void)
 		oldest_chunk = (oldest_chunk + 1) % (1 << UndoLogXidHighBits);
 	}
 	MyUndoLogState.xid_map_oldest_chunk = new_oldest_chunk;
+}
+
+/*
+ * Detach from shared memory banks that are no longer needed because they hold
+ * undo logs that are entirely discarded.  This should ideally be called
+ * periodically in any backend that accesses undo data, so that they have a
+ * chance to detach from DSM segments that hold banks of entirely discarded
+ * undo log control objects.
+ */
+static void
+undolog_bank_gc(void)
+{
+	UndoLogSharedData *shared = MyUndoLogState.shared;
+	UndoLogNumber low_logno = shared->low_logno;
+
+	if (unlikely(MyUndoLogState.low_logno < low_logno))
+	{
+		int low_bank = UndoLogNoGetBankNo(low_logno);
+		int bank = UndoLogNoGetBankNo(MyUndoLogState.low_logno);
+
+		while (bank < low_bank)
+		{
+			Assert(shared->banks[bank] == DSM_HANDLE_INVALID);
+			if (MyUndoLogState.banks[bank] != NULL)
+			{
+				dsm_detach(MyUndoLogState.bank_segments[bank]);
+				MyUndoLogState.bank_segments[bank] = NULL;
+				MyUndoLogState.banks[bank] = NULL;
+			}
+			++bank;
+		}
+	}
+
+	MyUndoLogState.low_logno = low_logno;
 }
 
 /*
@@ -2093,7 +2163,7 @@ DropUndoLogsInTablespace(Oid tablespace)
 		/* Log the dropping operation.  TODO: WAL */
 
 		LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-		log->meta.status = UNDO_LOG_STATUS_DROPPED;
+		log->meta.status = UNDO_LOG_STATUS_DISCARDED;
 		LWLockRelease(&log->mutex);
 	}
 
@@ -2132,7 +2202,7 @@ DropUndoLogsInTablespace(Oid tablespace)
 		while (*place != InvalidUndoLogNumber)
 		{
 			log = get_undo_log_by_number(*place);
-			if (log->meta.status == UNDO_LOG_STATUS_DROPPED)
+			if (log->meta.status == UNDO_LOG_STATUS_DISCARDED)
 				*place = log->next_free;
 			else
 				place = &log->next_free;
@@ -2280,7 +2350,7 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 		 */
 		LWLockAcquire(&log->mutex, LW_SHARED);
 
-		if (log->meta.status == UNDO_LOG_STATUS_DROPPED)
+		if (log->meta.status == UNDO_LOG_STATUS_DISCARDED)
 		{
 			LWLockRelease(&log->mutex);
 			continue;
