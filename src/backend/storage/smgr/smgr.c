@@ -224,6 +224,8 @@ smgropen(RelFileNode rnode, BackendId backend)
 			reln->md_seg_fds[forknum] = NULL;
 		}
 
+		reln->private_data = NULL;
+
 		/* it has no owner yet */
 		add_to_unowned_list(reln);
 	}

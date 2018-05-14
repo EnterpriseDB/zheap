@@ -282,27 +282,19 @@ static File undofile_get_segment_file(SMgrRelation reln, int segno)
 {
 	UndoFileState *state;
 
-	/*
-	 * XXX SMgrRelationData has a couple of members for md.c-specific state.
-	 * They should probably be replaced with a void private state pointer for
-	 * use by any implementation to store whatever it wants.  For now, we'll
-	 * just jam a square UndoFileState pointer into the round md_seg_fds[0].
-	 * Not beautiful.  To be fixed later.
-	 */
-	state = (UndoFileState *) reln->md_seg_fds[0];
 
 	/*
 	 * Create private state space on demand.
 	 *
-	 * XXX There should probably be a smgr 'open' interface that would do
-	 * this.  smgr.c currently initializes reln->md_XXX stuff directly but
-	 * md.c should get a chance to do that!  And undofile.c should do
-	 * similarly.
+	 * XXX There should probably be a smgr 'open' or 'init' interface that
+	 * would do this.  smgr.c currently initializes reln->md_XXX stuff
+	 * directly...
 	 */
+	state = (UndoFileState *) reln->private_data;
 	if (unlikely(state == NULL))
 	{
 		state = MemoryContextAllocZero(UndoFileCxt, sizeof(UndoFileState));
-		reln->md_seg_fds[0] = (struct _MdfdVec *) state;
+		reln->private_data = state;
 	}
 
 	/* If we have a file open already, check if we need to close it. */
