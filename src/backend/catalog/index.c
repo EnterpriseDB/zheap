@@ -2992,6 +2992,7 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 	ExprContext *econtext;
 	Snapshot	snapshot;
 	TransactionId OldestXmin;
+	bool		need_unregister_snapshot = false;
 
 	/*
 	 * sanity checks
@@ -3036,20 +3037,27 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 	 * concurrent build, or during bootstrap, we take a regular MVCC snapshot
 	 * and index whatever's live according to that.
 	 */
+	OldestXmin = InvalidTransactionId;
+
+	/* okay to ignore lazy VACUUMs here */
+	if (!IsBootstrapProcessingMode() && !indexInfo->ii_Concurrent)
+		OldestXmin = GetOldestXmin(zheapRelation, PROCARRAY_FLAGS_VACUUM);
+
 	if (!scan)
 	{
-		if (IsBootstrapProcessingMode() || indexInfo->ii_Concurrent)
+		/*
+		 * Serial index build.
+		 *
+		 * Must begin our own heap scan in this case.  We may also need to
+		 * register a snapshot whose lifetime is under our direct control.
+		 */
+		if (!TransactionIdIsValid(OldestXmin))
 		{
 			snapshot = RegisterSnapshot(GetTransactionSnapshot());
-
-			/* "any visible" mode is not compatible with this */
-			Assert(!anyvisible);
+			need_unregister_snapshot = true;
 		}
 		else
-		{
 			snapshot = SnapshotAny;
-			OldestXmin = GetOldestXmin(zheapRelation, PROCARRAY_FLAGS_VACUUM);
-		}
 
 		scan = zheap_beginscan_strat(zheapRelation,		/* relation */
 									 snapshot,	/* snapshot */
@@ -3071,6 +3079,17 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 		Assert(allow_sync);
 		snapshot = scan->rs_snapshot;
 	}
+
+	/*
+	 * Must call GetOldestXmin() with SnapshotAny.  Should never call
+	 * GetOldestXmin() with MVCC snapshot. (It's especially worth checking
+	 * this for parallel builds, since ambuild routines that support parallel
+	 * builds must work these details out for themselves.)
+	 */
+	Assert(snapshot == SnapshotAny || IsMVCCSnapshot(snapshot));
+	Assert(snapshot == SnapshotAny ? TransactionIdIsValid(OldestXmin) :
+		   !TransactionIdIsValid(OldestXmin));
+	Assert(snapshot == SnapshotAny || !anyvisible);
 
 	/* set our scan endpoints */
 	if (!allow_sync)
@@ -3301,7 +3320,8 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 
 	heap_endscan(scan);
 
-	if (IsBootstrapProcessingMode() || indexInfo->ii_Concurrent)
+	/* we can now forget our snapshot, if set and registered by us */
+	if (need_unregister_snapshot)
 		UnregisterSnapshot(snapshot);
 
 	ExecDropSingleTupleTableSlot(slot);
