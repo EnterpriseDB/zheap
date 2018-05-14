@@ -711,13 +711,16 @@ UndoLogAllocate(size_t size, UndoPersistence persistence, xl_undolog_meta *undom
 	/*
 	 * If this is the first time we've allocated undo log space in this
 	 * transaction, we'll record the xid->undo log association so that it can
-	 * be replayed correctly.
+	 * be replayed correctly. Before that, we set the first record flag to
+	 * false.
 	 */
+	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
+	log->meta.is_first_rec = false;
+
 	if (log->xid != GetTopTransactionId())
 	{
 		xl_undolog_attach xlrec;
 
-		LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 		/*
 		 * While we have the lock, check if we have been forcibly detached by
 		 * DROP TABLESPACE.  That can only happen between transactions (see
@@ -744,6 +747,10 @@ UndoLogAllocate(size_t size, UndoPersistence persistence, xl_undolog_meta *undom
 			XLogRegisterData((char *) &xlrec, sizeof(xlrec));
 			XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_ATTACH);
 		}
+	}
+	else
+	{
+		LWLockRelease(&log->mutex);
 	}
 
 	/*
