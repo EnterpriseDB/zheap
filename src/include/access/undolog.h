@@ -170,17 +170,6 @@ typedef int UndoLogNumber;
 /* Find out which tablespace the given undo log location is backed by. */
 extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
 
-/*
- * TODO: Currently we convert UndoRecPtr directly to RelFileNode using the
- * macro below and then we use that to get a buffer with
- * ReadBufferWithoutRelcache().  But that interface doesn't give us a safe way
- * to pass RBM_ZERO_AND_LOCK into ReadBufferWithoutRelcache().  Instead of
- * this, we need an UndoLogGetBuffer() function that would automatically do
- * that when it know that it's safe to do that.  Or something.  The point
- * being that we don't want to bother reading in undo data that we haven't
- * even written out yet -- because it's after the insert point.
- */
-
 /* Populate a RelFileNode from an UndoRecPtr. */
 #define UndoRecPtrAssignRelFileNode(rfn, urp)			\
 	do													\
