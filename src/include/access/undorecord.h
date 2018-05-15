@@ -119,8 +119,12 @@ typedef struct UndoRecordTransaction
 	uint64			urec_next;	/* urec pointer of the next transaction */
 } UndoRecordTransaction;
 
+#define SizeOfUrecNext (sizeof(UndoRecPtr))
 #define SizeOfUndoRecordTransaction \
-	(offsetof(UndoRecordTransaction, urec_next) + sizeof(uint64))
+	(offsetof(UndoRecordTransaction, urec_next) + SizeOfUrecNext)
+
+#define urec_next_pos \
+	(SizeOfUndoRecordTransaction - SizeOfUrecNext)
 
 /*
  * Information about the amount of payload data and tuple data present

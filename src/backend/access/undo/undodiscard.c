@@ -88,8 +88,7 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 			 * record pointer and in that case we'll calculate the location
 			 * of from pointer using the last record of next insert location.
 			 */
-			if ((next_urecptr != SpecialUndoRecPtr)
-				&& (next_urecptr != InvalidUndoRecPtr))
+			if (next_urecptr != SpecialUndoRecPtr)
 			{
 				UnpackedUndoRecord *next_urec = UndoFetchRecord(next_urecptr,
 																InvalidBlockNumber,
@@ -123,8 +122,7 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 
 		/* we can discard upto this point. */
 		if (TransactionIdFollowsOrEquals(undoxid, xmin) ||
-			next_urecptr == SpecialUndoRecPtr ||
-			next_urecptr == InvalidUndoRecPtr)
+			next_urecptr == SpecialUndoRecPtr)
 		{
 			/* Hey, I got some undo log to discard, can not hibernate now. */
 			*hibernate = false;
