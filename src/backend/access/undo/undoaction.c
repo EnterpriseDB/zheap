@@ -73,7 +73,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	BlockNumber	prev_block = InvalidBlockNumber;
 	List	   *luur = NIL;
 	bool		more_undo;
-	TransactionId xid;
+	TransactionId xid = InvalidTransactionId;
 
 	Assert(from_urecptr != InvalidUndoRecPtr);
 	/*

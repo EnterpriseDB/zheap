@@ -923,7 +923,7 @@ zheap_delete(Relation relation, ItemPointer tid,
 	bool		have_tuple_lock = false;
 	bool		in_place_updated_or_locked = false;
 	bool		all_visible_cleared = false;
-	bool		any_multi_locker_member_alive;
+	bool		any_multi_locker_member_alive = false;
 	xl_undolog_meta undometa;
 
 	Assert(ItemPointerIsValid(tid));
@@ -1466,8 +1466,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	CommandId	tup_cid;
 	Bitmapset  *inplace_upd_attrs = NULL;
 	Bitmapset  *key_attrs = NULL;
-	Bitmapset  *interesting_attrs;
-	Bitmapset  *modified_attrs;
+	Bitmapset  *interesting_attrs = NULL;
+	Bitmapset  *modified_attrs = NULL;
 	ItemId		lp;
 	ZHeapTupleData oldtup;
 	ZHeapPageOpaque	opaque;
@@ -1496,12 +1496,12 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	bool		new_all_visible_cleared = false;
 	bool		have_tuple_lock = false;
 	bool		is_index_updated = false;
-	bool		use_inplace_update;
+	bool		use_inplace_update = false;
 	bool		in_place_updated_or_locked = false;
-	bool		key_intact;
-	bool		checked_lockers;
-	bool		locker_remains;
-	bool		any_multi_locker_member_alive;
+	bool		key_intact = false;
+	bool		checked_lockers = false;
+	bool		locker_remains = false;
+	bool		any_multi_locker_member_alive = false;
 	xl_undolog_meta	undometa;
 
 	Assert(ItemPointerIsValid(otid));
@@ -2818,7 +2818,7 @@ zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 	bool		require_sleep;
 	bool		have_tuple_lock = false;
 	bool		in_place_updated_or_locked = false;
-	bool		any_multi_locker_member_alive;
+	bool		any_multi_locker_member_alive = false;
 
 	xid = GetTopTransactionId();
 	epoch = GetEpochForXid(xid);
