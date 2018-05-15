@@ -7198,9 +7198,9 @@ zheap_fetch(Relation relation,
 	lp = PageGetItemId(page, offnum);
 
 	/*
-	 * Must check for deleted tuple.
+	 * Must check for dead and unused items.
 	 */
-	if (!ItemIdIsNormal(lp))
+	if (!ItemIdIsNormal(lp) && !ItemIdIsDeleted(lp))
 	{
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 		if (keep_buf)
@@ -7214,31 +7214,44 @@ zheap_fetch(Relation relation,
 		return false;
 	}
 
-	/*
-	 * fill in *tuple fields
-	 */
-	tup_len = ItemIdGetLength(lp);
+	if (ItemIdIsDeleted(lp))
+	{
+		CommandId		tup_cid;
+		TransactionId	tup_xid;
 
-	*tuple = palloc(ZHEAPTUPLESIZE + tup_len);
-	(*tuple)->t_data = (ZHeapTupleHeader) ((char *) (*tuple) + ZHEAPTUPLESIZE);
+		*tuple = ZHeapGetVisibleTuple(offnum, snapshot, buffer, NULL);
+		ctid = *tid;
+		ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
+		resulttup = *tuple;
+		valid = resulttup ? true : false;
+	}
+	else
+	{
+		/*
+		 * fill in *tuple fields
+		 */
+		tup_len = ItemIdGetLength(lp);
 
-	(*tuple)->t_tableOid = RelationGetRelid(relation);
-	(*tuple)->t_len = tup_len;
-	(*tuple)->t_self = *tid;
+		*tuple = palloc(ZHEAPTUPLESIZE + tup_len);
+		(*tuple)->t_data = (ZHeapTupleHeader) ((char *) (*tuple) + ZHEAPTUPLESIZE);
 
-	/*
-	 * We always need to make a copy of zheap tuple as once we release
-	 * the lock on buffer an in-place update can change the tuple.
-	 */
-	memcpy((*tuple)->t_data, ((ZHeapTupleHeader) PageGetItem(page, lp)), tup_len);
+		(*tuple)->t_tableOid = RelationGetRelid(relation);
+		(*tuple)->t_len = tup_len;
+		(*tuple)->t_self = *tid;
 
-	ItemPointerSetInvalid(&ctid);
+		/*
+		 * We always need to make a copy of zheap tuple as once we release
+		 * the lock on buffer an in-place update can change the tuple.
+		 */
+		memcpy((*tuple)->t_data, ((ZHeapTupleHeader) PageGetItem(page, lp)), tup_len);
+		ItemPointerSetInvalid(&ctid);
 
-	/*
-	 * check time qualification of tuple, then release lock
-	 */
-	resulttup = ZHeapTupleSatisfiesVisibility(*tuple, snapshot, buffer, &ctid);
-	valid = resulttup ? true : false;
+		/*
+		 * check time qualification of tuple, then release lock
+		 */
+		resulttup = ZHeapTupleSatisfiesVisibility(*tuple, snapshot, buffer, &ctid);
+		valid = resulttup ? true : false;
+	}
 
 	/*
 	 * Pass back the ctid if the tuple is invisible because it was updated.
