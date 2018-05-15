@@ -330,7 +330,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	if (rewind)
 	{
 		/* Read the current log from undo */
-		UndoLogControl *log = UndoLogGet(UndoRecPtrGetLogNo(to_urecptr));
+		UndoLogControl *log = UndoLogGet(UndoRecPtrGetLogNo(to_urecptr), false);
 
 		/* Read the prevlen from the first record of this transaction. */
 		uur = UndoFetchRecord(to_urecptr, InvalidBlockNumber,

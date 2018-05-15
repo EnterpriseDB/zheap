@@ -25,6 +25,7 @@ PG_FUNCTION_INFO_V1(undo_dump);
 PG_FUNCTION_INFO_V1(undo_discard);
 PG_FUNCTION_INFO_V1(undo_is_discarded);
 PG_FUNCTION_INFO_V1(undo_foreground_discard_test);
+PG_FUNCTION_INFO_V1(undo_detach_full);
 
 /*
  * It's nice to show UndoRecPtr always as hex, because that way you can see
@@ -557,4 +558,17 @@ Datum
 undo_is_discarded(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_BOOL(UndoLogIsDiscarded(undo_rec_ptr_from_text(PG_GETARG_TEXT_PP(0))));
+}
+
+/*
+ * Mark the currently attached undo log(s) as full and detach.  Normally
+ * this happens automatically when UndoLogAllocate() hits the end of the 1TB
+ * space inside an undo log, before it attaches to a new one.  It's useful for
+ * testing to be able to force that at an arbitrary time.
+ */
+Datum
+undo_detach_full(PG_FUNCTION_ARGS)
+{
+	UndoLogDetachFull();
+	PG_RETURN_VOID();
 }

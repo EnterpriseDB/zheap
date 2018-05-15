@@ -249,7 +249,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			 */
 			if (nobuflock && first_urp)
 			{
-				log = UndoLogGet(UndoRecPtrGetLogNo(urec_ptr));
+				log = UndoLogGet(UndoRecPtrGetLogNo(urec_ptr), false);
 
 				/*
 				 * Acquire rewind lock to prevent rewinding the undo record

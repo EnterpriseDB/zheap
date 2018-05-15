@@ -54,6 +54,7 @@
 #include "access/reloptions.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/undolog.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"

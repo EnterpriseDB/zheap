@@ -6706,8 +6706,8 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        </para>
 
        <para>
-        The default value is an empty string, which results in all temporary
-        objects being created in the default tablespace.
+        The default value is an empty string, which results in all undo data
+        being written in the default tablespace.
        </para>
       </listitem>
      </varlistentry>

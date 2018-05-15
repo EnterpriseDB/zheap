@@ -981,8 +981,11 @@ IsInParallelMode(void)
 void
 SetCurrentUndoLocation(UndoRecPtr urec_ptr)
 {
-	UndoLogControl *log = UndoLogGet(UndoRecPtrGetLogNo(urec_ptr));
+	UndoLogControl *log = UndoLogGet(UndoRecPtrGetLogNo(urec_ptr), false);
 	UndoPersistence upersistence = log->meta.persistence;
+
+	Assert(AmAttachedToUndoLog(log) || InRecovery);
+
 	/*
 	 * Set the start undo record pointer for first undo record in a
 	 * subtransaction.

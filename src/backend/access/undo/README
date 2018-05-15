@@ -65,16 +65,14 @@ special cases including single-user mode and temporary undo logs the
 discard pointer might also be advanced synchronously by a foreground
 session.
 
+UndoLogControl objects corresponding to the current set of active undo
+logs are held in a fixed-sized pool in shared memory.  The size of
+the array is a multiple of max_connections, and limits the total size of
+transactions.
+
 In order to provide constant time access to undo log meta-data given
-an UndoRecPtr, there is conceptually an array of UndoLogControl
-objects indexed by undo log number.  Since that array would be too
-large and since we expect the set of active undo log numbers to be
-small and clustered, we only keep small ranges of that logical array
-in memory at a time.  We use the higher order bits of the undo log
-number to identify a 'bank' (array fragment), and then the lower order
-bits to identify a slot within the bank.  Each bank is backed by a DSM
-segment.  We expect to need just 1 or 2 such DSM segments to exist at
-any time.
+an UndoRecPtr, each backend maintains a hash table mapping undo log
+number to shared UndoLogControl objects.
 
 The meta-data for all undo logs is written to disk at every
 checkpoint.  It is stored in files under PGDATA/pg_undo/, using the

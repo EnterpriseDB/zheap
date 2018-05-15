@@ -36,7 +36,7 @@ typedef enum
 {
 	UNDO_LOG_STATUS_UNUSED = 0,
 	UNDO_LOG_STATUS_ACTIVE,
-	UNDO_LOG_STATUS_EXHAUSTED,
+	UNDO_LOG_STATUS_FULL,
 	UNDO_LOG_STATUS_DISCARDED
 } UndoLogStatus;
 
@@ -93,6 +93,9 @@ typedef uint64 UndoLogOffset;
 
 /* The width of an undo log number in bits.  24 allows for 16.7m logs. */
 #define UndoLogNumberBits 24
+
+/* The maximum valid undo log number. */
+#define MaxUndoLogNumber ((1 << UndoLogNumberBits) - 1)
 
 /* The width of an undo log offset in bits.  40 allows for 1TB per log.*/
 #define UndoLogOffsetBits (64 - UndoLogNumberBits)
@@ -177,9 +180,6 @@ typedef int UndoLogNumber;
 #define UndoLogOffsetPlusUsableBytes(offset, n)							\
 	UndoLogOffsetFromUsableByteNo(UndoLogOffsetToUsableByteNo(offset) + (n))
 
-/* Find out which tablespace the given undo log location is backed by. */
-extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
-
 /* Populate a RelFileNode from an UndoRecPtr. */
 #define UndoRecPtrAssignRelFileNode(rfn, urp)			\
 	do													\
@@ -195,6 +195,7 @@ extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
  */
 typedef struct UndoLogMetaData
 {
+	UndoLogNumber logno;
 	UndoLogStatus status;
 	Oid		tablespace;
 	UndoPersistence persistence;	/* permanent, unlogged, temp? */
@@ -240,34 +241,113 @@ typedef struct xl_undolog_meta
 #ifndef FRONTEND
 
 /*
- * The in-memory control object for an undo log.  As well as the current
- * meta-data for the undo log, we also lazily maintain a snapshot of the
- * meta-data as it was at the redo point of a checkpoint that is in progress.
- *
- * Conceptually the set of UndoLogControl objects is arranged into a very
- * large array for access by log number, but because we typically need only a
- * smallish number of adjacent undo logs to be active at a time we arrange
- * them into smaller fragments called 'banks'.
+ * The in-memory control object for an undo log.  We have a fixed-sized array
+ * of these.
  */
 typedef struct UndoLogControl
 {
-	UndoLogNumber logno;
+	/*
+	 * Protected by UndoLogLock and 'mutex'.  Both must be held to steal this
+	 * slot for another undolog.  Either may be held to prevent that from
+	 * happening.
+	 */
+	UndoLogNumber logno;			/* InvalidUndoLogNumber for unused slots */
+
+	/* Protected by UndoLogLock. */
+	UndoLogNumber next_free;		/* link for active unattached undo logs */
+
+	/* Protected by 'mutex'. */
+	LWLock	mutex;
 	UndoLogMetaData meta;			/* current meta-data */
 	XLogRecPtr      lsn;
 	bool	need_attach_wal_record;	/* need_attach_wal_record */
 	pid_t		pid;				/* InvalidPid for unattached */
-	LWLock	mutex;					/* protects the above */
 	TransactionId xid;
-	/* State used by undo workers. */
+
+	/* Protected by 'discard_lock'.  State used by undo workers. */
 	TransactionId	oldest_xid;		/* cache of oldest transaction's xid */
 	uint32		oldest_xidepoch;
 	UndoRecPtr	oldest_data;
 	LWLock		discard_lock;		/* prevents discarding while reading */
 	LWLock		rewind_lock;		/* prevent rewinding while reading */
-
-	UndoLogNumber next_free;		/* protected by UndoLogLock */
 } UndoLogControl;
 
+extern UndoLogControl *UndoLogGet(UndoLogNumber logno, bool missing_ok);
+extern UndoLogControl *UndoLogNext(UndoLogControl *log);
+extern bool AmAttachedToUndoLog(UndoLogControl *log);
+extern UndoRecPtr UndoLogGetFirstValidRecord(UndoLogControl *log, bool *full);
+
+/*
+ * Each backend maintains a small hash table mapping undo log numbers to
+ * UndoLogControl objects in shared memory.
+ *
+ * We also cache the tablespace here, since we need fast access to that when
+ * resolving UndoRecPtr to an buffer tag.  We could also reach that via
+ * control->meta.tablespace, but that can't be accessed without locking (since
+ * the UndoLogControl object might be recycled).  Since the tablespace for a
+ * given undo log is constant for the whole life of the undo log, there is no
+ * invalidation problem to worry about.
+ */
+typedef struct UndoLogTableEntry
+{
+	UndoLogNumber	number;
+	UndoLogControl *control;
+	Oid				tablespace;
+	char			status;
+} UndoLogTableEntry;
+
+/*
+ * Instantiate fast inline hash table access functions.  We use an identity
+ * hash function for speed, since we already have integers and don't expect
+ * many collisions.
+ */
+#define SH_PREFIX undologtable
+#define SH_ELEMENT_TYPE UndoLogTableEntry
+#define SH_KEY_TYPE UndoLogNumber
+#define SH_KEY number
+#define SH_HASH_KEY(tb, key) (key)
+#define SH_EQUAL(tb, a, b) ((a) == (b))
+#define SH_SCOPE static inline
+#define SH_DECLARE
+#define SH_DEFINE
+#include "lib/simplehash.h"
+
+extern PGDLLIMPORT undologtable_hash *undologtable_cache;
+
+/*
+ * Find the OID of the tablespace that holds a given UndoRecPtr.  This is
+ * included in the header so it can be inlined by UndoRecPtrAssignRelFileNode.
+ */
+static inline Oid
+UndoRecPtrGetTablespace(UndoRecPtr urp)
+{
+	UndoLogNumber		logno = UndoRecPtrGetLogNo(urp);
+	UndoLogTableEntry  *entry;
+
+	/*
+	 * Fast path, for undo logs we've seen before.  This is safe because
+	 * tablespaces are constant for the lifetime of an undo log number.
+	 */
+	entry = undologtable_lookup(undologtable_cache, logno);
+	if (likely(entry))
+		return entry->tablespace;
+
+	/*
+	 * Slow path: force cache entry to be created.  Raises an error if the
+	 * undo log has been entirely discarded, or hasn't been created yet.  That
+	 * is appropriate here, because this interface is designed for accessing
+	 * undo pages via bufmgr, and we should never be trying to access undo
+	 * pages that have been discarded.
+	 */
+	UndoLogGet(logno, false);
+
+	/*
+	 * We use the value from the newly created cache entry, because it's
+	 * cheaper than acquiring log->mutex and reading log->meta.tablespace.
+	 */
+	entry = undologtable_lookup(undologtable_cache, logno);
+	return entry->tablespace;
+}
 #endif
 
 /* Space management. */
@@ -301,18 +381,8 @@ extern void assign_undo_tablespaces(const char *newval, void *extra);
 extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
 							   XLogRecPtr priorCheckPointRedo);
 
-#ifndef FRONTEND
-
-extern UndoLogControl *UndoLogGet(UndoLogNumber logno);
-extern UndoLogControl *UndoLogNext(UndoLogControl *log);
-extern bool AmAttachedToUndoLog(UndoLogControl *log);
-
-#endif
-
 extern void UndoLogSetLastXactStartPoint(UndoRecPtr point);
 extern UndoRecPtr UndoLogGetLastXactStartPoint(UndoLogNumber logno);
-extern UndoRecPtr UndoLogGetCurrentLocation(UndoPersistence persistence);
-extern UndoRecPtr UndoLogGetFirstValidRecord(UndoLogNumber logno);
 extern UndoRecPtr UndoLogGetNextInsertPtr(UndoLogNumber logno,
 										  TransactionId xid);
 extern void UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen);
@@ -328,5 +398,8 @@ extern void undolog_redo(XLogReaderState *record);
 /* Discard the undo logs for temp tables */
 extern void TempUndoDiscard(UndoLogNumber);
 extern Oid UndoLogStateGetDatabaseId(void);
+
+/* Test-only interfacing. */
+extern void UndoLogDetachFull(void);
 
 #endif
