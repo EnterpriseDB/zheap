@@ -2975,7 +2975,7 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 				 * from page rather than relying on it's in-memory copy.  See
 				 * ValidateTuplesXact.
 				 */
-				if (ZHeapTupleGetCid(tuple, buffer) >= estate->es_output_cid)
+				if (ZHeapTupleGetCid(tuple, buffer, InvalidUndoRecPtr) >= estate->es_output_cid)
 				{
 					UnlockReleaseBuffer(buffer);
 					return NULL;

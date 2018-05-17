@@ -199,7 +199,7 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
  			 * might be better to move this check near to it's usage, but that will
  			 * make code look ugly, so keeping it here.  
  			 */
-			cid = ZHeapTupleGetCid(undo_tup, buffer);
+			cid = ZHeapTupleGetCid(undo_tup, buffer, prev_urec_ptr);
 		}
 	}
 
@@ -396,7 +396,7 @@ fetch_prior_undo_record:
 			 * might be better to move this check near to it's usage, but that will
 			 * make code look ugly, so keeping it here.
 			 */
-			cid = ZHeapTupleGetCid(undo_tup, buffer);
+			cid = ZHeapTupleGetCid(undo_tup, buffer, prev_urec_ptr);
 		}
 	}
 
@@ -662,7 +662,7 @@ fetch_prior_undo_record:
  			 * might be better to move this check near to it's usage, but that will
  			 * make code look ugly, so keeping it here.  
  			 */
-			cid = ZHeapTupleGetCid(undo_tup, buffer);
+			cid = ZHeapTupleGetCid(undo_tup, buffer, prev_urec_ptr);
 		}
 	}
 

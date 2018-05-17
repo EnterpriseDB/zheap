@@ -323,7 +323,7 @@ extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
 	)
 
 /* Zheap transaction information related API's */
-extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf);
+extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr);
 extern CommandId ZHeapPageGetCid(int trans_slot, Buffer buf, OffsetNumber off);
 extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 						int *trans_slot, uint64 *epoch_xid_out,

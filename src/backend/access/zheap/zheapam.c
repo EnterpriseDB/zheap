@@ -4834,7 +4834,7 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 		case MinCommandIdAttributeNumber:
 		case MaxCommandIdAttributeNumber:
 			Assert (BufferIsValid(buf));
-			cid = ZHeapTupleGetCid(zhtup, buf);
+			cid = ZHeapTupleGetCid(zhtup, buf, InvalidUndoRecPtr);
 			/*
 			 * To maintain the compatibility of cid with that of heap,
 			 * return the FirstCommandId if it comes to be InvalidCommandId
@@ -5531,7 +5531,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
  * on the buffer.
  */
 CommandId
-ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf)
+ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr)
 {
 	ZHeapPageOpaque	opaque;
 	UnpackedUndoRecord	*urec;
@@ -5549,7 +5549,14 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf)
 	if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return InvalidCommandId;
 
-	urec = UndoFetchRecord(ZHeapTupleHeaderGetRawUndoPtr(zhtup->t_data, opaque),
+	/*
+	 * If urec_ptr is not provided, fetch the latest undo pointer from the page.
+	 */
+	if (!UndoRecPtrIsValid(urec_ptr))
+		urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(zhtup->t_data, opaque);
+
+	Assert(UndoRecPtrIsValid(urec_ptr));
+	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
 						   InvalidTransactionId,
@@ -5701,7 +5708,7 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, int *trans_slot,
 				trans_slot_id = ZHeapTupleHeaderGetXactSlot(tuple);
 				epoch = (uint64) ZHeapTupleHeaderGetRawEpoch(tuple, opaque);
 				xid = ZHeapTupleHeaderGetRawXid(tuple, opaque);
-				cid = ZHeapTupleGetCid(zhtup, buf);
+				cid = ZHeapTupleGetCid(zhtup, buf, InvalidUndoRecPtr);
 				urec_ptr = ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque);
 			}
 			else
