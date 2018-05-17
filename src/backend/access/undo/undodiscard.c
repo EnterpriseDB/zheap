@@ -46,7 +46,7 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 	UnpackedUndoRecord	*uur;
 	bool	need_discard = false;
 	uint16 uur_prevlen;
-	TransactionId	undoxid;
+	TransactionId	undoxid, xid = log->oldest_xid;
 	TransactionId	latest_discardxid = InvalidTransactionId;
 	uint32	epoch;
 
@@ -55,7 +55,31 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 	/* Loop until we run out of discardable transactions. */
 	do
 	{
-		bool isCommitted;
+		bool isCommitted, only_discard = false;
+
+		next_insert = UndoLogGetNextInsertPtr(log->logno, xid);
+
+		if (next_insert == undo_recptr)
+		{
+			if (undo_recptr == log->oldest_data)
+			{
+				/*
+				 * If the discard location and the insert location is same then
+				 * there is nothing to discard.
+				 */
+				break;
+			}
+			else
+			{
+				/*
+				 * If the undo actions were already applied for a transaction
+				 * and the undo record pointer is rewound, then undo worker
+				 * only discards.
+				 */
+				only_discard = true;
+				goto discard;
+			}
+		}
 
 		/* Fetch the undo record for given undo_recptr. */
 		uur = UndoFetchRecord(undo_recptr, InvalidBlockNumber,
@@ -67,6 +91,7 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 		isCommitted = TransactionIdDidCommit(uur->uur_xid);
 		next_urecptr = uur->uur_next;
 		undoxid = uur->uur_xid;
+		xid = undoxid;
 		epoch = uur->uur_xidepoch;
 
 		/* There might not be any undo log and hibernation might be needed. */
@@ -124,20 +149,21 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 		if (TransactionIdFollowsOrEquals(undoxid, xmin) ||
 			next_urecptr == SpecialUndoRecPtr)
 		{
+discard:
 			/* Hey, I got some undo log to discard, can not hibernate now. */
 			*hibernate = false;
 
-			if (uur)
+			if (uur && !only_discard)
 				UndoRecordRelease(uur);
 
 			/*
 			 * If Transaction id is smaller than the xmin that means this must
 			 * be the last transaction in this undo log, so we need to get the
 			 * last insert point in this undo log and discard till that point.
-			 * Also, if a transation is aborted, we stop discarding undo from the
+			 * Also, if a transaction is aborted, we stop discarding undo from the
 			 * same location.
 			 */
-			if (TransactionIdPrecedes(undoxid, xmin))
+			if (!only_discard && TransactionIdPrecedes(undoxid, xmin))
 			{
 				UndoRecPtr	next_insert = InvalidUndoRecPtr;
 
@@ -159,9 +185,17 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 			}
 
 			LWLockAcquire(&log->discard_lock, LW_EXCLUSIVE);
-			log->oldest_xid = undoxid;
-			log->oldest_xidepoch = epoch;
-			log->oldest_data = undo_recptr;
+			if (only_discard)
+			{
+				log->oldest_xid = InvalidTransactionId;
+				log->oldest_xidepoch = 0;
+			}
+			else
+			{
+				log->oldest_data = undo_recptr;
+				log->oldest_xid = undoxid;
+				log->oldest_xidepoch = epoch;
+			}
 			LWLockRelease(&log->discard_lock);
 
 			if (need_discard)
