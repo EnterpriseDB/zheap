@@ -105,7 +105,16 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		 * Hence, exit quietly.
 		 */
 		if(uur == NULL)
+		{
+			/* release the undo records for which action has been replayed */
+			while (luur)
+			{
+				UnpackedUndoRecord *uur = (UnpackedUndoRecord *) linitial(luur);
+				UndoRecordRelease(uur);
+				luur = list_delete_first(luur);
+			}
 			return;
+		}
 
 		reloid = RelidByRelfilenode(uur->uur_tsid, uur->uur_relfilenode);
 		xid = uur->uur_xid;
