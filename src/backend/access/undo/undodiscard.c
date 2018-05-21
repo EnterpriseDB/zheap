@@ -43,12 +43,13 @@ static TransactionId
 UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 {
 	UndoRecPtr	undo_recptr, next_urecptr, from_urecptr, next_insert;
-	UnpackedUndoRecord	*uur;
+	UnpackedUndoRecord	*uur = NULL;
 	bool	need_discard = false;
 	uint16 uur_prevlen;
-	TransactionId	undoxid, xid = log->oldest_xid;
+	TransactionId	undoxid = InvalidTransactionId;
+	TransactionId	xid = log->oldest_xid;
 	TransactionId	latest_discardxid = InvalidTransactionId;
-	uint32	epoch;
+	uint32	epoch = 0;
 
 	undo_recptr = log->oldest_data;
 
