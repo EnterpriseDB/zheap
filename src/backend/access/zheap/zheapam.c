@@ -2386,7 +2386,14 @@ reacquire_buffer:
 								newtupsize;
 			ItemIdChangeOff(lp, ((PageHeader) page)->pd_upper);
 			new_pos= (ZHeapTupleHeader) PageGetItem(page, lp);
-			memcpy((char *) new_pos, (char *) oldtup.t_data, SizeofZHeapTupleHeader);
+
+			/*
+			 * Since the source and destination may overlap, use memmove() as
+			 * against memcpy().
+			 */
+			memmove((char *) new_pos, (char *) oldtup.t_data,
+					SizeofZHeapTupleHeader);
+
 			oldtup.t_data = new_pos;
 		}
 
