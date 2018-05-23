@@ -8527,6 +8527,8 @@ zheap_get_latest_tid(Relation relation,
 		ItemId		lp;
 		ZHeapTuple	tp;
 		ZHeapTuple	resulttup;
+		ItemPointerData new_ctid;
+		uint16		infomask;
 
 		/*
 		 * Read, pin, and lock the page.
@@ -8567,6 +8569,9 @@ zheap_get_latest_tid(Relation relation,
 		memcpy(tp->t_data, ((ZHeapTupleHeader) PageGetItem(page, lp)),
 			   tup_len);
 
+		/* Save the infomask. The tuple might get freed, as mentioned above */
+		infomask = tp->t_data->t_infomask;
+
 		/*
 		 * Ensure that the tuple is same as what we are expecting.  If the
 		 * the current or any prior version of tuple doesn't contain the
@@ -8585,8 +8590,9 @@ zheap_get_latest_tid(Relation relation,
 		 * Check time qualification of tuple; if visible, set it as the new
 		 * result candidate.
 		 */
-		ItemPointerSetInvalid(&ctid);
-		resulttup = ZHeapTupleSatisfiesVisibility(tp, snapshot, buffer, &ctid);
+		ItemPointerSetInvalid(&new_ctid);
+		resulttup = ZHeapTupleSatisfiesVisibility(tp, snapshot, buffer,
+												  &new_ctid);
 
 #if 0
 		/*
@@ -8599,25 +8605,28 @@ zheap_get_latest_tid(Relation relation,
 
 		/* Pass back the tuple ctid if it's visible */
 		if (resulttup != NULL)
-			*tid = tp->t_self;
+			*tid = ctid;
 
 		/* If there's a valid ctid link, follow it, else we're done. */
-		if (!ItemPointerIsValid(&ctid) ||
-			ZHEAP_XID_IS_LOCKED_ONLY(tp->t_data->t_infomask) ||
-			ItemPointerEquals(&tp->t_self, &ctid))
+		if (!ItemPointerIsValid(&new_ctid) ||
+			ZHEAP_XID_IS_LOCKED_ONLY(infomask) ||
+			ItemPointerEquals(&ctid, &new_ctid))
 		{
-			/* If the returned tuple is a copy, free it */
-			if (resulttup != NULL && resulttup != tp)
+			if (resulttup != NULL)
 				zheap_freetuple(resulttup);
-
 			UnlockReleaseBuffer(buffer);
 			break;
 		}
 
 		/* Get the transaction who modified this tuple */
-		ZHeapTupleGetTransInfo(tp, buffer, NULL, NULL, &priorXmax, NULL, NULL,
+		ZHeapTupleGetTransInfo(resulttup != NULL ? resulttup : tp,
+							   buffer, NULL, NULL, &priorXmax, NULL, NULL,
 							   true);
 
+		ctid = new_ctid;
+
+		if (resulttup != NULL)
+			zheap_freetuple(resulttup);
 		UnlockReleaseBuffer(buffer);
 	}							/* end of loop */
 }
