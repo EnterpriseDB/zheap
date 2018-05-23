@@ -86,50 +86,11 @@ static void zheap_prune_record_deleted(ZPruneState * prstate,
 void
 zheap_page_prune_opt(Relation relation, Buffer buffer)
 {
-	int     slot_no;
-	bool    can_prune = true;
-	ZHeapPageOpaque opaque;
 	Page	page;
 	TransactionId OldestXmin;
 	TransactionId ignore = InvalidTransactionId;
 
 	page = BufferGetPage(buffer);
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-
-	/*
-	 * While pruning if we have move the non committed tuple to a new place within
-	 * page then rollback of such tuple to old size might fail because of
-	 * insufficient space.  To avoid the same, we could do one of the following:
-	 *
-	 * a. During PageRepairFragmentation, check if the tuple is inplace updated
-	 * and the transaction is not committed, then fetch the length of largest
-	 * previous tuple from undo chain, so that we can reserve that much space.
-	 *
-	 * b. Write an undo record for PageRepairFragmentation such that it can be
-	 * rolledback. I think this can generate much more data both in undo and WAL.
-	 *
-	 * c. For such tuples always reserve the maxtuplesize space.
-	 *
-	 * d. Don't allow page rearrangement if we have any such tuple on a page.
-	 *
-	 * e. Allow page rearrangement considering the current length of tuple and
-	 * later during rollback if we don't find enough space, make a
-	 * non-inplace-update.
-	 *
-	 * For now we choose the simplest option which is to allow pruning if there
-	 * are no open transaction on a page.
-	 */
-	for (slot_no = 0; slot_no < ZHEAP_PAGE_TRANS_SLOTS; slot_no++)
-	{
-		if (TransactionIdIsInProgress(opaque->transinfo[slot_no].xid))
-		{
-			can_prune = false;
-			break;
-		}
-	}
-
-	if (!can_prune)
-		return;
 
 	/*
 	 * We can't write WAL in recovery mode, so there's no point trying to
