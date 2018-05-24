@@ -613,10 +613,7 @@ PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr)
 	LWLockAcquire(&log->discard_lock, LW_SHARED);
 
 	if (IsPrevTxnUndoDiscarded(log, prev_xact_urp))
-	{
-		LWLockRelease(&log->discard_lock);
 		return;
-	}
 
 	UndoRecPtrAssignRelFileNode(rnode, prev_xact_urp);
 	cur_blk = UndoRecPtrGetBlockNum(prev_xact_urp);
