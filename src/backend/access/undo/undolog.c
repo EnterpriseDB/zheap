@@ -2248,14 +2248,18 @@ ResetUndoLogs(UndoPersistence persistence)
 		FreeDir(dir);
 
 		/*
-		 * We have no segment files.  Set all pointers to the current end
-		 * pointer, so we'll create the next segment from there as soon as we
-		 * need it.
+		 * We have no segment files.  Set the pointers to indicate that there
+		 * is no data.  The discard and insert pointers point to the first
+		 * usable byte in the segment we will create when we next try to
+		 * allocate.  This is a bit strange, because it means that they are
+		 * past the end pointer.  That's the same as when new undo logs are
+		 * created.
 		 *
 		 * TODO: Should we rewind to zero instead, so we can reuse that (now)
 		 * unreferenced address space?
 		 */
-		log->meta.insert = log->meta.discard = log->meta.end;
+		log->meta.insert = log->meta.discard = log->meta.end +
+			UndoLogBlockHeaderSize;
 
 		/*
 		 * TODO: Here we need to call forget_undo_buffers() to nuke anything
