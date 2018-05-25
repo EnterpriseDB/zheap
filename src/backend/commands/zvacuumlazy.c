@@ -599,10 +599,10 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 				tupindex = lazy_vacuum_zpage_with_undo(onerel, blkno, buf,
 													   tupindex, vacrelstats);
 			}
-
-			/* Now that we've compacted the page, record its available space */
-			freespace = PageGetZHeapFreeSpace(page);
 		}
+
+		/* Now that we are done with the page, get its available space */
+		freespace = PageGetZHeapFreeSpace(page);
 
 		UnlockReleaseBuffer(buf);
 
