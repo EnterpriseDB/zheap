@@ -193,10 +193,10 @@ discard:
 			}
 			else
 			{
-				log->oldest_data = undo_recptr;
 				log->oldest_xid = undoxid;
 				log->oldest_xidepoch = epoch;
 			}
+			log->oldest_data = undo_recptr;
 			LWLockRelease(&log->discard_lock);
 
 			if (need_discard)
