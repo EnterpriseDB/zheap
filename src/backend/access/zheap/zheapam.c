@@ -1849,6 +1849,15 @@ check_tup_satisfies_update:
 		if (result != HeapTupleMayBeUpdated)
 			result = can_continue ? HeapTupleMayBeUpdated : HeapTupleUpdated;
 	}
+	else if (result == HeapTupleMayBeUpdated)
+	{
+		/*
+		 * There is no active locker on the tuple, so we avoid grabbing
+		 * the lock on new tuple.
+		 */
+		checked_lockers = true;
+		locker_remains = false;
+	}
 
 	if (crosscheck != InvalidSnapshot && result == HeapTupleMayBeUpdated)
 	{
