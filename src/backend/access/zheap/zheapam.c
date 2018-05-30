@@ -518,7 +518,7 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 	tup->t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
 	tup->t_data->t_infomask2 &= ~ZHEAP_XACT_SLOT;
 
-	if (options & ZHTUP_SLOT_FROZEN)
+	if (options & HEAP_INSERT_FROZEN)
 		ZHeapTupleHeaderSetXactSlot(tup->t_data, ZHTUP_SLOT_FROZEN);
 	tup->t_tableOid = RelationGetRelid(relation);
 
@@ -721,7 +721,8 @@ reacquire_buffer:
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
 
-	ZHeapTupleHeaderSetXactSlot(zheaptup->t_data, trans_slot_id);
+	if (!(options & HEAP_INSERT_FROZEN))
+		ZHeapTupleHeaderSetXactSlot(zheaptup->t_data, trans_slot_id);
 
 	RelationPutZHeapTuple(relation, buffer, zheaptup);
 
@@ -8355,14 +8356,6 @@ reacquire_buffer:
 		Assert(trans_slot_id != InvalidXactSlotId);
 
 		/*
-		 * RelationGetBufferForTuple has ensured that the first tuple fits.
-		 * Keep calm and put that on the page, and then as many other tuples
-		 * as fit.
-		 */
-		if ((options & ZHTUP_SLOT_FROZEN) != ZHTUP_SLOT_FROZEN)
-			ZHeapTupleHeaderSetXactSlot(zheaptuples[ndone]->t_data, trans_slot_id);
-
-		/*
 		 * Get the unused offset ranges in the page. This is required for
 		 * deciding the number of undo records to be prepared later.
 		 */
@@ -8421,6 +8414,11 @@ reacquire_buffer:
 		/* NO EREPORT(ERROR) from here till changes are logged */
 		START_CRIT_SECTION();
 
+		/*
+		 * RelationGetBufferForTuple has ensured that the first tuple fits.
+		 * Keep calm and put that on the page, and then as many other tuples
+		 * as fit.
+		 */
 		nthispage = 0;
 		for (i = 0; i < zfree_offset_ranges->nranges; i++)
 		{
@@ -8439,7 +8437,7 @@ reacquire_buffer:
 				if (PageGetZHeapFreeSpace(page) < MAXALIGN(zheaptup->t_len) + saveFreeSpace)
 					break;
 
-				if ((options & ZHTUP_SLOT_FROZEN) != ZHTUP_SLOT_FROZEN)
+				if (!(options & HEAP_INSERT_FROZEN))
 					ZHeapTupleHeaderSetXactSlot(zheaptup->t_data, trans_slot_id);
 
 				RelationPutZHeapTuple(relation, buffer, zheaptup);

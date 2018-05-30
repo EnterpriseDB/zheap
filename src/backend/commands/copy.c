@@ -2480,10 +2480,7 @@ CopyFrom(CopyState cstate)
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("cannot perform FREEZE because the table was not created or truncated in the current subtransaction")));
 
-		if (RelationStorageIsZHeap(cstate->rel))
-			hi_options |= ZHTUP_SLOT_FROZEN;
-		else
-			hi_options |= HEAP_INSERT_FROZEN;
+		hi_options |= HEAP_INSERT_FROZEN;
 	}
 
 	/*
