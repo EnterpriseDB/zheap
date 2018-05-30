@@ -57,6 +57,7 @@
 #include "executor/tuptable.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "postmaster/undoloop.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
@@ -92,7 +93,7 @@ zheap_beginscan_internal(Relation relation, Snapshot snapshot,
 						 bool is_samplescan,
 						 bool temp_snap);
 
-static bool PageFreezeTransSlots(Relation relation, Buffer buf);
+static bool PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired);
 static void RelationPutZHeapTuple(Relation relation, Buffer buffer,
 								  ZHeapTuple tuple);
 static XLogRecPtr log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
@@ -560,6 +561,39 @@ xid_infomask_changed(uint16 new_infomask, uint16 old_infomask)
 }
 
 /*
+ * zheap_exec_pending_rollback - Execute pending rollback actions for the
+ *	given buffer (page).
+ *
+ * This function expects that the input buffer is locked.  We will release and
+ * reacquire the buffer lock in this function, the same can be done in all the
+ * callers of this function, but that is just a code duplication, so we instead
+ * do it here.
+ */
+void
+zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no)
+{
+	UndoRecPtr urec_ptr;
+	Page	page;
+	ZHeapPageOpaque opaque;
+	TransactionId xid;
+
+	page = BufferGetPage(buffer);
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+	urec_ptr = opaque->transinfo[slot_no].urec_ptr;
+	xid = opaque->transinfo[slot_no].xid;
+
+	/*
+	 * Release buffer lock before applying undo actions.
+	 */
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+	process_and_execute_undo_actions_page(urec_ptr, rel, buffer, xid, slot_no);
+
+	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+}
+
+/*
  * zheap_insert - insert tuple into a zheap
  *
  * The functionality related to heap is quite similar to heap_insert,
@@ -584,6 +618,7 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	Page		page;
 	UndoRecPtr	urecptr, prev_urecptr;
 	xl_undolog_meta	undometa;
+	bool		lock_reacquired;
 
 	data_alignment_zheap = data_alignment;
 
@@ -612,7 +647,9 @@ reacquire_buffer:
 	 * that by releasing the buffer lock.
 	 */
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer, epoch, xid,
-											   &prev_urecptr);
+											   &prev_urecptr, &lock_reacquired);
+	if (lock_reacquired)
+		goto reacquire_buffer;
 
 	if (trans_slot_id == InvalidXactSlotId)
 	{
@@ -927,6 +964,7 @@ zheap_delete(Relation relation, ItemPointer tid,
 	bool		in_place_updated_or_locked = false;
 	bool		all_visible_cleared = false;
 	bool		any_multi_locker_member_alive = false;
+	bool		lock_reacquired;
 	xl_undolog_meta undometa;
 
 	Assert(ItemPointerIsValid(tid));
@@ -1016,8 +1054,10 @@ check_tup_satisfies_update:
 		List	*mlmembers = NIL;
 		TransactionId xwait;
 		uint16	infomask;
-		bool	lock_reacquired = false;
+		bool    isCommitted;
+		bool	can_continue = false;
 
+		lock_reacquired = false;
 		xwait = tup_xid;
 		infomask = zheaptup.t_data->t_infomask;
 
@@ -1037,8 +1077,21 @@ check_tup_satisfies_update:
 		if (ZHeapTupleHasMultiLockers(infomask))
 		{
 			LockTupleMode	old_lock_mode;
+			TransactionId	update_xact;
+			bool			upd_xact_aborted;
 
 			old_lock_mode = get_old_lock_mode(infomask);
+
+			/*
+			 * For aborted updates, we must allow to reverify the tuple in
+			 * case it's values got changed.  See the similar handling in
+			 * zheap_update.
+			 */
+			if (!ZHEAP_XID_IS_LOCKED_ONLY(zheaptup.t_data->t_infomask))
+				ZHeapTupleGetTransInfo(&zheaptup, buffer, NULL, NULL, &update_xact,
+									   NULL, NULL, false);
+			else
+				update_xact = InvalidTransactionId;
 
 			if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
 								HWLOCKMODE_from_locktupmode(LockTupleExclusive)))
@@ -1055,9 +1108,25 @@ check_tup_satisfies_update:
 									 LockWaitBlock, &have_tuple_lock);
 				mlmembers = ZGetMultiLockMembers(&zheaptup, buffer, true);
 				ZMultiLockMembersWait(relation, mlmembers, &zheaptup, buffer,
-									  LockTupleExclusive, false, XLTW_Delete, NULL);
+									  update_xact, LockTupleExclusive, false,
+									  XLTW_Delete, NULL, &upd_xact_aborted);
 				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+				/*
+				 * If the aborted xact is for update, then we need to reverify
+				 * the tuple.
+				 */
+				if (upd_xact_aborted)
+					goto check_tup_satisfies_update;
 				lock_reacquired = true;
+
+				/*
+				 * There was no UPDATE in the Multilockers. No
+				 * TransactionIdIsInProgress() call needed here, since we called
+				 * ZMultiLockMembersWait() above.
+				 */
+				if (!TransactionIdIsValid(update_xact))
+					can_continue = true;
 			}
 		}
 		else if (!TransactionIdIsCurrentTransactionId(xwait))
@@ -1131,23 +1200,53 @@ check_tup_satisfies_update:
 				!TransactionIdEquals(ZHeapTupleHeaderGetRawXid(zheaptup.t_data, opaque),
 									  xwait))
 				goto check_tup_satisfies_update;
+
+			/* Aborts of multi-lockers are already dealt above. */
+			if(!ZHeapTupleHasMultiLockers(infomask))
+			{
+				bool	has_update = false;
+
+				if (!ZHEAP_XID_IS_LOCKED_ONLY(zheaptup.t_data->t_infomask))
+					has_update = true;
+
+				isCommitted = TransactionIdDidCommit(xwait);
+
+				/*
+				 * For aborted transaction, if the undo actions are not applied
+				 * yet, then apply them before modifying the page.
+				 */
+				if (!isCommitted &&
+					opaque->transinfo[tup_trans_slot_id].xid == xwait)
+					zheap_exec_pending_rollback(relation, buffer,
+												tup_trans_slot_id);
+
+				/*
+				 * For aborted updates, we must allow to reverify the tuple in
+				 * case it's values got changed.
+				 */
+				if (!isCommitted && has_update)
+					goto check_tup_satisfies_update;
+
+				if (!has_update)
+					can_continue = true;
+			}
+		}
+		else
+		{
+			/*
+			 * We can proceed with the delete, when there's a single locker
+			 * and it's our own transaction.
+			 */
+			if (ZHEAP_XID_IS_LOCKED_ONLY(zheaptup.t_data->t_infomask))
+				can_continue = true;
 		}
 
 		/*
-		 * We may overwrite if previous xid is aborted, or if it is committed
-		 * but only locked the tuple without updating it.
-		 *
-		 * Fixme - For aborted transactions, we might want to apply the
-		 * undo for this page before proceeding.
+		 * We may overwrite if previous xid is aborted or committed, but only
+		 * locked the tuple without updating it.
 		 */
 		if (result != HeapTupleMayBeUpdated)
-		{
-			if ((!TransactionIdDidCommit(xwait)) ||
-				ZHEAP_XID_IS_LOCKED_ONLY(zheaptup.t_data->t_infomask))
-				result = HeapTupleMayBeUpdated;
-			else
-				result = HeapTupleUpdated;
-		}
+			result = can_continue ? HeapTupleMayBeUpdated : HeapTupleUpdated;
 	}
 
 	if (crosscheck != InvalidSnapshot && result == HeapTupleMayBeUpdated)
@@ -1190,7 +1289,9 @@ zheap_tuple_updated:
 	 * that by releasing the buffer lock.
 	 */
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer, epoch, xid,
-											   &prev_urecptr);
+											   &prev_urecptr, &lock_reacquired);
+	if (lock_reacquired)
+		goto check_tup_satisfies_update;
 
 	if (trans_slot_id == InvalidXactSlotId)
 	{
@@ -1505,6 +1606,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	bool		checked_lockers = false;
 	bool		locker_remains = false;
 	bool		any_multi_locker_member_alive = false;
+	bool		lock_reacquired;
 	xl_undolog_meta	undometa;
 
 	Assert(ItemPointerIsValid(otid));
@@ -1674,8 +1776,38 @@ check_tup_satisfies_update:
 			TransactionId update_xact;
 			LockTupleMode	old_lock_mode;
 			int			remain;
+			bool		isAborted;
+			bool		upd_xact_aborted;
 
 			old_lock_mode = get_old_lock_mode(infomask);
+
+			/*
+			 * For the conflicting lockers, we need to be careful about
+			 * applying pending undo actions for aborted transactions; if we
+			 * leave any transaction whether locker or updater, it can lead to
+			 * inconsistency.  Basically, in such a case after waiting for all
+			 * the conflicting transactions we might clear the multilocker
+			 * flag and proceed with update and it is quite possible that after
+			 * the update, undo worker rollbacks some of the previous locker
+			 * which can overwrite the tuple (Note, till multilocker bit is set,
+			 * the rollback actions won't overwrite the tuple).
+			 *
+			 * OTOH for non-conflicting lockers, as we don't clear the
+			 * multi-locker flag, there is no urgency to perform undo actions
+			 * for aborts of lockers.  The work involved in finding and
+			 * aborting lockers is non-trivial (w.r.t performance), so it is
+			 * better to avoid it.
+			 *
+			 * After abort, if it is only a locker, then it will be completely
+			 * gone; but if it is an update, then after applying pending
+			 * actions, the tuple might get changed and we must allow to
+			 * reverify the tuple in case it's values got changed.
+			 */
+			if (!ZHEAP_XID_IS_LOCKED_ONLY(oldtup.t_data->t_infomask))
+				ZHeapTupleGetTransInfo(&oldtup, buffer, NULL, NULL, &update_xact,
+									   NULL, NULL, false);
+			else
+				update_xact = InvalidTransactionId;
 
 			if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
 									HWLOCKMODE_from_locktupmode(*lockmode)))
@@ -1692,10 +1824,19 @@ check_tup_satisfies_update:
 									 LockWaitBlock, &have_tuple_lock);
 				mlmembers = ZGetMultiLockMembers(&oldtup, buffer, true);
 				ZMultiLockMembersWait(relation, mlmembers, &oldtup, buffer,
-									  *lockmode, false, XLTW_Update, &remain);
+									  update_xact, *lockmode, false,
+									  XLTW_Update, &remain,
+									  &upd_xact_aborted);
 				checked_lockers = true;
 				locker_remains = remain != 0;
 				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+				/*
+				 * If the aborted xact is for update, then we need to reverify
+				 * the tuple.
+				 */
+				if (upd_xact_aborted)
+					goto check_tup_satisfies_update;
 
 				/*
 				 * Also take care of cases when page is pruned after we
@@ -1752,23 +1893,28 @@ check_tup_satisfies_update:
 										 xwait))
 					goto check_tup_satisfies_update;
 			}
+			else if (TransactionIdIsValid(update_xact))
+			{
+				isAborted = TransactionIdDidAbort(update_xact);
 
-			if (!ZHEAP_XID_IS_LOCKED_ONLY(oldtup.t_data->t_infomask))
-				ZHeapTupleGetTransInfo(&oldtup, buffer, NULL, NULL, &update_xact,
-									   NULL, NULL, false);
-			else
-				update_xact = InvalidTransactionId;
+				/*
+				 * For aborted transaction, if the undo actions are not applied
+				 * yet, then apply them before modifying the page.
+				 */
+				if (isAborted && opaque->transinfo[tup_trans_slot_id].xid == xwait)
+				{
+					zheap_exec_pending_rollback(relation, buffer,
+												tup_trans_slot_id);
+					goto check_tup_satisfies_update;
+				}
+			}
 
 			/*
-			 * There was no UPDATE in the Multilockers; or it aborted. No
+			 * There was no UPDATE in the Multilockers. No
 			 * TransactionIdIsInProgress() call needed here, since we called
 			 * ZMultiLockMembersWait() above.
-			 *
-			 * Fixme - For aborted transactions, we might want to apply the
-			 * undo for this page before proceeding.
 			 */
-			if (!TransactionIdIsValid(update_xact) ||
-				TransactionIdDidAbort(update_xact))
+			if (!TransactionIdIsValid(update_xact))
 				can_continue = true;
 		}
 		else if (TransactionIdIsCurrentTransactionId(xwait))
@@ -1794,6 +1940,9 @@ check_tup_satisfies_update:
 		}
 		else
 		{
+			bool	isCommitted;
+			bool	has_update = false;
+
 			/*
 			 * Wait for regular transaction to end; but first, acquire tuple
 			 * lock.
@@ -1834,18 +1983,39 @@ check_tup_satisfies_update:
 									 xwait))
 				goto check_tup_satisfies_update;
 
+			if (!ZHEAP_XID_IS_LOCKED_ONLY(oldtup.t_data->t_infomask))
+				has_update = true;
+
 			/*
 			 * We may overwrite if previous xid is aborted, or if it is committed
 			 * but only locked the tuple without updating it.
-			 *
-			 * Fixme - For aborted transactions, we might want to apply the
-			 * undo for this page before proceeding.
 			 */
-			if ((!TransactionIdDidCommit(xwait)) ||
-				ZHEAP_XID_IS_LOCKED_ONLY(oldtup.t_data->t_infomask))
+			isCommitted = TransactionIdDidCommit(xwait);
+
+			/*
+			 * For aborted transaction, if the undo actions are not applied
+			 * yet, then apply them before modifying the page.
+			 */
+			if (!isCommitted &&
+				opaque->transinfo[tup_trans_slot_id].xid == xwait)
+				zheap_exec_pending_rollback(relation, buffer,
+											tup_trans_slot_id);
+
+			/*
+			 * For aborted updates, we must allow to reverify the tuple in
+			 * case it's values got changed.
+			 */
+			if (!isCommitted && has_update)
+				goto check_tup_satisfies_update;
+
+			if (!has_update)
 				can_continue = true;
 		}
 
+		/*
+		 * We may overwrite if previous xid is aborted or committed, but only
+		 * locked the tuple without updating it.
+		 */
 		if (result != HeapTupleMayBeUpdated)
 			result = can_continue ? HeapTupleMayBeUpdated : HeapTupleUpdated;
 	}
@@ -1931,7 +2101,9 @@ zheap_tuple_updated:
 	 * that by releasing the buffer lock.
 	 */
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer, epoch, xid,
-											   &prev_urecptr);
+											   &prev_urecptr, &lock_reacquired);
+	if (lock_reacquired)
+		goto check_tup_satisfies_update;
 
 	if (trans_slot_id == InvalidXactSlotId)
 	{
@@ -2173,7 +2345,10 @@ reacquire_buffer:
 													   newbuf,
 													   epoch,
 													   xid,
-													   &new_prev_urecptr);
+													   &new_prev_urecptr,
+													   &lock_reacquired);
+		if (lock_reacquired)
+			goto reacquire_buffer;
 
 		if (new_trans_slot_id == InvalidXactSlotId)
 		{
@@ -2838,6 +3013,8 @@ zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 	bool		have_tuple_lock = false;
 	bool		in_place_updated_or_locked = false;
 	bool		any_multi_locker_member_alive = false;
+	bool		isAborted = false;
+	bool		lock_reacquired;
 
 	xid = GetTopTransactionId();
 	epoch = GetEpochForXid(xid);
@@ -3219,6 +3396,7 @@ check_tup_satisfies_update:
 		else if (require_sleep)
 		{
 			List	*mlmembers = NIL;
+			bool	upd_xact_aborted = false;
 
 			/*
 			 * Acquire tuple lock to establish our priority for the tuple, or
@@ -3245,8 +3423,19 @@ check_tup_satisfies_update:
 			if (ZHeapTupleHasMultiLockers(infomask))
 			{
 				LockTupleMode	old_lock_mode;
+				TransactionId	update_xact;
 
 				old_lock_mode = get_old_lock_mode(infomask);
+
+				/*
+				 * For aborted updates, we must allow to reverify the tuple in
+				 * case it's values got changed.
+				 */
+				if (!ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask))
+					ZHeapTupleGetTransInfo(&zhtup, *buffer, NULL, NULL, &update_xact,
+										   NULL, NULL, true);
+				else
+					update_xact = InvalidTransactionId;
 
 				if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
 									HWLOCKMODE_from_locktupmode(mode)))
@@ -3264,15 +3453,18 @@ check_tup_satisfies_update:
 					{
 						case LockWaitBlock:
 							ZMultiLockMembersWait(relation, mlmembers, &zhtup,
-												  *buffer, mode, false,
-												  XLTW_Lock, NULL);
+												  *buffer, update_xact, mode,
+												  false, XLTW_Lock, NULL,
+												  &upd_xact_aborted);
 							break;
 						case LockWaitSkip:
 							if (!ConditionalZMultiLockMembersWait(relation,
 																  mlmembers,
 																  *buffer,
+																  update_xact,
 																  mode,
-																  NULL))
+																  NULL,
+																  &upd_xact_aborted))
 							{
 								result = HeapTupleWouldBlock;
 								/* recovery code expects to have buffer lock held */
@@ -3284,8 +3476,10 @@ check_tup_satisfies_update:
 							if (!ConditionalZMultiLockMembersWait(relation,
 																  mlmembers,
 																  *buffer,
+																  update_xact,
 																  mode,
-																  NULL))
+																  NULL,
+																  &upd_xact_aborted))
 								ereport(ERROR,
 										(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
 										 errmsg("could not obtain lock on row in relation \"%s\"",
@@ -3365,6 +3559,14 @@ check_tup_satisfies_update:
 			if (ZHeapTupleHasMultiLockers(infomask))
 			{
 				List	*new_mlmembers;
+
+				/*
+				 * If the aborted xact is for update, then we need to reverify
+				 * the tuple.
+				 */
+				if (upd_xact_aborted)
+					goto check_tup_satisfies_update;
+
 				new_mlmembers = ZGetMultiLockMembers(&zhtup, *buffer, false);
 
 				/*
@@ -3397,15 +3599,35 @@ check_tup_satisfies_update:
 		}
 
 		/*
-		 * We may lock if previous xid aborted, or if it committed but
-		 * only locked the tuple without updating it; or if we didn't have to
-		 * wait at all for whatever reason.
-		 *
-		 * Fixme - For aborted transactions, we might want to apply the
-		 * undo for this page before proceeding.
+		 * We may overwrite if previous xid is aborted, or if it is committed
+		 * but only locked the tuple without updating it.
+		 */
+		isAborted = TransactionIdDidAbort(xwait);
+
+		/*
+		 * For aborted transaction, if the undo actions are not applied
+		 * yet, then apply them before modifying the page.
+		 */
+		if (isAborted &&
+			!TransactionIdIsCurrentTransactionId(xwait) &&
+			opaque->transinfo[tup_trans_slot_id].xid == xwait)
+			zheap_exec_pending_rollback(relation, *buffer,
+										tup_trans_slot_id);
+
+		/*
+		 * For aborted updates, we must allow to reverify the tuple in
+		 * case it's values got changed.
+		 */
+		if (isAborted &&
+			!ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask))
+			goto check_tup_satisfies_update;
+
+		/*
+		 * We may lock if previous xid committed or aborted but only locked
+		 * the tuple without updating it; or if we didn't have to wait at all
+		 * for whatever reason.
 		 */
 		if (!require_sleep ||
-			(!TransactionIdDidCommit(xwait)) ||
 			ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask) ||
 			result == HeapTupleMayBeUpdated)
 			result = HeapTupleMayBeUpdated;
@@ -3532,7 +3754,9 @@ failed:
 	 * that by releasing the buffer lock.
 	 */
 	trans_slot_id = PageReserveTransactionSlot(relation, *buffer, epoch, xid,
-											   &prev_urecptr);
+											   &prev_urecptr, &lock_reacquired);
+	if (lock_reacquired)
+		goto check_tup_satisfies_update;
 
 	if (trans_slot_id == InvalidXactSlotId)
 	{
@@ -3613,7 +3837,8 @@ out_unlocked:
  * HeapTupleMayBeUpdated is returned.
  */
 static HTSU_Result
-test_lockmode_for_conflict(LockTupleMode old_mode, TransactionId xid,
+test_lockmode_for_conflict(Relation rel, Buffer buf, LockTupleMode old_mode,
+						   TransactionId xid, int trans_slot_id,
 						   LockTupleMode required_mode, bool has_update,
 						   bool *needwait)
 {
@@ -3656,9 +3881,22 @@ test_lockmode_for_conflict(LockTupleMode old_mode, TransactionId xid,
 	else if (TransactionIdDidAbort(xid))
 	{
 		/*
-		 * Fixme : For aborted transactions, we need to execute undo actions.
+		 * For aborted transaction, if the undo actions are not applied
+		 * yet, then apply them before modifying the page.
 		 */
-		return HeapTupleMayBeUpdated;
+		zheap_exec_pending_rollback(rel, buf, trans_slot_id);
+
+		/*
+		 * If it was only a locker, then the lock is completely gone now and
+		 * we can return success; but if it was an update, then after applying
+		 * pending actions, the tuple might have changed and we must report
+		 * error to the caller.  It will allow caller to reverify the tuple in
+		 * case it's values got changed.
+		 */
+		if (has_update)
+			return HeapTupleUpdated;
+		else
+			return HeapTupleMayBeUpdated;
 	}
 	else if (TransactionIdDidCommit(xid))
 	{
@@ -3722,6 +3960,7 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 	TransactionId	priorXmax = InvalidTransactionId;
 	uint32		epoch;
 	int			trans_slot_id;
+	bool		lock_reacquired;
 
 	ItemPointerCopy(ctid, &tupid);
 
@@ -3831,8 +4070,11 @@ lock_tuple:
 											true : false;
 					}
 
-					result = test_lockmode_for_conflict(mlmember->mode,
+					result = test_lockmode_for_conflict(rel,
+														buf,
+														mlmember->mode,
 														mlmember->xid,
+														mlmember->trans_slot_id,
 														mode, has_update,
 														&needwait);
 					if (result == HeapTupleSelfUpdated)
@@ -3889,8 +4131,10 @@ lock_tuple:
 						old_lock_mode = LockTupleNoKeyExclusive;
 				}
 
-				result = test_lockmode_for_conflict(old_lock_mode, tup_xid, mode,
-													has_update, &needwait);
+				result = test_lockmode_for_conflict(rel, buf, old_lock_mode,
+													tup_xid, tup_trans_slot,
+													mode, has_update,
+													&needwait);
 
 				/*
 				 * If the tuple was already locked by ourselves in a previous
@@ -3927,7 +4171,9 @@ lock_tuple:
 		 * that by releasing the buffer lock.
 		 */
 		trans_slot_id = PageReserveTransactionSlot(rel, buf, epoch, xid,
-												   &prev_urecptr);
+											&prev_urecptr, &lock_reacquired);
+		if (lock_reacquired)
+			goto lock_tuple;
 
 		if (trans_slot_id == InvalidXactSlotId)
 		{
@@ -5090,12 +5336,14 @@ PageGetTransactionSlot(Buffer buf, uint32 epoch, TransactionId xid)
  */
 int
 PageReserveTransactionSlot(Relation relation, Buffer buf, uint32 epoch,
-						   TransactionId xid, UndoRecPtr *urec_ptr)
+						   TransactionId xid, UndoRecPtr *urec_ptr,
+						   bool *lock_reacquired)
 {
 	ZHeapPageOpaque	opaque;
 	int		latestFreeTransSlot = InvalidXactSlotId;
 	int		slot_no;
 
+	*lock_reacquired = false;
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
 
 	for (slot_no = 0; slot_no < ZHEAP_PAGE_TRANS_SLOTS; slot_no++)
@@ -5118,8 +5366,16 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, uint32 epoch,
 	}
 
 	/* no transaction slot available, try to reuse some existing slot */
-	if (PageFreezeTransSlots(relation, buf))
+	if (PageFreezeTransSlots(relation, buf, lock_reacquired))
 	{
+		/*
+		 * If the lock is reacquired inside, then we allow callers to reverify
+		 * the condition whether then can still perform the required
+		 * operation.
+		 */
+		if (*lock_reacquired)
+			return InvalidXactSlotId;
+
 		for (slot_no = 0; slot_no < ZHEAP_PAGE_TRANS_SLOTS; slot_no++)
 		{
 			if (opaque->transinfo[slot_no].xid == InvalidTransactionId)
@@ -5335,13 +5591,13 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
  *	(c) if the xid is rolledback, then ensure that rollback is performed or
  *	at least undo actions for this page have been replayed.
  *
- *	For committed transactions, we simply clear the xid from the transaction
- *	slot and undo record pointer is kept as it is to ensure that we don't
- *	break the undo chain for that slot. We also mark the tuples that are
- *	modified by this xid with a special flag indicating that slot for this is
- *	reused.  The special flag is just an indication that the transaction
- *	information of the transaction that has modified the tuple can be
- *	retrieved from the undo.
+ *	For committed/aborted transactions, we simply clear the xid from the
+ *	transaction slot and undo record pointer is kept as it is to ensure that
+ *	we don't break the undo chain for that slot. We also mark the tuples that
+ *	are modified by committed xid with a special flag indicating that slot for
+ *	this tuple is reused.  The special flag is just an indication that the
+ *	transaction information of the transaction that has modified the tuple can
+ *	be retrieved from the undo.
  *
  *	If we don't do so, then after that slot got reused for some other
  *	unrelated transaction, it might become tricky to traverse the undo chain.
@@ -5361,9 +5617,6 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
  *	This also ensures that we are consistent with how other operations work in
  *	zheap i.e the tuple always reflect the current state.
  *
- *	Fixme - The case for Rollback needs to be handled once we implement undo
- *	actions.
- *
  *	We don't need any special handling for the tuples that are locked by
  *	multiple transactions (aka tuples that have MULTI_LOCKERS bit set).
  *	Basically, we always maintain either strongest lockers or latest lockers
@@ -5378,7 +5631,7 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
  *	false otherwise.
  */
 static bool
-PageFreezeTransSlots(Relation relation, Buffer buf)
+PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 {
 	Page	page;
 	ZHeapPageOpaque	opaque;
@@ -5388,6 +5641,8 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 	int		nFrozenSlots = 0;
 	int		completed_xact_slots[ZHEAP_PAGE_TRANS_SLOTS];
 	int		nCompletedXactSlots = 0;
+	int		aborted_xact_slots[ZHEAP_PAGE_TRANS_SLOTS];
+	int		nAbortedXactSlots = 0;
 
 	oldestXidWithEpochHavingUndo = pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
 
@@ -5476,16 +5731,21 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 	}
 
 	/*
-	 * Try to reuse transaction slots of committed transactions. This is just
-	 * like above but it will maintain a link to the previous transaction undo
-	 * record in this slot.  This is to ensure that if there is still any
-	 * alive snapshot to which this committed transaction is not visible, it
-	 * can fetch the record from undo and check the visibility.
+	 * Try to reuse transaction slots of committed/aborted transactions. This
+	 * is just like above but it will maintain a link to the previous
+	 * transaction undo record in this slot.  This is to ensure that if there
+	 * is still any alive snapshot to which this transaction is not visible,
+	 * it can fetch the record from undo and check the visibility.
 	 */
 	for (slot_no = 0; slot_no < ZHEAP_PAGE_TRANS_SLOTS; slot_no++)
 	{
 		if (!TransactionIdIsInProgress(opaque->transinfo[slot_no].xid))
-			completed_xact_slots[nCompletedXactSlots++] = slot_no;
+		{
+			if (TransactionIdDidCommit(opaque->transinfo[slot_no].xid))
+				completed_xact_slots[nCompletedXactSlots++] = slot_no;
+			else
+				aborted_xact_slots[nAbortedXactSlots++] = slot_no;
+		}
 	}
 
 	if (nCompletedXactSlots)
@@ -5537,6 +5797,37 @@ PageFreezeTransSlots(Relation relation, Buffer buf)
 
 		END_CRIT_SECTION();
 
+		return true;
+	}
+	else if (nAbortedXactSlots)
+	{
+		int		i;
+		UndoRecPtr *urecptr = palloc(nAbortedXactSlots * sizeof(UndoRecPtr));
+		TransactionId *xid = palloc(nAbortedXactSlots * sizeof(TransactionId));
+
+		/* Collect slot information before releasing the lock. */
+		for (i = 0; i < nAbortedXactSlots; i++)
+		{
+			urecptr[i] = opaque->transinfo[aborted_xact_slots[i]].urec_ptr;
+			xid[i] = opaque->transinfo[aborted_xact_slots[i]].xid;
+		}
+
+		/*
+		 * We need to release and the lock before applying undo actions for a
+		 * page as we might need to traverse the long undo chain for a page.
+		 */
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		for (i = 0; i < nAbortedXactSlots; i++)
+			process_and_execute_undo_actions_page(urecptr[i],
+												  relation,
+												  buf,
+												  xid[i],
+												  aborted_xact_slots[i]);
+
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		*lock_reacquired = true;
+		pfree(urecptr);
+		pfree(xid);
 		return true;
 	}
 
@@ -7982,6 +8273,7 @@ zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
 	TransactionId	xid = GetTopTransactionId();
 	uint32		epoch = GetEpochForXid(xid);
 	xl_undolog_meta	undometa;
+	bool		lock_reacquired;
 
 	needwal = !(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation);
 	saveFreeSpace = RelationGetTargetPageFreeSpace(relation,
@@ -8044,7 +8336,9 @@ reacquire_buffer:
 		 * that by releasing the buffer lock.
 		 */
 		trans_slot_id = PageReserveTransactionSlot(relation, buffer, epoch, xid,
-												   &prev_urecptr);
+											&prev_urecptr, &lock_reacquired);
+		if (lock_reacquired)
+			goto reacquire_buffer;
 
 		if (trans_slot_id == InvalidXactSlotId)
 		{

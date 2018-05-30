@@ -27,12 +27,14 @@
 extern List *ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, Buffer buf,
 							int trans_slot, UndoRecPtr urec_ptr);
 extern List *ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock);
-extern bool ZMultiLockMembersWait(Relation rel, List *mlmembers, ZHeapTuple zhtup,
-				  Buffer buf, LockTupleMode required_mode, bool nowait,
-				  XLTW_Oper oper, int *remaining);
+extern bool ZMultiLockMembersWait(Relation rel, List *mlmembers,
+					  ZHeapTuple zhtup, Buffer buf, TransactionId update_xact,
+					  LockTupleMode required_mode, bool nowait, XLTW_Oper oper,
+					  int *remaining, bool *upd_xact_aborted);
 extern bool ConditionalZMultiLockMembersWait(Relation rel, List *mlmembers,
-								 Buffer buf, LockTupleMode required_mode,
-								 int *remaining);
+								 Buffer buf, TransactionId update_xact,
+								 LockTupleMode required_mode, int *remaining,
+								 bool *upd_xact_aborted);
 extern bool ZIsAnyMultiLockMemberRunning(List *mlmembers, ZHeapTuple zhtup,
 					Buffer buf);
 extern bool ZMultiLockMembersSame(List *old_members, List* new_members);

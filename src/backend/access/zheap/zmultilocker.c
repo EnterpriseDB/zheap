@@ -78,6 +78,7 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, Buffer buf,
 		{
 			mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
 			mlmember->xid = urec->uur_xid;
+			mlmember->trans_slot_id = prev_trans_slot_id;
 			mlmember->mode = *((LockTupleMode *) urec->uur_payload.data);
 			multilockmembers = lappend(multilockmembers, mlmember);
 		}
@@ -86,6 +87,7 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, Buffer buf,
 		{
 			mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
 			mlmember->xid = urec->uur_xid;
+			mlmember->trans_slot_id = prev_trans_slot_id;
 
 			if (ZHEAP_XID_IS_EXCL_LOCKED(undo_tup->t_data->t_infomask))
 				mlmember->mode = LockTupleExclusive;
@@ -98,6 +100,7 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, Buffer buf,
 		{
 			mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
 			mlmember->xid = urec->uur_xid;
+			mlmember->trans_slot_id = prev_trans_slot_id;
 			mlmember->mode = LockTupleExclusive;
 			multilockmembers = lappend(multilockmembers, mlmember);
 		}
@@ -255,6 +258,7 @@ ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
 			{
 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
 				mlmember->xid = urec->uur_xid;
+				mlmember->trans_slot_id = prev_trans_slot_id;
 				mlmember->mode = *((LockTupleMode *) urec->uur_payload.data);
 				multilockmembers = lappend(multilockmembers, mlmember);
 			}
@@ -263,6 +267,7 @@ ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
 			{
 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
 				mlmember->xid = urec->uur_xid;
+				mlmember->trans_slot_id = prev_trans_slot_id;
 
 				if (ZHEAP_XID_IS_EXCL_LOCKED(undo_tup->t_data->t_infomask))
 					mlmember->mode = LockTupleExclusive;
@@ -275,6 +280,7 @@ ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
 			{
 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
 				mlmember->xid = urec->uur_xid;
+				mlmember->trans_slot_id = prev_trans_slot_id;
 				mlmember->mode = LockTupleExclusive;
 				multilockmembers = lappend(multilockmembers, mlmember);
 			}
@@ -324,11 +330,14 @@ ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
 
 /*
  * ZMultiLockMembersWait - Wait for all the members to end.
+ *
+ * This function also applies the undo actions for aborted transactions.
  */
 bool
 ZMultiLockMembersWait(Relation rel, List *mlmembers, ZHeapTuple zhtup,
-					  Buffer buf, LockTupleMode required_mode, bool nowait,
-					  XLTW_Oper oper, int *remaining)
+					  Buffer buf, TransactionId update_xact,
+					  LockTupleMode required_mode, bool nowait,
+					  XLTW_Oper oper, int *remaining, bool *upd_xact_aborted)
 {
 	bool		result = true;
 	ListCell   *lc;
@@ -338,6 +347,8 @@ ZMultiLockMembersWait(Relation rel, List *mlmembers, ZHeapTuple zhtup,
 	bufhdr = GetBufferDescriptor(buf - 1);
 	/* buffer must be unlocked */
 	Assert(!LWLockHeldByMe(BufferDescriptorGetContentLock(bufhdr)));
+
+	*upd_xact_aborted = false;
 
 	foreach(lc, mlmembers)
 	{
@@ -371,6 +382,20 @@ ZMultiLockMembersWait(Relation rel, List *mlmembers, ZHeapTuple zhtup,
 		}
 		else
 			XactLockTableWait(memxid, rel, &zhtup->t_self, oper);
+
+		/*
+		 * For aborted transaction, if the undo actions are not applied yet,
+		 * then apply them before modifying the page.
+		 */
+		if (TransactionIdDidAbort(memxid))
+		{
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			zheap_exec_pending_rollback(rel, buf, mlmember->trans_slot_id);
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+			if (TransactionIdIsValid(update_xact) && memxid == update_xact)
+				*upd_xact_aborted = true;
+		}
 	}
 
 	if (remaining)
@@ -385,11 +410,13 @@ ZMultiLockMembersWait(Relation rel, List *mlmembers, ZHeapTuple zhtup,
  */
 bool
 ConditionalZMultiLockMembersWait(Relation rel, List *mlmembers,
-								 Buffer buf, LockTupleMode required_mode,
-								 int *remaining)
+								 Buffer buf, TransactionId update_xact,
+								 LockTupleMode required_mode, int *remaining,
+								 bool *upd_xact_aborted)
 {
-	return ZMultiLockMembersWait(rel, mlmembers, NULL, buf, required_mode,
-								 true, XLTW_None, remaining);
+	return ZMultiLockMembersWait(rel, mlmembers, NULL, buf, update_xact,
+								 required_mode, true, XLTW_None, remaining,
+								 upd_xact_aborted);
 }
 
 /*
@@ -457,6 +484,7 @@ IsZMultiLockListMember(List *members, ZMultiLockMember *mlmember)
 		ZMultiLockMember *lc_member = (ZMultiLockMember *) lfirst(lc);
 
 		if (lc_member->xid == mlmember->xid &&
+			lc_member->trans_slot_id == mlmember->trans_slot_id &&
 			lc_member->mode == mlmember->mode)
 			return true;
 	}

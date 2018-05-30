@@ -31,6 +31,9 @@ undoaction_identify(uint8 info)
 		case XLOG_UNDO_PAGE:
 			id = "UNDO PAGE";
 			break;
+		case XLOG_UNDO_RESET_XID:
+			id = "UNDO RESET XID";
+			break;
 	}
 
 	return id;

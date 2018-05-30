@@ -69,6 +69,41 @@ undo_xlog_page(XLogReaderState *record)
 	UnlockReleaseBuffer(buf);
 }
 
+/*
+ * replay of undo reset xid operation
+ */
+static void
+undo_xlog_reset_xid(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer		buffer;
+	XLogRedoAction action;
+
+	action = XLogReadBufferForRedo(record, 0, &buffer);
+	if (action == BLK_NEEDS_REDO)
+	{
+		Size		datalen;
+		char	   *data;
+		Page		page;
+		ZHeapPageOpaque	opaque;
+		int			slot_no;
+
+		data = XLogRecGetBlockData(record, 0, &datalen);
+		slot_no = *(int *) data;
+
+		page = BufferGetPage(buffer);
+		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+		opaque->transinfo[slot_no].xid_epoch = 0;
+		opaque->transinfo[slot_no].xid = InvalidTransactionId;
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
 void
 undoaction_redo(XLogReaderState *record)
 {
@@ -78,6 +113,9 @@ undoaction_redo(XLogReaderState *record)
 	{
 		case XLOG_UNDO_PAGE:
 			undo_xlog_page(record);
+			break;
+		case XLOG_UNDO_RESET_XID:
+			undo_xlog_reset_xid(record);
 			break;
 		default:
 			elog(PANIC, "undoaction_redo: unknown op code %u", info);

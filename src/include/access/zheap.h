@@ -45,6 +45,7 @@ typedef ZHeapPageOpaqueData *ZHeapPageOpaque;
 #define SizeOfZHeapPageOpaqueData (ZHEAP_PAGE_TRANS_SLOTS \
 										 * sizeof(TransInfo))
 
+extern void zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no);
 extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate);
 extern HTSU_Result zheap_delete(Relation relation, ItemPointer tid,
@@ -61,7 +62,8 @@ extern void zheap_finish_speculative(Relation relation, ZHeapTuple tuple);
 extern void zheap_abort_speculative(Relation relation, ZHeapTuple tuple);
 extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
 									  uint32 epoch, TransactionId xid,
-									  UndoRecPtr *urec_ptr);
+									  UndoRecPtr *urec_ptr,
+									  bool *lock_reacquired);
 extern void ZheapInitPage(Page page, Size pageSize);
 extern void zheap_multi_insert(Relation relation, ZHeapTuple *tuples,
 								int ntuples, CommandId cid, int options,

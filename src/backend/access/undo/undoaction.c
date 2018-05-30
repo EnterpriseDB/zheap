@@ -30,8 +30,8 @@
 
 #define ROLLBACK_HT_SIZE	1024
 
-static void execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
-					 TransactionId xid, BlockNumber blkno,
+static bool execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr,
+					 Oid reloid, TransactionId xid, BlockNumber blkno,
 					 bool blk_chain_complete, bool norellock);
 static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
 									  TransactionId xid);
@@ -226,7 +226,8 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	if (list_length(luinfo))
 	{
 		execute_undo_actions_page(luinfo, save_urec_ptr, prev_reloid,
-								xid, prev_block, nopartial ? true : false, rellock);
+								xid, prev_block, nopartial ? true : false,
+								rellock);
 
 		/* release the undo records for which action has been replayed */
 		while (luinfo)
@@ -264,6 +265,128 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		UndoLogRewind(to_urecptr, uur->uur_prevlen);
 
 		UndoRecordRelease(uur);
+	}
+}
+
+/*
+ * process_and_execute_undo_actions_page
+ *
+ * Collect all the undo for the input buffer and execute.  Here, we don't know
+ * the to_urecptr and we can not collect from undo meta data also like we do in
+ * execute_undo_actions, because we might be applying undo of some old
+ * transaction and may be from different undo log as well.
+ *
+ * from_urecptr - undo record pointer from where to start applying the undo.
+ * rel			- relation descriptor for which undo to be applied.
+ * buffer		- buffer for which unto to be processed.
+ * xid			- aborted transaction id whose effects needs to be reverted.
+ * slot_no		- transaction slot number of xid.
+ */
+void
+process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
+									  Buffer buffer, TransactionId xid,
+									  int slot_no)
+{
+	UnpackedUndoRecord *uur = NULL;
+	UndoRecPtr	urec_ptr = from_urecptr;
+	List	   *luinfo = NIL;
+	Page		page;
+	ZHeapPageOpaque	opaque;
+	UndoRecInfo	*urec_info;
+	bool	actions_applied = false;
+
+	Assert(TransactionIdDidAbort(xid));
+
+	/*
+	 * Process and collect the undo for the block until we reach the first
+	 * record of the transaction.
+	 *
+	 * Fixme: This can lead to unbounded use of memory, so we should collect
+	 * the undo in chunks based on work_mem or some other memory unit.
+	 */
+	do
+	{
+		/* Fetch the undo record for given undo_recptr. */
+		uur = UndoFetchRecord(urec_ptr, InvalidBlockNumber,
+							  InvalidOffsetNumber, InvalidTransactionId,
+							  NULL, NULL);
+		/*
+		 * If the record is already discarded by undo worker, or the xid we
+		 * want to rollback has already applied its undo actions then just
+		 * cleanup the slot and exit.
+		 */
+		if(uur == NULL || uur->uur_xid != xid)
+		{
+			if (uur != NULL)
+				UndoRecordRelease(uur);
+			break;
+		}
+
+		/* Prepare an undo element. */
+		urec_info = palloc(sizeof(UndoRecInfo));
+		urec_info->urp = urec_ptr;
+		urec_info->uur = uur;
+
+		/* Collect the undo records. */
+		luinfo = lappend(luinfo, urec_info);
+		urec_ptr = uur->uur_blkprev;
+
+		/*
+		 * If we have exhausted the undo chain for the slot, then we are done.
+		 */
+		if (!UndoRecPtrIsValid(urec_ptr))
+			break;
+	} while (true);
+
+	if (list_length(luinfo))
+		actions_applied = execute_undo_actions_page(luinfo, urec_ptr,
+													rel->rd_id, xid,
+													BufferGetBlockNumber(buffer),
+													true,
+													false);
+	/* Release undo records and undo elements*/
+	while (luinfo)
+	{
+		UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
+
+		UndoRecordRelease(urec_info->uur);
+		pfree(urec_info);
+		luinfo = list_delete_first(luinfo);
+	}
+
+	/*
+	 * Clear the transaction id from the slot.  We expect that if the undo
+	 * actions are applied by execute_undo_actions_page then it would have
+	 * cleared the xid, otherwise we will cleare it here.
+	 */
+	if (!actions_applied)
+	{
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buffer);
+		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+		if (opaque->transinfo[slot_no].xid == xid)
+		{
+			START_CRIT_SECTION();
+			opaque->transinfo[slot_no].xid_epoch = 0;
+			opaque->transinfo[slot_no].xid = InvalidTransactionId;
+
+			/* XLOG stuff */
+			if (RelationNeedsWAL(rel))
+			{
+				XLogRecPtr	recptr;
+
+				XLogBeginInsert();
+
+				XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+				XLogRegisterBufData(0, (char *) &slot_no, sizeof(int));
+
+				recptr = XLogInsert(RM_UNDOACTION_ID, XLOG_UNDO_RESET_XID);
+
+				PageSetLSN(page, recptr);
+			}
+			END_CRIT_SECTION();
+		}
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 	}
 }
 
@@ -308,9 +431,9 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
  * execute_undo_actions_page - Execute the undo actions for a page
  *
  *	After applying all the undo actions for a page, we clear the transaction
- *	slot on a page if the undo chain for block is complete, otherwise rewind
- *	the undo pointer to the last record for that block that precedes the last
- *	undo record for which action is replayed.
+ *	slot on a page if the undo chain for block is complete, otherwise just
+ *	rewind the undo pointer to the last record for that block that precedes
+ *	the last undo record for which action is replayed.
  *
  *	luinfo - list of undo records (along with their location) for which undo
  *			 action needs to be replayed.
@@ -331,8 +454,10 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
  *				or for rollback to savepoint, we need not to lock as we already
  *				have the lock on the table. In cases like error or when
  *				rollbacking from the undo worker we need to have proper locks.
+ *
+ *	returns true, if successfully applied the undo actions, otherwise, false.
  */
-static void
+static bool
 execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 						  TransactionId xid, BlockNumber blkno,
 						  bool blk_chain_complete, bool rellock)
@@ -354,7 +479,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	if (!OidIsValid(reloid))
 	{
 		elog(LOG, "ignoring undo for invalid reloid");
-		return;
+		return false;
 	}
 
 	/*
@@ -391,7 +516,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	{
 		UnlockReleaseBuffer(buffer);
 		heap_close(rel, NoLock);
-		return;
+		return false;
 	}
 
 	START_CRIT_SECTION();
@@ -647,7 +772,10 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	 * urec_ptr.
 	 */
 	if (blk_chain_complete)
+	{
+		opaque->transinfo[slot_no].xid_epoch = 0;
 		opaque->transinfo[slot_no].xid = InvalidTransactionId;
+	}
 
 	opaque->transinfo[slot_no].urec_ptr = urec_ptr;
 
@@ -679,6 +807,8 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	UnlockReleaseBuffer(buffer);
 
 	heap_close(rel, NoLock);
+
+	return true;
 }
 
 /*

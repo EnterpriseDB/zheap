@@ -780,6 +780,11 @@ result_available:
  *	by the snapshot or is started after the snapshot was taken or is current
  *	transaction and the changes are made by current command.
  *
+ *  For aborted transactions, we need to fetch the visible tuple from undo.
+ *	Now, it is possible that actions corresponding to aborted transaction
+ *	has been applied, but still xid is present in slot, however we should
+ *	never get such an xid.
+ *
  *	For multilockers, the strongest locker information is always present on
  *	the tuple.  So for updaters, we don't need anything special as the tuple
  *	visibility will be determined based on the transaction information present
@@ -861,7 +866,8 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 									zhtup,
 									snapshot,
 									buffer,
-									ctid, InvalidTransactionId);
+									ctid,
+									InvalidTransactionId);
 	}
 	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
 			 tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
@@ -904,7 +910,8 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 									zhtup,
 									snapshot,
 									buffer,
-									ctid, InvalidTransactionId);
+									ctid,
+									InvalidTransactionId);
 	}
 
 	/*
@@ -1158,12 +1165,7 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 		}
 		else	/* transaction is aborted */
 		{
-			/*
-			 * Fixme - For aborted transactions, we should either wait for undo
-			 * to be applied or apply undo by ourselves before modifying the
-			 * the tuple.
-			 */
-			visible = UndoTupleSatisfiesUpdate(ZHeapTupleHeaderGetRawUndoPtr(tuple, opaque),
+			visible = UndoTupleSatisfiesUpdate(urec_ptr,
 											   zhtup,
 											   curcid,
 											   buffer,
@@ -1172,8 +1174,13 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 											   free_zhtup,
 											   in_place_updated_or_locked);
 
+			/*
+			 * If updating transaction id is aborted and the tuple is visible
+			 * then return HeapTupleBeingUpdated, so that caller can apply the
+			 * undo before modifying the page.
+			 */
 			if (visible)
-				return HeapTupleMayBeUpdated;
+				return HeapTupleBeingUpdated;
 			else
 				return HeapTupleInvisible;
 		}
@@ -1242,11 +1249,6 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 		}
 		else	/* transaction is aborted */
 		{
-			/*
-			 * Fixme - For aborted transactions, we should either wait for undo
-			 * to be applied or apply undo by ourselves before modifying the
-			 * the tuple.
-			 */
 			visible = UndoTupleSatisfiesUpdate(urec_ptr,
 											   zhtup,
 											   curcid,
@@ -1256,8 +1258,13 @@ ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup, CommandId curcid,
 											   free_zhtup,
 											   in_place_updated_or_locked);
 
+			/*
+			 * If updating transaction id is aborted and the tuple is visible
+			 * then return HeapTupleBeingUpdated, so that caller can apply the
+			 * undo before modifying the page.
+			 */
 			if (visible)
-				return HeapTupleMayBeUpdated;
+				return HeapTupleBeingUpdated;
 			else
 				return HeapTupleInvisible;
 		}
@@ -1376,7 +1383,8 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 									zhtup,
 									snapshot,
 									buffer,
-									ctid, InvalidTransactionId);
+									ctid,
+									InvalidTransactionId);
 		else if (TransactionIdDidCommit(xid))
 		{
 			/* tuple is deleted or non-inplace-updated */
@@ -1384,12 +1392,12 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 		}
 		else	/* transaction is aborted */
 		{
-			/*
-			 * Fixme - Here we need to fetch the tuple from undo, something similar
-			 * to GetTupleFromUndo but for SelfSnapshots.
-			 */
-			Assert(false);
-			return NULL;
+			return GetTupleFromUndo(urec_ptr,
+									zhtup,
+									snapshot,
+									buffer,
+									ctid,
+									InvalidTransactionId);
 		}
 	}
 	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
@@ -1414,7 +1422,8 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 									zhtup,
 									snapshot,
 									buffer,
-									ctid, InvalidTransactionId);
+									ctid,
+									InvalidTransactionId);
 		}
 		else if (TransactionIdDidCommit(xid))
 		{
@@ -1422,12 +1431,12 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 		}
 		else	/* transaction is aborted */
 		{
-			/*
-			 * Fixme - Here we need to fetch the tuple from undo, something similar
-			 * to GetTupleFromUndo but for SelfSnapshots.
-			 */
-			Assert(false);
-			return NULL;
+			return GetTupleFromUndo(urec_ptr,
+									zhtup,
+									snapshot,
+									buffer,
+									ctid,
+									InvalidTransactionId);
 		}
 	}
 
@@ -1450,11 +1459,7 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 		return zhtup;
 	else
 	{
-		/*
-		 * Fixme - Here we need to fetch the tuple from undo, something similar
-		 * to GetTupleFromUndo but for SelfSnapshots.
-		 */
-		Assert(false);
+		/* Inserting transaction is aborted. */
 		return NULL;
 	}
 
@@ -1542,7 +1547,6 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		}
 		else	/* transaction is aborted */
 		{
-			/* Here we need to fetch the tuple from undo */
 			return GetTupleFromUndo(urec_ptr, zhtup, snapshot, buffer, ctid,
 									InvalidTransactionId);
 		}

@@ -153,6 +153,7 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 	xl_undolog_meta undometa;
 	XLogRecPtr	RedoRecPtr;
 	bool		doPageWrites;
+	bool		lock_reacquired;
 
 	for (; tupindex < vacrelstats->num_dead_tuples; tupindex++)
 	{
@@ -182,7 +183,9 @@ reacquire_slot:
 	 * that by releasing the buffer lock.
 	 */
 	trans_slot_id = PageReserveTransactionSlot(onerel, buffer, epoch, xid,
-											   &prev_urecptr);
+											   &prev_urecptr, &lock_reacquired);
+	if (lock_reacquired)
+		goto reacquire_slot;
 
 	if (trans_slot_id == InvalidXactSlotId)
 	{

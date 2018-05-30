@@ -32,6 +32,7 @@
 typedef struct ZMultiLockMember
 {
 	TransactionId xid;
+	int		trans_slot_id;
 	LockTupleMode mode;
 } ZMultiLockMember;
 
