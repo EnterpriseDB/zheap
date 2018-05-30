@@ -30,7 +30,7 @@
 
 #define ROLLBACK_HT_SIZE	1024
 
-static void execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
+static void execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					 TransactionId xid, BlockNumber blkno,
 					 bool blk_chain_complete, bool norellock);
 static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
@@ -38,6 +38,13 @@ static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
 
 /* This is the hash table to store all the rollabck requests. */
 static HTAB *RollbackHT;
+
+/* undo record information */
+typedef struct UndoRecInfo
+{
+	UndoRecPtr	urp;	/* undo recptr (undo record location). */
+	UnpackedUndoRecord	*uur;	/* actual undo record. */
+} UndoRecInfo;
 
 /*
  * execute_undo_actions - Execute the undo actions
@@ -71,9 +78,10 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	Oid			prev_reloid = InvalidOid;
 	ForkNumber	prev_fork = InvalidForkNumber;
 	BlockNumber	prev_block = InvalidBlockNumber;
-	List	   *luur = NIL;
+	List	   *luinfo = NIL;
 	bool		more_undo;
 	TransactionId xid = InvalidTransactionId;
+	UndoRecInfo	*urec_info;
 
 	Assert(from_urecptr != InvalidUndoRecPtr);
 	/*
@@ -107,11 +115,13 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		if(uur == NULL)
 		{
 			/* release the undo records for which action has been replayed */
-			while (luur)
+			while (luinfo)
 			{
-				UnpackedUndoRecord *uur = (UnpackedUndoRecord *) linitial(luur);
-				UndoRecordRelease(uur);
-				luur = list_delete_first(luur);
+				UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
+
+				UndoRecordRelease(urec_info->uur);
+				pfree(urec_info);
+				luinfo = list_delete_first(luinfo);
 			}
 			return;
 		}
@@ -129,7 +139,12 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			prev_fork = uur->uur_fork;
 			prev_block = uur->uur_block;
 
-			luur = lappend(luur, uur);
+			/* Prepare an undo record information element. */
+			urec_info = palloc(sizeof(UndoRecInfo));
+			urec_info->urp = urec_ptr;
+			urec_info->uur = uur;
+
+			luinfo = lappend(luinfo, urec_info);
 			urec_prevlen = uur->uur_prevlen;
 			save_urec_ptr = uur->uur_blkprev;
 
@@ -157,21 +172,23 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		 */
 		if (!more_undo && nopartial)
 		{
-			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
+			execute_undo_actions_page(luinfo, save_urec_ptr, prev_reloid,
 									  xid, prev_block, true, rellock);
 		}
 		else
 		{
-			execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
+			execute_undo_actions_page(luinfo, save_urec_ptr, prev_reloid,
 									  xid, prev_block, false, rellock);
 		}
 
 		/* release the undo records for which action has been replayed */
-		while (luur)
+		while (luinfo)
 		{
-			UnpackedUndoRecord *uur = (UnpackedUndoRecord *) linitial(luur);
-			UndoRecordRelease(uur);
-			luur = list_delete_first(luur);
+			UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
+
+			UndoRecordRelease(urec_info->uur);
+			pfree(urec_info);
+			luinfo = list_delete_first(luinfo);
 		}
 
 		/*
@@ -180,7 +197,12 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		 */
 		if (more_undo)
 		{
-			luur = lappend(luur, uur);
+			/* Prepare an undo record information element. */
+			urec_info = palloc(sizeof(UndoRecInfo));
+			urec_info->urp = urec_ptr;
+			urec_info->uur = uur;
+			luinfo = lappend(luinfo, urec_info);
+
 			prev_reloid = reloid;
 			prev_fork = uur->uur_fork;
 			prev_block = uur->uur_block;
@@ -201,17 +223,19 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	}
 
 	/* Apply the undo actions for the remaining records. */
-	if (list_length(luur))
+	if (list_length(luinfo))
 	{
-		execute_undo_actions_page(luur, save_urec_ptr, prev_reloid,
+		execute_undo_actions_page(luinfo, save_urec_ptr, prev_reloid,
 								xid, prev_block, nopartial ? true : false, rellock);
 
 		/* release the undo records for which action has been replayed */
-		while (luur)
+		while (luinfo)
 		{
-			UnpackedUndoRecord *uur = (UnpackedUndoRecord *) linitial(luur);
-			UndoRecordRelease(uur);
-			luur = list_delete_first(luur);
+			UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
+
+			UndoRecordRelease(urec_info->uur);
+			pfree(urec_info);
+			luinfo = list_delete_first(luinfo);
 		}
 	}
 
@@ -288,8 +312,8 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
  *	the undo pointer to the last record for that block that precedes the last
  *	undo record for which action is replayed.
  *
- *	luur - list of unpacked undo records for which undo action needs to be
- *		   replayed.
+ *	luinfo - list of undo records (along with their location) for which undo
+ *			 action needs to be replayed.
  *	urec_ptr - undo record pointer to which we need to rewind.
  *	reloid	- OID of relation on which undo actions needs to be applied.
  *	blkno	- block number on which undo actions needs to be applied.
@@ -309,7 +333,7 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
  *				rollbacking from the undo worker we need to have proper locks.
  */
 static void
-execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
+execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 						  TransactionId xid, BlockNumber blkno,
 						  bool blk_chain_complete, bool rellock)
 {
@@ -319,6 +343,8 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 	Page		page;
 	ZHeapPageOpaque	opaque;
 	int			slot_no = 0;
+	UndoRecPtr	slot_urp;
+	UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
 
 	/*
 	 * FIXME: If reloid is not valid then we have nothing to do. In future,
@@ -353,9 +379,15 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 	/*
 	 * If undo action has been already applied for this page then skip
 	 * the process altogether.
+	 *
+	 * The logno of slot's undo record pointer must be same as the logno
+	 * of undo record to be applied.
 	 */
-	if (opaque->transinfo[slot_no].urec_ptr <= urec_ptr ||
-		slot_no == ZHEAP_PAGE_TRANS_SLOTS)
+	slot_urp = opaque->transinfo[slot_no].urec_ptr;
+	if (slot_no == ZHEAP_PAGE_TRANS_SLOTS ||
+	   (UndoRecPtrGetLogNo(slot_urp) != UndoRecPtrGetLogNo(urec_info->urp)) ||
+	   (UndoRecPtrGetLogNo(slot_urp) == UndoRecPtrGetLogNo(urec_ptr) &&
+		slot_urp <= urec_ptr))
 	{
 		UnlockReleaseBuffer(buffer);
 		heap_close(rel, NoLock);
@@ -364,9 +396,14 @@ execute_undo_actions_page(List *luur, UndoRecPtr urec_ptr, Oid reloid,
 
 	START_CRIT_SECTION();
 
-	foreach(l_iter, luur)
+	foreach(l_iter, luinfo)
 	{
-		UnpackedUndoRecord *uur = (UnpackedUndoRecord *) lfirst(l_iter);
+		UndoRecInfo *urec_info = (UndoRecInfo *) lfirst(l_iter);
+		UnpackedUndoRecord *uur = urec_info->uur;
+
+		/* Skip already applied undo. */
+		if (opaque->transinfo[slot_no].urec_ptr < urec_info->urp)
+			continue;
 
 		switch (uur->uur_type)
 		{
