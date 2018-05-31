@@ -202,7 +202,7 @@ typedef uint16 ItemLength;
 ( \
 	(itemId)->lp_flags = LP_UNUSED, \
 	(itemId)->lp_off = ((itemId)->lp_off & ~VISIBILTY_MASK) | ITEMID_XACT_PENDING, \
-	(itemId)->lp_off = ((itemId)->lp_off & ~XACT_SLOT) | trans_slot << XACT_SLOT_MASK, \
+	(itemId)->lp_off = ((itemId)->lp_off & ~XACT_SLOT) | (trans_slot) << XACT_SLOT_MASK, \
 	(itemId)->lp_len = 0 \
 )
 
@@ -217,8 +217,8 @@ typedef uint16 ItemLength;
 #define ItemIdSetDeleted(itemId, trans_slot, vis_info) \
 ( \
 	(itemId)->lp_flags = LP_REDIRECT, \
-	(itemId)->lp_off = ((lp)->lp_off & ~VISIBILTY_MASK) | vis_info, \
-	(itemId)->lp_off = ((lp)->lp_off & ~XACT_SLOT) | trans_slot << XACT_SLOT_MASK, \
+	(itemId)->lp_off = ((itemId)->lp_off & ~VISIBILTY_MASK) | (vis_info), \
+	(itemId)->lp_off = ((itemId)->lp_off & ~XACT_SLOT) | (trans_slot) << XACT_SLOT_MASK, \
 	(itemId)->lp_len = 0 \
 )
 
