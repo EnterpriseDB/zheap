@@ -491,6 +491,16 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	else
 		rel = heap_open(reloid, NoLock);
 
+	if (RelationGetNumberOfBlocks(rel) <= blkno)
+	{
+		/*
+		 * This is possible if the underlying relation is truncated just before
+		 * taking the relation lock above.
+		 */
+		heap_close(rel, NoLock);
+		return false;
+	}
+
 	buffer = ReadBuffer(rel, blkno);
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	page = BufferGetPage(buffer);
