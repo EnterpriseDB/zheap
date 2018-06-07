@@ -2212,9 +2212,9 @@ zheap_tuple_updated:
 		undorecord.uur_blkprev = prev_urecptr;
 		undorecord.uur_block = ItemPointerGetBlockNumber(&(oldtup.t_self));
 		undorecord.uur_offset = ItemPointerGetOffsetNumber(&(oldtup.t_self));
-		undorecord.uur_payload.len = 0;
 
 		initStringInfo(&undorecord.uur_tuple);
+		initStringInfo(&undorecord.uur_payload);
 
 		/*
 		 * Here, we are storing old tuple header which is required to
@@ -2223,6 +2223,10 @@ zheap_tuple_updated:
 		appendBinaryStringInfo(&undorecord.uur_tuple,
 							   (char *) oldtup.t_data,
 							   SizeofZHeapTupleHeader);
+
+		appendBinaryStringInfo(&undorecord.uur_payload,
+							   (char *) (lockmode),
+							   sizeof(LockTupleMode));
 
 		urecptr = PrepareUndoInsert(&undorecord,
 									UndoPersistenceForRelation(relation),
@@ -2292,6 +2296,7 @@ zheap_tuple_updated:
 			xlrec.offnum = ItemPointerGetOffsetNumber(&(oldtup.t_self));
 			xlrec.infomask = oldtup.t_data->t_infomask;
 			xlrec.trans_slot_id = trans_slot_id;
+			xlrec.flags = 0;
 
 prepare_xlog:
 			/* LOG undolog meta if this is the first WAL after the checkpoint. */
@@ -2314,6 +2319,7 @@ prepare_xlog:
 			 */
 			XLogRegisterData((char *) undorecord.uur_tuple.data,
 							 SizeofZHeapTupleHeader);
+			XLogRegisterData((char *) (lockmode), sizeof(LockTupleMode));
 
 			recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK, RedoRecPtr,
 										doPageWrites);
@@ -2325,6 +2331,7 @@ prepare_xlog:
 		END_CRIT_SECTION();
 
 		pfree(undorecord.uur_tuple.data);
+		pfree(undorecord.uur_payload.data);
 
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 		UnlockReleaseUndoBuffers();
