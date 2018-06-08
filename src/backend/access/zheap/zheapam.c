@@ -649,7 +649,10 @@ reacquire_buffer:
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer, epoch, xid,
 											   &prev_urecptr, &lock_reacquired);
 	if (lock_reacquired)
+	{
+		UnlockReleaseBuffer(buffer);
 		goto reacquire_buffer;
+	}
 
 	if (trans_slot_id == InvalidXactSlotId)
 	{
