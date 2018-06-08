@@ -21,7 +21,7 @@
  * WAL record definitions for undoactions.c's WAL operations
  */
 #define XLOG_UNDO_PAGE				0x00
-#define XLOG_UNDO_RESET_XID			0x01
+#define XLOG_UNDO_RESET_XID			0x10
 
 extern void undoaction_redo(XLogReaderState *record);
 extern void undoaction_desc(StringInfo buf, XLogReaderState *record);
