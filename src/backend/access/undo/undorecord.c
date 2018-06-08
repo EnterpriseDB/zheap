@@ -979,7 +979,9 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 		((!InRecovery && prev_txid[upersistence] != txid) ||
 		 first_rec_in_recovery))
 	{
-		PrepareUndoRecordUpdateTransInfo(urecptr);
+		/* Don't update our own start header. */
+		if (log->meta.last_xact_start != log->meta.insert)
+			PrepareUndoRecordUpdateTransInfo(urecptr);
 
 		/* Remember the current transaction's xid. */
 		prev_txid[upersistence] = txid;
