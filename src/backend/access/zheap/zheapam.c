@@ -6078,11 +6078,17 @@ ZHeapPageGetCid(int trans_slot, Buffer buf, OffsetNumber off)
 	ZHeapPageOpaque	opaque;
 	UnpackedUndoRecord	*urec;
 	CommandId	current_cid;
+	TransactionId	xid;
+	uint64		epoch_xid;
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
 
-	if (TransactionIdPrecedes(ZHeapPageGetRawXid(trans_slot, opaque),
-							  RecentGlobalXmin))
+	epoch_xid = ZHeapPageGetRawEpoch(trans_slot, opaque);
+	xid = ZHeapPageGetRawXid(trans_slot, opaque);
+
+	epoch_xid = MakeEpochXid(epoch_xid, xid);
+
+	if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return InvalidCommandId;
 
 	urec = UndoFetchRecord(ZHeapPageGetUndoPtr(trans_slot, opaque),
