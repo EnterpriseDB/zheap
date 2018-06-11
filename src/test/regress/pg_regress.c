@@ -1385,7 +1385,7 @@ results_differ(const char *testname, const char *resultsfile, const char *defaul
 		make_native_path(temp_resfile);
 		make_native_path(platform_resfile);
 		snprintf(cmd, sizeof(cmd),
-				 "findstr /B /v \"%s\" \"%s\" > \"%s\"",
+				 "findstr /B /v /c:\"%s\" \"%s\" > \"%s\"",
 				 exclude_pattern, platform_resfile, temp_resfile);
 #else
 		snprintf(cmd, sizeof(cmd),
