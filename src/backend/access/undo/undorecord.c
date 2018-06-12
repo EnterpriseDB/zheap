@@ -875,6 +875,10 @@ UndoSetPrepareSize(int max_prepare)
  * intended to insert.  Upon return, the necessary undo buffers are pinned.
  * This should be done before any critical section is established, since it
  * can fail.
+ *
+ * If not in recovery, 'xid' should refer to the top transaction id because
+ * undo log only stores mapping for the top most transactions.
+ * If in recovery, 'xid' refers to the transaction id stored in WAL.
  */
 UndoRecPtr
 PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
@@ -915,10 +919,11 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	else
 	{
 		/*
-		 * Get the top transaction id because undo log only stores mapping for
+		 * Assign the top transaction id because undo log only stores mapping for
 		 * the top most transactions.
 		 */
-		txid = SubTransGetTopmostTransaction(xid);
+		Assert (InRecovery || (xid == GetTopTransactionId()));
+		txid = xid;
 	}
 
 	/*
