@@ -351,13 +351,12 @@ PGAC_ARG_REQ(with, trans_slots_per_zheap_page, [SLOTS], [set transaction slots p
              [trans_slots_per_page=$withval],
              [trans_slots_per_page=4])
 case ${trans_slots_per_page} in
-  1) ZHEAP_PAGE_TRANS_SLOTS=1;;
   2) ZHEAP_PAGE_TRANS_SLOTS=2;;
   4) ZHEAP_PAGE_TRANS_SLOTS=4;;
   8) ZHEAP_PAGE_TRANS_SLOTS=8;;
  16) ZHEAP_PAGE_TRANS_SLOTS=16;;
  31) ZHEAP_PAGE_TRANS_SLOTS=31;;
-  *) AC_MSG_ERROR([Invalid transaction slots per zheap page. Allowed values are 1,2,4,8,16,31.])
+  *) AC_MSG_ERROR([Invalid transaction slots per zheap page. Allowed values are 2,4,8,16,31.])
 esac
 AC_MSG_RESULT([${trans_slots_per_page}])
 

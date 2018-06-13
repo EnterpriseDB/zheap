@@ -3827,13 +3827,12 @@ fi
 
 
 case ${trans_slots_per_page} in
-  1) ZHEAP_PAGE_TRANS_SLOTS=1;;
   2) ZHEAP_PAGE_TRANS_SLOTS=2;;
   4) ZHEAP_PAGE_TRANS_SLOTS=4;;
   8) ZHEAP_PAGE_TRANS_SLOTS=8;;
  16) ZHEAP_PAGE_TRANS_SLOTS=16;;
  31) ZHEAP_PAGE_TRANS_SLOTS=31;;
-  *) as_fn_error $? "Invalid transaction slots per zheap page. Allowed values are 1,2,4,8,16,31." "$LINENO" 5
+  *) as_fn_error $? "Invalid transaction slots per zheap page. Allowed values are 2,4,8,16,31." "$LINENO" 5
 esac
 { $as_echo "$as_me:${as_lineno-$LINENO}: result: ${trans_slots_per_page}" >&5
 $as_echo "${trans_slots_per_page}" >&6; }

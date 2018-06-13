@@ -59,7 +59,7 @@ sub _new
 	  unless $options->{trans_slots_per_page};    # undef or 0 means default
 	die "Bad trans_slots_per_page $options->{trans_slots_per_page}"
 	  unless grep { $_ == $options->{trans_slots_per_page} }
-		  (1, 2, 4, 8, 16, 31);
+		  (2, 4, 8, 16, 31);
 	$options->{wal_segsize} = 16
 	  unless $options->{wal_segsize};      # undef or 0 means default
 	die "Bad wal_segsize $options->{wal_segsize}"
