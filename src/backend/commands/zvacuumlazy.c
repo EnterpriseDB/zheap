@@ -261,17 +261,17 @@ reacquire_slot:
 		xl_rec.nunused = uncnt;
 		xl_rec.trans_slot_id = trans_slot_id;
 prepare_xlog:
-		GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
-
-		XLogBeginInsert();
-		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
-		XLogRegisterData((char *) &xl_rec, SizeOfZHeapUnused);
-
 		/*
 		 * WAL-LOG undolog meta data if this is the fisrt WAL after the
 		 * checkpoint.
 		 */
 		LogUndoMetaData(&undometa);
+		
+		GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
+		XLogRegisterData((char *) &xl_rec, SizeOfZHeapUnused);
 
 		XLogRegisterData((char *) unused, uncnt * sizeof(OffsetNumber));
 		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
