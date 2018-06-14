@@ -3259,8 +3259,8 @@ XactPerformUndoActionsIfPending()
 	 */
 	rollback_size = UndoActionStartPtr - UndoActionEndPtr;
 
-	if (rollback_size >= rollback_overflow_size * 1024 * 1024)
-		result = PushRollbackReq(xid, UndoActionStartPtr, UndoActionEndPtr);
+	if (new_xact && rollback_size >= rollback_overflow_size * 1024 * 1024)
+		result = PushRollbackReq(UndoActionStartPtr, UndoActionEndPtr);
 
 	else if (!result)
 	{
@@ -3964,7 +3964,7 @@ UserAbortTransactionBlock(void)
 		 * through RollbackHT, undo-worker will perform it's undo actions later.
 		 */
 		if (size >= rollback_overflow_size * 1024 * 1024)
-			result = PushRollbackReq(s->transactionId, s->start_urec_ptr,
+			result = PushRollbackReq(s->start_urec_ptr,
 									 latest_urec_ptr);
 		if (!result)
 			execute_undo_actions(latest_urec_ptr, s->start_urec_ptr, true,

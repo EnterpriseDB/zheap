@@ -856,8 +856,7 @@ InitRollbackHashTable(void)
  * and the caller may execute undo actions itself.
  */
 bool
-PushRollbackReq(TransactionId hash_key,
-				UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr)
+PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr)
 {
 	bool found = false;
 	RollbackHashEntry *rh;
@@ -876,11 +875,13 @@ PushRollbackReq(TransactionId hash_key,
 
 	LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
 
-	rh = (RollbackHashEntry *) hash_search(RollbackHT, &hash_key,
+	rh = (RollbackHashEntry *) hash_search(RollbackHT, &start_urec_ptr,
 										   HASH_ENTER_NULL, &found);
 	if (!rh)
+	{
+		LWLockRelease(RollbackHTLock);
 		return false;
-
+	}
 	/* We shouldn't try to push the same rollback request again. */
 	Assert(!found);
 
@@ -904,7 +905,6 @@ RollbackFromHT(bool *hibernate)
 {
 	UndoRecPtr start[ROLLBACK_HT_SIZE];
 	UndoRecPtr end[ROLLBACK_HT_SIZE];
-	TransactionId hash_key[ROLLBACK_HT_SIZE];
 	RollbackHashEntry *rh;
 	HASH_SEQ_STATUS status;
 	bool found;
@@ -918,7 +918,6 @@ RollbackFromHT(bool *hibernate)
 	{
 		start[i] = rh->start_urec_ptr;
 		end[i] = rh->end_urec_ptr;
-		hash_key[i++] = rh->xid;
 	}
 	LWLockRelease(RollbackHTLock);
 
@@ -937,7 +936,7 @@ RollbackFromHT(bool *hibernate)
 		CommitTransactionCommand();
 
 		LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
-		(void) hash_search(RollbackHT, &hash_key[i], HASH_REMOVE, &found);
+		(void) hash_search(RollbackHT, &start[i], HASH_REMOVE, &found);
 		LWLockRelease(RollbackHTLock);
 	}
 }

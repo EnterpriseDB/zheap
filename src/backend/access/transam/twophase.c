@@ -1517,7 +1517,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 		rollback_size = end_urec_ptr - start_urec_ptr;
 
 		if (rollback_size >= rollback_overflow_size * 1024 * 1024)
-			result = PushRollbackReq(xid, end_urec_ptr, start_urec_ptr);
+			result = PushRollbackReq(end_urec_ptr, start_urec_ptr);
 
 		if (!result)
 			execute_undo_actions(end_urec_ptr, start_urec_ptr, true, true, false);

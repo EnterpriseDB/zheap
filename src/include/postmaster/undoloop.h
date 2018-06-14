@@ -60,7 +60,6 @@ extern void	recover_undo_pages();
 /* This is the data structure for each hash table entry for rollbacks. */
 typedef struct RollbackHashEntry
 {
-	TransactionId xid;
 	UndoRecPtr start_urec_ptr;
 	UndoRecPtr end_urec_ptr;
 } RollbackHashEntry;
@@ -68,7 +67,7 @@ typedef struct RollbackHashEntry
 extern bool RollbackHTIsFull(void);
 
 /* To push the rollback requests from backend to the respective hash table */
-extern bool PushRollbackReq(TransactionId, UndoRecPtr, UndoRecPtr);
+extern bool PushRollbackReq(UndoRecPtr, UndoRecPtr);
 
 /* To perform the undo actions reading from the hash table */
 extern void RollbackFromHT(bool *hibernate);
