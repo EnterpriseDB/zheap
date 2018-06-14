@@ -1922,6 +1922,28 @@ pgstat_count_heap_insert(Relation rel, PgStat_Counter n)
 }
 
 /*
+ * pgstat_count_zheap_update - count a inplace tuple update
+ */
+void
+pgstat_count_zheap_update(Relation rel)
+{
+	PgStat_TableStatus *pgstat_info = rel->pgstat_info;
+
+	if (pgstat_info != NULL)
+	{
+		/* We have to log the effect at the proper transactional level */
+		int			nest_level = GetCurrentTransactionNestLevel();
+
+		if (pgstat_info->trans == NULL ||
+			pgstat_info->trans->nest_level != nest_level)
+			add_tabstat_xact_level(pgstat_info, nest_level);
+
+		/* t_tuples_hot_updated is nontransactional, so just advance it */
+		pgstat_info->t_counts.t_tuples_hot_updated++;
+	}
+}
+
+/*
  * pgstat_count_heap_update - count a tuple update
  */
 void

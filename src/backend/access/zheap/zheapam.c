@@ -2724,6 +2724,8 @@ reacquire_buffer:
 	 */
 	if (!use_inplace_update)
 		pgstat_count_heap_update(relation, false);
+	else
+		pgstat_count_zheap_update(relation);
 
 	data_alignment_zheap = 1;
 

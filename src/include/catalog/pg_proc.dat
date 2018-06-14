@@ -9934,6 +9934,10 @@
   proname => 'pg_relation_is_publishable', provolatile => 's',
   prorettype => 'bool', proargtypes => 'regclass',
   prosrc => 'pg_relation_is_publishable' },
+{ oid => '6122', descr => 'statistics: number of inplace updates performed',
+  proname => 'pg_stat_get_tuples_inplace_updated', provolatile => 's', proparallel => 'r',
+  prorettype => 'int8', proargtypes => 'oid',
+  prosrc => 'pg_stat_get_tuples_inplace_updated' },
 
 # rls
 { oid => '3298',

@@ -92,6 +92,9 @@ typedef int64 PgStat_Counter;
  * regardless of whether the transaction committed.  delta_live_tuples,
  * delta_dead_tuples, and changed_tuples are set depending on commit or abort.
  * Note that delta_live_tuples and delta_dead_tuples can be negative!
+ *
+ * Note: t_tuples_hot_updated stores the count of hot updates for a heap table
+ * and the count of inplace updates for a zheap table.
  * ----------
  */
 typedef struct PgStat_TableCounts
@@ -104,6 +107,7 @@ typedef struct PgStat_TableCounts
 	PgStat_Counter t_tuples_inserted;
 	PgStat_Counter t_tuples_updated;
 	PgStat_Counter t_tuples_deleted;
+
 	PgStat_Counter t_tuples_hot_updated;
 	bool		t_truncated;
 
@@ -624,6 +628,11 @@ typedef struct PgStat_StatTabEntry
 	PgStat_Counter tuples_inserted;
 	PgStat_Counter tuples_updated;
 	PgStat_Counter tuples_deleted;
+
+	/*
+	 * Counter tuples_hot_updated stores number of hot updates for heap table
+	 * and the number of inplace updates for zheap table.
+	 */
 	PgStat_Counter tuples_hot_updated;
 
 	PgStat_Counter n_live_tuples;
@@ -1326,6 +1335,7 @@ pgstat_report_wait_end(void)
 
 extern void pgstat_count_heap_insert(Relation rel, PgStat_Counter n);
 extern void pgstat_count_heap_update(Relation rel, bool hot);
+extern void pgstat_count_zheap_update(Relation rel);
 extern void pgstat_count_heap_delete(Relation rel);
 extern void pgstat_count_truncate(Relation rel);
 extern void pgstat_update_heap_dead_tuples(Relation rel, int delta);
