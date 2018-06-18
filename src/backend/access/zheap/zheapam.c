@@ -1676,6 +1676,15 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 		ctid = *otid;
 		ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
 		result = HeapTupleUpdated;
+
+		/*
+		 * Since tuple data is gone let's be conservative about lock mode.
+		 *
+		 * XXX We could optimize here by checking whether the key column is
+		 * not updated and if so, then use lower lock level, but this case
+		 * should be rare enough that it won't matter.
+		 */
+		*lockmode = LockTupleExclusive;
 		goto zheap_tuple_updated;
 	}
 
@@ -2373,6 +2382,17 @@ reacquire_buffer:
 
 			goto reacquire_buffer;
 		}
+
+		/*
+		 * After we release the lock on page, it could be pruned.  As we have
+		 * lock on the tuple, it couldn't be removed underneath us, but its
+		 * position could be changes, so need to refresh the tuple position.
+		 *
+		 * XXX Though the length of the tuple wouldn't have changed, but there
+		 * is no harm in refrehsing it for the sake of consistency of code.
+		 */
+		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+		oldtup.t_len = ItemIdGetLength(lp);
 	}
 	else
 	{
@@ -2554,6 +2574,9 @@ reacquire_buffer:
 	 */
 	if (!use_inplace_update || (newtup->t_len < oldtup.t_len))
 		ZPageSetPrunable(page, xid);
+
+	/* oldtup should be pointing to right place in page */
+	Assert(oldtup.t_data == (ZHeapTupleHeader) PageGetItem(page, lp));
 
 	ZHeapTupleHeaderSetXactSlot(oldtup.t_data, result_trans_slot_id);
 	oldtup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
@@ -3097,7 +3120,7 @@ check_tup_satisfies_update:
 
 		/*
 		 * make a copy of the tuple before releasing the lock as some other
-		 * backend can perform in-place update this tuple once we relase the
+		 * backend can perform in-place update this tuple once we release the
 		 * lock.
 		 */
 		tuple->t_tableOid = RelationGetRelid(relation);
@@ -3312,12 +3335,13 @@ check_tup_satisfies_update:
 		else if (mode == LockTupleNoKeyExclusive)
 		{
 			LockTupleMode	old_lock_mode;
+			bool	buf_lock_reacquired = false;
 
 			old_lock_mode = get_old_lock_mode(infomask);
 
 			/*
 			 * If we're requesting NoKeyExclusive, we might also be able to
-			 * avoid sleeping; just ensure that there no conflicting lock
+			 * avoid sleeping; just ensure that there is no conflicting lock
 			 * already acquired.
 			 */
 			if (ZHeapTupleHasMultiLockers(infomask))
@@ -3326,38 +3350,42 @@ check_tup_satisfies_update:
 									HWLOCKMODE_from_locktupmode(mode)))
 				{
 					LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-					if (xid_infomask_changed(zhtup.t_data->t_infomask, infomask) ||
-						!TransactionIdEquals(ZHeapTupleHeaderGetRawXid(zhtup.t_data, opaque),
-											 xwait))
-						goto check_tup_satisfies_update;
-					require_sleep = false;
+					buf_lock_reacquired = true;
 				}
 			}
 			else if (old_lock_mode == LockTupleKeyShare)
 			{
 				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+				buf_lock_reacquired = true;
+			}
+
+			if (buf_lock_reacquired)
+			{
+				/*
+				 * Also take care of cases when page is pruned after we release
+				 * the buffer lock. For this we check if ItemId is not deleted
+				 * and refresh the tuple offset position in page.  If TID is
+				 * already delete marked due to pruning, then get new ctid, so
+				 * that we can lock the new tuple.
+				 */
+				if (ItemIdIsDeleted(lp))
+				{
+					ctid = *tid;
+					ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
+					result = HeapTupleUpdated;
+					goto failed;
+				}
+
+				zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+				zhtup.t_len = ItemIdGetLength(lp);
+
 				if (xid_infomask_changed(zhtup.t_data->t_infomask, infomask) ||
-					 !TransactionIdEquals(ZHeapTupleHeaderGetRawXid(zhtup.t_data, opaque),
-										  xwait))
+					!TransactionIdEquals(ZHeapTupleHeaderGetRawXid(zhtup.t_data, opaque),
+										 xwait))
 					goto check_tup_satisfies_update;
+				/* Skip sleeping */
 				require_sleep = false;
 			}
-
-			/*
-			 * Also take care of cases when page is pruned after we release
-			 * the buffer lock. For this we check if ItemId is not deleted
-			 * and refresh the tuple offset position in page.  If TID is
-			 * already delete marked due to pruning, then get new ctid, so
-			 * that we can lock the new tuple.
-			 */
-			if (ItemIdIsDeleted(lp))
-			{
-				ctid = *tid;
-				ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-				result = HeapTupleUpdated;
-				goto failed;
-			}
-
 		}
 
 		/*
@@ -3444,7 +3472,7 @@ check_tup_satisfies_update:
 				 * For aborted updates, we must allow to reverify the tuple in
 				 * case it's values got changed.
 				 */
-				if (!ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask))
+				if (!ZHEAP_XID_IS_LOCKED_ONLY(infomask))
 					ZHeapTupleGetTransInfo(&zhtup, *buffer, NULL, NULL, &update_xact,
 										   NULL, NULL, true);
 				else
