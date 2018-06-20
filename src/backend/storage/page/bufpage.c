@@ -624,8 +624,7 @@ ZPageRepairFragmentation(Page page)
 
 			tup = (ZHeapTupleHeader) PageGetItem(page, lp);
 
-			if (!(tup->t_infomask & ZHEAP_DELETED ||
-				  tup->t_infomask & ZHEAP_INPLACE_UPDATED))
+			if (!(tup->t_infomask & ZHEAP_INPLACE_UPDATED))
 				continue;
 
 			if (!ZHeapTupleHasInvalidXact(tup->t_infomask))
@@ -637,7 +636,7 @@ ZPageRepairFragmentation(Page page)
 					continue;
 
 				opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-				if (TransactionIdIsInProgress(opaque->transinfo[trans_slot].xid))
+				if (!TransactionIdDidCommit(opaque->transinfo[trans_slot].xid))
 					return;
 			}
 		}
