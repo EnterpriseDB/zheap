@@ -132,7 +132,8 @@ UndoRecordExpectedSize(UnpackedUndoRecord *uur)
 {
 	Size	size;
 
-	if (uur->uur_info == 0)
+	/* Fixme : Temporary hack to allow zheap to set some value for uur_info. */
+	/* if (uur->uur_info == 0) */
 		UndoRecordSetInfo(uur);
 
 	size = SizeOfUndoRecordHeader;

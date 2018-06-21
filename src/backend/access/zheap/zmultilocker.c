@@ -17,6 +17,7 @@
  */
 #include "postgres.h"
 
+#include "access/tpd.h"
 #include "access/xact.h"
 #include "access/zmultilocker.h"
 #include "storage/bufmgr.h"
@@ -68,10 +69,8 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, Buffer buf,
 		}
 
 		/* don't free the tuple passed by caller */
-		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup,
+		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
 										   (undo_tup) == (zhtup) ? false : true);
-
-		trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 
 		if (uur_type == UNDO_XID_LOCK_ONLY ||
 			uur_type == UNDO_XID_MULTI_LOCK_ONLY)
@@ -153,14 +152,18 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, Buffer buf,
  * such transactions if they have updated the tuple.
  */
 List *
-ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
+ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
+					 bool nobuflock)
 {
-	ZHeapPageOpaque	opaque;
+	Page	page;
+	PageHeader	phdr;
 	ZHeapTuple		undo_tup;
 	UnpackedUndoRecord	*urec = NULL;
 	UndoRecPtr		urec_ptr;
 	ZMultiLockMember		*mlmember;
 	List	*multilockmembers = NIL;
+	TransInfo *tpd_trans_slots;
+	TransInfo *trans_slots;
 	TransactionId	xid;
 	uint64	epoch_xid;
 	uint64	epoch;
@@ -168,6 +171,7 @@ ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
 			trans_slot_id;
 	uint8	uur_type;
 	int		slot_no;
+	int		total_trans_slots;
 
 	if (nobuflock)
 	{
@@ -191,12 +195,53 @@ ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
 		}
 	}
 
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
+	page = BufferGetPage(buf);
+	phdr = (PageHeader) page;
 
-	for (slot_no = 0; slot_no < ZHEAP_PAGE_TRANS_SLOTS; slot_no++)
+	if (ZHeapPageHasTPDSlot(phdr))
 	{
-		epoch = opaque->transinfo[slot_no].xid_epoch;
-		xid = opaque->transinfo[slot_no].xid;
+		int		num_tpd_trans_slots;
+
+		tpd_trans_slots = TPDPageGetTransactionSlots(rel,
+													 page,
+													 InvalidOffsetNumber,
+													 &num_tpd_trans_slots,
+													 false,
+													 false,
+													 NULL);
+		/*
+		 * The last slot in page contains TPD information, so we don't need to
+		 * include it.
+		 */
+		total_trans_slots = num_tpd_trans_slots + ZHEAP_PAGE_TRANS_SLOTS - 1;
+		trans_slots = (TransInfo *)
+				palloc(total_trans_slots * sizeof(TransInfo));
+		/* Copy the transaction slots from the page. */
+		memcpy(trans_slots, page + phdr->pd_special,
+			   (ZHEAP_PAGE_TRANS_SLOTS - 1) * sizeof(TransInfo));
+		/* Copy the transaction slots from the tpd entry. */
+		memcpy((char *) trans_slots + ((ZHEAP_PAGE_TRANS_SLOTS - 1) * sizeof(TransInfo)),
+			   tpd_trans_slots, num_tpd_trans_slots * sizeof(TransInfo));
+
+		pfree(tpd_trans_slots);
+
+	}
+	else
+	{
+		total_trans_slots = ZHEAP_PAGE_TRANS_SLOTS;
+		trans_slots = (TransInfo *)
+				palloc(total_trans_slots * sizeof(TransInfo));
+		memcpy(trans_slots, page + phdr->pd_special,
+			   total_trans_slots * sizeof(TransInfo));
+	}
+
+	if (nobuflock)
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+	for (slot_no = 0; slot_no < total_trans_slots; slot_no++)
+	{
+		epoch = trans_slots[slot_no].xid_epoch;
+		xid = trans_slots[slot_no].xid;
 
 		epoch_xid = MakeEpochXid(epoch, xid);
 
@@ -207,7 +252,7 @@ ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
 		if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			continue;
 
-		urec_ptr = opaque->transinfo[slot_no].urec_ptr;
+		urec_ptr = trans_slots[slot_no].urec_ptr;
 		trans_slot_id = slot_no;
 		undo_tup = zhtup;
 
@@ -248,10 +293,8 @@ ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
 			}
 
 			/* don't free the tuple passed by caller */
-			undo_tup = CopyTupleFromUndoRecord(urec, undo_tup,
+			undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
 											   (undo_tup) == (zhtup) ? false : true);
-
-			trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 
 			if (uur_type == UNDO_XID_LOCK_ONLY ||
 				uur_type == UNDO_XID_MULTI_LOCK_ONLY)
@@ -322,8 +365,8 @@ ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
 			pfree(undo_tup);
 	}
 
-	if (nobuflock)
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	/* be tidy */
+	pfree(trans_slots);
 
 	return multilockmembers;
 }
@@ -390,7 +433,7 @@ ZMultiLockMembersWait(Relation rel, List *mlmembers, ZHeapTuple zhtup,
 		if (TransactionIdDidAbort(memxid))
 		{
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
-			zheap_exec_pending_rollback(rel, buf, mlmember->trans_slot_id);
+			zheap_exec_pending_rollback(rel, buf, mlmember->trans_slot_id, memxid);
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 
 			if (TransactionIdIsValid(update_xact) && memxid == update_xact)

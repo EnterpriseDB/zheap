@@ -78,7 +78,7 @@ RelationPutHeapTuple(Relation relation,
 /*
  * Read in a buffer, using bulk-insert strategy if bistate isn't NULL.
  */
-static Buffer
+Buffer
 ReadBufferBI(Relation relation, BlockNumber targetBlock,
 			 BulkInsertState bistate)
 {
@@ -120,7 +120,7 @@ ReadBufferBI(Relation relation, BlockNumber targetBlock,
  * must not be InvalidBuffer.  If both buffers are specified, buffer1 must
  * be less than buffer2.
  */
-static void
+void
 GetVisibilityMapPins(Relation relation, Buffer buffer1, Buffer buffer2,
 					 BlockNumber block1, BlockNumber block2,
 					 Buffer *vmbuffer1, Buffer *vmbuffer2)
@@ -176,7 +176,7 @@ GetVisibilityMapPins(Relation relation, Buffer buffer1, Buffer buffer2,
  * amount which ramps up as the degree of contention ramps up, but limiting
  * the result to some sane overall value.
  */
-static void
+void
 RelationAddExtraBlocks(Relation relation, BulkInsertState bistate)
 {
 	BlockNumber blockNum,
@@ -402,8 +402,20 @@ RelationGetBufferForTuple(Relation relation, Size len,
 		{
 			BlockNumber nblocks = RelationGetNumberOfBlocks(relation);
 
-			if (nblocks > 0)
-				targetBlock = nblocks - 1;
+			if (RelationStorageIsZHeap(relation))
+			{
+				/*
+				 * In zheap, first page is always a meta page, so we need to
+				 * skip it for tuple insertions.
+				 */
+				if (nblocks > ZHEAP_METAPAGE + 1)
+					targetBlock = nblocks - 1;
+			}
+			else
+			{
+				if (nblocks > 0)
+					targetBlock = nblocks - 1;
+			}
 		}
 	}
 

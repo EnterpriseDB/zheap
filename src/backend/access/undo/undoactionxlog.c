@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "access/tpd.h"
 #include "access/undoaction_xlog.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
@@ -61,47 +62,94 @@ undo_xlog_insert(XLogReaderState *record)
 static void
 undo_xlog_page(XLogReaderState *record)
 {
-	Buffer		buf;
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer	buf;
+	xl_undoaction_page	*xldata = NULL;
+	XLogRedoAction action;
+	uint8	*flags = (uint8 *) XLogRecGetData(record);
+
+	if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
+		xldata = (xl_undoaction_page *) ((char *) flags + sizeof(uint8));
 
 	if (XLogReadBufferForRedo(record, 0, &buf) != BLK_RESTORED)
 		elog(ERROR, "Undo page record did not contain a full-page image");
 
+	/* replay the record for tpd buffer */
+	if (XLogRecHasBlockRef(record, 1))
+	{
+		TransactionId	xid = XLogRecGetXid(record);
+		uint32	xid_epoch = 0;
+
+		if (TransactionIdIsValid(xid))
+			xid_epoch = GetEpochForXid(xid);
+
+		/*
+		 * We need to replay the record for TPD only when this record contains
+		 * slot from TPD.
+		 */
+		Assert(*flags & XLU_PAGE_CONTAINS_TPD_SLOT);
+		action = XLogReadTPDBuffer(record, 1);
+		if (action == BLK_NEEDS_REDO)
+		{
+			TPDPageSetTransactionSlotInfo(buf, xldata->trans_slot_id,
+										  xid_epoch, xid, xldata->urec_ptr);
+			TPDPageSetLSN(BufferGetPage(buf), lsn);
+		}
+	}
+
 	UnlockReleaseBuffer(buf);
+	UnlockReleaseTPDBuffers();
 }
 
 /*
- * replay of undo reset xid operation
+ * replay of undo reset slot operation
  */
 static void
 undo_xlog_reset_xid(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	Buffer		buffer;
+	xl_undoaction_reset_slot	*xlrec = (xl_undoaction_reset_slot *) XLogRecGetData(record);
+	Buffer		buf;
 	XLogRedoAction action;
 
-	action = XLogReadBufferForRedo(record, 0, &buffer);
+	action = XLogReadBufferForRedo(record, 0, &buf);
 	if (action == BLK_NEEDS_REDO)
 	{
-		Size		datalen;
-		char	   *data;
-		Page		page;
+		Page	page;
 		ZHeapPageOpaque	opaque;
-		int			slot_no;
+		int		slot_no = xlrec->trans_slot_id;
 
-		data = XLogRecGetBlockData(record, 0, &datalen);
-		slot_no = *(int *) data;
+		/* The transaction slot must belong to page. */
+		Assert(xlrec->trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS);
 
-		page = BufferGetPage(buffer);
+		page = BufferGetPage(buf);
 		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
 		opaque->transinfo[slot_no].xid_epoch = 0;
 		opaque->transinfo[slot_no].xid = InvalidTransactionId;
+		opaque->transinfo[slot_no].urec_ptr = xlrec->urec_ptr;
 
 		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
+		MarkBufferDirty(buf);
 	}
 
-	if (BufferIsValid(buffer))
-		UnlockReleaseBuffer(buffer);
+	/* replay the record for tpd buffer */
+	if (XLogRecHasBlockRef(record, 1))
+	{
+		Assert(xlrec->flags & XLU_RESET_CONTAINS_TPD_SLOT);
+		action = XLogReadTPDBuffer(record, 1);
+		if (action == BLK_NEEDS_REDO)
+		{
+			TPDPageSetTransactionSlotInfo(buf, xlrec->trans_slot_id,
+										  0, InvalidTransactionId,
+										  xlrec->urec_ptr);
+			TPDPageSetLSN(BufferGetPage(buf), lsn);
+		}
+	}
+
+	if (BufferIsValid(buf))
+		UnlockReleaseBuffer(buf);
+	UnlockReleaseTPDBuffers();
 }
 
 void
@@ -114,7 +162,7 @@ undoaction_redo(XLogReaderState *record)
 		case XLOG_UNDO_PAGE:
 			undo_xlog_page(record);
 			break;
-		case XLOG_UNDO_RESET_XID:
+		case XLOG_UNDO_RESET_SLOT:
 			undo_xlog_reset_xid(record);
 			break;
 		default:

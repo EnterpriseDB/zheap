@@ -18,6 +18,7 @@
 #include "access/multixact.h"
 #include "access/nbtxlog.h"
 #include "access/spgxlog.h"
+#include "access/tpd_xlog.h"
 #include "access/undoaction_xlog.h"
 #include "access/undolog_xlog.h"
 #include "access/xact.h"

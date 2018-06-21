@@ -19,6 +19,7 @@
 #include "access/xlog.h"
 #include "access/zhtup.h"
 #include "access/zheap.h"
+#include "storage/bufmgr.h"
 #include "storage/checksum.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
@@ -109,7 +110,8 @@ PageIsVerified(Page page, BlockNumber blkno)
 		 * the block can still reveal problems, which is why we offer the
 		 * checksum option.
 		 */
-		if ((p->pd_flags & ~PD_VALID_FLAG_BITS) == 0 &&
+		if (((p->pd_flags & ~PD_VALID_FLAG_BITS) == 0 ||
+			 (p->pd_flags & ~PD_ZHEAP_VALID_FLAG_BITS) == 0) &&
 			p->pd_lower <= p->pd_upper &&
 			p->pd_upper <= p->pd_special &&
 			p->pd_special <= BLCKSZ &&
@@ -577,14 +579,18 @@ PageRepairFragmentation(Page page)
  * deal with unused items that can't be immediately reclaimed.
  */
 void
-ZPageRepairFragmentation(Page page)
+ZPageRepairFragmentation(Buffer buffer)
 {
+	Page		page = BufferGetPage(buffer);
 	Offset		pd_lower = ((PageHeader) page)->pd_lower;
 	Offset		pd_upper = ((PageHeader) page)->pd_upper;
 	Offset		pd_special = ((PageHeader) page)->pd_special;
 	itemIdSortData itemidbase[MaxZHeapTuplesPerPageAlign0];
 	itemIdSort	itemidptr;
 	ItemId		lp;
+	TransactionId	xid;
+	uint32			epoch;
+	UndoRecPtr		urec_ptr;
 	int			nline,
 				nstorage,
 				nunused;
@@ -629,14 +635,16 @@ ZPageRepairFragmentation(Page page)
 
 			if (!ZHeapTupleHasInvalidXact(tup->t_infomask))
 			{
-				ZHeapPageOpaque opaque;
 				int			trans_slot;
+
 				trans_slot = ZHeapTupleHeaderGetXactSlot(tup);
 				if (trans_slot == ZHTUP_SLOT_FROZEN)
 					continue;
 
-				opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-				if (!TransactionIdDidCommit(opaque->transinfo[trans_slot].xid))
+				(void) GetTransactionSlotInfo(buffer, i, trans_slot, &epoch,
+											  &xid, &urec_ptr, true, false);
+
+				if (!TransactionIdDidCommit(xid))
 					return;
 			}
 		}
@@ -678,10 +686,7 @@ ZPageRepairFragmentation(Page page)
 			 */
 			if (ItemIdHasPendingXact(lp))
 			{
-				TransactionId	xid;
-				ZHeapPageOpaque	opaque;
-
-				opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+				int		trans_slot = ItemIdGetTransactionSlot(lp);
 
 				/*
 				 * Here, we are relying on the transaction information in
@@ -689,7 +694,8 @@ ZPageRepairFragmentation(Page page)
 				 * transaction information from the entry would have been
 				 * cleared.  See PageFreezeTransSlots.
 				 */
-				xid = ZHeapPageGetRawXid(ItemIdGetTransactionSlot(lp), opaque);
+				(void) GetTransactionSlotInfo(buffer, i, trans_slot, &epoch, &xid,
+											  &urec_ptr, true, false);
 				if (!TransactionIdDidCommit(xid))
 					continue;
 			}

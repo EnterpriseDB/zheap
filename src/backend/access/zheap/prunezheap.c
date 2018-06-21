@@ -356,7 +356,7 @@ zheap_page_prune_execute(Buffer buffer, OffsetNumber *deleted, int ndeleted,
 	 * Finally, repair any fragmentation, and update the page's hint bit about
 	 * whether it has free pointers.
 	 */
-	ZPageRepairFragmentation(page);
+	ZPageRepairFragmentation(buffer);
 }
 
 /*

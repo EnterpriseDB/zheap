@@ -11,7 +11,7 @@ include $(top_builddir)/src/Makefile.global
 OBJS = brindesc.o clogdesc.o committsdesc.o dbasedesc.o genericdesc.o \
 	   gindesc.o gistdesc.o hashdesc.o heapdesc.o logicalmsgdesc.o \
 	   mxactdesc.o nbtdesc.o relmapdesc.o replorigindesc.o seqdesc.o \
-	   smgrdesc.o spgdesc.o standbydesc.o tblspcdesc.o undoactiondesc.o \
+	   smgrdesc.o spgdesc.o standbydesc.o tblspcdesc.o tpddesc.o undoactiondesc.o \
 	   undologdesc.o xactdesc.o xlogdesc.o zheapamdesc.o
 
 include $(top_srcdir)/src/backend/common.mk

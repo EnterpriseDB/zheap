@@ -30,8 +30,8 @@ TransactionId latestRecentGlobalXmin;
 extern void execute_undo_actions(UndoRecPtr from_urecptr,
 			UndoRecPtr to_urecptr, bool nopartial, bool rewind, bool rellock);
 extern void process_and_execute_undo_actions_page(UndoRecPtr from_urecptr,
-							Relation rel, Buffer buffer, TransactionId xid,
-							int slot_no);
+							Relation rel, Buffer buffer, uint32 epoch,
+							TransactionId xid, int slot_no);
 
 /*
  * This function will be responsible to truncate the undo logs

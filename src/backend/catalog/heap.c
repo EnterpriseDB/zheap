@@ -36,6 +36,7 @@
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/zheap.h"
 #include "catalog/binary_upgrade.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
@@ -1126,6 +1127,7 @@ heap_create_with_catalog(const char *relname,
 	Oid			new_type_oid;
 	ObjectAddress new_type_addr;
 	Oid			new_array_oid = InvalidOid;
+	StdRdOptions *rdopts;
 
 	pg_class_desc = heap_open(RelationRelationId, RowExclusiveLock);
 
@@ -1422,13 +1424,27 @@ heap_create_with_catalog(const char *relname,
 	if (oncommit != ONCOMMIT_NOOP)
 		register_on_commit_action(relid, oncommit);
 
+	rdopts = (StdRdOptions *) heap_reloptions(relkind, reloptions, false);
+
+	/*
+	 * Initialize the metapage for zheap, except for partitioned relations as
+	 * they do not have any storage
+	 */
+	if (RelationStorageOptIsZHeap(relkind, rdopts) &&
+		relkind != 'p')
+		ZheapInitMetaPage(new_rel_desc, MAIN_FORKNUM);
+
 	/*
 	 * Unlogged objects need an init fork, except for partitioned tables which
 	 * have no storage at all.
 	 */
 	if (relpersistence == RELPERSISTENCE_UNLOGGED &&
 		relkind != RELKIND_PARTITIONED_TABLE)
+	{
 		heap_create_init_fork(new_rel_desc);
+		if (RelationStorageOptIsZHeap(relkind, rdopts))
+			ZheapInitMetaPage(new_rel_desc, INIT_FORKNUM);
+	}
 
 	/*
 	 * ok, the relation has been cataloged, so close our relations and return
@@ -3160,6 +3176,18 @@ heap_truncate(List *relids)
 
 		/* Truncate the relation */
 		heap_truncate_one_rel(rel);
+
+		if (RelationStorageIsZHeap(rel))
+				RelationSetNewRelfilenode(rel, rel->rd_rel->relpersistence,
+										  InvalidTransactionId,
+										  InvalidMultiXactId);
+		if (rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED &&
+			rel->rd_rel->relkind != 'p')
+		{
+				heap_create_init_fork(rel);
+				if (RelationStorageIsZHeap(rel))
+					ZheapInitMetaPage(rel, INIT_FORKNUM);
+		}
 
 		/* Close the relation, but keep exclusive lock on it until commit */
 		heap_close(rel, NoLock);

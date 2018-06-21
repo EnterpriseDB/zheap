@@ -51,3 +51,4 @@ PG_RMGR(RM_UNDOLOG_ID, "UndoLog", undolog_redo, undolog_desc, undolog_identify, 
 PG_RMGR(RM_ZHEAP_ID, "Zheap", zheap_redo, zheap_desc, zheap_identify, NULL, NULL, zheap_mask)
 PG_RMGR(RM_ZHEAP2_ID, "Zheap2", zheap2_redo, zheap2_desc, zheap2_identify, NULL, NULL, zheap_mask)
 PG_RMGR(RM_UNDOACTION_ID, "UndoAction", undoaction_redo, undoaction_desc, undoaction_identify, NULL, NULL, NULL)
+PG_RMGR(RM_TPD_ID, "TPD", tpd_redo, tpd_desc, tpd_identify, NULL, NULL, NULL)

@@ -30,6 +30,7 @@
 #include <math.h>
 
 #include "access/genam.h"
+#include "access/tpd.h"
 #include "access/xact.h"
 #include "access/zhtup.h"
 #include "access/zheapam_xlog.h"
@@ -108,7 +109,7 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 		unused[uncnt++] = toff;
 	}
 
-	ZPageRepairFragmentation(page);
+	ZPageRepairFragmentation(buffer);
 
 	/*
 	 * Mark buffer dirty before we write WAL.
@@ -182,8 +183,13 @@ reacquire_slot:
 	 * operation.  It will be costly to wait for getting the slot, but we do
 	 * that by releasing the buffer lock.
 	 */
-	trans_slot_id = PageReserveTransactionSlot(onerel, buffer, epoch, xid,
-											   &prev_urecptr, &lock_reacquired);
+	trans_slot_id = PageReserveTransactionSlot(onerel,
+											   buffer,
+											   InvalidOffsetNumber,
+											   epoch,
+											   xid,
+											   &prev_urecptr,
+											   &lock_reacquired);
 	if (lock_reacquired)
 		goto reacquire_slot;
 
@@ -216,6 +222,11 @@ reacquire_slot:
 	undorecord.uur_payload.len = uncnt * sizeof(OffsetNumber);
 	undorecord.uur_payload.data = (char *) palloc(uncnt * sizeof(OffsetNumber));
 
+	/*
+	 * XXX Unlike other undo records, we don't set the TPD slot number in undo
+	 * record as this record is just skipped during processing of undo.
+	 */
+
 	urecptr = PrepareUndoInsert(&undorecord,
 								UndoPersistenceForRelation(onerel),
 								InvalidTransactionId,
@@ -225,7 +236,32 @@ reacquire_slot:
 
 	memcpy(undorecord.uur_payload.data, unused, uncnt * sizeof(OffsetNumber));
 	InsertPreparedUndo();
-	PageSetUNDO(undorecord, page, trans_slot_id, epoch, xid, urecptr);
+	/*
+	 * We're sending the undo record for debugging purpose. So, just send
+	 * the last one.
+	 */
+	if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+	{
+		PageSetUNDO(undorecord,
+					page,
+					trans_slot_id,
+					epoch,
+					xid,
+					urecptr,
+					unused,
+					uncnt);
+	}
+	else
+	{
+		PageSetUNDO(undorecord,
+					page,
+					trans_slot_id,
+					epoch,
+					xid,
+					urecptr,
+					NULL,
+					0);
+	}
 
 	for (i = 0; i < uncnt; i++)
 	{
@@ -234,7 +270,7 @@ reacquire_slot:
 		itemid = PageGetItemId(page, unused[i]);
 		ItemIdSetUnusedExtended(itemid, trans_slot_id);
 	}
-	ZPageRepairFragmentation(page);
+	ZPageRepairFragmentation(buffer);
 
 	/*
 	 * Mark buffer dirty before we write WAL.
@@ -275,6 +311,8 @@ prepare_xlog:
 
 		XLogRegisterData((char *) unused, uncnt * sizeof(OffsetNumber));
 		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+			(void) RegisterTPDBuffer(page, 1);
 
 		recptr = XLogInsertExtended(RM_ZHEAP2_ID, XLOG_ZHEAP_UNUSED, RedoRecPtr,
 									doPageWrites);
@@ -282,11 +320,14 @@ prepare_xlog:
 			goto prepare_xlog;
 
 		PageSetLSN(page, recptr);
+		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+			TPDPageSetLSN(page, recptr);
 	}
 
 	END_CRIT_SECTION();
 
 	UnlockReleaseUndoBuffers();
+	UnlockReleaseTPDBuffers();
 
 	return tupindex;
 }
@@ -364,7 +405,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 
 	lazy_space_zalloc(vacrelstats, nblocks);
 
-	for (blkno = 0; blkno < nblocks; blkno++)
+	for (blkno = ZHEAP_METAPAGE + 1; blkno < nblocks; blkno++)
 	{
 		Buffer		buf;
 		Page		page;
@@ -438,6 +479,17 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 			UnlockReleaseBuffer(buf);
 
 			RecordPageWithFreeSpace(onerel, blkno, freespace);
+			continue;
+		}
+
+		/*
+		 * Skip TPD pages.  This needs to be checked before PageIsEmpty as TPD
+		 * pages can also be empty, but we don't want to deal with it like a
+		 * heap page.
+		 */
+		if (PageGetSpecialSize(page) == sizeof(TPDPageOpaqueData))
+		{
+			UnlockReleaseBuffer(buf);
 			continue;
 		}
 
@@ -622,9 +674,12 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 	vacrelstats->tuples_deleted = tups_vacuumed;
 	vacrelstats->new_dead_tuples = nkeep;
 
-	/* now we can compute the new value for pg_class.reltuples */
+	/*
+	 * Now we can compute the new value for pg_class.reltuples.  To compensate
+	 * for metapage pass one less than the actual nblocks.
+	 */
 	vacrelstats->new_rel_tuples = vac_estimate_reltuples(onerel,
-														 nblocks,
+														 nblocks - 1,
 														 vacrelstats->tupcount_pages,
 														 num_tuples);
 

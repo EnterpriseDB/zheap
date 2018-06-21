@@ -984,7 +984,9 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 			 * minimum to indexes.
 			 */
 			if (curpages < 10 &&
-				rel->rd_rel->relpages == 0 &&
+				(rel->rd_rel->relpages == 0 ||
+				(RelationStorageIsZHeap(rel) &&
+				 rel->rd_rel->relpages == ZHEAP_METAPAGE + 1)) &&
 				!rel->rd_rel->relhassubclass &&
 				rel->rd_rel->relkind != RELKIND_INDEX)
 				curpages = 10;
@@ -992,7 +994,8 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 			/* report estimated # pages */
 			*pages = curpages;
 			/* quick exit if rel is clearly empty */
-			if (curpages == 0)
+			if (curpages == 0 || (RelationStorageIsZHeap(rel) &&
+				curpages == ZHEAP_METAPAGE + 1))
 			{
 				*tuples = 0;
 				*allvisfrac = 0;
@@ -1003,6 +1006,15 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 			reltuples = (double) rel->rd_rel->reltuples;
 			relallvisible = (BlockNumber) rel->rd_rel->relallvisible;
 
+			/*
+			 * If it's a zheap relation, then subtract the pages
+			 * to account for the metapage.
+			 */
+			if (relpages > 0 && RelationStorageIsZHeap(rel))
+			{
+				curpages--;
+				relpages--;
+			}
 			/*
 			 * If it's an index, discount the metapage while estimating the
 			 * number of tuples.  This is a kluge because it assumes more than

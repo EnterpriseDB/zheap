@@ -3429,6 +3429,10 @@ RelationSetNewRelfilenode(Relation relation, char persistence,
 
 	/* Flag relation as needing eoxact cleanup (to remove the hint) */
 	EOXactListAdd(relation);
+
+	/* Initialize the metapage for zheap relation. */
+	if (RelationStorageIsZHeap(relation))
+		ZheapInitMetaPage(relation, MAIN_FORKNUM);
 }
 
 

@@ -57,6 +57,17 @@
 #define XLOG_ZHEAP_CONFIRM		0x00
 #define XLOG_ZHEAP_UNUSED		0x10
 
+/*
+ * All that we need to regenerate the meta-data page
+ */
+typedef struct xl_zheap_metadata
+{
+	uint32		first_used_tpd_page;
+	uint32		last_used_tpd_page;
+} xl_zheap_metadata;
+
+#define SizeOfMetaData	(offsetof(xl_zheap_metadata, last_used_tpd_page) + sizeof(uint32))
+
 /* common undo record related info */
 typedef struct xl_undo_header
 {
@@ -75,6 +86,7 @@ typedef struct xl_undo_header
 #define XLZ_INSERT_LAST_IN_MULTI				(1<<1)
 #define XLZ_INSERT_IS_SPECULATIVE				(1<<2)
 #define XLZ_INSERT_CONTAINS_NEW_TUPLE			(1<<3)
+#define XLZ_INSERT_CONTAINS_TPD_SLOT			(1<<4)
 
 /*
  * NOTE: t_hoff could be recomputed, but we may as well store it because
@@ -108,6 +120,7 @@ typedef struct xl_zheap_insert
 #define XLZ_DELETE_ALL_VISIBLE_CLEARED			(1<<0)
 /* undo tuple is present in xlog record? */
 #define XLZ_HAS_DELETE_UNDOTUPLE				(1<<1)
+#define XLZ_DELETE_CONTAINS_TPD_SLOT			(1<<2)
 
 /* This is what we need to know about delete */
 typedef struct xl_zheap_delete
@@ -136,6 +149,8 @@ typedef struct xl_zheap_delete
 #define XLZ_UPDATE_SUFFIX_FROM_OLD				(1<<3)
 #define	XLZ_NON_INPLACE_UPDATE					(1<<4)
 #define	XLZ_HAS_UPDATE_UNDOTUPLE				(1<<5)
+#define	XLZ_UPDATE_OLD_CONTAINS_TPD_SLOT		(1<<6)
+#define	XLZ_UPDATE_NEW_CONTAINS_TPD_SLOT		(1<<7)
 
 /*
  * This is what we need to know about update|inplace_update
@@ -186,7 +201,8 @@ typedef struct xl_zheap_invalid_xact_slot
 /*
  * xl_zheap_lock flag values, 8 bits are available.
  */
-#define XLZ_LOCK_TRANS_SLOT_FOR_UREC			(1<<0)
+#define XLZ_LOCK_TRANS_SLOT_FOR_UREC		(1<<0)
+#define XLZ_LOCK_CONTAINS_TPD_SLOT			(1<<2)
 
 /* This is what we need to know about zheap lock tuple. */
 typedef struct xl_zheap_lock
@@ -205,9 +221,8 @@ typedef struct xl_zheap_lock
 /*
  * This is what we need to know about a multi-insert.
  *
- * The main data of the record consists of this xl_zheap_multi_insert header.
- * 'offsets' array is omitted if the whole page is reinitialized
- * (XLOG_ZHEAP_INIT_PAGE).
+ * The main data of the record consists of this xl_zheap_multi_insert header,
+ * 'offset ranges' and tpd transaction slot number.
  *
  * In block 0's data portion, there is an xl_multi_insert_ztuple struct,
  * followed by the tuple data for each tuple. There is padding to align

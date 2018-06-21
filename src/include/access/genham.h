@@ -18,6 +18,7 @@
 #include "access/sdir.h"
 #include "access/skey.h"
 #include "nodes/lockoptions.h"
+#include "storage/buf.h"
 #include "storage/itemptr.h"
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
@@ -122,6 +123,11 @@ static const struct
 extern bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
 					 LockTupleMode mode, LockWaitPolicy wait_policy,
 					 bool *have_tuple_lock);
-
+extern void GetVisibilityMapPins(Relation relation, Buffer buffer1,
+					Buffer buffer2, BlockNumber block1, BlockNumber block2,
+					Buffer *vmbuffer1, Buffer *vmbuffer2);
+extern void RelationAddExtraBlocks(Relation relation, BulkInsertState bistate);
+extern Buffer ReadBufferBI(Relation relation, BlockNumber targetBlock,
+					BulkInsertState bistate);
 
 #endif   /* GENHAM_H */

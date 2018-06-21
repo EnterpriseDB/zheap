@@ -26,7 +26,8 @@
 
 extern List *ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, Buffer buf,
 							int trans_slot, UndoRecPtr urec_ptr);
-extern List *ZGetMultiLockMembers(ZHeapTuple zhtup, Buffer buf, bool nobuflock);
+extern List *ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
+								  bool nobuflock);
 extern bool ZMultiLockMembersWait(Relation rel, List *mlmembers,
 					  ZHeapTuple zhtup, Buffer buf, TransactionId update_xact,
 					  LockTupleMode required_mode, bool nowait, XLTW_Oper oper,

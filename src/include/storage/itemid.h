@@ -198,13 +198,20 @@ typedef uint16 ItemLength;
  *		marked it as UNUSED is committed. Beware of multiple evaluations of
  *		itemId!
  */
-#define ItemIdSetUnusedExtended(itemId, trans_slot) \
-( \
-	(itemId)->lp_flags = LP_UNUSED, \
-	(itemId)->lp_off = ((itemId)->lp_off & ~VISIBILTY_MASK) | ITEMID_XACT_PENDING, \
-	(itemId)->lp_off = ((itemId)->lp_off & ~XACT_SLOT) | (trans_slot) << XACT_SLOT_MASK, \
-	(itemId)->lp_len = 0 \
-)
+static inline
+void ItemIdSetUnusedExtended(ItemId itemId, int trans_slot)
+{
+	/*
+	 * The slots that belongs to TPD entry always point to last slot on the
+	 * page.
+	 */
+	if (trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
+		trans_slot = ZHEAP_PAGE_TRANS_SLOTS;
+	itemId->lp_flags = LP_UNUSED;
+	itemId->lp_off = (itemId->lp_off & ~VISIBILTY_MASK) | ITEMID_XACT_PENDING;
+	itemId->lp_off = (itemId->lp_off & ~XACT_SLOT) | trans_slot << XACT_SLOT_MASK;
+	itemId->lp_len = 0;
+}
 
 /*
  * ItemIdSetDeleted

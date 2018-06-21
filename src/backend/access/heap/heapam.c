@@ -298,8 +298,12 @@ heap_setscanlimits(HeapScanDesc scan, BlockNumber startBlk, BlockNumber numBlks)
 	Assert(!scan->rs_inited);	/* else too late to change */
 	Assert(!scan->rs_syncscan); /* else rs_startblock is significant */
 
-	/* Check startBlk is valid (but allow case of zero blocks...) */
-	Assert(startBlk == 0 || startBlk < scan->rs_nblocks);
+	/*
+	 * Check startBlk is valid (but allow case of zero blocks...).
+	 * Consider meta-page as well.
+	 */
+	Assert(startBlk == 0 || startBlk < scan->rs_nblocks ||
+			startBlk == ZHEAP_METAPAGE + 1);
 
 	scan->rs_startblock = startBlk;
 	scan->rs_numblocks = numBlks;

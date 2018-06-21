@@ -13,10 +13,12 @@
 
 #include "postgres.h"
 
+#include "access/tpd.h"
 #include "access/undoaction_xlog.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
 #include "access/xact.h"
+#include "access/zheap.h"
 #include "nodes/pg_list.h"
 #include "postmaster/undoloop.h"
 #include "storage/block.h"
@@ -279,19 +281,19 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
  * from_urecptr - undo record pointer from where to start applying the undo.
  * rel			- relation descriptor for which undo to be applied.
  * buffer		- buffer for which unto to be processed.
+ * epoch		- epoch of the xid passed.
  * xid			- aborted transaction id whose effects needs to be reverted.
  * slot_no		- transaction slot number of xid.
  */
 void
 process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
-									  Buffer buffer, TransactionId xid,
-									  int slot_no)
+									  Buffer buffer, uint32 epoch,
+									  TransactionId xid, int slot_no)
 {
 	UnpackedUndoRecord *uur = NULL;
 	UndoRecPtr	urec_ptr = from_urecptr;
 	List	   *luinfo = NIL;
 	Page		page;
-	ZHeapPageOpaque	opaque;
 	UndoRecInfo	*urec_info;
 	bool	actions_applied = false;
 
@@ -357,36 +359,63 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 	/*
 	 * Clear the transaction id from the slot.  We expect that if the undo
 	 * actions are applied by execute_undo_actions_page then it would have
-	 * cleared the xid, otherwise we will cleare it here.
+	 * cleared the xid, otherwise we will clear it here.
 	 */
 	if (!actions_applied)
 	{
+		int		slot_no;
+
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buffer);
-		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-		if (opaque->transinfo[slot_no].xid == xid)
+		slot_no = PageGetTransactionSlotId(rel, buffer, epoch, xid, &urec_ptr,
+										   true);
+		/*
+		 * If someone has already cleared the transaction info, then we don't
+		 * need to do anything.
+		 */
+		if (slot_no != InvalidXactSlotId)
 		{
 			START_CRIT_SECTION();
-			opaque->transinfo[slot_no].xid_epoch = 0;
-			opaque->transinfo[slot_no].xid = InvalidTransactionId;
+
+			/* Clear the epoch and xid from the slot. */
+			PageSetTransactionSlotInfo(buffer, slot_no, 0,
+									   InvalidTransactionId, urec_ptr);
+			MarkBufferDirty(buffer);
 
 			/* XLOG stuff */
 			if (RelationNeedsWAL(rel))
 			{
 				XLogRecPtr	recptr;
+				xl_undoaction_reset_slot	xlrec;
+
+				xlrec.flags = 0;
+				xlrec.urec_ptr = urec_ptr;
+				xlrec.trans_slot_id = slot_no;
 
 				XLogBeginInsert();
 
+				XLogRegisterData((char *) &xlrec, SizeOfUndoActionResetSlot);
 				XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
-				XLogRegisterBufData(0, (char *) &slot_no, sizeof(int));
 
-				recptr = XLogInsert(RM_UNDOACTION_ID, XLOG_UNDO_RESET_XID);
+				/* Register tpd buffer if the slot belongs to tpd page. */
+				if (slot_no > ZHEAP_PAGE_TRANS_SLOTS)
+				{
+					xlrec.flags |= XLU_RESET_CONTAINS_TPD_SLOT;
+					RegisterTPDBuffer(page, 1);
+				}
+
+				recptr = XLogInsert(RM_UNDOACTION_ID, XLOG_UNDO_RESET_SLOT);
 
 				PageSetLSN(page, recptr);
+				if (xlrec.flags & XLU_RESET_CONTAINS_TPD_SLOT)
+					TPDPageSetLSN(page, recptr);
 			}
+
 			END_CRIT_SECTION();
 		}
+
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		UnlockReleaseTPDBuffers();
 	}
 }
 
@@ -466,9 +495,9 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	Relation	rel;
 	Buffer		buffer;
 	Page		page;
-	ZHeapPageOpaque	opaque;
+	UndoRecPtr	slot_urec_ptr;
+	uint32		epoch;
 	int			slot_no = 0;
-	UndoRecPtr	slot_urp;
 	UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
 
 	/*
@@ -504,25 +533,27 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	buffer = ReadBuffer(rel, blkno);
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	page = BufferGetPage(buffer);
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 
-	/* Identify the slot number for this transaction */
-	while (slot_no < ZHEAP_PAGE_TRANS_SLOTS &&
-		   !(TransactionIdEquals(xid, opaque->transinfo[slot_no].xid)))
-		slot_no++;
+	/*
+	 * Identify the slot number for this transaction.  As we never allow undo
+	 * more than 2-billion transactions, we can compute epoch from xid.
+	 */
+	epoch = GetEpochForXid(xid);
+	slot_no = PageGetTransactionSlotId(rel, buffer, epoch, xid,
+									   &slot_urec_ptr, true);
 
 	/*
 	 * If undo action has been already applied for this page then skip
-	 * the process altogether.
+	 * the process altogether.  If we didn't find a slot corresponding to
+	 * xid, we consider the transaction is already rolledback.
 	 *
 	 * The logno of slot's undo record pointer must be same as the logno
 	 * of undo record to be applied.
 	 */
-	slot_urp = opaque->transinfo[slot_no].urec_ptr;
-	if (slot_no == ZHEAP_PAGE_TRANS_SLOTS ||
-	   (UndoRecPtrGetLogNo(slot_urp) != UndoRecPtrGetLogNo(urec_info->urp)) ||
-	   (UndoRecPtrGetLogNo(slot_urp) == UndoRecPtrGetLogNo(urec_ptr) &&
-		slot_urp <= urec_ptr))
+	if (slot_no == InvalidXactSlotId ||
+	   (UndoRecPtrGetLogNo(slot_urec_ptr) != UndoRecPtrGetLogNo(urec_info->urp)) ||
+	   (UndoRecPtrGetLogNo(slot_urec_ptr) == UndoRecPtrGetLogNo(urec_ptr) &&
+		slot_urec_ptr <= urec_ptr))
 	{
 		UnlockReleaseBuffer(buffer);
 		heap_close(rel, NoLock);
@@ -537,7 +568,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 		UnpackedUndoRecord *uur = urec_info->uur;
 
 		/* Skip already applied undo. */
-		if (opaque->transinfo[slot_no].urec_ptr < urec_info->urp)
+		if (slot_urec_ptr < urec_info->urp)
 			continue;
 
 		switch (uur->uur_type)
@@ -669,6 +700,12 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					}
 					else
 					{
+						TransactionId	slot_xid;
+
+						(void) GetTransactionSlotInfo(buffer, uur->uur_offset,
+													  trans_slot, NULL,
+													  &slot_xid,
+													  NULL, false, false);
 						if (TransactionIdEquals(uur->uur_prevxid,
 												FrozenTransactionId))
 						{
@@ -679,7 +716,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 							ZHeapTupleHeaderSetXactSlot(zhtup, ZHTUP_SLOT_FROZEN);
 						}
 						else if (trans_slot != ZHTUP_SLOT_FROZEN &&
-							uur->uur_prevxid != opaque->transinfo[trans_slot].xid)
+								 uur->uur_prevxid != slot_xid)
 						{
 							/*
 							 * If the transaction slot to which tuple point got reused
@@ -715,11 +752,16 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					if (!(ZHeapTupleHasMultiLockers(infomask)))
 					{
 						int			trans_slot;
+						TransactionId	slot_xid;
 
 						zhtup->t_infomask2 = undo_tup_hdr->t_infomask2;
 						zhtup->t_infomask = undo_tup_hdr->t_infomask;
 
 						trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
+						(void) GetTransactionSlotInfo(buffer, uur->uur_offset,
+													  trans_slot, NULL,
+													  &slot_xid,
+													  NULL, false, false);
 
 						if (TransactionIdEquals(uur->uur_prevxid,
 												FrozenTransactionId))
@@ -731,7 +773,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 							ZHeapTupleHeaderSetXactSlot(zhtup, ZHTUP_SLOT_FROZEN);
 						}
 						else if (trans_slot != ZHTUP_SLOT_FROZEN &&
-							uur->uur_prevxid != opaque->transinfo[trans_slot].xid)
+								 uur->uur_prevxid != slot_xid)
 						{
 							/*
 							 * If the transaction slot to which tuple point got reused
@@ -783,11 +825,11 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	 */
 	if (blk_chain_complete)
 	{
-		opaque->transinfo[slot_no].xid_epoch = 0;
-		opaque->transinfo[slot_no].xid = InvalidTransactionId;
+		epoch = 0;
+		xid = InvalidTransactionId;
 	}
 
-	opaque->transinfo[slot_no].urec_ptr = urec_ptr;
+	PageSetTransactionSlotInfo(buffer, slot_no, epoch, xid, urec_ptr);
 
 	MarkBufferDirty(buffer);
 
@@ -802,19 +844,39 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	if (RelationNeedsWAL(rel))
 	{
 		XLogRecPtr	recptr;
+		uint8	flags = 0;
+
+		if (slot_no > ZHEAP_PAGE_TRANS_SLOTS)
+			flags |= XLU_PAGE_CONTAINS_TPD_SLOT;
 
 		XLogBeginInsert();
 
+		XLogRegisterData((char *) &flags, sizeof(uint8));
 		XLogRegisterBuffer(0, buffer, REGBUF_FORCE_IMAGE | REGBUF_STANDARD);
+
+		/* Log the TPD details, if the transaction slot belongs to TPD. */
+		if (flags & XLU_PAGE_CONTAINS_TPD_SLOT)
+		{
+			xl_undoaction_page	xlrec;
+
+			xlrec.urec_ptr = urec_ptr;
+			xlrec.xid = xid;
+			xlrec.trans_slot_id = slot_no;
+			XLogRegisterData((char *) &xlrec, SizeOfUndoActionPage);
+			RegisterTPDBuffer(page, 1);
+		}
 
 		recptr = XLogInsert(RM_UNDOACTION_ID, XLOG_UNDO_PAGE);
 
 		PageSetLSN(page, recptr);
+		if (flags & XLU_PAGE_CONTAINS_TPD_SLOT)
+			TPDPageSetLSN(page, recptr);
 	}
 
 	END_CRIT_SECTION();
 
 	UnlockReleaseBuffer(buffer);
+	UnlockReleaseTPDBuffers();
 
 	heap_close(rel, NoLock);
 

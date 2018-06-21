@@ -18,6 +18,7 @@
 
 #include "access/multixact.h"
 #include "access/sysattr.h"
+#include "access/tpd.h"
 #include "access/transam.h"
 #include "access/tupconvert.h"
 #include "access/tuptoaster.h"
@@ -1022,6 +1023,10 @@ acquire_sample_rows(Relation onerel, int elevel,
 		OffsetNumber targoffset,
 					maxoffset;
 
+		/* Skip meta pages for zheap relations. */
+		if (RelationStorageIsZHeap(onerel) && targblock == ZHEAP_METAPAGE)
+			continue;
+
 		vacuum_delay_point();
 
 		/*
@@ -1037,6 +1042,15 @@ acquire_sample_rows(Relation onerel, int elevel,
 										RBM_NORMAL, vac_strategy);
 		LockBuffer(targbuffer, BUFFER_LOCK_SHARE);
 		targpage = BufferGetPage(targbuffer);
+
+		/* Skip TPD pages for zheap relations. */
+		if (RelationStorageIsZHeap(onerel) &&
+			PageGetSpecialSize(targpage) == sizeof(TPDPageOpaqueData))
+		{
+			UnlockReleaseBuffer(targbuffer);
+			continue;
+		}
+
 		maxoffset = PageGetMaxOffsetNumber(targpage);
 
 		/* Inner loop over all tuples on the selected page */

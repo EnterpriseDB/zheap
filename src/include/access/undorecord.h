@@ -76,10 +76,11 @@ typedef struct UndoRecordHeader
  * appear in the same order in which the constants are defined here.  That is,
  * UndoRecordRelationDetails appears first.
  */
-#define UREC_INFO_RELATION_DETAILS	0x01
-#define UREC_INFO_BLOCK				0x02
-#define UREC_INFO_PAYLOAD			0x04
-#define UREC_INFO_TRANSACTION		0x08
+#define UREC_INFO_RELATION_DETAILS			0x01
+#define UREC_INFO_BLOCK						0x02
+#define UREC_INFO_PAYLOAD					0x04
+#define UREC_INFO_TRANSACTION				0x08
+#define UREC_INFO_PAYLOAD_CONTAINS_SLOT		0x10
 /*
  * Additional information about a relation to which this record pertains,
  * namely the tablespace OID and fork number.  If the tablespace OID is

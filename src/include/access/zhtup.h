@@ -27,7 +27,7 @@
 /* valid values for transaction slot is between 0 and ZHEAP_PAGE_TRANS_SLOTS */
 #define InvalidXactSlotId	(-1)
 /* we use frozen slot to indicate that the tuple is all visible now */
-#define	ZHTUP_SLOT_FROZEN	0x01F
+#define	ZHTUP_SLOT_FROZEN	0x000
 
 typedef struct ZMultiLockMember
 {
@@ -173,11 +173,19 @@ typedef ZHeapTupleData *ZHeapTuple;
 	(((tup)->t_infomask2 & ZHEAP_XACT_SLOT) >> ZHEAP_XACT_SLOT_MASK) \
 )
 
-#define ZHeapTupleHeaderSetXactSlot(tup, slotno) \
-( \
-	(tup)->t_infomask2 = ((tup)->t_infomask2 & ~ZHEAP_XACT_SLOT) | \
-						 (slotno << ZHEAP_XACT_SLOT_MASK) \
-)
+static inline
+void ZHeapTupleHeaderSetXactSlot(ZHeapTupleHeader tup, int slotno)
+{
+	/*
+	 * The slots that belongs to TPD entry always point to last slot on the
+	 * page.
+	 */
+	if (slotno > ZHEAP_PAGE_TRANS_SLOTS)
+		slotno = ZHEAP_PAGE_TRANS_SLOTS;
+
+	(tup)->t_infomask2 = ((tup)->t_infomask2 & ~ZHEAP_XACT_SLOT) |
+						 (slotno << ZHEAP_XACT_SLOT_MASK);
+}
 
 #define ZHeapTupleHeaderGetOid(tup) \
 ( \
@@ -215,49 +223,12 @@ do { \
 #define ZHeapTupleDeleted(tup_data) \
 		((tup_data->t_infomask & (ZHEAP_DELETED | ZHEAP_UPDATED)) != 0)
 
-
-
-#define ZHeapTupleHeaderGetRawEpoch(tup, opaque) \
-( \
-	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].xid_epoch \
-)
-
-#define ZHeapTupleHeaderGetRawXid(tup, opaque) \
-( \
-	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].xid \
-)
-
-#define ZHeapTupleHeaderGetRawUndoPtr(tup, opaque) \
-( \
-	opaque->transinfo[ZHeapTupleHeaderGetXactSlot(tup)].urec_ptr \
-)
-
-#define ZHeapPageGetRawXid(slot, opaque) \
-( \
-	opaque->transinfo[slot].xid \
-)
-
-#define ZHeapPageGetRawEpoch(slot, opaque) \
-( \
-	opaque->transinfo[slot].xid_epoch \
-)
-
-#define ZHeapPageGetRawUndoPtr(slot, opaque) \
-( \
-	opaque->transinfo[slot].urec_ptr \
-)
-
 #define IsZHeapTupleModified(t_infomask) \
 ( \
 	((t_infomask & ZHEAP_DELETED || \
 	 t_infomask & ZHEAP_UPDATED || \
 	 t_infomask & ZHEAP_INPLACE_UPDATED || \
 	 t_infomask & ZHEAP_XID_LOCK_ONLY) != 0) \
-)
-
-#define ZHeapPageGetUndoPtr(slot, opaque) \
-( \
-	opaque->transinfo[slot].urec_ptr \
 )
 
 extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
@@ -324,15 +295,23 @@ extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
 	)
 
 /* Zheap transaction information related API's */
-extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr);
-extern CommandId ZHeapPageGetCid(int trans_slot, Buffer buf, OffsetNumber off);
+extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf,
+								  UndoRecPtr urec_ptr, int trans_slot_id);
+extern CommandId ZHeapPageGetCid(Buffer buf, int trans_slot, uint32 epoch,
+						TransactionId xid, UndoRecPtr urec_ptr, OffsetNumber off);
+extern int GetTransactionSlotInfo(Buffer buf, OffsetNumber offset,
+					   int trans_slot_id, uint32 *epoch, TransactionId *xid,
+					   UndoRecPtr *urec_ptr, bool NoTPDBufLock, bool TPDSlot);
 extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 						int *trans_slot, uint64 *epoch_xid_out,
 						TransactionId *xid_out, CommandId *cid_out,
 						UndoRecPtr *urec_ptr_out, bool nobuflock);
-extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, ItemPointer ctid);
-extern void ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, uint32 *specToken);
-extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, ItemPointer ctid);
+extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf,
+						UndoRecPtr urec_ptr, ItemPointer ctid);
+extern void ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf,
+							UndoRecPtr urec_ptr, uint32 *specToken);
+extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
+							 ItemPointer ctid);
 
 /* Page related API's. */
 
@@ -375,13 +354,13 @@ extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, ItemPointer ctid);
 #define MaxZHeapTupleSize  (BLCKSZ - MAXALIGN(SizeOfPageHeaderData + SizeOfZHeapPageOpaqueData + sizeof(ItemIdData)))
 #define MinZHeapTupleSize  MAXALIGN(SizeofZHeapTupleHeader)
 
-#define ZPageAddItem(page, item, size, offsetNumber, overwrite, is_heap) \
-	ZPageAddItemExtended(page, item, size, offsetNumber, \
+#define ZPageAddItem(buffer, item, size, offsetNumber, overwrite, is_heap) \
+	ZPageAddItemExtended(buffer, item, size, offsetNumber, \
 						 ((overwrite) ? PAI_OVERWRITE : 0) | \
 						 ((is_heap) ? PAI_IS_HEAP : 0))
 
 extern Size PageGetZHeapFreeSpace(Page page);
-extern OffsetNumber ZPageAddItemExtended(Page page,
+extern OffsetNumber ZPageAddItemExtended(Buffer buffer,
 					 Item item, Size size, OffsetNumber offsetNumber,
 					 int flags);
 

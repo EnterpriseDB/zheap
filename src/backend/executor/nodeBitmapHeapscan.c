@@ -40,6 +40,7 @@
 #include "access/relscan.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
+#include "access/tpd.h"
 #include "executor/execdebug.h"
 #include "executor/nodeBitmapHeapscan.h"
 #include "miscadmin.h"
@@ -64,7 +65,7 @@ static inline void BitmapPrefetch(BitmapHeapScanState *node,
 			   HeapScanDesc scan);
 static bool BitmapShouldInitializeSharedState(
 								  ParallelBitmapHeapState *pstate);
-static void bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres);
+static bool bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres);
 
 
 /* ----------------------------------------------------------------
@@ -86,6 +87,7 @@ BitmapHeapNext(BitmapHeapScanState *node)
 	TupleTableSlot *slot;
 	ParallelBitmapHeapState *pstate = node->pstate;
 	dsa_area   *dsa = node->ss.ps.state->es_query_dsa;
+	bool    valid;
 
 	/*
 	 * extract necessary information from index scan node
@@ -190,6 +192,7 @@ BitmapHeapNext(BitmapHeapScanState *node)
 		node->initialized = true;
 	}
 
+get_next_page:
 	for (;;)
 	{
 		Page		dp;
@@ -251,7 +254,13 @@ BitmapHeapNext(BitmapHeapScanState *node)
 				 * Fetch the current heap page and identify candidate tuples.
 				 */
 				if (RelationStorageIsZHeap(node->ss.ss_currentRelation))
-					bitgetzpage(scan, tbmres);
+				{
+					valid = false;
+					if (tbmres->blockno != ZHEAP_METAPAGE)
+						valid = bitgetzpage(scan, tbmres);
+					if (!valid)
+						goto get_next_page;
+				}
 				else
 					bitgetpage(scan, tbmres);
 			}
@@ -726,10 +735,11 @@ BitmapPrefetch(BitmapHeapScanState *node, HeapScanDesc scan)
  *
  * Similar to bitgetpage, but for zheap relations.
  */
-static void
+static bool
 bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 {
 	BlockNumber page = tbmres->blockno;
+	Page        dp;
 	Buffer		buffer;
 	Snapshot	snapshot;
 	int			ntup;
@@ -737,7 +747,7 @@ bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 	/*
 	 * Acquire pin on the target zheap page, trading in any pin we held before.
 	 */
-	Assert(page < scan->rs_nblocks);
+	Assert(page < scan->rs_nblocks && page != ZHEAP_METAPAGE);
 
 	scan->rs_cbuf = ReleaseAndReadBuffer(scan->rs_cbuf,
 										 scan->rs_rd,
@@ -753,7 +763,22 @@ bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 	 * visible are guaranteed good as long as we hold the buffer pin.
 	 */
 	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+	dp = (Page) BufferGetPage(buffer);
 
+	/*
+	 * Skip TPD pages. As of now, the size of special space in TPD pages is
+	 * different from other zheap pages like metapage and regular zheap page,
+	 * however, if that changes, we might need to explicitly store pagetype
+	 * flag somewhere.
+	 *
+	 * Fixme - As an exception, the size of special space for zheap page
+	 * with one transaction slot will match with TPD page's special size.
+	 */
+	if (PageGetSpecialSize(dp) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+	{
+		UnlockReleaseBuffer(buffer);
+		return false;
+	}
 	/*
 	 * We need two separate strategies for lossy and non-lossy cases.
 	 */
@@ -782,7 +807,6 @@ bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 		/*
 		 * Bitmap is lossy, so we must examine each item pointer on the page.
 		 */
-		Page		dp = (Page) BufferGetPage(buffer);
 		OffsetNumber maxoff = PageGetMaxOffsetNumber(dp);
 		OffsetNumber offnum;
 
@@ -829,6 +853,7 @@ bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 
 	Assert(ntup <= MaxZHeapTuplesPerPage);
 	scan->rs_ntuples = ntup;
+	return true;
 }
 
 /*
