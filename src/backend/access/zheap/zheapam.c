@@ -2511,6 +2511,8 @@ reacquire_buffer:
 			Assert((new_trans_slot_id == trans_slot_id) ||
 					(ZHeapPageHasTPDSlot((PageHeader)page) &&
 					 new_trans_slot_id == trans_slot_id + 1));
+
+			trans_slot_id = new_trans_slot_id;
 		}
 		if (oldblk < newblk)
 		{
@@ -2524,6 +2526,8 @@ reacquire_buffer:
 			Assert((slot_id == trans_slot_id) ||
 					(ZHeapPageHasTPDSlot((PageHeader)page) &&
 					 slot_id == trans_slot_id + 1));
+
+			trans_slot_id = slot_id;
 
 			/* reserve the transaction slot on a new page */
 			new_trans_slot_id = PageReserveTransactionSlot(relation,
@@ -2556,6 +2560,7 @@ reacquire_buffer:
 			Assert((slot_id == trans_slot_id) ||
 					(ZHeapPageHasTPDSlot((PageHeader)page) &&
 					 slot_id == trans_slot_id + 1));
+			trans_slot_id = slot_id;
 		}
 
 		if (lock_reacquired)
@@ -5789,11 +5794,9 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Page page, int trans_slot_id,
 		opaque->transinfo[trans_slot_id - 1].xid = xid;
 		opaque->transinfo[trans_slot_id - 1].urec_ptr = urecptr;
 	}
-	else
+	/* TPD information is set separately during recovery. */
+	else if (!InRecovery)
 	{
-		/* TPD information is set separately during recovery. */
-		Assert(!InRecovery);
-
 		if (ucnt <= 0)
 		{
 			Assert(ucnt == 0);
