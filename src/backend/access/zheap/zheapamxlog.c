@@ -1286,6 +1286,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	Size		ranges_data_size = 0;
 	TransactionId	xid = XLogRecGetXid(record);
 	uint32	xid_epoch = GetEpochForXid(xid);
+	ZHeapFreeOffsetRanges	*zfree_offset_ranges;
 
 	xlundohdr = (xl_undo_header *) XLogRecGetData(record);
 	xlrec = (xl_zheap_multi_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
@@ -1329,7 +1330,16 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	ranges_data += sizeof(int);
 	ranges_data_size += sizeof(int);
 
+	zfree_offset_ranges = (ZHeapFreeOffsetRanges *) palloc0(sizeof(ZHeapFreeOffsetRanges));
 	Assert(nranges > 0);
+	for (i = 0; i < nranges; i++)
+	{
+		memcpy(&zfree_offset_ranges->startOffset[i],(char *) ranges_data, sizeof(OffsetNumber));
+		ranges_data += sizeof(OffsetNumber);
+		memcpy(&zfree_offset_ranges->endOffset[i],(char *) ranges_data, sizeof(OffsetNumber));
+		ranges_data += sizeof(OffsetNumber);
+	}
+
 	undorecord = (UnpackedUndoRecord *) palloc(nranges * sizeof(UnpackedUndoRecord));
 
 	/* Start UNDO prepare Stuff */
@@ -1406,7 +1416,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		tupdata = XLogRecGetBlockData(record, 0, &len);
 		endptr = tupdata + len;
 
-		offnum = ((OffsetNumber *)undorecord[j].uur_payload.data)[0];
+		offnum = zfree_offset_ranges->startOffset[j];
 		for (i = 0; i < xlrec->ntuples; i++)
 		{
 			xl_multi_insert_ztuple *xlhdr;
@@ -1424,10 +1434,10 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 				 * Change the offset range if we've reached the end of current
 				 * range.
 				 */
-				if (offnum > ((OffsetNumber *)undorecord[j].uur_payload.data)[1])
+				if (offnum > zfree_offset_ranges->endOffset[j])
 				{
 					j++;
-					offnum = ((OffsetNumber *)undorecord[j].uur_payload.data)[0];
+					offnum = zfree_offset_ranges->startOffset[j];
 				}
 			}
 			if (PageGetMaxOffsetNumber(page) + 1 < offnum)
@@ -1532,6 +1542,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	for (i = 0; i < nranges; i++)
 		pfree(undorecord[i].uur_payload.data);
 	pfree(undorecord);
+	pfree(zfree_offset_ranges);
 
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);

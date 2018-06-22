@@ -9750,7 +9750,7 @@ reacquire_buffer:
 		nthispage = 0;
 		for (i = 0; i < zfree_offset_ranges->nranges; i++)
 		{
-			OffsetNumber offnum, endoffnum;
+			OffsetNumber offnum;
 
 			for (offnum = zfree_offset_ranges->startOffset[i];
 				 offnum <= zfree_offset_ranges->endOffset[i];
@@ -9800,15 +9800,15 @@ reacquire_buffer:
 			 * offnum - 1. There is no harm in doing the same for previous undo
 			 * records as well.
 			 */
-			endoffnum = offnum - 1;
+			zfree_offset_ranges->endOffset[i] = offnum - 1;
 			appendBinaryStringInfo(&undorecord[i].uur_payload,
 								   (char *) &zfree_offset_ranges->startOffset[i],
 								   sizeof(OffsetNumber));
 			appendBinaryStringInfo(&undorecord[i].uur_payload,
-								   (char *) &endoffnum,
+								  (char *) &zfree_offset_ranges->endOffset[i],
 								   sizeof(OffsetNumber));
 			elog(DEBUG1, "start offset: %d, end offset: %d",
-				 zfree_offset_ranges->startOffset[i], endoffnum);
+				 zfree_offset_ranges->startOffset[i], zfree_offset_ranges->endOffset[i]);
 		}
 
 		if (PageIsAllVisible(page))
@@ -9876,8 +9876,8 @@ reacquire_buffer:
 			 * replay. All undo records have same information apart from the
 			 * payload data. Hence, we can copy the same from the last record.
 			 */
-			xlundohdr.relfilenode = undorecord[zfree_offset_ranges->nranges - 1].uur_relfilenode;
-			xlundohdr.tsid = undorecord[zfree_offset_ranges->nranges - 1].uur_tsid;
+			xlundohdr.relfilenode = relation->rd_node.relNode;
+			xlundohdr.tsid = relation->rd_node.spcNode;
 			xlundohdr.urec_ptr = urecptr;
 			xlundohdr.blkprev = prev_urecptr;
 
@@ -9892,10 +9892,10 @@ reacquire_buffer:
 			scratchptr += sizeof(int);
 			for (i = 0; i < zfree_offset_ranges->nranges; i++)
 			{
-				memcpy((char *) scratchptr,
-					   (char *) undorecord[i].uur_payload.data,
-					   undorecord[i].uur_payload.len);
-				scratchptr += undorecord[i].uur_payload.len;
+				memcpy((char *)scratchptr, (char *)&zfree_offset_ranges->startOffset[i], sizeof(OffsetNumber));
+				scratchptr += sizeof(OffsetNumber);
+				memcpy((char *)scratchptr, (char *)&zfree_offset_ranges->endOffset[i], sizeof(OffsetNumber));
+				scratchptr += sizeof(OffsetNumber);
 			}
 
 			/* the rest of the scratch space is used for tuple data */
@@ -10001,8 +10001,8 @@ prepare_xlog:
 		/* be tidy */
 		for (i = 0; i < zfree_offset_ranges->nranges; i++)
 			pfree(undorecord[i].uur_payload.data);
-		pfree(zfree_offset_ranges);
 		pfree(undorecord);
+		pfree(zfree_offset_ranges);
 
 		UnlockReleaseBuffer(buffer);
 		if (vmbuffer != InvalidBuffer)
