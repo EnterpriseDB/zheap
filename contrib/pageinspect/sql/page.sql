@@ -1,6 +1,6 @@
 CREATE EXTENSION pageinspect;
 
-CREATE TABLE test1 (a int, b int);
+CREATE TABLE test1 (a int, b int) with(storage_engine='heap');
 INSERT INTO test1 VALUES (16777217, 131584);
 
 VACUUM test1;  -- set up FSM
