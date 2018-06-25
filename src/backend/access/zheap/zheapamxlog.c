@@ -967,8 +967,8 @@ zheap_xlog_update(XLogReaderState *record)
 	if (undorecord.uur_payload.len > 0)
 		pfree(undorecord.uur_payload.data);
 
-	if (!inplace_update)
-		pfree(undorecord.uur_payload.data);
+	if (!inplace_update && newundorecord.uur_payload.len > 0)
+		pfree(newundorecord.uur_payload.data);
 
 	UnlockReleaseUndoBuffers();
 	UnlockReleaseTPDBuffers();
