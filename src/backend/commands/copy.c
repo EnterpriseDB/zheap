@@ -2900,6 +2900,8 @@ CopyFrom(CopyState cstate)
 					 * Otherwise, just remember the original unconverted
 					 * tuple, to avoid a needless round trip conversion.
 					 */
+					if (RelationStorageIsZHeap(cstate->rel))
+						tuple = zheap_to_heap(ztuple, cstate->rel->rd_att);
 					cstate->transition_capture->tcs_original_insert_tuple = tuple;
 					cstate->transition_capture->tcs_map = NULL;
 				}

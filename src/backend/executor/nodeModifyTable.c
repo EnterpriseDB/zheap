@@ -2154,9 +2154,9 @@ ExecPrepareTupleRouting(ModifyTableState *mtstate,
 	ModifyTable *node;
 	int			partidx;
 	ResultRelInfo *partrel;
-	HeapTuple	tuple;
 	TupleConversionMap *map;
-	ZHeapTuple	ztuple;
+	HeapTuple	tuple = NULL; /* Assign NULL to keep compiler silent */
+	ZHeapTuple	ztuple = NULL; /* Same as above */
 
 	/*
 	 * Determine the target partition.  If ExecFindPartition does not find a
@@ -2234,6 +2234,9 @@ ExecPrepareTupleRouting(ModifyTableState *mtstate,
 			 * Otherwise, just remember the original unconverted tuple, to
 			 * avoid a needless round trip conversion.
 			 */
+			if (RelationStorageIsZHeap(targetRelInfo->ri_RelationDesc))
+				tuple = zheap_to_heap(ztuple,
+									  targetRelInfo->ri_RelationDesc->rd_att);
 			mtstate->mt_transition_capture->tcs_original_insert_tuple = tuple;
 			mtstate->mt_transition_capture->tcs_map = NULL;
 		}
