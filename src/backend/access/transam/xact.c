@@ -3228,7 +3228,6 @@ void
 XactPerformUndoActionsIfPending()
 {
 	TransactionState s = CurrentTransactionState;
-	TransactionId xid = s->transactionId;
 	uint64 rollback_size = 0;
 	bool new_xact = true, result = false;
 	UndoRecPtr parent_latest_urec_ptr;
@@ -3277,7 +3276,6 @@ XactPerformUndoActionsIfPending()
 			 * into this transaction's state so that if there is some error while
 			 * performing undo actions we can restart from begining.
 			 */
-			xid = xact->transactionId;
 			xact->start_urec_ptr = UndoActionEndPtr;
 			xact->latest_urec_ptr = UndoActionStartPtr;
 		}
