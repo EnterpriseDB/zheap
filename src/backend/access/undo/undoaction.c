@@ -76,7 +76,6 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	UnpackedUndoRecord *uur = NULL;
 	UndoRecPtr	urec_ptr;
 	UndoRecPtr	save_urec_ptr;
-	Oid			reloid;
 	Oid			prev_reloid = InvalidOid;
 	ForkNumber	prev_fork = InvalidForkNumber;
 	BlockNumber	prev_block = InvalidBlockNumber;
@@ -102,19 +101,26 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 
 	while (urec_ptr >= to_urecptr)
 	{
-		uint16	urec_prevlen;
+		Oid			reloid = InvalidOid;
+		uint16		urec_prevlen;
 
 		more_undo = true;
 
 		/* Fetch the undo record for given undo_recptr. */
 		uur = UndoFetchRecord(urec_ptr, InvalidBlockNumber,
 						 InvalidOffsetNumber, InvalidTransactionId, NULL, NULL);
+
+		if (uur != NULL)
+			reloid = RelidByRelfilenode(uur->uur_tsid, uur->uur_relfilenode);
+
 		/*
-		 * If the record is already discarded by undo worker,
-		 * then we cannot fetch record successfully.
+		 * If the record is already discarded by undo worker or if the relation
+		 * is dropped or truncated, then we cannot fetch record successfully.
 		 * Hence, exit quietly.
+		 *
+		 * Note: reloid remains InvalidOid for a discarded record.
 		 */
-		if(uur == NULL)
+		if (!OidIsValid(reloid))
 		{
 			/* release the undo records for which action has been replayed */
 			while (luinfo)
@@ -125,10 +131,14 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 				pfree(urec_info);
 				luinfo = list_delete_first(luinfo);
 			}
+
+			/* Release the just-fetched record */
+			if (uur != NULL)
+				UndoRecordRelease(uur);
+
 			return;
 		}
 
-		reloid = RelidByRelfilenode(uur->uur_tsid, uur->uur_relfilenode);
 		xid = uur->uur_xid;
 
 		/* Collect the undo records that belong to the same page. */
