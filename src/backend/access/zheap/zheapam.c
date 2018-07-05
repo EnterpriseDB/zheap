@@ -2672,6 +2672,7 @@ reacquire_buffer:
 	else
 	{
 		Size	payload_len;
+		UnpackedUndoRecord	undorec[2];
 
 		undorecord.uur_type = UNDO_UPDATE;
 
@@ -2688,20 +2689,6 @@ reacquire_buffer:
 
 		undorecord.uur_payload.len = payload_len;
 
-		urecptr = PrepareUndoInsert(&undorecord,
-									UndoPersistenceForRelation(relation),
-									InvalidTransactionId,
-									&undometa);
-
-		initStringInfo(&undorecord.uur_payload);
-		/* Make more room for tuple location if needed */
-		enlargeStringInfo(&undorecord.uur_payload, payload_len);
-
-		if (buffer == newbuf)
-			prev_urecptr = urecptr;
-		else
-			prev_urecptr = new_prev_urecptr;
-
 		/* prepare an undo record for new tuple */
 		new_undorecord.uur_type = UNDO_INSERT;
 		new_undorecord.uur_info = 0;
@@ -2712,8 +2699,8 @@ reacquire_buffer:
 		new_undorecord.uur_cid = cid;
 		new_undorecord.uur_tsid = relation->rd_node.spcNode;
 		new_undorecord.uur_fork = MAIN_FORKNUM;
-		new_undorecord.uur_blkprev = prev_urecptr;
 		new_undorecord.uur_block = BufferGetBlockNumber(newbuf);
+		new_undorecord.uur_payload.len = 0;
 		new_undorecord.uur_tuple.len = 0;
 
 		if (new_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
@@ -2726,6 +2713,30 @@ reacquire_buffer:
 		}
 		else
 			new_undorecord.uur_payload.len = 0;
+
+		undorec[0] = undorecord;
+		undorec[1] = new_undorecord;
+		UndoSetPrepareSize(2, undorec, InvalidTransactionId,
+						   UndoPersistenceForRelation(relation), &undometa);
+
+		/* copy updated record (uur_info might got updated )*/
+		undorecord = undorec[0];
+		new_undorecord = undorec[1];
+
+		urecptr = PrepareUndoInsert(&undorecord,
+									UndoPersistenceForRelation(relation),
+									InvalidTransactionId,
+									NULL);
+
+		initStringInfo(&undorecord.uur_payload);
+
+		/* Make more room for tuple location if needed */
+		enlargeStringInfo(&undorecord.uur_payload, payload_len);
+
+		if (buffer == newbuf)
+			new_undorecord.uur_blkprev = urecptr;
+		else
+			new_undorecord.uur_blkprev = new_prev_urecptr;
 
 		new_urecptr = PrepareUndoInsert(&new_undorecord,
 										UndoPersistenceForRelation(relation),
@@ -9256,7 +9267,6 @@ zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
 		ZHeapFreeOffsetRanges	*zfree_offset_ranges;
 		OffsetNumber	usedoff[MaxOffsetNumber];
 		OffsetNumber	max_required_offset;
-		bool	undometa_fetched = false;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -9327,9 +9337,6 @@ reacquire_buffer:
 												   * sizeof(UnpackedUndoRecord));
 		/* Start UNDO prepare Stuff */
 		urecptr = prev_urecptr;
-
-		UndoSetPrepareSize(zfree_offset_ranges->nranges);
-
 		for (i = 0; i < zfree_offset_ranges->nranges; i++)
 		{
 			/* prepare an undo record */
@@ -9346,13 +9353,20 @@ reacquire_buffer:
 			undorecord[i].uur_tuple.len = 0;
 			undorecord[i].uur_offset = 0;
 			undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
+		}
 
+		UndoSetPrepareSize(zfree_offset_ranges->nranges, undorecord,
+						   InvalidTransactionId,
+						   UndoPersistenceForRelation(relation), &undometa);
+
+		for (i = 0; i < zfree_offset_ranges->nranges; i++)
+		{
+			undorecord[i].uur_blkprev = urecptr;
 			urecptr = PrepareUndoInsert(&undorecord[i],
 										UndoPersistenceForRelation(relation),
-										InvalidTransactionId,
-										undometa_fetched ? NULL : &undometa);
+										InvalidTransactionId, NULL);
+
 			initStringInfo(&undorecord[i].uur_payload);
-			undometa_fetched = true;
 		}
 
 		Assert(UndoRecPtrIsValid(urecptr));

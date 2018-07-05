@@ -74,7 +74,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 					 bool nopartial, bool rewind, bool rellock)
 {
 	UnpackedUndoRecord *uur = NULL;
-	UndoRecPtr	urec_ptr;
+	UndoRecPtr	urec_ptr, prev_urec_ptr;
 	UndoRecPtr	save_urec_ptr;
 	Oid			prev_reloid = InvalidOid;
 	ForkNumber	prev_fork = InvalidForkNumber;
@@ -99,12 +99,15 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 
 	save_urec_ptr = urec_ptr = from_urecptr;
 
-	while (urec_ptr >= to_urecptr)
+	prev_urec_ptr = InvalidUndoRecPtr;
+	while (prev_urec_ptr != to_urecptr)
 	{
 		Oid			reloid = InvalidOid;
 		uint16		urec_prevlen;
 
 		more_undo = true;
+
+		prev_urec_ptr = urec_ptr;
 
 		/* Fetch the undo record for given undo_recptr. */
 		uur = UndoFetchRecord(urec_ptr, InvalidBlockNumber,
@@ -161,13 +164,10 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			save_urec_ptr = uur->uur_blkprev;
 
 			/* The undo chain must continue till we reach to_urecptr */
-			if (urec_prevlen)
+			if (urec_prevlen > 0 && urec_ptr != to_urecptr)
 			{
 				urec_ptr = UndoGetPrevUndoRecptr(urec_ptr, urec_prevlen);
-				if (urec_ptr >= to_urecptr)
-					continue;
-				else
-					more_undo = false;
+				continue;
 			}
 			else
 				more_undo = false;
@@ -225,7 +225,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			 * record in chain.
 			 */
 			urec_prevlen = uur->uur_prevlen;
-			if (urec_prevlen)
+			if (urec_prevlen > 0 && urec_ptr != to_urecptr)
 				urec_ptr = UndoGetPrevUndoRecptr(urec_ptr, urec_prevlen);
 			else
 				break;

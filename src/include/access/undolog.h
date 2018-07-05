@@ -100,6 +100,9 @@ typedef uint64 UndoLogOffset;
 /* Special value for undo record pointer which indicates that it is invalid. */
 #define	InvalidUndoRecPtr	((UndoRecPtr) 0)
 
+/* End-of-list value when building linked lists of undo logs. */
+#define InvalidUndoLogNumber -1
+
 /*
  * This undo record pointer will be used in the transaction header this special
  * value is the indication that currently we don't have the value of the the
@@ -167,6 +170,21 @@ typedef int UndoLogNumber;
 #define UndoCheckPointFilenamePrecedes(file1, file2)	\
 	(strcmp(file1, file2) < 0)
 
+/* What is the offset of the i'th non-header byte? */
+#define UndoLogOffsetFromUsableByteNo(i)								\
+	(((i) / UndoLogUsableBytesPerPage) * BLCKSZ +						\
+	 UndoLogBlockHeaderSize +											\
+	 ((i) % UndoLogUsableBytesPerPage))
+
+/* How many non-header bytes are there before a given offset? */
+#define UndoLogOffsetToUsableByteNo(offset)				\
+	(((offset) % BLCKSZ - UndoLogBlockHeaderSize) +		\
+	 ((offset) / BLCKSZ) * UndoLogUsableBytesPerPage)
+
+/* Add 'n' usable bytes to offset stepping over headers to find new offset. */
+#define UndoLogOffsetPlusUsableBytes(offset, n)							\
+	UndoLogOffsetFromUsableByteNo(UndoLogOffsetToUsableByteNo(offset) + (n))
+
 /* Find out which tablespace the given undo log location is backed by. */
 extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
 
@@ -192,6 +210,16 @@ typedef struct UndoLogMetaData
 	UndoLogOffset end;				/* one past end of highest segment */
 	UndoLogOffset discard;			/* oldest data needed (tail) */
 	UndoLogOffset last_xact_start;	/* last transactions start undo offset */
+
+	/*
+	 * If the same transaction is split over two undo logs then it stored the
+	 * previous log number, see file header comments of undorecord.c for its
+	 * usage.
+	 *
+	 * Fixme: See if we can find other way to handle it instead of keeping
+	 * previous log number.
+	 */
+	UndoLogNumber prevlogno;		/* Previous undo log number */
 	bool	is_first_rec;
 
 	/*
@@ -251,8 +279,7 @@ typedef struct UndoLogControl
 
 /* Space management. */
 extern UndoRecPtr UndoLogAllocate(size_t size,
-								  UndoPersistence level,
-								  xl_undolog_meta *undometa);
+								  UndoPersistence level);
 extern UndoRecPtr UndoLogAllocateInRecovery(TransactionId xid,
 											size_t size,
 											UndoPersistence persistence);

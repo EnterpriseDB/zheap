@@ -8,6 +8,32 @@
  *
  * src/backend/access/undo/undorecord.c
  *
+ * NOTES:
+ * Handling multilog -
+ *  It is possible that the undo record of a transaction can be spread across
+ *  multiple undo log.  And, we need some special handling while inserting the
+ *  undo for discard and rollback to work sanely.
+ *
+ *  If the undorecord goes to next log then we insert a transaction header for
+ *  the first record in the new log and update the transaction header with this
+ *  new log's location. This will allow us to connect transactions across logs
+ *  when the same transaction span across log (for this we keep track of the
+ *  previous logno in undo log meta) which is required to find the latest undo
+ *  record pointer of the aborted transaction for executing the undo actions
+ *  before discard. If the next log get processed first in that case we
+ *  don't need to trace back the actual start pointer of the transaction,
+ *  in such case we can only execute the undo actions from the current log
+ *  because the undo pointer in the slot will be rewound and that will be enough
+ *  to avoid executing same actions.  However, there is possibility that after
+ *  executing the undo actions the undo pointer got discarded, now in later
+ *  stage while processing the previous log it might try to fetch the undo
+ *  record in the discarded log while chasing the transaction header chain.
+ *  To avoid this situation we first check if the next_urec of the transaction
+ *  is already discarded then no need to access that and start executing from
+ *  the last undo record in the current log.
+ *
+ *  We only connect to next log if the same transaction spread to next log
+ *  otherwise don't.
  *-------------------------------------------------------------------------
  */
 
@@ -77,6 +103,8 @@ typedef struct PreparedUndoSpace
 static PreparedUndoSpace  def_prepared[MAX_PREPARED_UNDO];
 static int prepare_idx;
 static int	max_prepare_undo = MAX_PREPARED_UNDO;
+static UndoRecPtr	multi_prep_urp = InvalidUndoRecPtr;
+static bool	update_prev_header = false;
 
 /*
  * By default prepared_undo and undo_buffer points to the static memory.
@@ -116,7 +144,8 @@ static bool ReadUndoBytes(char *destptr, int readlen,
 static UnpackedUndoRecord* UndoGetOneRecord(UnpackedUndoRecord *urec,
 											UndoRecPtr urp, RelFileNode rnode,
 											UndoPersistence persistence);
-static void PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr);
+static void PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr,
+											 bool log_switched);
 static void UndoRecordUpdateTransInfo(void);
 static int InsertFindBufferSlot(RelFileNode rnode, BlockNumber blk,
 								ReadBufferMode rbm,
@@ -557,7 +586,7 @@ IsPrevTxnUndoDiscarded(UndoLogControl *log, UndoRecPtr prev_xact_urp)
  * record.
  */
 void
-PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr)
+PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr, bool log_switched)
 {
 	UndoRecPtr	prev_xact_urp;
 	Buffer		buffer = InvalidBuffer;
@@ -575,6 +604,12 @@ PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr)
 
 	log = UndoLogGet(logno);
 
+	if (log_switched)
+	{
+		Assert(log->meta.prevlogno != InvalidUndoLogNumber);
+		log = UndoLogGet(log->meta.prevlogno);
+	}
+
 	/*
 	 * TODO: For now we don't know how to build a transaction chain for
 	 * temporary undo logs.  That's because this log might have been used by a
@@ -591,7 +626,8 @@ PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr)
 	 * because only the backend attached to the log can write to it (or we're
 	 * in recovery).
 	 */
-	Assert(AmAttachedToUndoLog(log) || InRecovery);
+	Assert(AmAttachedToUndoLog(log) || InRecovery || log_switched);
+
 	if (log->meta.last_xact_start == 0)
 		prev_xact_urp = InvalidUndoRecPtr;
 	else
@@ -850,13 +886,154 @@ InsertFindBufferSlot(RelFileNode rnode,
 }
 
 /*
+ * Calculate total size required by nrecords and allocate them in bulk. This is
+ * required for some operation which can allocate multiple undo record in one
+ * WAL operation e.g multi-insert.  If we don't allocate undo space for all the
+ * record (which are inserted under one WAL) together than there is possibility
+ * that both of them go under different undo log.  And, currently during
+ * recovery we don't have mechanism to map xid to multiple log number during one
+ * WAL operation.  So in short all the operation under one WAL must allocate
+ * their undo from the same undo log.
+ */
+static UndoRecPtr
+UndoRecordAllocateMulti(UnpackedUndoRecord *undorecords, int nrecords,
+						UndoPersistence upersistence, TransactionId txid,
+						xl_undolog_meta *undometa)
+{
+	UnpackedUndoRecord *urec;
+	UndoLogControl *log;
+	UndoRecordSize	size;
+	UndoRecPtr		urecptr;
+	bool	need_start_undo = false;
+	bool	first_rec_in_recovery;
+	bool	log_switched = false;
+	int	i;
+
+	/*
+	 * If this is the first undo record for this transaction then set the
+	 * uur_next to the SpecialUndoRecPtr.  This is the indication to allocate
+	 * the space for the transaction header and the valid value of the uur_next
+	 * will be updated while preparing the first undo record of the next
+	 * transaction.
+	 */
+	first_rec_in_recovery = InRecovery && IsTransactionFirstRec(txid);
+
+	if ((!InRecovery && prev_txid[upersistence] != txid) ||
+		first_rec_in_recovery)
+	{
+		need_start_undo = true;
+	}
+
+resize:
+	size = 0;
+
+	for (i = 0; i < nrecords; i++)
+	{
+		urec = undorecords + i;
+
+		if (need_start_undo && i == 0)
+		{
+			urec->uur_next = SpecialUndoRecPtr;
+			urec->uur_xidepoch = GetEpochForXid(txid);
+		}
+		else
+			urec->uur_next = InvalidUndoRecPtr;
+
+		/* calculate the size of the undo record. */
+		size += UndoRecordExpectedSize(urec);
+	}
+
+	if (InRecovery)
+		urecptr = UndoLogAllocateInRecovery(txid, size, upersistence);
+	else
+		urecptr = UndoLogAllocate(size, upersistence);
+
+	log = UndoLogGet(UndoRecPtrGetLogNo(urecptr));
+	Assert(AmAttachedToUndoLog(log) || InRecovery);
+
+	/*
+	 * If this is the first record of the log and not the first record of
+	 * the transaction i.e. same transaction continued from the previous log
+	 */
+	if ((UndoRecPtrGetOffset(urecptr) == UndoLogBlockHeaderSize) &&
+		log->meta.prevlogno != InvalidUndoLogNumber)
+		log_switched = true;
+
+	/*
+	 * If we've rewound all the way back to the start of the transaction by
+	 * rolling back the first subtransaction (which we can't detect until
+	 * after we've allocated some space), we'll need a new transaction header.
+	 * If we weren't already generating one, that will make the record larger,
+	 * so we'll have to go back and recompute the size.
+	 */
+	if (!need_start_undo &&
+		(log->meta.insert == log->meta.last_xact_start ||
+		 UndoRecPtrGetOffset(urecptr) == UndoLogBlockHeaderSize))
+	{
+		need_start_undo = true;
+		urec->uur_info = 0;		/* force recomputation of info bits */
+
+		goto resize;
+	}
+
+	/*
+	 * If transaction id is switched then update the previous transaction's
+	 * start undo record.
+	 */
+	if (first_rec_in_recovery || prev_txid[upersistence] != txid ||
+		log_switched)
+	{
+		/* Don't update our own start header. */
+		if (log->meta.last_xact_start != log->meta.insert)
+			PrepareUndoRecordUpdateTransInfo(urecptr, log_switched);
+
+		/* Remember the current transaction's xid. */
+		prev_txid[upersistence] = txid;
+
+		/* Store the current transaction's start undorecptr in the undo log. */
+		UndoLogSetLastXactStartPoint(urecptr);
+		update_prev_header = false;
+	}
+
+	/* Copy undometa before advancing the insert location. */
+	if (undometa)
+	{
+		undometa->meta = log->meta;
+		undometa->logno = log->logno;
+		undometa->xid = log->xid;
+	}
+
+	UndoLogAdvance(urecptr, size, upersistence);
+
+	return urecptr;
+}
+
+/*
  * Call UndoSetPrepareSize to set the value of how many maximum prepared can
  * be done before inserting the prepared undo.  If size is > MAX_PREPARED_UNDO
  * then it will allocate extra memory to hold the extra prepared undo.
  */
 void
-UndoSetPrepareSize(int max_prepare)
+UndoSetPrepareSize(int max_prepare, UnpackedUndoRecord *undorecords,
+				   TransactionId xid, UndoPersistence upersistence,
+				   xl_undolog_meta *undometa)
 {
+	TransactionId txid;
+
+	/* Get the top transaction id. */
+	if (xid == InvalidTransactionId)
+	{
+		Assert (!InRecovery);
+		txid = GetTopTransactionId();
+	}
+	else
+	{
+		Assert (InRecovery || (xid == GetTopTransactionId()));
+		txid = xid;
+	}
+
+	multi_prep_urp = UndoRecordAllocateMulti(undorecords, max_prepare,
+											 upersistence, txid, undometa);
 	if (max_prepare <= MAX_PREPARED_UNDO)
 		return;
 
@@ -885,7 +1062,6 @@ UndoRecPtr
 PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 				  TransactionId xid, xl_undolog_meta *undometa)
 {
-	UndoLogControl *log;
 	UndoRecordSize	size;
 	UndoRecPtr		urecptr;
 	RelFileNode		rnode;
@@ -895,8 +1071,6 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 	int				starting_byte;
 	int				index = 0;
 	int				bufidx;
-	bool			need_start_undo = false;
-	bool			first_rec_in_recovery;
 	ReadBufferMode	rbm;
 
 	/* Already reached maximum prepared limit. */
@@ -927,76 +1101,19 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 		txid = xid;
 	}
 
-	/*
-	 * If this is the first undo record for this transaction then set the
-	 * uur_next to the SpecialUndoRecPtr.  This is the indication to allocate
-	 * the space for the transaction header and the valid value of the uur_next
-	 * will be updated while preparing the first undo record of the next
-	 * transaction.
-	 */
-	first_rec_in_recovery = InRecovery && IsTransactionFirstRec(txid);
-	if ((!InRecovery && prev_txid[upersistence] != txid) ||
-		first_rec_in_recovery)
-		need_start_undo = true;
-
- resize:
-	if (need_start_undo)
-	{
-		urec->uur_next = SpecialUndoRecPtr;
-		urec->uur_xidepoch = GetEpochForXid(txid);
-	}
+	if (!UndoRecPtrIsValid(multi_prep_urp))
+		urecptr = UndoRecordAllocateMulti(urec, 1, upersistence, txid, undometa);
 	else
-		urec->uur_next = InvalidUndoRecPtr;
+		urecptr = multi_prep_urp;
 
-	/* calculate the size of the undo record. */
 	size = UndoRecordExpectedSize(urec);
-
-	if (InRecovery)
-		urecptr = UndoLogAllocateInRecovery(xid, size, upersistence);
-	else
-		urecptr = UndoLogAllocate(size, upersistence, undometa);
-
-	log = UndoLogGet(UndoRecPtrGetLogNo(urecptr));
-	Assert(AmAttachedToUndoLog(log) || InRecovery);
-
-	/*
-	 * If we've rewound all the way back to the start of the transaction by
-	 * rolling back the first subtransaction (which we can't detect until
-	 * after we've allocated some space), we'll need a new transaction header.
-	 * If we weren't already generating one, that will make the record larger,
-	 * so we'll have to go back and recompute the size.
-	 *
-	 * TODO: What should we do here if we switched to different undo log
-	 * mid-transaction?
-	 */
-	if (!need_start_undo &&
-		log->meta.insert == log->meta.last_xact_start)
+	if (UndoRecPtrIsValid(multi_prep_urp))
 	{
-		need_start_undo = true;
-		urec->uur_info = 0;		/* force recomputation of info bits */
-		goto resize;
+		UndoLogOffset insert = UndoRecPtrGetOffset(multi_prep_urp);
+		insert = UndoLogOffsetPlusUsableBytes(insert, size);
+		multi_prep_urp = MakeUndoRecPtr(UndoRecPtrGetLogNo(urecptr), insert);
 	}
 
-	/*
-	 * If transaction id is switched then update the previous transaction's
-	 * start undo record.
-	 */
-	if (need_start_undo &&
-		((!InRecovery && prev_txid[upersistence] != txid) ||
-		 first_rec_in_recovery))
-	{
-		/* Don't update our own start header. */
-		if (log->meta.last_xact_start != log->meta.insert)
-			PrepareUndoRecordUpdateTransInfo(urecptr);
-
-		/* Remember the current transaction's xid. */
-		prev_txid[upersistence] = txid;
-
-		/* Store the current transaction's start undorecptr in the undo log. */
-		UndoLogSetLastXactStartPoint(urecptr);
-	}
-
-	UndoLogAdvance(urecptr, size, upersistence);
 	cur_blk = UndoRecPtrGetBlockNum(urecptr);
 	UndoRecPtrAssignRelFileNode(rnode, urecptr);
 	starting_byte = UndoRecPtrGetPageOffset(urecptr);
@@ -1012,8 +1129,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 
 	do
 	{
-		bufidx = InsertFindBufferSlot(rnode, cur_blk, rbm,
-									  log->meta.persistence);
+		bufidx = InsertFindBufferSlot(rnode, cur_blk, rbm, upersistence);
 		if (cur_size == 0)
 			cur_size = BLCKSZ - starting_byte;
 		else
@@ -1096,7 +1212,15 @@ InsertPreparedUndo(void)
 
 		/* if starting a new log then there is no prevlen to store */
 		if (offset == UndoLogBlockHeaderSize)
-			uur->uur_prevlen = 0;
+		{
+			if (log->meta.prevlogno != InvalidUndoLogNumber)
+			{
+				UndoLogControl *prevlog = UndoLogGet(log->meta.prevlogno);
+				uur->uur_prevlen = prevlog->meta.prevlen;
+			}
+			else
+				uur->uur_prevlen = 0;
+		}
 
 		/* if starting from a new page then include header in prevlen */
 		else if (starting_byte == UndoLogBlockHeaderSize)
@@ -1178,6 +1302,7 @@ UnlockReleaseUndoBuffers(void)
 	/* Reset the prepared index. */
 	prepare_idx = 0;
 	buffer_idx = 0;
+	multi_prep_urp = InvalidUndoRecPtr;
 
 	/*
 	 * max_prepare_undo limit is changed so free the allocated memory and reset
@@ -1404,12 +1529,33 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 
 /*
  * Return the previous undo record pointer.
+ *
+ * This API can switch to the previous log if the current log is exhausted,
+ * so the caller shouldn't use it where that is not expected.
  */
 UndoRecPtr
 UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen)
 {
 	UndoLogNumber logno = UndoRecPtrGetLogNo(urp);
 	UndoLogOffset offset = UndoRecPtrGetOffset(urp);
+
+	/*
+	 * We have reached to the first undo record of this undo log, so fetch the
+	 * previous undo record of the transaction from the previous log.
+	 */
+	if (offset == UndoLogBlockHeaderSize)
+	{
+		UndoLogControl	*prevlog, *log;
+
+		log = UndoLogGet(logno);
+
+		Assert(log->meta.prevlogno != InvalidUndoLogNumber);
+
+		/* Fetch the previous log control. */
+		prevlog = UndoLogGet(log->meta.prevlogno);
+		logno = log->meta.prevlogno;
+		offset = prevlog->meta.insert;
+	}
 
 	/* calculate the previous undo record pointer */
 	return MakeUndoRecPtr (logno, offset - prevlen);

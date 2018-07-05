@@ -646,6 +646,8 @@ zheap_xlog_update(XLogReaderState *record)
 	}
 	else
 	{
+		UnpackedUndoRecord	undorec[2];
+
 		undorecord.uur_type = UNDO_UPDATE;
 		initStringInfo(&undorecord.uur_payload);
 		/* update new tuple location in undo record */
@@ -660,7 +662,6 @@ zheap_xlog_update(XLogReaderState *record)
 								   (char *) old_tup_trans_slot_id,
 								   sizeof(*old_tup_trans_slot_id));
 		}
-		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
 
 		/* prepare an undo record for new tuple */
 		newundorecord.uur_type = UNDO_INSERT;
@@ -688,6 +689,14 @@ zheap_xlog_update(XLogReaderState *record)
 		else
 			newundorecord.uur_payload.len = 0;
 
+		undorec[0] = undorecord;
+		undorec[1] = newundorecord;
+
+		UndoSetPrepareSize(2, undorec, InvalidTransactionId, UNDO_PERMANENT, NULL);
+		undorecord = undorec[0];
+		newundorecord = undorec[1];
+
+		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
 		newurecptr = PrepareUndoInsert(&newundorecord, UNDO_PERMANENT, xid, NULL);
 
 		Assert (newurecptr == xlnewundohdr->urec_ptr);
@@ -1327,8 +1336,6 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	prev_urecptr = xlundohdr->blkprev;
 	urecptr = prev_urecptr;
 
-	UndoSetPrepareSize(nranges);
-
 	for (i = 0; i < nranges; i++)
 	{
 		/* prepare an undo record */
@@ -1346,8 +1353,6 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		undorecord[i].uur_offset = 0;
 		undorecord[i].uur_tuple.len = 0;
 		undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
-		urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERMANENT, xid, NULL);
-
 		initStringInfo(&undorecord[i].uur_payload);
 		appendBinaryStringInfo(&undorecord[i].uur_payload,
 							   (char *) ranges_data,
@@ -1356,6 +1361,15 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		ranges_data += undorecord[i].uur_payload.len;
 		ranges_data_size += undorecord[i].uur_payload.len;
 	}
+
+	UndoSetPrepareSize(nranges, undorecord, InvalidTransactionId,
+					   UNDO_PERMANENT, NULL);
+	for (i = 0; i < nranges; i++)
+	{
+		undorecord[i].uur_blkprev = urecptr;
+		urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERMANENT, xid, NULL);
+	}
+
 	elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
 		 nranges, blkno);
 

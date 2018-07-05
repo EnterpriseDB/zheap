@@ -59,7 +59,7 @@ undo_allocate(PG_FUNCTION_ARGS)
 	int size = PG_GETARG_INT32(0);
 	UndoRecPtr undo_ptr;
 
-	undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT, NULL);
+	undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT);
 
 	PG_RETURN_TEXT_P(undo_rec_ptr_to_text(undo_ptr));
 }
@@ -117,7 +117,7 @@ undo_append_file(PG_FUNCTION_ARGS)
 	lseek(fd, 0, SEEK_SET);
 
 	/* Allocate undo log space. */
-	start_undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT, NULL);
+	start_undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT);
 
 	elog(NOTICE, "will copy %zu bytes into undo log", size);
 
@@ -300,7 +300,7 @@ undo_append(PG_FUNCTION_ARGS)
 	size = VARSIZE_ANY_EXHDR(input);
 
 	/* Allocate undo log space for our data. */
-	start_undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT, NULL);
+	start_undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT);
 
 	elog(NOTICE, "will copy %zu bytes into undo log at " UndoRecPtrFormat,
 		 size, start_undo_ptr);
@@ -460,7 +460,7 @@ undo_foreground_discard_test(PG_FUNCTION_ARGS)
 		UndoRecPtr undo_ptr;
 
 		/* Allocate some space. */
-		undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT, NULL);
+		undo_ptr = UndoLogAllocate(size, UNDO_PERMANENT);
 		UndoLogAdvance(undo_ptr, size, UNDO_PERMANENT);
 
 		/* Discard the space that we just allocated. */

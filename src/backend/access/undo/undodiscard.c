@@ -25,6 +25,10 @@
 #include "storage/proc.h"
 #include "postmaster/undoloop.h"
 
+static UndoRecPtr FetchLatestUndoPtrForXid(UndoRecPtr urecptr,
+										   UnpackedUndoRecord *uur_start,
+										   UndoLogControl *log);
+
 /*
  * Discard the undo for the log
  *
@@ -45,7 +49,6 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 	UndoRecPtr	undo_recptr, next_urecptr, from_urecptr, next_insert;
 	UnpackedUndoRecord	*uur = NULL;
 	bool	need_discard = false;
-	uint16 uur_prevlen;
 	TransactionId	undoxid = InvalidTransactionId;
 	TransactionId	xid = log->oldest_xid;
 	TransactionId	latest_discardxid = InvalidTransactionId;
@@ -114,33 +117,10 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 			 * record pointer and in that case we'll calculate the location
 			 * of from pointer using the last record of next insert location.
 			 */
-			if (next_urecptr != SpecialUndoRecPtr)
-			{
-				UnpackedUndoRecord *next_urec = UndoFetchRecord(next_urecptr,
-																InvalidBlockNumber,
-																InvalidOffsetNumber,
-																InvalidTransactionId,
-																NULL,
-																NULL);
-				from_urecptr = UndoGetPrevUndoRecptr(next_urecptr, next_urec->uur_prevlen);
-				UndoRecordRelease(next_urec);
-			}
-			else
-			{
-				uur_prevlen = UndoLogGetPrevLen(log->logno);
-				Assert(uur_prevlen != 0);
-				next_insert = UndoLogGetNextInsertPtr(log->logno, undoxid);
-				if (!UndoRecPtrIsValid(next_insert))
-				{
-					UndoRecordRelease(uur);
-					continue;
-				}
-
-				from_urecptr = UndoGetPrevUndoRecptr(next_insert, uur_prevlen);
-			}
-
+			from_urecptr = FetchLatestUndoPtrForXid(undo_recptr, uur, log);
 			UndoRecordRelease(uur);
 			uur = NULL;
+
 			StartTransactionCommand();
 			execute_undo_actions(from_urecptr, undo_recptr, true, false, true);
 			CommitTransactionCommand();
@@ -148,7 +128,8 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 
 		/* we can discard upto this point. */
 		if (TransactionIdFollowsOrEquals(undoxid, xmin) ||
-			next_urecptr == SpecialUndoRecPtr)
+			next_urecptr == SpecialUndoRecPtr ||
+			UndoRecPtrGetLogNo(next_urecptr) != log->logno)
 		{
 discard:
 			/* Hey, I got some undo log to discard, can not hibernate now. */
@@ -292,4 +273,115 @@ UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 	 */
 	pg_atomic_write_u64(&ProcGlobal->oldestXidWithEpochHavingUndo,
 						MakeEpochXid(epoch, oldestXidHavingUndo));
+}
+
+/*
+ * Fetch the latest urec pointer for the transaction.
+ */
+UndoRecPtr
+FetchLatestUndoPtrForXid(UndoRecPtr urecptr, UnpackedUndoRecord *uur_start,
+						 UndoLogControl *log)
+{
+	UndoRecPtr next_urecptr, from_urecptr;
+	uint16	prevlen;
+	UndoLogOffset next_insert;
+	UnpackedUndoRecord *uur;
+	bool refetch = false;
+
+	uur = uur_start;
+
+	while (true)
+	{
+		/* fetch the undo record again if required. */
+		if (refetch)
+		{
+			uur = UndoFetchRecord(urecptr, InvalidBlockNumber,
+								  InvalidOffsetNumber, InvalidTransactionId,
+								  NULL, NULL);
+			refetch = false;
+		}
+
+		next_urecptr = uur->uur_next;
+		prevlen = UndoLogGetPrevLen(log->logno);
+
+		/*
+		 * If this is the last transaction in the log then calculate the latest
+		 * urec pointer using next insert location of the undo log.  Otherwise,
+		 * calculate using next transaction's start pointer.
+		 */
+		if (uur->uur_next == SpecialUndoRecPtr)
+		{
+			/*
+			 * While fetching the next insert location if the new transaction
+			 * has already started in this log then lets re-fetch the undo
+			 * record.
+			 */
+			next_insert = UndoLogGetNextInsertPtr(log->logno, uur->uur_xid);
+			if (!UndoRecPtrIsValid(next_insert))
+			{
+				if (uur != uur_start)
+					UndoRecordRelease(uur);
+				refetch = true;
+				continue;
+			}
+
+			from_urecptr = UndoGetPrevUndoRecptr(next_insert, prevlen);
+			break;
+		}
+		else if ((UndoRecPtrGetLogNo(next_urecptr) != log->logno) &&
+				UndoLogIsDiscarded(next_urecptr))
+		{
+			/*
+			 * If next_urecptr is in different undolog and its already discarded
+			 * that means the undo actions for this transaction which are in the
+			 * next log has already been executed and we only need to execute
+			 * which are remaining in this log.
+			 */
+			next_insert = UndoLogGetNextInsertPtr(log->logno, uur->uur_xid);
+
+			Assert(UndoRecPtrIsValid(next_insert));
+			from_urecptr = UndoGetPrevUndoRecptr(next_insert, prevlen);
+			break;
+		}
+		else
+		{
+			UnpackedUndoRecord	*next_uur;
+
+			next_uur = UndoFetchRecord(next_urecptr,
+										InvalidBlockNumber,
+										InvalidOffsetNumber,
+										InvalidTransactionId,
+										NULL, NULL);
+			/*
+			 * If the next_urecptr is in the same log then calculate the
+			 * from pointer using prevlen.
+			 */
+			if (UndoRecPtrGetLogNo(next_urecptr) == log->logno)
+			{
+				from_urecptr =
+					UndoGetPrevUndoRecptr(next_urecptr, next_uur->uur_prevlen);
+				UndoRecordRelease(next_uur);
+				break;
+			}
+			else
+			{
+				/*
+				 * The transaction is overflowed to the next log, so restart
+				 * the processing from then next log.
+				 */
+				log = UndoLogGet(UndoRecPtrGetLogNo(next_urecptr));
+				if (uur != uur_start)
+					UndoRecordRelease(uur);
+				uur = next_uur;
+				continue;
+			}
+
+			UndoRecordRelease(next_uur);
+		}
+	}
+
+	if (uur != uur_start)
+		UndoRecordRelease(uur);
+
+	return from_urecptr;
 }

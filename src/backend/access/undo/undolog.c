@@ -49,9 +49,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* End-of-list value when building linked lists of undo logs. */
-#define InvalidUndoLogNumber -1
-
 /*
  * Number of bits of an undo log number used to identify a bank of
  * UndoLogControl objects.  This allows us to break up our array of
@@ -87,21 +84,6 @@
 
 /* Extract the lower bits of an xid, for undo log mapping purposes. */
 #define UndoLogGetXidLow(xid) ((xid) & ((1 << UndoLogXidLowBits) - 1))
-
-/* What is the offset of the i'th non-header byte? */
-#define UndoLogOffsetFromUsableByteNo(i)								\
-	(((i) / UndoLogUsableBytesPerPage) * BLCKSZ +						\
-	 UndoLogBlockHeaderSize +											\
-	 ((i) % UndoLogUsableBytesPerPage))
-
-/* How many non-header bytes are there before a given offset? */
-#define UndoLogOffsetToUsableByteNo(offset)				\
-	(((offset) % BLCKSZ - UndoLogBlockHeaderSize) +		\
-	 ((offset) / BLCKSZ) * UndoLogUsableBytesPerPage)
-
-/* Add 'n' usable bytes to offset stepping over headers to find new offset. */
-#define UndoLogOffsetPlusUsableBytes(offset, n)							\
-	UndoLogOffsetFromUsableByteNo(UndoLogOffsetToUsableByteNo(offset) + (n))
 
 /*
  * Main control structure for undo log management in shared memory.
@@ -680,10 +662,12 @@ extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end)
  * and an insertion point within a buffer page using the macros above.
  */
 UndoRecPtr
-UndoLogAllocate(size_t size, UndoPersistence persistence, xl_undolog_meta *undometa)
+UndoLogAllocate(size_t size, UndoPersistence persistence)
 {
 	UndoLogControl *log = MyUndoLogState.logs[persistence];
 	UndoLogOffset new_insert;
+	UndoLogNumber prevlogno = InvalidUndoLogNumber;
+	TransactionId logxid;
 
 	/*
 	 * We may need to attach to an undo log, either because this is the first
@@ -706,6 +690,7 @@ UndoLogAllocate(size_t size, UndoPersistence persistence, xl_undolog_meta *undom
 		if (need_to_unlock)
 			LWLockRelease(TablespaceCreateLock);
 		log = MyUndoLogState.logs[persistence];
+		log->meta.prevlogno = prevlogno;
 		MyUndoLogState.need_to_choose_tablespace = false;
 	}
 
@@ -717,8 +702,9 @@ UndoLogAllocate(size_t size, UndoPersistence persistence, xl_undolog_meta *undom
 	 */
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->meta.is_first_rec = false;
+	logxid = log->xid;
 
-	if (log->xid != GetTopTransactionId())
+	if (logxid != GetTopTransactionId())
 	{
 		xl_undolog_attach xlrec;
 
@@ -773,11 +759,15 @@ UndoLogAllocate(size_t size, UndoPersistence persistence, xl_undolog_meta *undom
 		if (new_insert > UndoLogMaxSize)
 		{
 			/* This undo log is entirely full.  Get a new one. */
-			/*
-			 * TODO: do we need to do something more here?  How will the
-			 * caller or later the undo worker deal with a transaction being
-			 * split over two undo logs?
-			 */
+			if (logxid == GetTopTransactionId())
+			{
+				/*
+				 * If the same transaction is split over two undo logs then
+				 * store the previous log number in new log.  See detailed
+				 * comments in undorecord.c file header.
+				 */
+				prevlogno = log->logno;
+			}
 			log = NULL;
 			detach_current_undo_log(persistence, true);
 			goto retry;
@@ -790,13 +780,6 @@ UndoLogAllocate(size_t size, UndoPersistence persistence, xl_undolog_meta *undom
 						new_insert + UndoLogSegmentSize -
 						new_insert % UndoLogSegmentSize);
 		Assert(new_insert <= log->meta.end);
-	}
-
-	if (undometa)
-	{
-		undometa->meta = log->meta;
-		undometa->logno = log->logno;
-		undometa->xid = log->xid;
 	}
 
 	return MakeUndoRecPtr(log->logno, log->meta.insert);
