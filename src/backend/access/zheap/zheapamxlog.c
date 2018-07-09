@@ -692,7 +692,7 @@ zheap_xlog_update(XLogReaderState *record)
 		undorec[0] = undorecord;
 		undorec[1] = newundorecord;
 
-		UndoSetPrepareSize(2, undorec, InvalidTransactionId, UNDO_PERMANENT, NULL);
+		UndoSetPrepareSize(2, undorec, xid, UNDO_PERMANENT, NULL);
 		undorecord = undorec[0];
 		newundorecord = undorec[1];
 
@@ -1362,7 +1362,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		ranges_data_size += undorecord[i].uur_payload.len;
 	}
 
-	UndoSetPrepareSize(nranges, undorecord, InvalidTransactionId,
+	UndoSetPrepareSize(nranges, undorecord, xid,
 					   UNDO_PERMANENT, NULL);
 	for (i = 0; i < nranges; i++)
 	{
