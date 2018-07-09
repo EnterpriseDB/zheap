@@ -980,7 +980,8 @@ resize:
 	 * If transaction id is switched then update the previous transaction's
 	 * start undo record.
 	 */
-	if (first_rec_in_recovery || prev_txid[upersistence] != txid ||
+	if (first_rec_in_recovery ||
+		(!InRecovery && prev_txid[upersistence] != txid) ||
 		log_switched)
 	{
 		/* Don't update our own start header. */
