@@ -376,7 +376,6 @@ static int
 zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 				 TransactionId OldestXmin, ZPruneState * prstate)
 {
-	ZHeapTuple     zhtup;
 	ZHeapTupleData tup;
 	ItemId		lp;
 	Page		dp = (Page) BufferGetPage(buffer);
@@ -399,18 +398,17 @@ zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 	 */
 	tupdead = recent_dead = false;
 
-	zhtup = zheap_copytuple(&tup);
-	switch (ZHeapTupleSatisfiesOldestXmin(&zhtup, OldestXmin, buffer, &xid))
+	switch (ZHeapTupleSatisfiesVacuum(&tup, OldestXmin, buffer, &xid))
 	{
-		case HEAPTUPLE_DEAD:
+		case ZHEAPTUPLE_DEAD:
 			tupdead = true;
 			break;
 
-		case HEAPTUPLE_RECENTLY_DEAD:
+		case ZHEAPTUPLE_RECENTLY_DEAD:
 			recent_dead = true;
 			break;
 
-		case HEAPTUPLE_DELETE_IN_PROGRESS:
+		case ZHEAPTUPLE_DELETE_IN_PROGRESS:
 
 			/*
 			 * This tuple may soon become DEAD.  Update the hint field so that
@@ -419,8 +417,8 @@ zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 			zheap_prune_record_prunable(prstate, xid);
 			break;
 
-		case HEAPTUPLE_LIVE:
-		case HEAPTUPLE_INSERT_IN_PROGRESS:
+		case ZHEAPTUPLE_LIVE:
+		case ZHEAPTUPLE_INSERT_IN_PROGRESS:
 
 			/*
 			 * If we wanted to optimize for aborts, we might consider marking
@@ -430,13 +428,17 @@ zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 			 */
 			break;
 
+		case ZHEAPTUPLE_ABORT_IN_PROGRESS:
+			/*
+			 * We can simply skip the tuple if it has inserted/operated by
+			 * some aborted transaction and its rollback is still pending. It'll
+			 * be taken care of by future prune calls.
+			 */
+			break;
 		default:
-			elog(ERROR, "unexpected ZHeapTupleSatisfiesOldestXmin result");
+			elog(ERROR, "unexpected ZHeapTupleSatisfiesVacuum result");
 			break;
 	}
-
-	if (zhtup != NULL)
-		pfree(zhtup);
 
 	if (tupdead)
 		ZHeapTupleHeaderAdvanceLatestRemovedXid(tup.t_data, xid, &prstate->latestRemovedXid);

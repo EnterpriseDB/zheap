@@ -2025,3 +2025,97 @@ ZHeapTupleSatisfiesNonVacuumable(ZHeapTuple ztup, Snapshot snapshot,
 	return (ZHeapTupleSatisfiesOldestXmin(&ztup, snapshot->xmin, buffer, &xid)
 		!= HEAPTUPLE_DEAD) ? ztup : NULL;
 }
+
+/*
+ * ZHeapTupleSatisfiesVacuum
+ * Similar to ZHeapTupleSatisfiesOldestXmin, but it behaves differently for
+ * handling aborted transaction.
+ *
+ * For aborted transactions, we don't fetch any prior committed version of the
+ * tuple. Instead, we return ZHEAPTUPLE_ABORT_IN_PROGRESS and return the aborted
+ * xid. The caller should avoid such tuple for any kind of prunning/vacuuming.
+ */
+ZHTSV_Result
+ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
+							  Buffer buffer, TransactionId *xid)
+{
+	ZHeapTupleHeader tuple = zhtup->t_data;
+	UndoRecPtr	urec_ptr;
+	uint64	epoch_xid;
+	int		trans_slot_id;
+
+	Assert(ItemPointerIsValid(&zhtup->t_self));
+	Assert(zhtup->t_tableOid != InvalidOid);
+
+	/* Get transaction id */
+	ZHeapTupleGetTransInfo(zhtup, buffer, &trans_slot_id, &epoch_xid, xid, NULL,
+						   &urec_ptr, false);
+
+	if (tuple->t_infomask & ZHEAP_DELETED ||
+		tuple->t_infomask & ZHEAP_UPDATED)
+	{
+		/*
+		 * The tuple is deleted and must be all visible if the transaction slot
+		 * is cleared or latest xid that has changed the tuple precedes
+		 * smallest xid that has undo.
+		 */
+		if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
+			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+			return ZHEAPTUPLE_DEAD;
+
+		if (TransactionIdIsCurrentTransactionId(*xid))
+			return ZHEAPTUPLE_DELETE_IN_PROGRESS;
+		else if (TransactionIdIsInProgress(*xid))
+		{
+			return ZHEAPTUPLE_DELETE_IN_PROGRESS;
+		}
+		else if (TransactionIdDidCommit(*xid))
+		{
+			/*
+			 * Deleter committed, but perhaps it was recent enough that some open
+			 * transactions could still see the tuple.
+			 */
+			if (!TransactionIdPrecedes(*xid, OldestXmin))
+				return ZHEAPTUPLE_RECENTLY_DEAD;
+
+			/* Otherwise, it's dead and removable */
+			return ZHEAPTUPLE_DEAD;
+		}
+		else	/* transaction is aborted */
+		{
+			return ZHEAPTUPLE_ABORT_IN_PROGRESS;
+		}
+	}
+	else if (tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
+	{
+		/*
+		 * "Deleting" xact really only locked it, so the tuple is live in any
+		 * case.
+		 */
+		return ZHEAPTUPLE_LIVE;
+	}
+
+	/* The tuple is either a newly inserted tuple or is in-place updated. */
+
+	/*
+	 * The tuple must be all visible if the transaction slot is cleared or
+	 * latest xid that has changed the tuple precedes smallest xid that has
+	 * undo.
+	 */
+	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
+		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		return ZHEAPTUPLE_LIVE;
+
+	if (TransactionIdIsCurrentTransactionId(*xid))
+		return ZHEAPTUPLE_INSERT_IN_PROGRESS;
+	else if (TransactionIdIsInProgress(*xid))
+		return ZHEAPTUPLE_INSERT_IN_PROGRESS;		/* in insertion by other */
+	else if (TransactionIdDidCommit(*xid))
+		return ZHEAPTUPLE_LIVE;
+	else	/* transaction is aborted */
+	{
+		return ZHEAPTUPLE_ABORT_IN_PROGRESS;
+	}
+
+	return ZHEAPTUPLE_LIVE;
+}

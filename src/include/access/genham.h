@@ -68,6 +68,17 @@ typedef enum
 	HEAPTUPLE_DELETE_IN_PROGRESS	/* deleting xact is still in progress */
 } HTSV_Result;
 
+/* Result codes for ZHeapTupleSatisfiesVacuum */
+typedef enum
+{
+	ZHEAPTUPLE_DEAD,				/* tuple is dead and deletable */
+	ZHEAPTUPLE_LIVE,				/* tuple is live (committed, no deleter) */
+	ZHEAPTUPLE_RECENTLY_DEAD,	/* tuple is dead, but not deletable yet */
+	ZHEAPTUPLE_INSERT_IN_PROGRESS,		/* inserting xact is still in progress */
+	ZHEAPTUPLE_DELETE_IN_PROGRESS,	/* deleting xact is still in progress */
+	ZHEAPTUPLE_ABORT_IN_PROGRESS		/* rollback is still pending */
+} ZHTSV_Result;
+
 /*
  * Possible lock modes for a tuple.
  */

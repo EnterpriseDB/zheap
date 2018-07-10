@@ -362,7 +362,6 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 	BlockNumber nblocks,
 				blkno;
 	ZHeapTupleData tuple;
-	ZHeapTuple  zhtup;
 	char	   *relname;
 	BlockNumber empty_pages,
 				vacuumed_pages,
@@ -564,10 +563,9 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 
 			tupgone = false;
 
-			zhtup = zheap_copytuple(&tuple);
-			switch (ZHeapTupleSatisfiesOldestXmin(&zhtup, OldestXmin, buf, &xid))
+			switch (ZHeapTupleSatisfiesVacuum(&tuple, OldestXmin, buf, &xid))
 			{
-				case HEAPTUPLE_DEAD:
+				case ZHEAPTUPLE_DEAD:
 
 					/*
 					 * Ordinarily, DEAD tuples would have been removed by
@@ -579,14 +577,14 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 					 */
 					tupgone = true; /* we can delete the tuple */
 					break;
-				case HEAPTUPLE_LIVE:
+				case ZHEAPTUPLE_LIVE:
 					/* Tuple is good --- but let's do some validity checks */
 					if (onerel->rd_rel->relhasoids &&
 						!OidIsValid(ZHeapTupleGetOid(&tuple)))
 						elog(WARNING, "relation \"%s\" TID %u/%u: OID is invalid",
 							 relname, blkno, offnum);
 					break;
-				case HEAPTUPLE_RECENTLY_DEAD:
+				case ZHEAPTUPLE_RECENTLY_DEAD:
 
 					/*
 					 * If tuple is recently deleted then we must not remove it
@@ -594,19 +592,26 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 					 */
 					nkeep += 1;
 					break;
-				case HEAPTUPLE_INSERT_IN_PROGRESS:
-				case HEAPTUPLE_DELETE_IN_PROGRESS:
+				case ZHEAPTUPLE_INSERT_IN_PROGRESS:
+				case ZHEAPTUPLE_DELETE_IN_PROGRESS:
 					/* This is an expected case during concurrent vacuum */
 					break;
+				case ZHEAPTUPLE_ABORT_IN_PROGRESS:
+					/*
+					 * We can simply skip the tuple if it has inserted/operated by
+					 * some aborted transaction and its rollback is still pending. It'll
+					 * be taken care of by future vacuum calls.
+					 */
+					break;
 				default:
-					elog(ERROR, "unexpected ZHeapTupleSatisfiesOldestXmin result");
+					elog(ERROR, "unexpected ZHeapTupleSatisfiesVacuum result");
 					break;
 			}
 
 			if (tupgone)
 			{
-				lazy_record_dead_tuple(vacrelstats, &(zhtup->t_self));
-				ZHeapTupleHeaderAdvanceLatestRemovedXid(zhtup->t_data, xid,
+				lazy_record_dead_tuple(vacrelstats, &(tuple.t_self));
+				ZHeapTupleHeaderAdvanceLatestRemovedXid(tuple.t_data, xid,
 													   &vacrelstats->latestRemovedXid);
 				tups_vacuumed += 1;
 			}
@@ -615,9 +620,6 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 				num_tuples += 1;
 				hastup = true;
 			}
-
-			if (zhtup != NULL)
-				pfree(zhtup);
 		}						/* scan along page */
 
 		/*
