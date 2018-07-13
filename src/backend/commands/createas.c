@@ -567,9 +567,12 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	/*
 	 * We can skip WAL-logging the insertions, unless PITR or streaming
 	 * replication is in use. We can skip the FSM in any case.
+	 * In zheap, we don't support the optimization for HEAP_INSERT_SKIP_WAL.
+	 * See zheap_prepare_insert for details.
 	 */
 	myState->hi_options = HEAP_INSERT_SKIP_FSM |
-		(XLogIsNeeded() ? 0 : HEAP_INSERT_SKIP_WAL);
+		(RelationStorageIsZHeap(myState->rel) || XLogIsNeeded() ? 0
+		 : HEAP_INSERT_SKIP_WAL);
 	myState->bistate = GetBulkInsertState();
 
 	/* Not using WAL requires smgr_targblock be initially invalid */

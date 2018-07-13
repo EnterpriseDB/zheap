@@ -481,6 +481,18 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 static ZHeapTuple
 zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 {
+
+	/*
+	 * In zheap, we don't support the optimization for HEAP_INSERT_SKIP_WAL.
+	 * If we skip writing/using WAL, we must force the relation down to disk
+	 * (using heap_sync) before it's safe to commit the transaction. This
+	 * requires writing out any dirty buffers of that relation and then doing
+	 * a forced fsync. For zheap, we've to fsync the corresponding undo buffers
+	 * as well. It is difficult to keep track of dirty undo buffers and fsync
+	 * them at end of the operation in some function similar to heap_sync.
+	 */
+	Assert(!(options & HEAP_INSERT_SKIP_WAL));
+
 	/*
 	 * Parallel operations are required to be strictly read-only in a parallel
 	 * worker.  Parallel inserts are not safe even in the leader in the
@@ -774,7 +786,7 @@ reacquire_buffer:
 	PageSetUNDO(undorecord, page, trans_slot_id, epoch, xid, urecptr, NULL, 0);
 
 	/* XLOG stuff */
-	if (!(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation))
+	if (RelationNeedsWAL(relation))
 	{
 		xl_undo_header	xlundohdr;
 		xl_zheap_insert xlrec;
@@ -9224,7 +9236,7 @@ zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
 	xl_undolog_meta	undometa;
 	bool		lock_reacquired;
 
-	needwal = !(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation);
+	needwal = RelationNeedsWAL(relation);
 	saveFreeSpace = RelationGetTargetPageFreeSpace(relation,
 												   HEAP_DEFAULT_FILLFACTOR);
 
