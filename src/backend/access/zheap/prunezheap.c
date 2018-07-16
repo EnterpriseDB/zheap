@@ -27,6 +27,7 @@
 
 #include "access/zheap.h"
 #include "access/zheapam_xlog.h"
+#include "access/zheaputils.h"
 #include "catalog/catalog.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -375,6 +376,7 @@ static int
 zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 				 TransactionId OldestXmin, ZPruneState * prstate)
 {
+	ZHeapTuple     zhtup;
 	ZHeapTupleData tup;
 	ItemId		lp;
 	Page		dp = (Page) BufferGetPage(buffer);
@@ -397,7 +399,8 @@ zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 	 */
 	tupdead = recent_dead = false;
 
-	switch (ZHeapTupleSatisfiesOldestXmin(&tup, OldestXmin, buffer, &xid))
+	zhtup = zheap_copytuple(&tup);
+	switch (ZHeapTupleSatisfiesOldestXmin(&zhtup, OldestXmin, buffer, &xid))
 	{
 		case HEAPTUPLE_DEAD:
 			tupdead = true;
@@ -431,6 +434,9 @@ zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 			elog(ERROR, "unexpected ZHeapTupleSatisfiesOldestXmin result");
 			break;
 	}
+
+	if (zhtup != NULL)
+		pfree(zhtup);
 
 	if (tupdead)
 		ZHeapTupleHeaderAdvanceLatestRemovedXid(tup.t_data, xid, &prstate->latestRemovedXid);

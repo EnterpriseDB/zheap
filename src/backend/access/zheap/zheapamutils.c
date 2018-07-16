@@ -72,6 +72,32 @@ heap_to_zheap(HeapTuple tuple, TupleDesc tupDesc)
 	return ztuple;
 }
 
+/* ----------------
+ *		zheap_copytuple
+ *
+ *		returns a copy of an entire tuple
+ *
+ * The ZHeapTuple struct, tuple header, and tuple data are all allocated
+ * as a single palloc() block.
+ * ----------------
+ */
+ZHeapTuple
+zheap_copytuple(ZHeapTuple tuple)
+{
+	ZHeapTuple	newTuple;
+
+	if (!ZHeapTupleIsValid(tuple) || tuple->t_data == NULL)
+		return NULL;
+
+	newTuple = (ZHeapTuple) palloc(ZHEAPTUPLESIZE + tuple->t_len);
+	newTuple->t_len = tuple->t_len;
+	newTuple->t_self = tuple->t_self;
+	newTuple->t_tableOid = tuple->t_tableOid;
+	newTuple->t_data = (ZHeapTupleHeader) ((char *) newTuple + ZHEAPTUPLESIZE);
+	memcpy((char *) newTuple->t_data, (char *) tuple->t_data, tuple->t_len);
+	return newTuple;
+}
+
 /*
  * XXX this function may need to move to some other file may be trigger.c
  * but currently kept here so that the coverage of zheap can be tracked easily.

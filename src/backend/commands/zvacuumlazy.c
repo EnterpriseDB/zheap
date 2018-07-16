@@ -34,6 +34,7 @@
 #include "access/xact.h"
 #include "access/zhtup.h"
 #include "access/zheapam_xlog.h"
+#include "access/zheaputils.h"
 #include "commands/dbcommands.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
@@ -361,6 +362,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 	BlockNumber nblocks,
 				blkno;
 	ZHeapTupleData tuple;
+	ZHeapTuple  zhtup;
 	char	   *relname;
 	BlockNumber empty_pages,
 				vacuumed_pages,
@@ -562,7 +564,8 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 
 			tupgone = false;
 
-			switch (ZHeapTupleSatisfiesOldestXmin(&tuple, OldestXmin, buf, &xid))
+			zhtup = zheap_copytuple(&tuple);
+			switch (ZHeapTupleSatisfiesOldestXmin(&zhtup, OldestXmin, buf, &xid))
 			{
 				case HEAPTUPLE_DEAD:
 
@@ -602,8 +605,8 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 
 			if (tupgone)
 			{
-				lazy_record_dead_tuple(vacrelstats, &(tuple.t_self));
-				ZHeapTupleHeaderAdvanceLatestRemovedXid(tuple.t_data, xid,
+				lazy_record_dead_tuple(vacrelstats, &(zhtup->t_self));
+				ZHeapTupleHeaderAdvanceLatestRemovedXid(zhtup->t_data, xid,
 													   &vacrelstats->latestRemovedXid);
 				tups_vacuumed += 1;
 			}
@@ -612,6 +615,9 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 				num_tuples += 1;
 				hastup = true;
 			}
+
+			if (zhtup != NULL)
+				pfree(zhtup);
 		}						/* scan along page */
 
 		/*

@@ -50,7 +50,7 @@ extern ZHeapTuple ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup,
 						Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern ZHeapTuple ZHeapTupleSatisfiesAny(ZHeapTuple zhtup,
 					  Snapshot snapshot, Buffer buffer, ItemPointer ctid);
-extern HTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup,
+extern HTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple *zhtup,
 						TransactionId OldestXmin, Buffer buffer,
 						TransactionId *xid);
 extern ZHeapTuple ZHeapTupleSatisfiesNonVacuumable(ZHeapTuple ztup, Snapshot snapshot,

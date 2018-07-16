@@ -80,6 +80,11 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define ZHEAPTUPLESIZE	MAXALIGN(sizeof(ZHeapTupleData))
 
 /*
+ * Accessor macros to be used with ZHeapTuple pointers.
+ */
+#define ZHeapTupleIsValid(tuple) PointerIsValid(tuple)
+
+/*
  * information stored in t_infomask:
  */
 #define ZHEAP_HASNULL			0x0001	/* has null attribute(s) */

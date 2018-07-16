@@ -1080,18 +1080,43 @@ acquire_sample_rows(Relation onerel, int elevel,
 
 			if (RelationStorageIsZHeap(onerel))
 			{
-				ZHeapTupleData targztuple;
+				ZHeapTuple	targztuple;
+				Size		targztuple_len;
 
-				ItemPointerSet(&targztuple.t_self, targblock, targoffset);
+				/*
+				 * For zheap, we need to count delete committed rows towards
+				 * dead rows which would have been same, if the tuple was
+				 * present in heap.
+				 */
+				if (ItemIdIsDeleted(itemid))
+				{
+					deadrows += 1;
+					continue;
+				}
 
-				targztuple.t_tableOid = RelationGetRelid(onerel);
-				targztuple.t_data = (ZHeapTupleHeader) PageGetItem(targpage, itemid);
-				targztuple.t_len = ItemIdGetLength(itemid);
+				targztuple_len = ItemIdGetLength(itemid);
+
+				targztuple = palloc(ZHEAPTUPLESIZE + targztuple_len);
+				targztuple->t_data = (ZHeapTupleHeader) ((char *) targztuple + ZHEAPTUPLESIZE);
+
+				targztuple->t_tableOid = RelationGetRelid(onerel);
+				targztuple->t_len = targztuple_len;
+				ItemPointerSet(&targztuple->t_self, targblock, targoffset);
+				memcpy(targztuple->t_data,
+					   ((ZHeapTupleHeader) PageGetItem((Page) targpage, itemid)),
+					   targztuple_len);
 
 				result = ZHeapTupleSatisfiesOldestXmin(&targztuple, OldestXmin, targbuffer, &xid);
 
-				targtup = zheap_to_heap(&targztuple, onerel->rd_att);
+				targtup = zheap_to_heap(targztuple, onerel->rd_att);
 				targtuple = *targtup;
+
+				/*
+				 * zheap_to_heap will return freshly allocated tuple, so we
+				 * can free the tuple used for visibility test.
+				 */
+				if (targztuple)
+					pfree(targztuple);
 			}
 			else
 			{

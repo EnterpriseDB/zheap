@@ -27,6 +27,7 @@
 
 extern HeapTuple zheap_to_heap(ZHeapTuple ztuple, TupleDesc tupDesc);
 extern ZHeapTuple heap_to_zheap(HeapTuple ztuple, TupleDesc tupDesc);
+extern ZHeapTuple zheap_copytuple(ZHeapTuple tuple);
 extern HeapTuple GetZTupleForTrigger(EState *estate,
 				   EPQState *epqstate,
 				   ResultRelInfo *relinfo,
