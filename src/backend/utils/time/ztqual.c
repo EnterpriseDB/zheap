@@ -439,7 +439,7 @@ fetch_prior_undo_record:
 
 	/* not reachable */
 	Assert(0);
-	return false;
+	return NULL;
 }
 
 /*
