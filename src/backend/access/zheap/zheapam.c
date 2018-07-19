@@ -2124,14 +2124,6 @@ check_tup_satisfies_update:
 			 * other xact could update this tuple before we get to this point.
 			 * Check for xid change, and start over if so.
 			 */
-			(void) GetTransactionSlotInfo(buffer,
-										  old_offnum,
-										  ZHeapTupleHeaderGetXactSlot(oldtup.t_data),
-										  NULL,
-										  &current_tup_xid,
-										  NULL,
-										  true,
-										  false);
 			ZHeapTupleGetTransInfo(&oldtup, buffer, NULL, NULL, &current_tup_xid,
 								   NULL, NULL, false);
 			if (xid_infomask_changed(oldtup.t_data->t_infomask, infomask) ||
