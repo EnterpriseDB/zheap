@@ -24,7 +24,7 @@
 #define HWLOCKMODE_from_locktupmode(lockmode) \
 			(tupleLockExtraInfo[lockmode].hwlock)
 
-extern List *ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, Buffer buf,
+extern List *ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup,
 							int trans_slot, UndoRecPtr urec_ptr);
 extern List *ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 								  bool nobuflock);
@@ -42,7 +42,12 @@ extern bool ZMultiLockMembersSame(List *old_members, List* new_members);
 extern void ZGetMultiLockInfo(uint16 old_infomask, TransactionId tup_xid,
 				  int tup_trans_slot, TransactionId add_to_xid,
 				  uint16 *new_infomask, int *new_trans_slot,
-				  LockTupleMode *mode, bool *old_tuple_has_update);
+				  LockTupleMode *mode, bool *old_tuple_has_update,
+				  bool is_update);
+extern bool GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
+				   int *trans_slot, uint64 *epoch_xid_out,
+				   TransactionId *xid_out, CommandId *cid_out,
+				   UndoRecPtr *urec_ptr_out);
 
 static inline LockTupleMode get_old_lock_mode(uint16 infomask)
 {

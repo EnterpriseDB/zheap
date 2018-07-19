@@ -641,6 +641,15 @@ ZPageRepairFragmentation(Buffer buffer)
 				if (trans_slot == ZHTUP_SLOT_FROZEN)
 					continue;
 
+				/*
+				 * XXX There is possibility that the updater's slot got reused by a
+				 * locker in such a case the INVALID_XACT will be moved to lockers
+				 * undo.  Now, we will find that the tuple has in-place update flag
+				 * but it doesn't have INVALID_XACT flag and the slot transaction is
+				 * also running, in such case we will not prune this page.  Ideally
+				 * if the multi-locker is set we can get the actual transaction and
+				 * check the status of the transaction.
+				 */
 				(void) GetTransactionSlotInfo(buffer, i, trans_slot, &epoch,
 											  &xid, &urec_ptr, true, false);
 

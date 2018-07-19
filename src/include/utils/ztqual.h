@@ -27,7 +27,7 @@
 
 extern void FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch,
 								   TransactionId *xid, CommandId *cid,
-								   UndoRecPtr *urec_ptr);
+								   UndoRecPtr *urec_ptr, bool skip_lockers);
 /* Fetch CTID information stored in undo */
 extern void ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid,
 								TransactionId *xid, CommandId *cid);
@@ -37,7 +37,7 @@ extern ZHeapTuple ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup,
 					   Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern ZHeapTuple ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot,
 									   Buffer buffer, bool *all_dead);
-extern HTSU_Result ZHeapTupleSatisfiesUpdate(ZHeapTuple zhtup,
+extern HTSU_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,
 						CommandId curcid, Buffer buffer, ItemPointer ctid,
 						int *trans_slot, TransactionId *xid, CommandId *cid,
 						bool free_zhtup, bool lock_allowed, Snapshot snapshot,
