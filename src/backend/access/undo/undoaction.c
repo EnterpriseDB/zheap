@@ -929,6 +929,16 @@ PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr)
 	bool found = false;
 	RollbackHashEntry *rh;
 
+	/*
+	 * If the location upto which rollback need to be done is not provided,
+	 * then rollback the complete transaction.
+	 */
+	if (start_urec_ptr == InvalidUndoRecPtr)
+	{
+		UndoLogNumber logno = UndoRecPtrGetLogNo(end_urec_ptr);
+		start_urec_ptr = UndoLogGetLastXactStartPoint(logno);
+	}
+
 	Assert(UndoRecPtrIsValid(start_urec_ptr));
 
 	/* If there is no space to accomodate new request, then we can't proceed. */
