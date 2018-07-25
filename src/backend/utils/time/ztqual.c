@@ -1297,6 +1297,9 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
  *	modified the visible tuple.
  *	xid - returns the xid that has modified the visible tuple.
  *	cid - returns the cid of visible tuple.
+ *	single_locker_xid - returns the xid of a single in-progress locker, if any.
+ *	single_locker_trans_slot - returns the transaction slot of a single
+ *	in-progress locker, if any.
  *	lock_allowed - allow caller to lock the tuple if it is in-place updated
  *	in_place_updated - returns whether the current visible version of tuple is
  *	updated in place.
@@ -1304,7 +1307,9 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 HTSU_Result
 ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 						  Buffer buffer, ItemPointer ctid, int *trans_slot,
-						  TransactionId *xid, CommandId *cid, bool free_zhtup,
+						  TransactionId *xid, CommandId *cid,
+						  TransactionId *single_locker_xid,
+						  int *single_locker_trans_slot, bool free_zhtup,
 						  bool lock_allowed, Snapshot snapshot,
 						  bool *in_place_updated_or_locked)
 {
@@ -1313,6 +1318,8 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 	uint64	epoch_xid;
 	bool	visible;
 
+	*single_locker_xid = InvalidTransactionId;
+	*single_locker_trans_slot = InvalidXactSlotId;
 	*in_place_updated_or_locked = false;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
@@ -1429,10 +1436,22 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 
 			if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask) &&
 				!ZHeapTupleHasMultiLockers(tuple->t_infomask))
-				found = GetLockerTransInfo(rel, zhtup, buffer, trans_slot,
-										   &epoch_xid, xid, cid, &urec_ptr);
+				found = GetLockerTransInfo(rel, zhtup, buffer, single_locker_trans_slot,
+										   NULL, single_locker_xid, NULL, NULL);
 			if (!found)
 				return HeapTupleMayBeUpdated;
+			else
+			{
+				/*
+				 * If there is a single locker in-progress/aborted locker,
+				 * it's safe to return being updated so that the caller
+				 * check for lock conflicts or perform rollback if necessary.
+				 *
+				 * If the single locker is our current transaction, then also
+				 * we return beging updated.
+				 */
+				return HeapTupleBeingUpdated;
+			}
 		}
 
 		if (TransactionIdIsCurrentTransactionId(*xid))

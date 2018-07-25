@@ -111,12 +111,14 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 static void zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 					  TransactionId tup_xid, TransactionId xid,
 					  LockTupleMode mode, uint32 epoch, int tup_trans_slot_id,
-					  int trans_slot_id, UndoRecPtr prev_urecptr,
+					  int trans_slot_id,  TransactionId single_locker_xid,
+					  int single_locker_trans_slot, UndoRecPtr prev_urecptr,
 					  CommandId cid, bool any_multi_locker_member_alive);
 static void compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf,
 						 TransactionId tup_xid, int tup_trans_slot,
 						 uint16 old_infomask, TransactionId add_to_xid,
-						 int trans_slot, LockTupleMode mode, bool is_update,
+						 int trans_slot, TransactionId single_locker_xid,
+						 LockTupleMode mode, bool is_update,
 						 uint16 *result_infomask, int *result_trans_slot);
 static ZHeapFreeOffsetRanges *
 ZHeapGetUsableOffsetRanges(Buffer buffer, ZHeapTuple *tuples, int ntuples,
@@ -993,7 +995,9 @@ zheap_delete(Relation relation, ItemPointer tid,
 {
 	HTSU_Result result;
 	TransactionId xid = GetTopTransactionId();
-	TransactionId	tup_xid, oldestXidHavingUndo;
+	TransactionId	tup_xid,
+					oldestXidHavingUndo,
+					single_locker_xid;
 	CommandId		tup_cid;
 	ItemId		lp;
 	ZHeapTupleData zheaptup;
@@ -1008,7 +1012,8 @@ zheap_delete(Relation relation, ItemPointer tid,
 	uint32		epoch = GetEpochForXid(xid);
 	int			tup_trans_slot_id,
 				trans_slot_id,
-				new_trans_slot_id;
+				new_trans_slot_id,
+				single_locker_trans_slot;
 	uint16		new_infomask;
 	bool		have_tuple_lock = false;
 	bool		in_place_updated_or_locked = false;
@@ -1083,9 +1088,10 @@ zheap_delete(Relation relation, ItemPointer tid,
 
 check_tup_satisfies_update:
 	any_multi_locker_member_alive = true;
-	result = ZHeapTupleSatisfiesUpdate(relation, &zheaptup, cid, buffer,
-									   &ctid, &tup_trans_slot_id,
-									   &tup_xid, &tup_cid, false, false,
+	result = ZHeapTupleSatisfiesUpdate(relation, &zheaptup, cid, buffer, &ctid,
+									   &tup_trans_slot_id, &tup_xid, &tup_cid,
+									   &single_locker_xid, &single_locker_trans_slot,
+									   false, false,
 									   snapshot, &in_place_updated_or_locked);
 
 	if (result == HeapTupleInvisible)
@@ -1102,12 +1108,24 @@ check_tup_satisfies_update:
 	{
 		List	*mlmembers = NIL;
 		TransactionId xwait;
+		int		xwait_trans_slot;
 		uint16	infomask;
 		bool    isCommitted;
 		bool	can_continue = false;
 
 		lock_reacquired = false;
-		xwait = tup_xid;
+
+		if (TransactionIdIsValid(single_locker_xid))
+		{
+			xwait = single_locker_xid;
+			xwait_trans_slot = single_locker_trans_slot;
+		}
+		else
+		{
+			xwait = tup_xid;
+			xwait_trans_slot = tup_trans_slot_id;
+		}
+
 		infomask = zheaptup.t_data->t_infomask;
 
 		/*
@@ -1246,14 +1264,36 @@ check_tup_satisfies_update:
 
 			/*
 			 * xwait is done, but if xwait had just locked the tuple then some
-			 * other xact could update this tuple before we get to this point.
-			 * Check for xid change, and start over if so.
+			 * other xact could update/lock this tuple before we get to this
+			 * point.  Check for xid change, and start over if so.  We need to
+			 * do some special handling for lockers because their xid is never
+			 * stored on the tuples.  If there was a single locker on the
+			 * tuple and that locker is gone and some new locker has locked
+			 * the tuple, we won't be able to identify that by infomask/xid on
+			 * the tuple, rather we need to fetch the locker xid.
 			 */
-			ZHeapTupleGetTransInfo(&zheaptup, buffer, NULL, NULL, &current_tup_xid,
-									   NULL, NULL, false);
+			ZHeapTupleGetTransInfo(&zheaptup, buffer, NULL, NULL,
+								   &current_tup_xid, NULL, NULL, false);
 			if (xid_infomask_changed(zheaptup.t_data->t_infomask, infomask) ||
 				!TransactionIdEquals(current_tup_xid, xwait))
-				goto check_tup_satisfies_update;
+			{
+				if (ZHEAP_XID_IS_LOCKED_ONLY(zheaptup.t_data->t_infomask) &&
+					!ZHeapTupleHasMultiLockers(zheaptup.t_data->t_infomask) &&
+					TransactionIdIsValid(single_locker_xid))
+				{
+					TransactionId current_single_locker_xid = InvalidTransactionId;
+
+					(void) GetLockerTransInfo(relation, &zheaptup, buffer, NULL,
+											  NULL, &current_single_locker_xid,
+											  NULL, NULL);
+					if (!TransactionIdEquals(single_locker_xid,
+											 current_single_locker_xid))
+						goto check_tup_satisfies_update;
+
+				}
+				else
+					goto check_tup_satisfies_update;
+			}
 
 			/* Aborts of multi-lockers are already dealt above. */
 			if(!ZHeapTupleHasMultiLockers(infomask))
@@ -1272,7 +1312,7 @@ check_tup_satisfies_update:
 				if (!isCommitted)
 					zheap_exec_pending_rollback(relation,
 												buffer,
-												tup_trans_slot_id,
+												xwait_trans_slot,
 												xwait);
 
 				/*
@@ -1442,8 +1482,8 @@ zheap_tuple_updated:
 	/* Compute the new xid and infomask to store into the tuple. */
 	compute_new_xid_infomask(&zheaptup, buffer, tup_xid, tup_trans_slot_id,
 							 zheaptup.t_data->t_infomask, xid, trans_slot_id,
-							 LockTupleExclusive, true, &new_infomask,
-							 &new_trans_slot_id);
+							 single_locker_xid, LockTupleExclusive, true,
+							 &new_infomask, &new_trans_slot_id);
 	/*
 	 * There must not be any stronger locker than the current operation,
 	 * otherwise it would have waited for it to finish.
@@ -1699,7 +1739,10 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 {
 	HTSU_Result result;
 	TransactionId xid = GetTopTransactionId();
-	TransactionId tup_xid, save_tup_xid, oldestXidHavingUndo;
+	TransactionId tup_xid,
+				  save_tup_xid,
+				  oldestXidHavingUndo,
+				  single_locker_xid;
 	CommandId	tup_cid;
 	Bitmapset  *inplace_upd_attrs = NULL;
 	Bitmapset  *key_attrs = NULL;
@@ -1723,7 +1766,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	int			tup_trans_slot_id,
 				trans_slot_id,
 				new_trans_slot_id,
-				result_trans_slot_id;
+				result_trans_slot_id,
+				single_locker_trans_slot;
 	uint16		old_infomask;
 	uint16		new_infomask;
 	uint16		infomask_old_tuple = 0;
@@ -1888,8 +1932,9 @@ check_tup_satisfies_update:
 	locker_remains = false;
 	any_multi_locker_member_alive = true;
 	result = ZHeapTupleSatisfiesUpdate(relation, &oldtup, cid, buffer, &ctid,
-									   &tup_trans_slot_id, &tup_xid,
-									   &tup_cid, false, false, snapshot,
+									   &tup_trans_slot_id, &tup_xid, &tup_cid,
+									   &single_locker_xid, &single_locker_trans_slot,
+									   false, false, snapshot,
 									   &in_place_updated_or_locked);
 
 	if (result == HeapTupleInvisible)
@@ -1906,11 +1951,22 @@ check_tup_satisfies_update:
 	{
 		List	*mlmembers;
 		TransactionId xwait;
+		int			xwait_trans_slot;
 		uint16		infomask;
 		bool		can_continue = false;
 
+		if (TransactionIdIsValid(single_locker_xid))
+		{
+			xwait = single_locker_xid;
+			xwait_trans_slot = single_locker_trans_slot;
+		}
+		else
+		{
+			xwait = tup_xid;
+			xwait_trans_slot = tup_trans_slot_id;
+		}
+
 		/* must copy state data before unlocking buffer */
-		xwait = tup_xid;
 		infomask = oldtup.t_data->t_infomask;
 
 		if (ZHeapTupleHasMultiLockers(infomask))
@@ -2050,7 +2106,7 @@ check_tup_satisfies_update:
 				 */
 				if (isAborted &&
 					zheap_exec_pending_rollback(relation, buffer,
-												tup_trans_slot_id, xwait))
+												xwait_trans_slot, xwait))
 					goto check_tup_satisfies_update;
 			}
 
@@ -2121,14 +2177,36 @@ check_tup_satisfies_update:
 
 			/*
 			 * xwait is done, but if xwait had just locked the tuple then some
-			 * other xact could update this tuple before we get to this point.
-			 * Check for xid change, and start over if so.
+			 * other xact could update/lock this tuple before we get to this
+			 * point.  Check for xid change, and start over if so.  We need to
+			 * do some special handling for lockers because their xid is never
+			 * stored on the tuples.  If there was a single locker on the
+			 * tuple and that locker is gone and some new locker has locked
+			 * the tuple, we won't be able to identify that by infomask/xid on
+			 * the tuple, rather we need to fetch the locker xid.
 			 */
-			ZHeapTupleGetTransInfo(&oldtup, buffer, NULL, NULL, &current_tup_xid,
-								   NULL, NULL, false);
+			ZHeapTupleGetTransInfo(&oldtup, buffer, NULL, NULL,
+								   &current_tup_xid, NULL, NULL, false);
 			if (xid_infomask_changed(oldtup.t_data->t_infomask, infomask) ||
 				!TransactionIdEquals(current_tup_xid, xwait))
-				goto check_tup_satisfies_update;
+			{
+				if (ZHEAP_XID_IS_LOCKED_ONLY(oldtup.t_data->t_infomask) &&
+					!ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask) &&
+					TransactionIdIsValid(single_locker_xid))
+				{
+					TransactionId current_single_locker_xid = InvalidTransactionId;
+
+					(void) GetLockerTransInfo(relation, &oldtup, buffer, NULL,
+											  NULL, &current_single_locker_xid,
+											  NULL, NULL);
+					if (!TransactionIdEquals(single_locker_xid,
+											 current_single_locker_xid))
+						goto check_tup_satisfies_update;
+
+				}
+				else
+					goto check_tup_satisfies_update;
+			}
 
 			if (!ZHEAP_XID_IS_LOCKED_ONLY(oldtup.t_data->t_infomask))
 				has_update = true;
@@ -2145,7 +2223,7 @@ check_tup_satisfies_update:
 			 */
 			if (!isCommitted)
 				zheap_exec_pending_rollback(relation, buffer,
-											tup_trans_slot_id, xwait);
+											xwait_trans_slot, xwait);
 
 			/*
 			 * For aborted updates, we must allow to reverify the tuple in
@@ -2476,8 +2554,9 @@ zheap_tuple_updated:
 		/* Compute the new xid and infomask to store into the tuple. */
 		compute_new_xid_infomask(&oldtup, buffer, save_tup_xid,
 								 tup_trans_slot_id, oldtup.t_data->t_infomask,
-								 xid, trans_slot_id, *lockmode, false,
-								 &lock_old_infomask, &result_trans_slot_id);
+								 xid, trans_slot_id, single_locker_xid,
+								 *lockmode, false, &lock_old_infomask,
+								 &result_trans_slot_id);
 
 		if (ZHeapTupleHasMultiLockers(lock_old_infomask))
 			undorecord.uur_type = UNDO_XID_MULTI_LOCK_ONLY;
@@ -2859,8 +2938,8 @@ reacquire_buffer:
 	/* Compute the new xid and infomask to store into the tuple. */
 	compute_new_xid_infomask(&oldtup, buffer, save_tup_xid, tup_trans_slot_id,
 							 oldtup.t_data->t_infomask, xid, trans_slot_id,
-							 *lockmode, true, &old_infomask,
-							 &result_trans_slot_id);
+							 single_locker_xid, *lockmode, true,
+							 &old_infomask, &result_trans_slot_id);
 
 	/*
 	 * There must not be any stronger locker than the current operation,
@@ -3444,12 +3523,15 @@ zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 	ItemId		lp;
 	Page		page;
 	ItemPointerData	ctid;
-	TransactionId xid, tup_xid;
+	TransactionId xid,
+				  tup_xid,
+				  single_locker_xid;
 	CommandId	tup_cid;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	uint32		epoch;
 	int			tup_trans_slot_id,
-				trans_slot_id;
+				trans_slot_id,
+				single_locker_trans_slot;
 	OffsetNumber	offnum;
 	bool		require_sleep;
 	bool		have_tuple_lock = false;
@@ -3502,8 +3584,9 @@ zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 check_tup_satisfies_update:
 	any_multi_locker_member_alive = true;
 	result = ZHeapTupleSatisfiesUpdate(relation, &zhtup, cid, *buffer, &ctid,
-									   &tup_trans_slot_id, &tup_xid,
-									   &tup_cid, false, eval, snapshot,
+									   &tup_trans_slot_id, &tup_xid, &tup_cid,
+									   &single_locker_xid, &single_locker_trans_slot,
+									   false, eval, snapshot,
 									   &in_place_updated_or_locked);
 	if (result == HeapTupleInvisible)
 	{
@@ -3517,9 +3600,20 @@ check_tup_satisfies_update:
 			  ZHeapTupleHasMultiLockers(zhtup.t_data->t_infomask)))
 	{
 		TransactionId	xwait;
+		int				xwait_trans_slot;
 		uint16			infomask;
 
-		xwait = tup_xid;
+		if (TransactionIdIsValid(single_locker_xid))
+		{
+			xwait = single_locker_xid;
+			xwait_trans_slot = single_locker_trans_slot;
+		}
+		else
+		{
+			xwait = tup_xid;
+			xwait_trans_slot = tup_trans_slot_id;
+		}
+
 		infomask = zhtup.t_data->t_infomask;
 
 		/*
@@ -3805,8 +3899,8 @@ check_tup_satisfies_update:
 		 * by not doing anything.
 		 */
 		if (require_sleep &&
-			!ZHeapTupleHasMultiLockers(infomask)
-			&& TransactionIdIsCurrentTransactionId(xwait))
+			!ZHeapTupleHasMultiLockers(infomask) &&
+			TransactionIdIsCurrentTransactionId(xwait))
 		{
 			TransactionId	current_tup_xid;
 
@@ -4043,14 +4137,36 @@ check_tup_satisfies_update:
 
 			/*
 			 * xwait is done, but if xwait had just locked the tuple then some
-			 * other xact could update this tuple before we get to this point.
-			 * Check for xid change, and start over if so.
+			 * other xact could update/lock this tuple before we get to this
+			 * point.  Check for xid change, and start over if so.  We need to
+			 * do some special handling for lockers because their xid is never
+			 * stored on the tuples.  If there was a single locker on the
+			 * tuple and that locker is gone and some new locker has locked
+			 * the tuple, we won't be able to identify that by infomask/xid on
+			 * the tuple, rather we need to fetch the locker xid.
 			 */
-			ZHeapTupleGetTransInfo(&zhtup, *buffer, NULL, NULL, &current_tup_xid,
-								   NULL, NULL, false);
+			ZHeapTupleGetTransInfo(&zhtup, *buffer, NULL, NULL,
+								   &current_tup_xid, NULL, NULL, false);
 			if (xid_infomask_changed(zhtup.t_data->t_infomask, infomask) ||
 				!TransactionIdEquals(current_tup_xid, xwait))
-				goto check_tup_satisfies_update;
+			{
+				if (ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask) &&
+					!ZHeapTupleHasMultiLockers(zhtup.t_data->t_infomask) &&
+					TransactionIdIsValid(single_locker_xid))
+				{
+					TransactionId current_single_locker_xid = InvalidTransactionId;
+
+					(void) GetLockerTransInfo(relation, &zhtup, *buffer, NULL,
+											  NULL, &current_single_locker_xid,
+											  NULL, NULL);
+					if (!TransactionIdEquals(single_locker_xid,
+											 current_single_locker_xid))
+						goto check_tup_satisfies_update;
+
+				}
+				else
+					goto check_tup_satisfies_update;
+			}
 		}
 
 		if (TransactionIdIsValid(xwait) && TransactionIdDidAbort(xwait))
@@ -4061,7 +4177,7 @@ check_tup_satisfies_update:
 			 */
 			if (!TransactionIdIsCurrentTransactionId(xwait))
 				zheap_exec_pending_rollback(relation, *buffer,
-											tup_trans_slot_id, xwait);
+											xwait_trans_slot, xwait);
 
 			/*
 			 * For aborted updates, we must allow to reverify the tuple in
@@ -4088,7 +4204,11 @@ check_tup_satisfies_update:
 		TransactionId	xwait;
 		uint16			infomask;
 
-		xwait = tup_xid;
+		if (TransactionIdIsValid(single_locker_xid))
+			xwait = single_locker_xid;
+		else
+			xwait = tup_xid;
+
 		infomask = zhtup.t_data->t_infomask;
 
 		/*
@@ -4248,7 +4368,9 @@ failed:
 	 * with the MULTI_LOCKERS bit.
 	 */
 	zheap_lock_tuple_guts(relation, *buffer, &zhtup, tup_xid, xid, mode, epoch,
-						  tup_trans_slot_id, trans_slot_id, prev_urecptr, cid,
+						  tup_trans_slot_id, trans_slot_id,
+						  single_locker_xid, single_locker_trans_slot,
+						  prev_urecptr, cid,
 						  !any_multi_locker_member_alive);
 
 	tuple->t_tableOid = RelationGetRelid(relation);
@@ -4410,6 +4532,7 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 	int			tup_trans_slot;
 	TransactionId	priorXmax = InvalidTransactionId;
 	uint32		epoch;
+	uint64		epoch_xid;
 	int			trans_slot_id;
 	bool		lock_reacquired;
 	OffsetNumber	offnum;
@@ -4470,7 +4593,7 @@ lock_tuple:
 			return HeapTupleMayBeUpdated;
 		}
 
-		ZHeapTupleGetTransInfo(mytup, buf, &tup_trans_slot, NULL, &tup_xid, NULL, NULL,
+		ZHeapTupleGetTransInfo(mytup, buf, &tup_trans_slot, &epoch_xid, &tup_xid, NULL, NULL,
 							   false);
 		old_infomask = mytup->t_data->t_infomask;
 
@@ -4559,6 +4682,14 @@ lock_tuple:
 				 */
 				if (ZHEAP_XID_IS_LOCKED_ONLY(old_infomask))
 				{
+					/*
+					 * We don't expect to lock updated version of a tuple if
+					 * there is only a single locker on the tuple and previous
+					 * modifier is all-visible.
+					 */
+					Assert(!(tup_trans_slot == ZHTUP_SLOT_FROZEN ||
+					epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)));
+
 					if (ZHEAP_XID_IS_KEYSHR_LOCKED(old_infomask))
 						old_lock_mode = LockTupleKeyShare;
 					else if (ZHEAP_XID_IS_SHR_LOCKED(old_infomask))
@@ -4653,7 +4784,9 @@ lock_tuple:
 		zhtup.t_self = mytup->t_self;
 
 		zheap_lock_tuple_guts(rel, buf, &zhtup, tup_xid, xid, mode, epoch,
-							  tup_trans_slot, trans_slot_id, prev_urecptr,
+							  tup_trans_slot, trans_slot_id,
+							  InvalidTransactionId, InvalidXactSlotId,
+							  prev_urecptr,
 							  cid, false);
 
 next:
@@ -4710,7 +4843,9 @@ static void
 zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 					  TransactionId tup_xid, TransactionId xid,
 					  LockTupleMode mode, uint32 epoch, int tup_trans_slot_id,
-					  int trans_slot_id, UndoRecPtr prev_urecptr,
+					  int trans_slot_id, TransactionId single_locker_xid,
+					  int single_locker_trans_slot,
+					  UndoRecPtr prev_urecptr,
 					  CommandId cid, bool clear_multi_locker)
 {
 	TransactionId oldestXidHavingUndo;
@@ -4730,7 +4865,8 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	if (ZHeapTupleHasMultiLockers(old_infomask) && clear_multi_locker)
 		old_infomask &= ~ZHEAP_MULTI_LOCKERS;
 	compute_new_xid_infomask(zhtup, buf, tup_xid, tup_trans_slot_id,
-							 old_infomask, xid, trans_slot_id, mode, false,
+							 old_infomask, xid, trans_slot_id,
+							 single_locker_xid, mode, false,
 							 &new_infomask, &new_trans_slot_id);
 
 
@@ -4924,8 +5060,9 @@ static void
 compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 						 int tup_trans_slot, uint16 old_infomask,
 						 TransactionId add_to_xid, int trans_slot,
-						 LockTupleMode mode, bool is_update,
-						 uint16 *result_infomask, int *result_trans_slot)
+						 TransactionId single_locker_xid, LockTupleMode mode,
+						 bool is_update, uint16 *result_infomask,
+						 int *result_trans_slot)
 {
 	int			new_trans_slot;
 	uint16		new_infomask;
@@ -4945,16 +5082,47 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 						  &mode, &old_tuple_has_update, is_update);
 	}
 	else if (!is_update &&
+			 TransactionIdIsInProgress(single_locker_xid))
+	{
+		LockTupleMode old_mode;
+
+		/*
+		 * When there is a single in-progress locker on the tuple and previous
+		 * inserter/updater became all visible, we've to set multi-locker flag
+		 * and highest lock mode. If current transaction tries to reacquire
+		 * a lock, we don't set multi-locker flag.
+		 */
+		Assert(ZHEAP_XID_IS_LOCKED_ONLY(old_infomask));
+		if (single_locker_xid != add_to_xid)
+		{
+			new_infomask |= ZHEAP_MULTI_LOCKERS;
+			new_trans_slot = tup_trans_slot;
+		}
+
+		old_mode = get_old_lock_mode(old_infomask);
+
+		/* Acquire the strongest of both. */
+		if (mode < old_mode)
+			mode = old_mode;
+
+		/* Keep the old tuple slot as it is */
+		new_trans_slot = tup_trans_slot;
+	}
+	else if (!is_update &&
 			 TransactionIdIsInProgress(tup_xid))
 	{
 		/*
 		 * Normally if the tuple is not modified and the current transaction
-		 * is in progress, the other transaction can't lock the tuple.
+		 * is in progress, the other transaction can't lock the tuple except
+		 * itself.
+		 *
 		 * However, this can happen while locking the updated tuple chain.  We
 		 * keep the transaction slot of original tuple as that will allow us to
 		 * check the visibility of tuple by just referring the current
 		 * transaction slot.
 		 */
+		Assert((tup_xid == add_to_xid) || (mode == LockTupleKeyShare));
+
 		if (tup_xid != add_to_xid)
 		{
 			new_infomask |= ZHEAP_MULTI_LOCKERS;
