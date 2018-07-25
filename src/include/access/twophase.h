@@ -43,7 +43,7 @@ extern GlobalTransaction MarkAsPreparing(TransactionId xid, const char *gid,
 				TimestampTz prepared_at,
 				Oid owner, Oid databaseid);
 
-extern void StartPrepare(GlobalTransaction gxact, UndoRecPtr, UndoRecPtr);
+extern void StartPrepare(GlobalTransaction gxact, UndoRecPtr *, UndoRecPtr *);
 extern void EndPrepare(GlobalTransaction gxact);
 extern bool StandbyTransactionIdIsPrepared(TransactionId xid);
 
