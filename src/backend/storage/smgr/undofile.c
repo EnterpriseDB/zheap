@@ -407,6 +407,8 @@ undofile_sync(void)
 			 */
 			if (file <= 0)
 			{
+				char		name[MAXPGPATH];
+
 				/*
 				 * Put the request back into the bitset in a way that can't
 				 * fail due to memory allocation.
@@ -418,10 +420,15 @@ undofile_sync(void)
 				 */
 				AbsorbFsyncRequests();
 				if (bms_is_member(segno, entry->requests))
+				{
+					UndoLogSegmentPath(entry->rnode.relNode,
+									   segno,
+									   entry->rnode.spcNode,
+									   name);
 					ereport(ERROR,
 							(errcode_for_file_access(),
-							 errmsg("could not fsync file \"%s\": %m",
-									FilePathName(file))));
+							 errmsg("could not fsync file \"%s\": %m", name)));
+				}
 				/* It must have been removed, so we can safely skip it. */
 				continue;
 			}
@@ -429,6 +436,9 @@ undofile_sync(void)
 			elog(LOG, "fsync()ing %s", FilePathName(file));	/* TODO: remove me */
 			if (FileSync(file, WAIT_EVENT_UNDO_FILE_SYNC) < 0)
 			{
+				char		name[MAXPGPATH];
+
+				strcpy(name, FilePathName(file));
 				FileClose(file);
 
 				/*
@@ -441,8 +451,7 @@ undofile_sync(void)
 				entry->requests = bms_join(entry->requests, requests);
 				ereport(ERROR,
 						(errcode_for_file_access(),
-						 errmsg("could not fsync file \"%s\": %m",
-								FilePathName(file))));
+						 errmsg("could not fsync file \"%s\": %m", name)));
 			}
 			requests = bms_del_member(requests, segno);
 			FileClose(file);

@@ -2554,7 +2554,7 @@ undolog_xlog_discard(XLogReaderState *record)
 		 */
 		undofile_forgetsync(log->logno,
 							log->meta.tablespace,
-							end / UndoLogSegmentSize);
+							old_segment_begin / UndoLogSegmentSize);
 
 		UndoLogSegmentPath(xlrec->logno, old_segment_begin / UndoLogSegmentSize,
 						   log->meta.tablespace, discard_path);
