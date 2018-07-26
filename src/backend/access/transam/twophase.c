@@ -1030,8 +1030,8 @@ StartPrepare(GlobalTransaction gxact, UndoRecPtr *start_urec_ptr,
 	hdr.owner = gxact->owner;
 
 	/* save the start and end undo record pointers */
-	memcpy(hdr.start_urec_ptr, start_urec_ptr, sizeof(*start_urec_ptr));
-	memcpy(hdr.end_urec_ptr, end_urec_ptr, sizeof(*end_urec_ptr));
+	memcpy(hdr.start_urec_ptr, start_urec_ptr, sizeof(hdr.start_urec_ptr));
+	memcpy(hdr.end_urec_ptr, end_urec_ptr, sizeof(hdr.end_urec_ptr));
 
 	hdr.nsubxacts = xactGetCommittedChildren(&children);
 	hdr.ncommitrels = smgrGetPendingDeletes(true, &commitrels);
