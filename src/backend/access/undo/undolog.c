@@ -2466,14 +2466,6 @@ undolog_xlog_meta(XLogReaderState *record)
 	log->xid = xlrec->xid;
 	log->pid = MyProcPid; /* show as recovery process */
 	LWLockRelease(&log->mutex);
-
-	/*
-	 * TODO: We should never see an attach record for a persistence level
-	 * other than UNDO_PERMANENT, right?  That is, we should probably suppress
-	 * them and then assert that we never get them here.
-	 */
-
-	MyUndoLogState.logs[log->meta.persistence] = log;
 }
 
 /*
