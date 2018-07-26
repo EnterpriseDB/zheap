@@ -99,6 +99,13 @@ UndoWorkerMain(Datum main_arg)
 	 */
 	BackgroundWorkerInitializeConnection("postgres", NULL, 0);
 
+	/* 
+	 * Create resource owner for undo worker.  Undo worker need this as it
+	 * need to read the undo records  outside the transaction blocks which
+	 * intern access buffer read routine.
+	 */
+	CreateAuxProcessResourceOwner();
+
 	/* Enter main loop */
 	while (!got_SIGTERM)
 	{
@@ -163,6 +170,8 @@ UndoWorkerMain(Datum main_arg)
 		if (rc & WL_POSTMASTER_DEATH)
 			proc_exit(1);
 	}
+
+	ReleaseAuxProcessResources(true);
 
 	/* we're done */
 	ereport(LOG,

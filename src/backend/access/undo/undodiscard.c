@@ -23,6 +23,7 @@
 #include "storage/bufmgr.h"
 #include "storage/shmem.h"
 #include "storage/proc.h"
+#include "utils/resowner.h"
 #include "postmaster/undoloop.h"
 
 static UndoRecPtr FetchLatestUndoPtrForXid(UndoRecPtr urecptr,
@@ -124,6 +125,14 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 			StartTransactionCommand();
 			execute_undo_actions(from_urecptr, undo_recptr, true, false, true);
 			CommitTransactionCommand();
+
+			/*
+			 * Set the current resource owner to AuxProcessResourceOwner as
+			 * CommitTransaction would have set it to NULL.  And we need it
+			 * outside the transaction block for fetching the undo records.
+			 */
+			CurrentResourceOwner = AuxProcessResourceOwner;
+
 		}
 
 		/* we can discard upto this point. */
