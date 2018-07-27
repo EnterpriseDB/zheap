@@ -1272,9 +1272,9 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	}			tbuf;
 	ZHeapTupleHeader zhtup;
 	uint32		newlen;
-	UnpackedUndoRecord	*undorecord;
-	UndoRecPtr	urecptr,
-						prev_urecptr;
+	UnpackedUndoRecord	*undorecord = NULL;
+	UndoRecPtr	urecptr = InvalidUndoRecPtr,
+						prev_urecptr = InvalidUndoRecPtr;
 	int			i;
 	int			nranges;
 	int			ucnt = 0;
@@ -1287,6 +1287,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	TransactionId	xid = XLogRecGetXid(record);
 	uint32	xid_epoch = GetEpochForXid(xid);
 	ZHeapFreeOffsetRanges	*zfree_offset_ranges;
+	bool		skip_undo;
 
 	xlundohdr = (xl_undo_header *) XLogRecGetData(record);
 	xlrec = (xl_zheap_multi_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
@@ -1340,56 +1341,64 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		ranges_data += sizeof(OffsetNumber);
 	}
 
-	undorecord = (UnpackedUndoRecord *) palloc(nranges * sizeof(UnpackedUndoRecord));
-
-	/* Start UNDO prepare Stuff */
-	prev_urecptr = xlundohdr->blkprev;
-	urecptr = prev_urecptr;
-
-	for (i = 0; i < nranges; i++)
-	{
-		/* prepare an undo record */
-		undorecord[i].uur_type = UNDO_MULTI_INSERT;
-		undorecord[i].uur_info = 0;
-		undorecord[i].uur_prevlen = 0;
-		undorecord[i].uur_relfilenode = xlundohdr->relfilenode;
-		undorecord[i].uur_prevxid = xid;
-		undorecord[i].uur_xid = xid;
-		undorecord[i].uur_cid = FirstCommandId;
-		undorecord[i].uur_tsid = xlundohdr->tsid;
-		undorecord[i].uur_fork = MAIN_FORKNUM;
-		undorecord[i].uur_blkprev = urecptr;
-		undorecord[i].uur_block = blkno;
-		undorecord[i].uur_offset = 0;
-		undorecord[i].uur_tuple.len = 0;
-		undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
-		initStringInfo(&undorecord[i].uur_payload);
-		appendBinaryStringInfo(&undorecord[i].uur_payload,
-							   (char *) ranges_data,
-							   2 * sizeof(OffsetNumber));
-
-		ranges_data += undorecord[i].uur_payload.len;
-		ranges_data_size += undorecord[i].uur_payload.len;
-	}
-
-	UndoSetPrepareSize(nranges, undorecord, xid,
-					   UNDO_PERMANENT, NULL);
-	for (i = 0; i < nranges; i++)
-	{
-		undorecord[i].uur_blkprev = urecptr;
-		urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERMANENT, xid, NULL);
-	}
-
-	elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
-		 nranges, blkno);
-
 	/*
-	 * undo should be inserted at same location as it was during the actual
-	 * insert (DO operation).
+	 * We can skip inserting undo records if the tuples are to be marked
+	 * as frozen.
 	 */
-	Assert (urecptr == xlundohdr->urec_ptr);
+	skip_undo= (xlrec->flags & XLZ_INSERT_IS_FROZEN);
+	if (!skip_undo)
+	{
+		undorecord = (UnpackedUndoRecord *) palloc(nranges * sizeof(UnpackedUndoRecord));
 
-	InsertPreparedUndo();
+		/* Start UNDO prepare Stuff */
+		prev_urecptr = xlundohdr->blkprev;
+		urecptr = prev_urecptr;
+
+		for (i = 0; i < nranges; i++)
+		{
+			/* prepare an undo record */
+			undorecord[i].uur_type = UNDO_MULTI_INSERT;
+			undorecord[i].uur_info = 0;
+			undorecord[i].uur_prevlen = 0;
+			undorecord[i].uur_relfilenode = xlundohdr->relfilenode;
+			undorecord[i].uur_prevxid = xid;
+			undorecord[i].uur_xid = xid;
+			undorecord[i].uur_cid = FirstCommandId;
+			undorecord[i].uur_tsid = xlundohdr->tsid;
+			undorecord[i].uur_fork = MAIN_FORKNUM;
+			undorecord[i].uur_blkprev = urecptr;
+			undorecord[i].uur_block = blkno;
+			undorecord[i].uur_offset = 0;
+			undorecord[i].uur_tuple.len = 0;
+			undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
+			initStringInfo(&undorecord[i].uur_payload);
+			appendBinaryStringInfo(&undorecord[i].uur_payload,
+								   (char *) ranges_data,
+								   2 * sizeof(OffsetNumber));
+
+			ranges_data += undorecord[i].uur_payload.len;
+			ranges_data_size += undorecord[i].uur_payload.len;
+		}
+
+		UndoSetPrepareSize(nranges, undorecord, xid,
+						   UNDO_PERMANENT, NULL);
+		for (i = 0; i < nranges; i++)
+		{
+			undorecord[i].uur_blkprev = urecptr;
+			urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERMANENT, xid, NULL);
+		}
+
+		elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
+			 nranges, blkno);
+
+		/*
+		 * undo should be inserted at same location as it was during the actual
+		 * insert (DO operation).
+		 */
+		Assert (urecptr == xlundohdr->urec_ptr);
+
+		InsertPreparedUndo();
+	}
 
 	/* Get the tpd transaction slot number */
 	if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
@@ -1471,25 +1480,29 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			/* increase the offset to store next tuple */
 			offnum++;
 
-			if (tpd_trans_slot_id)
-				trans_slot_id = *tpd_trans_slot_id;
-			else
-				trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup);
-			if (first_time)
+			if (!skip_undo)
 			{
-				prev_trans_slot_id = trans_slot_id;
-				first_time = false;
-			}
-			else
-			{
-				/* All the tuples must refer to same transaction slot. */
-				Assert(prev_trans_slot_id == trans_slot_id);
-				prev_trans_slot_id = trans_slot_id;
+				if (tpd_trans_slot_id)
+					trans_slot_id = *tpd_trans_slot_id;
+				else
+					trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup);
+				if (first_time)
+				{
+					prev_trans_slot_id = trans_slot_id;
+					first_time = false;
+				}
+				else
+				{
+					/* All the tuples must refer to same transaction slot. */
+					Assert(prev_trans_slot_id == trans_slot_id);
+					prev_trans_slot_id = trans_slot_id;
+				}
 			}
 		}
 
-		PageSetUNDO(undorecord[nranges-1], page, trans_slot_id, xid_epoch,
-						xid, urecptr, NULL, 0);
+		if (!skip_undo)
+			PageSetUNDO(undorecord[nranges-1], page, trans_slot_id, xid_epoch,
+							xid, urecptr, NULL, 0);
 
 		PageSetLSN(page, lsn);
 		if (xlrec->flags & XLZ_INSERT_ALL_VISIBLE_CLEARED)
@@ -1539,9 +1552,12 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	}
 
 	/* be tidy */
-	for (i = 0; i < nranges; i++)
-		pfree(undorecord[i].uur_payload.data);
-	pfree(undorecord);
+	if (!skip_undo)
+	{
+		for (i = 0; i < nranges; i++)
+			pfree(undorecord[i].uur_payload.data);
+		pfree(undorecord);
+	}
 	pfree(zfree_offset_ranges);
 
 	if (BufferIsValid(buffer))

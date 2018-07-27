@@ -9588,10 +9588,16 @@ zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
 	uint32		epoch = GetEpochForXid(xid);
 	xl_undolog_meta	undometa;
 	bool		lock_reacquired;
+	bool		skip_undo;
 
 	needwal = RelationNeedsWAL(relation);
 	saveFreeSpace = RelationGetTargetPageFreeSpace(relation,
 												   HEAP_DEFAULT_FILLFACTOR);
+	/*
+	 * We can skip inserting undo records if the tuples are to be marked
+	 * as frozen.
+	 */
+	skip_undo = (options & HEAP_INSERT_FROZEN);
 
 	/* Toast and set header data in all the tuples */
 	zheaptuples = palloc(ntuples * sizeof(ZHeapTuple));
@@ -9626,9 +9632,9 @@ zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
 		int		nthispage = 0;
 		int		trans_slot_id;
 		int		ucnt = 0;
-		UndoRecPtr		urecptr,
-						prev_urecptr;
-		UnpackedUndoRecord		*undorecord;
+		UndoRecPtr	urecptr = InvalidUndoRecPtr,
+								prev_urecptr = InvalidUndoRecPtr;
+		UnpackedUndoRecord		*undorecord = NULL;
 		ZHeapFreeOffsetRanges	*zfree_offset_ranges;
 		OffsetNumber	usedoff[MaxOffsetNumber];
 		OffsetNumber	max_required_offset;
@@ -9664,80 +9670,87 @@ reacquire_buffer:
 			zfree_offset_ranges->endOffset[zfree_offset_ranges->nranges - 1];
 
 		/*
-		 * The transaction information of tuple needs to be set in transaction
-		 * slot, so needs to reserve the slot before proceeding with the actual
-		 * operation.  It will be costly to wait for getting the slot, but we do
-		 * that by releasing the buffer lock.
+		 * If we're not inserting an undo record, we don't have to reserve
+		 * a transaction slot as well.
 		 */
-		trans_slot_id = PageReserveTransactionSlot(relation,
-												   buffer,
-												   max_required_offset,
-												   epoch,
-												   xid,
-												   &prev_urecptr,
-												   &lock_reacquired);
-		if (lock_reacquired)
-			goto reacquire_buffer;
-
-		if (trans_slot_id == InvalidXactSlotId)
+		if (!skip_undo)
 		{
-			UnlockReleaseBuffer(buffer);
+			/*
+			 * The transaction information of tuple needs to be set in transaction
+			 * slot, so needs to reserve the slot before proceeding with the actual
+			 * operation.  It will be costly to wait for getting the slot, but we do
+			 * that by releasing the buffer lock.
+			 */
+			trans_slot_id = PageReserveTransactionSlot(relation,
+													   buffer,
+													   max_required_offset,
+													   epoch,
+													   xid,
+													   &prev_urecptr,
+													   &lock_reacquired);
+			if (lock_reacquired)
+				goto reacquire_buffer;
 
-			pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
-			pg_usleep(10000L);	/* 10 ms */
-			pgstat_report_wait_end();
+			if (trans_slot_id == InvalidXactSlotId)
+			{
+				UnlockReleaseBuffer(buffer);
 
-			goto reacquire_buffer;
+				pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
+				pg_usleep(10000L);	/* 10 ms */
+				pgstat_report_wait_end();
+
+				goto reacquire_buffer;
+			}
+
+			/* transaction slot must be reserved before adding tuple to page */
+			Assert(trans_slot_id != InvalidXactSlotId);
+
+			/*
+			 * For every contiguous free or new offsets, we insert an undo record.
+			 * In the payload data of each undo record, we store the start and end
+			 * available offset for a contiguous range.
+			 */
+			undorecord = (UnpackedUndoRecord *) palloc(zfree_offset_ranges->nranges
+													   * sizeof(UnpackedUndoRecord));
+			/* Start UNDO prepare Stuff */
+			urecptr = prev_urecptr;
+			for (i = 0; i < zfree_offset_ranges->nranges; i++)
+			{
+				/* prepare an undo record */
+				undorecord[i].uur_type = UNDO_MULTI_INSERT;
+				undorecord[i].uur_info = 0;
+				undorecord[i].uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
+				undorecord[i].uur_relfilenode = relation->rd_node.relNode;
+				undorecord[i].uur_xid = xid;
+				undorecord[i].uur_cid = cid;
+				undorecord[i].uur_tsid = relation->rd_node.spcNode;
+				undorecord[i].uur_fork = MAIN_FORKNUM;
+				undorecord[i].uur_blkprev = urecptr;
+				undorecord[i].uur_block = BufferGetBlockNumber(buffer);
+				undorecord[i].uur_tuple.len = 0;
+				undorecord[i].uur_offset = 0;
+				undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
+			}
+
+			UndoSetPrepareSize(zfree_offset_ranges->nranges, undorecord,
+							   InvalidTransactionId,
+							   UndoPersistenceForRelation(relation), &undometa);
+
+			for (i = 0; i < zfree_offset_ranges->nranges; i++)
+			{
+				undorecord[i].uur_blkprev = urecptr;
+				urecptr = PrepareUndoInsert(&undorecord[i],
+											UndoPersistenceForRelation(relation),
+											InvalidTransactionId, NULL);
+
+				initStringInfo(&undorecord[i].uur_payload);
+			}
+
+			Assert(UndoRecPtrIsValid(urecptr));
+			elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
+				 zfree_offset_ranges->nranges, BufferGetBlockNumber(buffer));
+			/* End UNDO prepare Stuff */
 		}
-
-		/* transaction slot must be reserved before adding tuple to page */
-		Assert(trans_slot_id != InvalidXactSlotId);
-
-		/*
-		 * For every contiguous free or new offsets, we insert an undo record.
-		 * In the payload data of each undo record, we store the start and end
-		 * available offset for a contiguous range.
-		 */
-		undorecord = (UnpackedUndoRecord *) palloc(zfree_offset_ranges->nranges
-												   * sizeof(UnpackedUndoRecord));
-		/* Start UNDO prepare Stuff */
-		urecptr = prev_urecptr;
-		for (i = 0; i < zfree_offset_ranges->nranges; i++)
-		{
-			/* prepare an undo record */
-			undorecord[i].uur_type = UNDO_MULTI_INSERT;
-			undorecord[i].uur_info = 0;
-			undorecord[i].uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
-			undorecord[i].uur_relfilenode = relation->rd_node.relNode;
-			undorecord[i].uur_xid = xid;
-			undorecord[i].uur_cid = cid;
-			undorecord[i].uur_tsid = relation->rd_node.spcNode;
-			undorecord[i].uur_fork = MAIN_FORKNUM;
-			undorecord[i].uur_blkprev = urecptr;
-			undorecord[i].uur_block = BufferGetBlockNumber(buffer);
-			undorecord[i].uur_tuple.len = 0;
-			undorecord[i].uur_offset = 0;
-			undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
-		}
-
-		UndoSetPrepareSize(zfree_offset_ranges->nranges, undorecord,
-						   InvalidTransactionId,
-						   UndoPersistenceForRelation(relation), &undometa);
-
-		for (i = 0; i < zfree_offset_ranges->nranges; i++)
-		{
-			undorecord[i].uur_blkprev = urecptr;
-			urecptr = PrepareUndoInsert(&undorecord[i],
-										UndoPersistenceForRelation(relation),
-										InvalidTransactionId, NULL);
-
-			initStringInfo(&undorecord[i].uur_payload);
-		}
-
-		Assert(UndoRecPtrIsValid(urecptr));
-		elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
-			 zfree_offset_ranges->nranges, BufferGetBlockNumber(buffer));
-		/* End UNDO prepare Stuff */
 
 		/* NO EREPORT(ERROR) from here till changes are logged */
 		START_CRIT_SECTION();
@@ -9801,12 +9814,15 @@ reacquire_buffer:
 			 * records as well.
 			 */
 			zfree_offset_ranges->endOffset[i] = offnum - 1;
-			appendBinaryStringInfo(&undorecord[i].uur_payload,
-								   (char *) &zfree_offset_ranges->startOffset[i],
-								   sizeof(OffsetNumber));
-			appendBinaryStringInfo(&undorecord[i].uur_payload,
-								  (char *) &zfree_offset_ranges->endOffset[i],
-								   sizeof(OffsetNumber));
+			if (!skip_undo)
+			{
+				appendBinaryStringInfo(&undorecord[i].uur_payload,
+										   (char *) &zfree_offset_ranges->startOffset[i],
+										   sizeof(OffsetNumber));
+				appendBinaryStringInfo(&undorecord[i].uur_payload,
+										  (char *) &zfree_offset_ranges->endOffset[i],
+										   sizeof(OffsetNumber));
+			}
 			elog(DEBUG1, "start offset: %d, end offset: %d",
 				 zfree_offset_ranges->startOffset[i], zfree_offset_ranges->endOffset[i]);
 		}
@@ -9826,34 +9842,37 @@ reacquire_buffer:
 
 		MarkBufferDirty(buffer);
 
-		/* Insert the undo */
-		InsertPreparedUndo();
+		if (!skip_undo)
+		{
+			/* Insert the undo */
+			InsertPreparedUndo();
 
-		/*
-		 * We're sending the undo record for debugging purpose. So, just send
-		 * the last one.
-		 */
-		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-		{
-			PageSetUNDO(undorecord[zfree_offset_ranges->nranges - 1],
-						page,
-						trans_slot_id,
-						epoch,
-						xid,
-						urecptr,
-						usedoff,
-						ucnt);
-		}
-		else
-		{
-			PageSetUNDO(undorecord[zfree_offset_ranges->nranges - 1],
-						page,
-						trans_slot_id,
-						epoch,
-						xid,
-						urecptr,
-						NULL,
-						0);
+			/*
+			 * We're sending the undo record for debugging purpose. So, just send
+			 * the last one.
+			 */
+			if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+			{
+				PageSetUNDO(undorecord[zfree_offset_ranges->nranges - 1],
+							page,
+							trans_slot_id,
+							epoch,
+							xid,
+							urecptr,
+							usedoff,
+							ucnt);
+			}
+			else
+			{
+				PageSetUNDO(undorecord[zfree_offset_ranges->nranges - 1],
+							page,
+							trans_slot_id,
+							epoch,
+							xid,
+							urecptr,
+							NULL,
+							0);
+			}
 		}
 
 		/* XLOG stuff */
@@ -9884,6 +9903,8 @@ reacquire_buffer:
 			/* allocate xl_zheap_multi_insert struct from the scratch area */
 			xlrec = (xl_zheap_multi_insert *) scratchptr;
 			xlrec->flags = all_visible_cleared ? XLZ_INSERT_ALL_VISIBLE_CLEARED : 0;
+			if (skip_undo)
+				xlrec->flags |= XLZ_INSERT_IS_FROZEN;
 			xlrec->ntuples = nthispage;
 			scratchptr += SizeOfZHeapMultiInsert;
 
@@ -9971,7 +9992,9 @@ prepare_xlog:
 			XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
 			/* copy xl_multi_insert_tuple in maindata */
 			XLogRegisterData((char *) xlrec, tupledata - scratch);
-			if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+
+			/* If we've skipped undo insertion, we don't need a slot in page. */
+			if (!skip_undo && trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			{
 				xlrec->flags |= XLZ_INSERT_CONTAINS_TPD_SLOT;
 				XLogRegisterData((char *) &trans_slot_id, sizeof(trans_slot_id));
@@ -9999,9 +10022,12 @@ prepare_xlog:
 		END_CRIT_SECTION();
 
 		/* be tidy */
-		for (i = 0; i < zfree_offset_ranges->nranges; i++)
-			pfree(undorecord[i].uur_payload.data);
-		pfree(undorecord);
+		if (!skip_undo)
+		{
+			for (i = 0; i < zfree_offset_ranges->nranges; i++)
+				pfree(undorecord[i].uur_payload.data);
+			pfree(undorecord);
+		}
 		pfree(zfree_offset_ranges);
 
 		UnlockReleaseBuffer(buffer);

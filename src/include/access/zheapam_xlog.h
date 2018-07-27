@@ -87,6 +87,7 @@ typedef struct xl_undo_header
 #define XLZ_INSERT_IS_SPECULATIVE				(1<<2)
 #define XLZ_INSERT_CONTAINS_NEW_TUPLE			(1<<3)
 #define XLZ_INSERT_CONTAINS_TPD_SLOT			(1<<4)
+#define XLZ_INSERT_IS_FROZEN					(1<<5)
 
 /*
  * NOTE: t_hoff could be recomputed, but we may as well store it because
