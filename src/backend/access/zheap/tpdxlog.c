@@ -54,7 +54,7 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 	{
 		char	*tpd_entry;
 		Size	size_tpd_entry;
-		uint16	offset;
+		uint16	offset PG_USED_FOR_ASSERTS_ONLY;
 
 		tpd_entry = XLogRecGetBlockData(record, 0, &size_tpd_entry);
 		tpdpage = BufferGetPage(tpdbuffer);

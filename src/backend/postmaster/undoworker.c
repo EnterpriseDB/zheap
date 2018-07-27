@@ -27,6 +27,7 @@
 #include "storage/procarray.h"
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
+#include "utils/resowner.h"
 #include "postmaster/undoloop.h"
 
 static void undoworker_sigterm_handler(SIGNAL_ARGS);

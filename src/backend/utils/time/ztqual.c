@@ -335,11 +335,12 @@ GetTupleFromUndoForAbortedXact(UndoRecPtr urec_ptr, Buffer buffer, int trans_slo
 	ZHeapTuple  undo_tup = ztuple;
 	UnpackedUndoRecord	*urec;
 	UndoRecPtr  prev_urec_ptr;
-	TransactionId	prev_undo_xid = InvalidTransactionId,
-					oldestXidHavingUndo = InvalidTransactionId;
+	TransactionId	prev_undo_xid PG_USED_FOR_ASSERTS_ONLY;
+	TransactionId	oldestXidHavingUndo = InvalidTransactionId;
 	int				trans_slot_id;
 	int				prev_trans_slot_id = trans_slot;
 
+	prev_undo_xid = InvalidTransactionId;
 fetch_prior_undo_record:
 	prev_urec_ptr = InvalidUndoRecPtr;
 	trans_slot_id = InvalidXactSlotId;

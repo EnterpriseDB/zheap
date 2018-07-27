@@ -159,7 +159,7 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 
 	for (; tupindex < vacrelstats->num_dead_tuples; tupindex++)
 	{
-		BlockNumber tblk;
+		BlockNumber tblk PG_USED_FOR_ASSERTS_ONLY;
 		OffsetNumber toff;
 
 		tblk = ItemPointerGetBlockNumber(&vacrelstats->dead_tuples[tupindex]);

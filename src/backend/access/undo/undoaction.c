@@ -763,7 +763,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					if (!(ZHeapTupleHasMultiLockers(infomask)))
 					{
 						int			trans_slot;
-						int			prev_trans_slot;
+						int			prev_trans_slot PG_USED_FOR_ASSERTS_ONLY;
 						TransactionId	slot_xid;
 
 						prev_trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);

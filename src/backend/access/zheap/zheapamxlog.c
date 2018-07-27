@@ -1394,7 +1394,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		char	   *tupdata;
 		char	   *endptr;
 		int		trans_slot_id = 0;
-		int		prev_trans_slot_id;
+		int		prev_trans_slot_id PG_USED_FOR_ASSERTS_ONLY;
 		Size		len;
 		OffsetNumber offnum;
 		int			j = 0;

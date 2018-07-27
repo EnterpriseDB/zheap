@@ -909,6 +909,9 @@ UndoRecordAllocateMulti(UnpackedUndoRecord *undorecords, int nrecords,
 	bool	log_switched = false;
 	int	i;
 
+	/* There must be at least one undo record. */
+	Assert(nrecords > 0);
+
 	/*
 	 * If this is the first undo record for this transaction then set the
 	 * uur_next to the SpecialUndoRecPtr.  This is the indication to allocate
