@@ -331,5 +331,7 @@ extern void UndoLogSetLSN(XLogRecPtr lsn);
 extern void LogUndoMetaData(xl_undolog_meta *xlrec);
 /* Redo interface. */
 extern void undolog_redo(XLogReaderState *record);
+/* Discard the undo logs for temp tables */
+extern void TempUndoDiscard(UndoLogNumber);
 
 #endif

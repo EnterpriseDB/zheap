@@ -50,6 +50,7 @@
 #include "storage/buf.h"
 #include "storage/bufmgr.h"
 #include "miscadmin.h"
+#include "commands/tablecmds.h"
 
 /*
  * FIXME:  Do we want to support undo tuple size which is more than the BLCKSZ
@@ -1005,6 +1006,27 @@ resize:
 		undometa->meta = log->meta;
 		undometa->logno = log->logno;
 		undometa->xid = log->xid;
+	}
+
+	/*
+	 * If the insertion is for temp table then register an on commit
+	 * action for discarding the undo logs.
+	 */
+	if (upersistence == UNDO_TEMP)
+	{
+		/*
+		 * We only need to register when we are inserting in temp undo logs
+		 * for the first time after the discard.
+		 */
+		if (log->meta.insert == log->meta.discard)
+		{
+			/*
+			 * XXX Here, we are overriding the first parameter of function
+			 * which is a unsigned int with an integer argument, that should
+			 * work fine because logno will always be positive.
+			 */
+			register_on_commit_action(log->logno, ONCOMMIT_TEMP_DISCARD);
+		}
 	}
 
 	UndoLogAdvance(urecptr, size, upersistence);

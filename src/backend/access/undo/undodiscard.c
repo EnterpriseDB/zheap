@@ -394,3 +394,23 @@ FetchLatestUndoPtrForXid(UndoRecPtr urecptr, UnpackedUndoRecord *uur_start,
 
 	return from_urecptr;
 }
+
+/*
+ * Discard the undo logs for temp tables.
+ */
+void
+TempUndoDiscard(UndoLogNumber logno)
+{
+	UndoLogControl *log = UndoLogGet(logno);
+
+	/*
+	 * Discard the undo log for temp table only. Ensure that there is
+	 * something to be discarded there.
+	 */
+	Assert (log->meta.persistence == UNDO_TEMP);
+
+	/* Process the undo log. */
+	UndoLogDiscard(MakeUndoRecPtr(log->logno, log->meta.insert),
+				   InvalidTransactionId);
+	elog(LOG, "Undo discarded for temp tables");
+}
