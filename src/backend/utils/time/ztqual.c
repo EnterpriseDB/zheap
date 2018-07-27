@@ -1210,7 +1210,7 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 			 */
 			trans_slot = GetTransactionSlotInfo(buffer, off, trans_slot,
 												&tmp_epoch, &xid, &urec_ptr,
-												true, true);
+												true, false);
 			xid = InvalidTransactionId;
 			FetchTransInfoFromUndo(&undo_tup, &epoch, &xid, &cid, &urec_ptr, false);
 		}
@@ -1218,7 +1218,7 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 		{
 			trans_slot = GetTransactionSlotInfo(buffer, off, trans_slot,
 												&tmp_epoch, &xid, &urec_ptr,
-												true, true);
+												true, false);
 			epoch = (uint64) tmp_epoch;
 			cid = ZHeapPageGetCid(buffer, trans_slot, tmp_epoch, xid, urec_ptr, off);
 		}
