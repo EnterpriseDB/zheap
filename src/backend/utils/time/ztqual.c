@@ -1261,7 +1261,13 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 		else
 			return NULL;	/* deleted before scan started */
 	}
-	else if (XidInMVCCSnapshot(xid, snapshot))
+	else if (IsMVCCSnapshot(snapshot) && XidInMVCCSnapshot(xid, snapshot))
+		return GetTupleFromUndoWithOffset(urec_ptr,
+										  snapshot,
+										  buffer,
+										  off,
+										  trans_slot);
+	else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(xid))
 		return GetTupleFromUndoWithOffset(urec_ptr,
 										  snapshot,
 										  buffer,
