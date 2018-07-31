@@ -18,6 +18,7 @@ SUBDIRS = \
 		  test_rbtree \
 		  test_rls_hooks \
 		  test_shm_mq \
+		  test_undo \
 		  worker_spi
 
 $(recurse)
