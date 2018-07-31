@@ -773,6 +773,15 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 
 	Assert(params != NULL);
 
+	/*
+	 * For zheap, since vacuum process also reserves transaction slot
+	 * in page, other backend can't ignore this while calculating
+	 * OldestXmin/RecentXmin.  See GetSnapshotData for details.
+	 */
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	MyPgXact->vacuumFlags &= ~PROC_IN_VACUUM;
+	LWLockRelease(ProcArrayLock);
+
 	/* measure elapsed time iff autovacuum logging requires it */
 	if (IsAutoVacuumWorkerProcess() && params->log_min_duration >= 0)
 	{
@@ -788,15 +797,11 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 	vac_strategy = bstrategy;
 
 	/*
-	 * We can always ignore processes running lazy vacuum.  This is because we
-	 * use these values only for deciding which tuples we must keep in the
-	 * tables.  Since lazy vacuum doesn't write its XID anywhere, it's safe to
-	 * ignore it.  In theory it could be problematic to ignore lazy vacuums in
-	 * a full vacuum, but keep in mind that only one vacuum process can be
-	 * working on a particular table at any time, and that each vacuum is
-	 * always an independent transaction.
+	 * We can't ignore processes running lazy vacuum on zheap relations because,
+	 * like other backends operating on zheap, lazy vacuum also reserves a
+	 * transaction slot in the page for pruning purpose.
 	 */
-	OldestXmin = GetOldestXmin(onerel, PROCARRAY_FLAGS_VACUUM);
+	OldestXmin = GetOldestXmin(onerel, PROCARRAY_FLAGS_DEFAULT);
 
 	Assert(TransactionIdIsNormal(OldestXmin));
 
