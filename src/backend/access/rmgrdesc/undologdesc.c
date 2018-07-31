@@ -95,6 +95,9 @@ undolog_identify(uint8 info)
 		case XLOG_UNDOLOG_DISCARD:
 			id = "DISCARD";
 			break;
+		case XLOG_UNDOLOG_REWIND:
+			id = "REWIND";
+			break;
 	}
 
 	return id;
