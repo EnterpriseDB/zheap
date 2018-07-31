@@ -40,6 +40,7 @@
 #include "storage/bufmgr.h"
 #include "storage/buf_internals.h"
 #include "storage/lmgr.h"
+#include "storage/proc.h"
 #include "utils/lsyscache.h"
 #include "utils/relfilenodemap.h"
 
@@ -83,7 +84,6 @@ static int GetTPDBuffer(Relation rel, BlockNumber blk, Buffer tpd_buf,
 						TPDACTION tpd_action, bool *already_exists);
 static bool TPDBufferAlreadyRegistered(Buffer tpd_buf);
 static void ReleaseLastTPDBuffer(Buffer buf);
-
 static Size PageGetTPDFreeSpace(Page page);
 
 /*
@@ -243,6 +243,7 @@ AllocateAndFormTPDEntry(Buffer buf, OffsetNumber offset,
 		return NULL;
 
 	/* form tpd entry header */
+	tpe_header.blkno = BufferGetBlockNumber(buf);
 	tpe_header.tpe_num_map_entries = num_map_entries;
 	tpe_header.tpe_num_slots = INITIAL_TRANS_SLOTS_IN_TPD_ENTRY;
 	tpe_header.tpe_flags = TPE_ONE_BYTE;
@@ -354,7 +355,14 @@ AllocateAndFormTPDEntry(Buffer buf, OffsetNumber offset,
  * TPDPageAddEntry - Add the given to TPD entry on the page and
  * move the upper to point to the next free location.
  *
- * This function returns the page offset location of the entry.
+ * Return value is the offset at which it was inserted, or InvalidOffsetNumber
+ * if the item is not inserted for any reason.  A WARNING is issued indicating
+ * the reason for the refusal.
+ *
+ * This function is same as PageAddItemExtended, but has different
+ * alignment requirements.  We might want to deal with that by passing
+ * additional argument to PageAddItemExtended, but for now we have kept
+ * it as a separate function.
  */
 OffsetNumber
 TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
@@ -402,7 +410,31 @@ TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 	}
 	else
 	{
-		offnum = limit;
+		/* offsetNumber was not passed in, so find a free slot */
+		/* if no free slot, we'll put it at limit (1st open slot) */
+		if (PageHasFreeLinePointers(phdr))
+		{
+			/*
+			 * Look for "recyclable" (unused) ItemId.  We check for no storage
+			 * as well, just to be paranoid --- unused items should never have
+			 * storage.
+			 */
+			for (offnum = 1; offnum < limit; offnum++)
+			{
+				itemId = PageGetItemId(phdr, offnum);
+				if (!ItemIdIsUsed(itemId) && !ItemIdHasStorage(itemId))
+					break;
+			}
+			if (offnum >= limit)
+			{
+				/* the hint is wrong, so reset it */
+				PageClearHasFreeLinePointers(phdr);
+			}
+		}
+		else
+		{
+			offnum = limit;
+		}
 	}
 
 	/* Reject placing items beyond the first unused line pointer */
@@ -419,8 +451,18 @@ TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 		return InvalidOffsetNumber;
 	}
 
+	/*
+	 * Compute new lower and upper pointers for page, see if it'll fit.
+	 *
+	 * Note: do arithmetic as signed ints, to avoid mistakes if, say,
+	 * alignedSize > pd_upper.
+	 */
+	if (offnum == limit || needshuffle)
+		lower = phdr->pd_lower + sizeof(ItemIdData);
+	else
+		lower = phdr->pd_lower;
+
 	upper = (int) phdr->pd_upper - (int) size;
-	lower = phdr->pd_lower + sizeof(ItemIdData);
 
 	if (lower > upper)
 		return InvalidOffsetNumber;
@@ -472,6 +514,66 @@ SetTPDLocation(Buffer heapbuffer, Buffer tpdbuffer, OffsetNumber offset)
 			(opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid & ~OFFSET_MASK) | offset;
 
 	phdr->pd_flags |= PD_PAGE_HAS_TPD_SLOT;
+}
+
+/*
+ * ClearTPDLocation - Clear TPD entry location in the last transaction slot of
+ *		heap page and indicate the same in page.
+ */
+void
+ClearTPDLocation(Page heappage)
+{
+	PageHeader	phdr;
+	ZHeapPageOpaque	opaque;
+
+	phdr = (PageHeader) heappage;
+
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
+
+	/* clear the last transaction slot info */
+	opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid_epoch = 0;
+	opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid =
+											InvalidTransactionId;
+	opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].urec_ptr =
+											InvalidUndoRecPtr;
+
+	phdr->pd_flags &= ~PD_PAGE_HAS_TPD_SLOT;
+}
+
+/*
+ * LogClearTPDLocation - Write a WAL record for clearing TPD location.
+ */
+static void
+LogClearTPDLocation(Buffer buffer)
+{
+	XLogRecPtr	recptr;
+
+	XLogBeginInsert();
+	XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+
+	recptr = XLogInsert(RM_TPD_ID, XLOG_TPD_CLEAR_LOCATION);
+
+	PageSetLSN(BufferGetPage(buffer), recptr);
+}
+
+/*
+ * LogAndClearTPDLocation - Clear the TPD location from heap page and WAL log
+ *			it.
+ */
+static void
+LogAndClearTPDLocation(Relation relation, Buffer heapbuf, bool *tpd_e_pruned)
+{
+	START_CRIT_SECTION();
+
+	ClearTPDLocation(BufferGetPage(heapbuf));
+	MarkBufferDirty(heapbuf);
+	if (RelationNeedsWAL(relation))
+		LogClearTPDLocation(heapbuf);
+
+	END_CRIT_SECTION();
+
+	if (tpd_e_pruned)
+		*tpd_e_pruned = true;
 }
 
 /*
@@ -576,16 +678,31 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 
 		if (tpdpageFreeSpace < size_tpd_entry)
 		{
+			int		entries_removed;
+
 			/*
-			 * XXX Here, we can have an optimization such that instead of
-			 * allocating a new page, we can search other TPD pages starting
-			 * from the first_used_tpd_page till we reach last_used_tpd_page.
-			 * However, I think that can help only when we have a mechanism
-			 * to prune the TPD pages.
+			 * Prune the TPD page to make space for new TPD entries.  After
+			 * pruning, check again to see if the TPD entry can be accomodated
+			 * on the page.
 			 */
-			if (!already_exists)
-				ReleaseLastTPDBuffer(tpd_buf);
-			allocate_new_tpd_page = true;
+			entries_removed = TPDPagePrune(relation, tpd_buf);
+
+			if (entries_removed > 0)
+				tpdpageFreeSpace = PageGetTPDFreeSpace(BufferGetPage(tpd_buf));
+
+			if (tpdpageFreeSpace < size_tpd_entry)
+			{
+				/*
+				 * XXX Here, we can have an optimization such that instead of
+				 * allocating a new page, we can search other TPD pages starting
+				 * from the first_used_tpd_page till we reach last_used_tpd_page.
+				 * It is not clear whether such an optimization can help because
+				 * checking all the TPD pages isn't free either.
+				 */
+				if (!already_exists)
+					ReleaseLastTPDBuffer(tpd_buf);
+				allocate_new_tpd_page = true;
+			}
 		}
 	}
 
@@ -788,14 +905,15 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
  * responsibility of the caller to free it.
  */
 TransInfo *
-TPDPageGetTransactionSlots(Relation relation, Page heappage,
-						   OffsetNumber offnum, int *num_trans_slots,
-						   bool keepTPDBufLock, bool checkOffset,
-						   int *tpd_buf_idx)
+TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
+						   OffsetNumber offnum, bool keepTPDBufLock,
+						   bool checkOffset, int *num_trans_slots,
+						   int *tpd_buf_idx, bool *tpd_e_pruned)
 {
 	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
+	Page		heappage = BufferGetPage(heapbuf);
 	ZHeapPageOpaque	zopaque;
-	TransInfo	*trans_slots;
+	TransInfo	*trans_slots = NULL;
 	TransInfo	last_trans_slot_info;
 	Buffer	tpd_buf;
 	Page	tpdpage;
@@ -814,6 +932,10 @@ TPDPageGetTransactionSlots(Relation relation, Page heappage,
 	
 	if (tpd_buf_idx)
 		*tpd_buf_idx = -1;
+	if (num_trans_slots)
+		*num_trans_slots = 0;
+	if (tpd_e_pruned)
+		*tpd_e_pruned = false;
 
 	/* Heap page must have TPD entry. */
 	Assert(phdr->pd_flags & PD_PAGE_HAS_TPD_SLOT);
@@ -842,16 +964,34 @@ TPDPageGetTransactionSlots(Relation relation, Page heappage,
 
 	tpdpage = BufferGetPage(tpd_buf);
 	itemId = PageGetItemId(tpdpage, tpdItemOff);
+
+	/* TPD entry has been pruned */
+	if (!ItemIdIsUsed(itemId))
+	{
+		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+		goto failed;
+	}
+
 	tpd_e_offset = ItemIdGetOffset(itemId);
 
 	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
+
+	/*
+	 * This TPD entry is for some other block, so we can't continue.  This
+	 * indicates that the TPD entry corresponding to heap block has been
+	 * pruned and some other TPD entry has been moved at its location.
+	 */
+	if (tpd_e_hdr.blkno != BufferGetBlockNumber(heapbuf))
+	{
+		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+		goto failed;
+	}
 
 	/* Fixme: We should allocate a bigger TPD entry instead. */
 	if (checkOffset && offnum > tpd_e_hdr.tpe_num_map_entries)
 	{
 		elog(LOG, "TPD entry does not have space for new offset");
-		*num_trans_slots = 0;
-		return NULL;
+		goto failed;
 	}
 
 	if (tpd_e_hdr.tpe_flags & TPE_ONE_BYTE)
@@ -869,6 +1009,7 @@ TPDPageGetTransactionSlots(Relation relation, Page heappage,
 	trans_slots = (TransInfo *) palloc(size_tpd_e_slots);
 	memcpy((char *) trans_slots, tpdpage + loc_trans_slots, size_tpd_e_slots);
 
+failed:
 	if (!keepTPDBufLock)
 	{
 		/*
@@ -896,7 +1037,7 @@ TPDPageGetTransactionSlots(Relation relation, Page heappage,
  * updates if it is able to reserve a slot.
  */
 int
-TPDPageReserveTransSlot(Relation relation, Page heappage, OffsetNumber offnum,
+TPDPageReserveTransSlot(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 						UndoRecPtr *urec_ptr)
 {
 	TransInfo	*trans_slots;
@@ -904,9 +1045,16 @@ TPDPageReserveTransSlot(Relation relation, Page heappage, OffsetNumber offnum,
 	int		num_slots;
 	int		result_slot_no = InvalidXactSlotId;
 	int		buf_idx;
+	bool	tpd_e_pruned;
 
-	trans_slots = TPDPageGetTransactionSlots(relation, heappage, offnum,
-											 &num_slots, true, true, &buf_idx);
+	trans_slots = TPDPageGetTransactionSlots(relation, heapbuf, offnum,
+											 true, true, &num_slots, &buf_idx,
+											 &tpd_e_pruned);
+	if (tpd_e_pruned)
+	{
+		Assert(trans_slots == NULL);
+		Assert(num_slots == 0);
+	}
 
 	for (slot_no = 0; slot_no < num_slots; slot_no++)
 	{
@@ -937,6 +1085,16 @@ TPDPageReserveTransSlot(Relation relation, Page heappage, OffsetNumber offnum,
 	else if (buf_idx != -1)
 		ReleaseLastTPDBuffer(tpd_buffers[buf_idx].buf);
 
+	/*
+	 * As TPD entry is pruned, so last transaction slot must be free on the
+	 * heap page.
+	 */
+	if (tpd_e_pruned)
+	{
+		Assert(result_slot_no == InvalidXactSlotId);
+		result_slot_no = ZHEAP_PAGE_TRANS_SLOTS;
+	}
+
 	return result_slot_no;
 }
 
@@ -951,7 +1109,7 @@ TPDPageReserveTransSlot(Relation relation, Page heappage, OffsetNumber offnum,
  * buffer if we are able to reserve a transaction slot.
  */
 int
-TPDPageGetSlotIfExists(Relation relation, Page heappage, OffsetNumber offnum,
+TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 					   uint32 epoch, TransactionId xid, UndoRecPtr *urec_ptr,
 					   bool keepTPDBufLock, bool checkOffset)
 {
@@ -960,14 +1118,21 @@ TPDPageGetSlotIfExists(Relation relation, Page heappage, OffsetNumber offnum,
 	int		num_slots;
 	int		result_slot_no = InvalidXactSlotId;
 	int		buf_idx;
+	bool	tpd_e_pruned;
 
 	trans_slots = TPDPageGetTransactionSlots(relation,
-											 heappage,
+											 heapbuf,
 											 offnum,
-											 &num_slots,
 											 keepTPDBufLock,
 											 checkOffset,
-											 &buf_idx);
+											 &num_slots,
+											 &buf_idx,
+											 &tpd_e_pruned);
+	if (tpd_e_pruned)
+	{
+		Assert(trans_slots == NULL);
+		Assert(num_slots == 0);
+	}
 
 	for (slot_no = 0; slot_no < num_slots; slot_no++)
 	{
@@ -1078,9 +1243,37 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 
 	tpdpage = BufferGetPage(tpdbuffer);
 	itemId = PageGetItemId(tpdpage, tpdItemOff);
+
+	/* TPD entry has been pruned */
+	if (!ItemIdIsUsed(itemId))
+	{
+		/*
+		 * Ideally, we can clear the TPD location from heap page, but for that
+		 * we need to have an exclusive lock on the heap page.  As this API
+		 * can be called with shared lock on a heap page, we can't perform
+		 * that action.
+		 *
+		 * XXX If it ever turns out to be a performance problem, we can
+		 * release the current lock and acuire the exclusive lock on heap
+		 * page.  Also we need to ensure that the lock on TPD page also needs
+		 * to be released and reacquired as we always follow the protocol of
+		 * acquiring the lock on heap page first and then on TPD page, doing
+		 * it otherway can lead to undetected deadlock.
+		 */
+		goto slot_is_frozen;
+	}
+
 	tpd_e_offset = ItemIdGetOffset(itemId);
 
 	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
+
+	/*
+	 * This TPD entry is for some other block, so we can't continue.  This
+	 * indicates that the TPD entry corresponding to heap block has been
+	 * pruned and some other TPD entry has been moved at its location.
+	 */
+	if (tpd_e_hdr.blkno != BufferGetBlockNumber(heapbuf))
+		goto slot_is_frozen;
 
 	tpd_e_num_map_entries = tpd_e_hdr.tpe_num_map_entries;
 	tpd_entry_data = tpdpage + tpd_e_offset + SizeofTPDEntryHeader;
@@ -1149,6 +1342,20 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 		UnlockReleaseBuffer(tpdbuffer);
 
 	return trans_slot_id;
+
+slot_is_frozen:
+	if (NoTPDBufLock && !keepTPDBufLock)
+		UnlockReleaseBuffer(tpdbuffer);
+
+	trans_slot_id = ZHTUP_SLOT_FROZEN;
+	if (epoch)
+		*epoch = 0;
+	if (xid)
+		*xid = InvalidTransactionId;
+	if (urec_ptr)
+		*urec_ptr = InvalidUndoRecPtr;
+
+	return trans_slot_id;
 }
 
 /*
@@ -1210,9 +1417,20 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 
 	tpdpage = BufferGetPage(tpd_buf);
 	itemId = PageGetItemId(tpdpage, tpdItemOff);
+
+	/*
+	 * TPD entry can't go away as we acquire the lock while reserving the slot
+	 * from TPD entry and keep it till we set the required transaction
+	 * information in the slot.
+	 */
+	Assert(ItemIdIsUsed(itemId));
+
 	tpd_e_offset = ItemIdGetOffset(itemId);
 
 	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
+
+	/* TPD entry can't be pruned. */
+	Assert(tpd_e_hdr.blkno == BufferGetBlockNumber(heapbuf));
 
 	tpd_entry_data = tpdpage + tpd_e_offset + SizeofTPDEntryHeader;
 
@@ -1266,11 +1484,12 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
  * information can get lost.
  */
 void
-TPDPageSetUndo(Page heappage, int trans_slot_id, uint32 epoch,
+TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, uint32 epoch,
 			   TransactionId xid, UndoRecPtr urec_ptr, OffsetNumber *usedoff,
 			   int ucnt)
 {
 	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
+	Page	heappage = BufferGetPage(heapbuf);
 	ZHeapPageOpaque	zopaque;
 	TransInfo	trans_slot_info, last_trans_slot_info;
 	BufferDesc *tpdbufhdr PG_USED_FOR_ASSERTS_ONLY;
@@ -1322,9 +1541,20 @@ TPDPageSetUndo(Page heappage, int trans_slot_id, uint32 epoch,
 
 	tpdpage = BufferGetPage(tpd_buf);
 	itemId = PageGetItemId(tpdpage, tpdItemOff);
+
+	/*
+	 * TPD entry can't go away as we acquire the lock while reserving the slot
+	 * from TPD entry and keep it till we set the required transaction
+	 * information in the slot.
+	 */
+	Assert(ItemIdIsUsed(itemId));
+
 	tpd_e_offset = ItemIdGetOffset(itemId);
 
 	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
+
+	/* TPD entry can't be pruned. */
+	Assert(tpd_e_hdr.blkno == BufferGetBlockNumber(heapbuf));
 
 	tpd_e_num_map_entries = tpd_e_hdr.tpe_num_map_entries;
 	tpd_entry_data = tpdpage + tpd_e_offset + SizeofTPDEntryHeader;

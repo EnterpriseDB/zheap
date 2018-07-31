@@ -136,6 +136,7 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
 	ItemId	lp;
 	Page	page;
 	OffsetNumber	offnum = ItemPointerGetOffsetNumber(ctid);
+	int		out_slot_no PG_USED_FOR_ASSERTS_ONLY;
 
 	page = BufferGetPage(buffer);
 	lp = PageGetItemId(page, offnum);
@@ -156,20 +157,27 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
 		 * We need undo record pointer to fetch the transaction information
 		 * from undo.
 		 */
-		(void) GetTransactionSlotInfo(buffer, offnum, trans_slot,
-									  (uint32 *) &epoch, xid, &urec_ptr,
-									  true, false);
+		out_slot_no = GetTransactionSlotInfo(buffer, offnum, trans_slot,
+											 (uint32 *) &epoch, xid, &urec_ptr,
+											 true, false);
 		*xid = InvalidTransactionId;
 		FetchTransInfoFromUndo(&undo_tup, &epoch, xid, cid, &urec_ptr, false);
 	}
 	else
 	{
-		(void) GetTransactionSlotInfo(buffer, offnum, trans_slot,
-									  (uint32 *) &epoch, xid, &urec_ptr,
-									  true, false);
+		out_slot_no = GetTransactionSlotInfo(buffer, offnum, trans_slot,
+											 (uint32 *) &epoch, xid, &urec_ptr,
+											 true, false);
 		*cid = ZHeapPageGetCid(buffer, trans_slot, (uint32) epoch, *xid,
 							   urec_ptr, offnum);
 	}
+
+	/*
+	 * We always expect non-frozen transaction slot here as the caller tries
+	 * to fetch the ctid of tuples that are visible to the snapshot, so
+	 * corresponding undo record can't be discarded.
+	 */
+	Assert(out_slot_no != ZHTUP_SLOT_FROZEN);
 
 	ZHeapPageGetCtid(trans_slot, buffer, urec_ptr, ctid);
 }
@@ -531,14 +539,20 @@ fetch_prior_undo_record:
 	if (trans_slot_id != ZHTUP_SLOT_FROZEN &&
 		trans_slot_id != prev_trans_slot_id)
 	{
-		(void) GetTransactionSlotInfo(buffer,
-									  ItemPointerGetOffsetNumber(&undo_tup->t_self),
-									  trans_slot_id,
-									  NULL,
-									  NULL,
-									  &prev_urec_ptr,
-									  true,
-									  true);
+		/*
+		 * It is quite possible that the tuple is showing some valid
+		 * transaction slot, but actual slot has been frozen.  This can happen
+		 * when the slot belongs to TPD entry and the corresponding TPD entry
+		 * is pruned.
+		 */
+		trans_slot_id = GetTransactionSlotInfo(buffer,
+											   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+											   trans_slot_id,
+											   NULL,
+											   NULL,
+											   &prev_urec_ptr,
+											   true,
+											   true);
 	}
 
 	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
@@ -718,13 +732,13 @@ GetTupleFromUndoWithOffset(UndoRecPtr urec_ptr, Snapshot snapshot,
 		trans_slot_id != prev_trans_slot_id)
 	{
 		trans_slot_id = GetTransactionSlotInfo(buffer,
-									  ItemPointerGetOffsetNumber(&undo_tup->t_self),
-									  trans_slot_id,
-									  NULL,
-									  NULL,
-									  &prev_urec_ptr,
-									  true,
-									  true);
+											   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+											   trans_slot_id,
+											   NULL,
+											   NULL,
+											   &prev_urec_ptr,
+											   true,
+											   true);
 	}
 
 	return GetVisibleTupleIfAny(prev_urec_ptr, undo_tup,
@@ -829,14 +843,20 @@ fetch_prior_undo_record:
 	if (trans_slot_id != ZHTUP_SLOT_FROZEN &&
 		trans_slot_id != prev_trans_slot_id)
 	{
-		(void) GetTransactionSlotInfo(buffer,
-									  ItemPointerGetOffsetNumber(&undo_tup->t_self),
-									  trans_slot_id,
-									  NULL,
-									  NULL,
-									  &prev_urec_ptr,
-									  true,
-									  true);
+		/*
+		 * It is quite possible that the tuple is showing some valid
+		 * transaction slot, but actual slot has been frozen.  This can happen
+		 * when the slot belongs to TPD entry and the corresponding TPD entry
+		 * is pruned.
+		 */
+		trans_slot_id =  GetTransactionSlotInfo(buffer,
+												ItemPointerGetOffsetNumber(&undo_tup->t_self),
+												trans_slot_id,
+												NULL,
+												NULL,
+												&prev_urec_ptr,
+												true,
+												true);
 	}
 
 	oldestXidHavingUndo = GetXidFromEpochXid(
@@ -1195,6 +1215,7 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 	 * record for the tuples that point to a slot that gets invalidated for
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
+check_trans_slot:
 	if (trans_slot != ZHTUP_SLOT_FROZEN)
 	{
 		if (vis_info & ITEMID_XACT_INVALID)
@@ -1211,6 +1232,15 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 			trans_slot = GetTransactionSlotInfo(buffer, off, trans_slot,
 												&tmp_epoch, &xid, &urec_ptr,
 												true, false);
+			/*
+			 * It is quite possible that the tuple is showing some valid
+			 * transaction slot, but actual slot has been frozen.  This can happen
+			 * when the slot belongs to TPD entry and the corresponding TPD entry
+			 * is pruned.
+			 */
+			if (trans_slot == ZHTUP_SLOT_FROZEN)
+				goto check_trans_slot;
+
 			xid = InvalidTransactionId;
 			FetchTransInfoFromUndo(&undo_tup, &epoch, &xid, &cid, &urec_ptr, false);
 		}
@@ -1219,6 +1249,9 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 			trans_slot = GetTransactionSlotInfo(buffer, off, trans_slot,
 												&tmp_epoch, &xid, &urec_ptr,
 												true, false);
+			if (trans_slot == ZHTUP_SLOT_FROZEN)
+				goto check_trans_slot;
+
 			epoch = (uint64) tmp_epoch;
 			cid = ZHeapPageGetCid(buffer, trans_slot, tmp_epoch, xid, urec_ptr, off);
 		}
@@ -1903,15 +1936,23 @@ ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer,
 	if (ZHeapTupleIsUpdated(zhtup->t_data->t_infomask) && ctid)
 	{
 		UndoRecPtr	urec_ptr;
+		int		out_slot_no PG_USED_FOR_ASSERTS_ONLY;
 
-		(void) GetTransactionSlotInfo(buffer,
-									  ItemPointerGetOffsetNumber(&zhtup->t_self),
-									  ZHeapTupleHeaderGetXactSlot(zhtup->t_data),
-									  NULL,
-									  NULL,
-									  &urec_ptr,
-									  true,
-									  false);
+		out_slot_no = GetTransactionSlotInfo(buffer,
+											 ItemPointerGetOffsetNumber(&zhtup->t_self),
+											 ZHeapTupleHeaderGetXactSlot(zhtup->t_data),
+											 NULL,
+											 NULL,
+											 &urec_ptr,
+											 true,
+											 false);
+		/*
+		 * We always expect non-frozen transaction slot here as the caller tries
+		 * to fetch the ctid of tuples that are visible to the snapshot, so
+		 * corresponding undo record can't be discarded.
+		 */
+		Assert(out_slot_no != ZHTUP_SLOT_FROZEN);
+
 		ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
 	}
 	return zhtup;

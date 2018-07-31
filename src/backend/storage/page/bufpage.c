@@ -418,17 +418,6 @@ PageRestoreTempPage(Page tempPage, Page oldPage)
 	pfree(tempPage);
 }
 
-/*
- * sorting support for PageRepairFragmentation and PageIndexMultiDelete
- */
-typedef struct itemIdSortData
-{
-	uint16		offsetindex;	/* linp array index */
-	int16		itemoff;		/* page offset of item data */
-	uint16		alignedlen;		/* MAXALIGN(item data len) */
-} itemIdSortData;
-typedef itemIdSortData *itemIdSort;
-
 static int
 itemoffcompare(const void *itemidp1, const void *itemidp2)
 {
@@ -441,7 +430,7 @@ itemoffcompare(const void *itemidp1, const void *itemidp2)
  * After removing or marking some line pointers unused, move the tuples to
  * remove the gaps caused by the removed items.
  */
-static void
+void
 compactify_tuples(itemIdSort itemidbase, int nitems, Page page)
 {
 	PageHeader	phdr = (PageHeader) page;
@@ -650,8 +639,17 @@ ZPageRepairFragmentation(Buffer buffer)
 				 * if the multi-locker is set we can get the actual transaction and
 				 * check the status of the transaction.
 				 */
-				(void) GetTransactionSlotInfo(buffer, i, trans_slot, &epoch,
-											  &xid, &urec_ptr, true, false);
+				trans_slot = GetTransactionSlotInfo(buffer, i, trans_slot,
+													&epoch, &xid, &urec_ptr,
+													true, false);
+				/*
+				 * It is quite possible that the item is showing some
+				 * valid transaction slot, but actual slot has been frozen.
+				 * This can happen when the slot belongs to TPD entry and
+				 * the corresponding TPD entry is pruned.
+				 */
+				if (trans_slot == ZHTUP_SLOT_FROZEN)
+					continue;
 
 				if (!TransactionIdDidCommit(xid))
 					return;
@@ -703,10 +701,22 @@ ZPageRepairFragmentation(Buffer buffer)
 				 * transaction information from the entry would have been
 				 * cleared.  See PageFreezeTransSlots.
 				 */
-				(void) GetTransactionSlotInfo(buffer, i, trans_slot, &epoch, &xid,
-											  &urec_ptr, true, false);
-				if (!TransactionIdDidCommit(xid))
-					continue;
+				if (trans_slot != ZHTUP_SLOT_FROZEN)
+				{
+					trans_slot = GetTransactionSlotInfo(buffer, i, trans_slot,
+														&epoch, &xid,
+														&urec_ptr, true,
+														false);
+					/*
+					 * It is quite possible that the item is showing some
+					 * valid transaction slot, but actual slot has been frozen.
+					 * This can happen when the slot belongs to TPD entry and
+					 * the corresponding TPD entry is pruned.
+					 */
+					if (trans_slot != ZHTUP_SLOT_FROZEN &&
+						!TransactionIdDidCommit(xid))
+						continue;
+				}
 			}
 
 			/* Unused entries should have lp_len = 0, but make sure */

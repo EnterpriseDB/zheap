@@ -714,10 +714,15 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 							zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
 					}
 
-					(void) GetTransactionSlotInfo(buffer, uur->uur_offset,
-												  trans_slot, NULL,
-												  &slot_xid,
-												  NULL, false, false);
+					trans_slot = GetTransactionSlotInfo(buffer,
+														uur->uur_offset,
+														trans_slot,
+														NULL,
+														&slot_xid,
+														NULL,
+														false,
+														false);
+
 					if (TransactionIdEquals(uur->uur_prevxid,
 											FrozenTransactionId))
 					{
@@ -771,10 +776,14 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 						zhtup->t_infomask = undo_tup_hdr->t_infomask;
 
 						trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
-						(void) GetTransactionSlotInfo(buffer, uur->uur_offset,
-													  trans_slot, NULL,
-													  &slot_xid,
-													  NULL, false, false);
+						trans_slot = GetTransactionSlotInfo(buffer,
+															uur->uur_offset,
+															trans_slot,
+															NULL,
+															&slot_xid,
+															NULL,
+															false,
+															false);
 
 						/*
 						 * For a non multi locker case, the slot in undo (and

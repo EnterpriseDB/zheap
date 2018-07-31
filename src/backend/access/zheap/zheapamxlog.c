@@ -176,7 +176,7 @@ zheap_xlog_insert(XLogReaderState *record)
 		else
 			trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup);
 		
-		PageSetUNDO(undorecord, page, trans_slot_id, xid_epoch, xid, urecptr,
+		PageSetUNDO(undorecord, buffer, trans_slot_id, xid_epoch, xid, urecptr,
 					NULL, 0);
 		PageSetLSN(page, lsn);
 
@@ -197,7 +197,7 @@ zheap_xlog_insert(XLogReaderState *record)
 		action = XLogReadTPDBuffer(record, 1);
 		if (action == BLK_NEEDS_REDO)
 		{
-			TPDPageSetUndo(BufferGetPage(buffer),
+			TPDPageSetUndo(buffer,
 						   *tpd_trans_slot_id,
 						   xid_epoch,
 						   xid,
@@ -381,8 +381,8 @@ zheap_xlog_delete(XLogReaderState *record)
 		zheaptup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
 		zheaptup.t_data->t_infomask = xlrec->infomask;
 
-		PageSetUNDO(undorecord, page, xlrec->trans_slot_id, xid_epoch, xid, urecptr,
-					NULL, 0);
+		PageSetUNDO(undorecord, buffer, xlrec->trans_slot_id, xid_epoch, xid,
+					urecptr, NULL, 0);
 
 		/* Mark the page as a candidate for pruning */
 		ZPageSetPrunable(page, XLogRecGetXid(record));
@@ -399,7 +399,7 @@ zheap_xlog_delete(XLogReaderState *record)
 		action = XLogReadTPDBuffer(record, 1);
 		if (action == BLK_NEEDS_REDO)
 		{
-			TPDPageSetUndo(page,
+			TPDPageSetUndo(buffer,
 						   xlrec->trans_slot_id,
 						   xid_epoch,
 						   xid,
@@ -722,7 +722,7 @@ zheap_xlog_update(XLogReaderState *record)
 		ZHeapTupleHeaderSetXactSlot(oldtup.t_data, xlrec->old_trans_slot_id);
 
 		if (oldblk != newblk)
-			PageSetUNDO(undorecord, oldpage, xlrec->old_trans_slot_id,
+			PageSetUNDO(undorecord, oldbuffer, xlrec->old_trans_slot_id,
 						xid_epoch, xid, urecptr, NULL, 0);
 
 		/* Mark the page as a candidate for pruning */
@@ -892,7 +892,7 @@ zheap_xlog_update(XLogReaderState *record)
 			}
 
 			memcpy((char *) oldtup.t_data, (char *) newtup, newlen);
-			PageSetUNDO(undorecord, newpage, xlrec->old_trans_slot_id,
+			PageSetUNDO(undorecord, newbuffer, xlrec->old_trans_slot_id,
 						xid_epoch, xid, urecptr, NULL, 0);
 		}
 		else
@@ -901,7 +901,7 @@ zheap_xlog_update(XLogReaderState *record)
 						 true, true) == InvalidOffsetNumber)
 				elog(PANIC, "failed to add tuple");
 			PageSetUNDO((newbuffer == oldbuffer) ? undorecord : newundorecord,
-						newpage, trans_slot_id, xid_epoch, xid, newurecptr,
+						newbuffer, trans_slot_id, xid_epoch, xid, newurecptr,
 						NULL, 0);
 		}
 
@@ -939,7 +939,7 @@ zheap_xlog_update(XLogReaderState *record)
 				ucnt = 1;
 			}
 
-			TPDPageSetUndo(oldpage,
+			TPDPageSetUndo(oldbuffer,
 						   xlrec->old_trans_slot_id,
 						   xid_epoch,
 						   xid,
@@ -955,7 +955,7 @@ zheap_xlog_update(XLogReaderState *record)
 	{
 		if (XLogReadTPDBuffer(record, 3) == BLK_NEEDS_REDO)
 		{
-			TPDPageSetUndo(newpage,
+			TPDPageSetUndo(newbuffer,
 						   *new_trans_slot_id,
 						   xid_epoch,
 						   xid,
@@ -1221,7 +1221,7 @@ zheap_xlog_lock(XLogReaderState *record)
 		zheaptup.t_len = ItemIdGetLength(lp);
 		ZHeapTupleHeaderSetXactSlot(zheaptup.t_data, xlrec->trans_slot_id);
 		zheaptup.t_data->t_infomask = xlrec->infomask;
-		PageSetUNDO(undorecord, page, undo_slot_no, xid_epoch, xid, urecptr,
+		PageSetUNDO(undorecord, buffer, undo_slot_no, xid_epoch, xid, urecptr,
 					NULL, 0);
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
@@ -1232,7 +1232,7 @@ zheap_xlog_lock(XLogReaderState *record)
 		action = XLogReadTPDBuffer(record, 1);
 		if (action == BLK_NEEDS_REDO)
 		{
-			TPDPageSetUndo(page,
+			TPDPageSetUndo(buffer,
 						   undo_slot_no,
 						   xid_epoch,
 						   xid,
@@ -1501,8 +1501,8 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		}
 
 		if (!skip_undo)
-			PageSetUNDO(undorecord[nranges-1], page, trans_slot_id, xid_epoch,
-							xid, urecptr, NULL, 0);
+			PageSetUNDO(undorecord[nranges-1], buffer, trans_slot_id,
+						xid_epoch, xid, urecptr, NULL, 0);
 
 		PageSetLSN(page, lsn);
 		if (xlrec->flags & XLZ_INSERT_ALL_VISIBLE_CLEARED)
@@ -1540,7 +1540,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 				}
 			}
 
-			TPDPageSetUndo(BufferGetPage(buffer),
+			TPDPageSetUndo(buffer,
 						   *tpd_trans_slot_id,
 						   xid_epoch,
 						   xid,
@@ -1786,7 +1786,7 @@ zheap_xlog_unused(XLogReaderState *record)
 			itemid = PageGetItemId(page, unused[i]);
 			ItemIdSetUnusedExtended(itemid, xlrec->trans_slot_id);
 		}
-		PageSetUNDO(undorecord, page, xlrec->trans_slot_id, xid_epoch, xid,
+		PageSetUNDO(undorecord, buffer, xlrec->trans_slot_id, xid_epoch, xid,
 					urecptr, NULL, 0);
 		ZPageRepairFragmentation(buffer);
 
@@ -1806,7 +1806,7 @@ zheap_xlog_unused(XLogReaderState *record)
 		action = XLogReadTPDBuffer(record, 1);
 		if (action == BLK_NEEDS_REDO)
 		{
-			TPDPageSetUndo(BufferGetPage(buffer),
+			TPDPageSetUndo(buffer,
 						   xlrec->trans_slot_id,
 						   xid_epoch,
 						   xid,

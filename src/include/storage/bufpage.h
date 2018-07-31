@@ -202,6 +202,18 @@ extern bool TransactionIdIsInProgress(TransactionId xid);
 #define PG_PAGE_LAYOUT_VERSION		4
 #define PG_DATA_CHECKSUM_VERSION	1
 
+/*
+ * sorting support for PageRepairFragmentation and PageIndexMultiDelete
+ */
+typedef struct itemIdSortData
+{
+	uint16		offsetindex;	/* linp array index */
+	int16		itemoff;		/* page offset of item data */
+	uint16		alignedlen;		/* MAXALIGN(item data len) */
+} itemIdSortData;
+typedef itemIdSortData *itemIdSort;
+
+
 /* ----------------------------------------------------------------
  *						page support macros
  * ----------------------------------------------------------------
@@ -443,6 +455,7 @@ extern Page PageGetTempPage(Page page);
 extern Page PageGetTempPageCopy(Page page);
 extern Page PageGetTempPageCopySpecial(Page page);
 extern void PageRestoreTempPage(Page tempPage, Page oldPage);
+extern void compactify_tuples(itemIdSort itemidbase, int nitems, Page page);
 extern void PageRepairFragmentation(Page page);
 extern void ZPageRepairFragmentation(Buffer buffer);
 extern Size PageGetFreeSpace(Page page);

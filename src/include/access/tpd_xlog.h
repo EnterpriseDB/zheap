@@ -24,6 +24,8 @@
  * WAL record definitions for tpd.c's WAL operations
  */
 #define XLOG_ALLOCATE_TPD_ENTRY			0x00
+#define XLOG_TPD_CLEAN					0x10
+#define XLOG_TPD_CLEAR_LOCATION			0x20
 
 #define	XLOG_TPD_OPMASK				0x70
 

@@ -41,6 +41,12 @@ tpd_identify(uint8 info)
 		case XLOG_ALLOCATE_TPD_ENTRY:
 			id = "ALLOCATE TPD ENTRY";
 			break;
+		case XLOG_TPD_CLEAN:
+			id = "TPD CLEAN";
+			break;
+		case XLOG_TPD_CLEAR_LOCATION:
+			id = "TPD CLEAR LOCATION";
+			break;
 	}
 
 	return id;

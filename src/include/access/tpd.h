@@ -46,6 +46,8 @@ typedef TPDPageOpaqueData *TPDPageOpaque;
 
 typedef struct TPDEntryHeaderData
 {
+	BlockNumber	blkno;		/* Heap block number to which this TPD entry
+							 * belongs. */
 	uint16		tpe_num_map_entries;
 	uint16		tpe_num_slots;
 	uint16		tpe_flags;
@@ -82,15 +84,17 @@ typedef TPDEntryHeaderData *TPDEntryHeader;
 extern OffsetNumber TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 							OffsetNumber offset);
 extern void SetTPDLocation(Buffer heapbuffer, Buffer tpdbuffer, uint16 offset);
+extern void ClearTPDLocation(Page heappage);
 extern void TPDInitPage(Page page, Size pageSize);
 extern int TPDAllocateAndReserveTransSlot(Relation relation, Buffer buf,
 								OffsetNumber offnum, UndoRecPtr *urec_ptr);
-extern TransInfo *TPDPageGetTransactionSlots(Relation relation, Page heappage,
-						   OffsetNumber offnum, int *num_trans_slots,
-						   bool keepTPDBufLock, bool checkOffset, int *tpd_buf_idx);
-extern int TPDPageReserveTransSlot(Relation relation, Page heappage,
+extern TransInfo *TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
+						   OffsetNumber offnum, bool keepTPDBufLock,
+						   bool checkOffset, int *num_trans_slots,
+						   int *tpd_buf_idx, bool *tpd_e_pruned);
+extern int TPDPageReserveTransSlot(Relation relation, Buffer heapbuf,
 						OffsetNumber offset, UndoRecPtr *urec_ptr);
-extern int TPDPageGetSlotIfExists(Relation relation, Page heappage, OffsetNumber offnum,
+extern int TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 					   uint32 epoch, TransactionId xid, UndoRecPtr *urec_ptr,
 					   bool keepTPDBufLock, bool checkOffset);
 extern int TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
@@ -98,7 +102,7 @@ extern int TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 					UndoRecPtr *urec_ptr, bool NoTPDBufLock, bool keepTPDBufLock);
 extern void TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 					uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr);
-extern void TPDPageSetUndo(Page heappage, int trans_slot_id, uint32 epoch,
+extern void TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, uint32 epoch,
 				TransactionId xid, UndoRecPtr urec_ptr, OffsetNumber *usedoff,
 				int ucnt);
 extern XLogRedoAction XLogReadTPDBuffer(XLogReaderState *record,
@@ -106,5 +110,10 @@ extern XLogRedoAction XLogReadTPDBuffer(XLogReaderState *record,
 extern uint8 RegisterTPDBuffer(Page heappage, uint8 block_id);
 extern void TPDPageSetLSN(Page heappage, XLogRecPtr recptr);
 extern void UnlockReleaseTPDBuffers(void);
+
+/* interfaces exposed via prunetpd.c */
+extern int TPDPagePrune(Relation rel, Buffer tpdbuf);
+extern void TPDPagePruneExecute(Buffer tpdbuf, OffsetNumber *nowunused,
+								int nunused);
 
 #endif   /* TPD_H */

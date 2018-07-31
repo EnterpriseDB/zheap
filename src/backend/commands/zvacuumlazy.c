@@ -244,7 +244,7 @@ reacquire_slot:
 	if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 	{
 		PageSetUNDO(undorecord,
-					page,
+					buffer,
 					trans_slot_id,
 					epoch,
 					xid,
@@ -255,7 +255,7 @@ reacquire_slot:
 	else
 	{
 		PageSetUNDO(undorecord,
-					page,
+					buffer,
 					trans_slot_id,
 					epoch,
 					xid,

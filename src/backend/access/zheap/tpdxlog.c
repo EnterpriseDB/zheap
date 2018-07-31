@@ -153,6 +153,71 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 		UnlockReleaseBuffer(last_used_buf);
 }
 
+/*
+ * replay of pruning tpd page
+ */
+static void
+tpd_xlog_clean(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer	tpdbuf;
+	XLogRedoAction action;
+
+	/*
+	 * If we have a full-page image, restore it (using a cleanup lock) and
+	 * we're done.
+	 */
+	action = XLogReadBufferForRedoExtended(record, 0, RBM_NORMAL, true,
+										   &tpdbuf);
+	if (action == BLK_NEEDS_REDO)
+	{
+		Page		tpdpage = (Page) BufferGetPage(tpdbuf);
+		OffsetNumber *end;
+		OffsetNumber *nowunused;
+		int			nunused;
+		Size		datalen;
+
+		nowunused = (OffsetNumber *) XLogRecGetBlockData(record, 0, &datalen);
+		end = (OffsetNumber *) ((char *) nowunused + datalen);
+		nunused = (end - nowunused);
+		Assert(nunused >= 0);
+
+		/* Update all item pointers per the record, and repair fragmentation */
+		TPDPagePruneExecute(tpdbuf, nowunused, nunused);
+
+		/*
+		 * Note: we don't worry about updating the page's prunability hints.
+		 * At worst this will cause an extra prune cycle to occur soon.
+		 */
+
+		MarkBufferDirty(tpdbuf);
+		PageSetLSN(tpdpage, lsn);
+	}
+	if (BufferIsValid(tpdbuf))
+		UnlockReleaseBuffer(tpdbuf);
+}
+
+/*
+ * replay for clearing tpd location from heap page.
+ */
+static void
+tpd_xlog_clear_location(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer	buffer;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page	page = (Page) BufferGetPage(buffer);
+
+		ClearTPDLocation(page);
+		MarkBufferDirty(buffer);
+		PageSetLSN(page, lsn);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
 void
 tpd_redo(XLogReaderState *record)
 {
@@ -163,6 +228,10 @@ tpd_redo(XLogReaderState *record)
 		case XLOG_ALLOCATE_TPD_ENTRY:
 			tpd_xlog_allocate_entry(record);
 			break;
+		case XLOG_TPD_CLEAN:
+			tpd_xlog_clean(record);
+		case XLOG_TPD_CLEAR_LOCATION:
+			tpd_xlog_clear_location(record);
 		default:
 			elog(PANIC, "tpd_redo: unknown op code %u", info);
 	}

@@ -116,7 +116,7 @@ extern void zheap_get_latest_tid(Relation relation,
 					 ItemPointer tid);
 extern void PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id,
 					uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr);
-extern void PageSetUNDO(UnpackedUndoRecord undorecord, Page page,
+extern void PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer,
 				int trans_slot_id, uint32 epoch, TransactionId xid,
 				UndoRecPtr urecptr, OffsetNumber *usedoff, int ucnt);
 extern UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
