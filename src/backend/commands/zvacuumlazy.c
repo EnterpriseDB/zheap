@@ -186,7 +186,7 @@ reacquire_slot:
 	 */
 	trans_slot_id = PageReserveTransactionSlot(onerel,
 											   buffer,
-											   InvalidOffsetNumber,
+											   PageGetMaxOffsetNumber(page),
 											   epoch,
 											   xid,
 											   &prev_urecptr,
