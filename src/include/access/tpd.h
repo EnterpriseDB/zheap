@@ -32,6 +32,8 @@ typedef struct TPDPageOpaqueData
 
 typedef TPDPageOpaqueData *TPDPageOpaque;
 
+#define SizeofTPDPageOpaque offsetof(TPDPageOpaqueData, tpd_latest_xid)
+
 /* TPD entry information */
 #define INITIAL_TRANS_SLOTS_IN_TPD_ENTRY	8
 /*
@@ -51,6 +53,8 @@ typedef struct TPDEntryHeaderData
 
 typedef TPDEntryHeaderData *TPDEntryHeader;
 
+#define SizeofTPDEntryHeader (offsetof(TPDEntryHeaderData, tpe_flags) + sizeof(uint16))
+
 #define	TPE_ONE_BYTE	0x0001
 #define	TPE_FOUR_BYTE	0x0002
 
@@ -60,6 +64,14 @@ typedef TPDEntryHeaderData *TPDEntryHeader;
 #define MaxTPDOffset		(BLCKSZ - sizeof(TPDPageOpaqueData))
 
 /*
+ * MaxTPDTuplesPerPage is an upper bound on the number of tuples that can
+ * fit on one zheap page.
+ */
+#define MaxTPDTuplesPerPage	\
+	((int) ((BLCKSZ - SizeOfPageHeaderData - SizeofTPDPageOpaque) / \
+			(SizeofTPDEntryHeader  + sizeof(ItemIdData))))
+
+/*
  * TPDOffsetIsValid
  *		True iff the offset is valid.
  */
@@ -67,8 +79,8 @@ typedef TPDEntryHeaderData *TPDEntryHeader;
 	((bool) ((offset != InvalidTPDOffset) && \
 			 (offset <= MaxTPDOffset)))
 
-extern uint16 TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
-						uint16 offset);
+extern OffsetNumber TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
+							OffsetNumber offset);
 extern void SetTPDLocation(Buffer heapbuffer, Buffer tpdbuffer, uint16 offset);
 extern void TPDInitPage(Page page, Size pageSize);
 extern int TPDAllocateAndReserveTransSlot(Relation relation, Buffer buf,

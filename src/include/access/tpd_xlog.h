@@ -39,12 +39,12 @@ typedef struct xl_tpd_allocate_entry
 	/* tpd entry related info */
 	BlockNumber	prevblk;
 	BlockNumber	nextblk;
-	uint16 offset;		/* inserted entry's offset */
+	OffsetNumber offnum;		/* inserted entry's offset */
 
 	/* TPD entry data in backup block 0 */
 } xl_tpd_allocate_entry;
 
-#define SizeOfTPDAllocateEntry	(offsetof(xl_tpd_allocate_entry, offset) + sizeof(uint16))
+#define SizeOfTPDAllocateEntry	(offsetof(xl_tpd_allocate_entry, offnum) + sizeof(OffsetNumber))
 
 extern void tpd_redo(XLogReaderState *record);
 extern void tpd_desc(StringInfo buf, XLogReaderState *record);

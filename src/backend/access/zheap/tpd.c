@@ -272,14 +272,14 @@ AllocateAndFormTPDEntry(Buffer buf, OffsetNumber offset,
 	tpd_e_trans_slots[0].urec_ptr = last_trans_slot_info.urec_ptr;
 
 	/* form tpd entry */
-	*size_tpd_entry = sizeof(TPDEntryHeaderData) + size_tpd_e_map +
+	*size_tpd_entry = SizeofTPDEntryHeader + size_tpd_e_map +
 										size_tpd_e_slots;
 
 	tpd_entry = (char *) palloc0(*size_tpd_entry);
 
-	memcpy(tpd_entry, (char *) &tpe_header, sizeof(TPDEntryHeaderData));
+	memcpy(tpd_entry, (char *) &tpe_header, SizeofTPDEntryHeader);
 
-	tpd_entry_data = tpd_entry + sizeof(TPDEntryHeaderData);
+	tpd_entry_data = tpd_entry + SizeofTPDEntryHeader;
 
 	/*
 	 * Update the itemid to slot map for all the itemid's that point to last
@@ -334,7 +334,7 @@ AllocateAndFormTPDEntry(Buffer buf, OffsetNumber offset,
 		}
 	}
 
-	memcpy(tpd_entry + sizeof(TPDEntryHeaderData) + size_tpd_e_map,
+	memcpy(tpd_entry + SizeofTPDEntryHeader + size_tpd_e_map,
 		   (char *) tpd_e_trans_slots, size_tpd_e_slots);
 
 	/*
@@ -356,12 +356,16 @@ AllocateAndFormTPDEntry(Buffer buf, OffsetNumber offset,
  *
  * This function returns the page offset location of the entry.
  */
-uint16
+OffsetNumber
 TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
-				uint16 offset)
+				OffsetNumber offnum)
 {
 	PageHeader	phdr = (PageHeader) tpdpage;
-	uint16			upper;
+	OffsetNumber	limit;
+	ItemId		itemId;
+	uint16		lower;
+	uint16		upper;
+	bool		needshuffle = false;
 
 	/*
 	 * Be wary about corrupted page pointers
@@ -375,21 +379,68 @@ TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 				 errmsg("corrupted page pointers: lower = %u, upper = %u, special = %u",
 						phdr->pd_lower, phdr->pd_upper, phdr->pd_special)));
 
-	if (TPDOffsetIsValid(offset))
+	/*
+	 * Select offsetNumber to place the new item at
+	 */
+	limit = OffsetNumberNext(PageGetMaxOffsetNumber(tpdpage));
+
+	lower = phdr->pd_lower + sizeof(ItemIdData);
+
+	if (OffsetNumberIsValid(offnum))
 	{
-		Assert(offset > SizeOfPageHeaderData && offset < BLCKSZ);
-		upper = offset;
+		if (offnum < limit)
+		{
+			itemId = PageGetItemId(phdr, offnum);
+			if (ItemIdIsUsed(itemId) || ItemIdHasStorage(itemId))
+			{
+				elog(WARNING, "will not overwrite a used ItemId");
+				return InvalidOffsetNumber;
+			}
+
+			needshuffle = true;
+		}
 	}
 	else
 	{
-		upper = (int) phdr->pd_upper - (int) size;
+		offnum = limit;
 	}
+
+	/* Reject placing items beyond the first unused line pointer */
+	if (offnum > limit)
+	{
+		elog(WARNING, "specified item offset is too large");
+		return InvalidOffsetNumber;
+	}
+
+	/* Reject placing items beyond tpd boundary */
+	if (offnum > MaxTPDTuplesPerPage)
+	{
+		elog(WARNING, "can't put more than MaxTPDTuplesPerPage items in a tpd page");
+		return InvalidOffsetNumber;
+	}
+
+	upper = (int) phdr->pd_upper - (int) size;
+	lower = phdr->pd_lower + sizeof(ItemIdData);
+
+	if (lower > upper)
+		return InvalidOffsetNumber;
+
+	/* OK to insert the item. */
+	itemId = PageGetItemId(phdr, offnum);
+
+	if (needshuffle)
+		memmove(itemId + 1, itemId, (limit - offnum) * sizeof(ItemIdData));
+
+	/* set the item pointer */
+	ItemIdSetNormal(itemId, upper, size);
 
 	/* copy the item's data onto the page */
 	memcpy((char *) tpdpage + upper, tpd_entry, size);
+
+	phdr->pd_lower = (LocationIndex) lower;
 	phdr->pd_upper = (LocationIndex) upper;
 
-	return upper;
+	return offnum;
 }
 
 /*
@@ -397,7 +448,7 @@ TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
  *		heap page and indicate the same in page.
  */
 void
-SetTPDLocation(Buffer heapbuffer, Buffer tpdbuffer, uint16 offset)
+SetTPDLocation(Buffer heapbuffer, Buffer tpdbuffer, OffsetNumber offset)
 {
 	Page	heappage;
 	PageHeader	phdr;
@@ -475,7 +526,7 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 	Size		size_tpd_entry;
 	int			reserved_slot = InvalidXactSlotId;
 	int			buf_idx;
-	uint16		offset;
+	OffsetNumber	offset_num;
 	bool		allocate_new_tpd_page = false;
 	bool		update_meta = false;
 	bool		already_exists;
@@ -512,7 +563,7 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 
 		size_tpd_e_map = num_map_entries * sizeof(uint8);
 		size_tpd_e_slots = INITIAL_TRANS_SLOTS_IN_TPD_ENTRY * sizeof(TransInfo);
-		size_tpd_entry = sizeof(TPDEntryHeaderData) + size_tpd_e_map +
+		size_tpd_entry = SizeofTPDEntryHeader + size_tpd_e_map +
 										size_tpd_e_slots;
 
 		buf_idx = GetTPDBuffer(relation, last_used_tpd_page, InvalidBuffer,
@@ -630,15 +681,18 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 	}
 
 	/* Add tpd entry to page */
-	offset = TPDPageAddEntry(tpdpage, tpd_entry, size_tpd_entry,
-							 InvalidTPDOffset);
+	offset_num = TPDPageAddEntry(tpdpage, tpd_entry, size_tpd_entry,
+								 InvalidOffsetNumber);
+	if (offset_num == InvalidOffsetNumber)
+		elog(PANIC, "failed to add TPD entry");
+
 	MarkBufferDirty(tpd_buf);
 
 	/*
 	 * Now that the last transaction slot from heap page has moved to TPD,
 	 * we need to assign TPD location in the last transaction slot of heap.
 	 */
-	SetTPDLocation(pagebuf, tpd_buf, offset);
+	SetTPDLocation(pagebuf, tpd_buf, offset_num);
 	MarkBufferDirty(pagebuf);
 
 	/* XLOG stuff */
@@ -650,7 +704,7 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 		int		bufflags = 0;
 		uint8	info = XLOG_ALLOCATE_TPD_ENTRY;
 
-		xlrec.offset = offset;
+		xlrec.offnum = offset_num;
 		xlrec.prevblk = prevblk;
 		xlrec.nextblk = nextblk;
 
@@ -751,6 +805,8 @@ TPDPageGetTransactionSlots(Relation relation, Page heappage,
 	Size	size_tpd_e_slots;
 	int		loc_trans_slots;
 	int		buf_idx;
+	OffsetNumber	tpdItemOff;
+	ItemId	itemId;
 	uint16	tpd_e_offset;
 	bool	already_exists;
 
@@ -767,7 +823,7 @@ TPDPageGetTransactionSlots(Relation relation, Page heappage,
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
 	tpdblk = last_trans_slot_info.xid_epoch;
-	tpd_e_offset = last_trans_slot_info.xid & OFFSET_MASK;
+	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
 
 	/*
 	 * Fetch the required TPD entry.  We need to lock the buffer in exclusive
@@ -785,9 +841,10 @@ TPDPageGetTransactionSlots(Relation relation, Page heappage,
 	}
 
 	tpdpage = BufferGetPage(tpd_buf);
+	itemId = PageGetItemId(tpdpage, tpdItemOff);
+	tpd_e_offset = ItemIdGetOffset(itemId);
 
-	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset,
-		   sizeof(TPDEntryHeaderData));
+	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
 
 	/* Fixme: We should allocate a bigger TPD entry instead. */
 	if (checkOffset && offnum > tpd_e_hdr.tpe_num_map_entries)
@@ -807,8 +864,7 @@ TPDPageGetTransactionSlots(Relation relation, Page heappage,
 
 	*num_trans_slots = tpd_e_hdr.tpe_num_slots;
 	size_tpd_e_slots = tpd_e_hdr.tpe_num_slots * sizeof(TransInfo);
-	loc_trans_slots = tpd_e_offset + sizeof(TPDEntryHeaderData) +
-										size_tpd_e_map;
+	loc_trans_slots = tpd_e_offset + SizeofTPDEntryHeader + size_tpd_e_map;
 
 	trans_slots = (TransInfo *) palloc(size_tpd_e_slots);
 	memcpy((char *) trans_slots, tpdpage + loc_trans_slots, size_tpd_e_slots);
@@ -969,6 +1025,8 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 	int		trans_slot_loc;
 	int		trans_slot_id = trans_slot;
 	char	*tpd_entry_data;
+	OffsetNumber	tpdItemOff;
+	ItemId	itemId;
 	uint16	tpd_e_offset;
 	char relpersistence;
 
@@ -982,7 +1040,7 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
 	tpdblk = last_trans_slot_info.xid_epoch;
-	tpd_e_offset = last_trans_slot_info.xid & OFFSET_MASK;
+	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
 
 	if (NoTPDBufLock)
 	{
@@ -1019,12 +1077,13 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 	}
 
 	tpdpage = BufferGetPage(tpdbuffer);
+	itemId = PageGetItemId(tpdpage, tpdItemOff);
+	tpd_e_offset = ItemIdGetOffset(itemId);
 
-	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset,
-		   sizeof(TPDEntryHeaderData));
+	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
 
 	tpd_e_num_map_entries = tpd_e_hdr.tpe_num_map_entries;
-	tpd_entry_data = tpdpage + tpd_e_offset + sizeof(TPDEntryHeaderData);
+	tpd_entry_data = tpdpage + tpd_e_offset + SizeofTPDEntryHeader;
 	if (tpd_e_hdr.tpe_flags & TPE_ONE_BYTE)
 		size_tpd_e_map = tpd_e_num_map_entries * sizeof(uint8);
 	else
@@ -1120,6 +1179,8 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 	int		trans_slot_loc;
 	int		buf_idx;
 	char	*tpd_entry_data;
+	OffsetNumber	tpdItemOff;
+	ItemId	itemId;
 	uint16	tpd_e_offset;
 	bool	already_exists PG_USED_FOR_ASSERTS_ONLY;
 
@@ -1133,7 +1194,7 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
 	tpdblk = last_trans_slot_info.xid_epoch;
-	tpd_e_offset = last_trans_slot_info.xid & OFFSET_MASK;
+	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
 
 	buf_idx = GetTPDBuffer(NULL, tpdblk, InvalidBuffer, TPD_BUF_FIND,
 						   &already_exists);
@@ -1148,11 +1209,12 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 	Assert(BufferGetBlockNumber(tpd_buf) == tpdblk);
 
 	tpdpage = BufferGetPage(tpd_buf);
+	itemId = PageGetItemId(tpdpage, tpdItemOff);
+	tpd_e_offset = ItemIdGetOffset(itemId);
 
-	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset,
-		   sizeof(TPDEntryHeaderData));
+	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
 
-	tpd_entry_data = tpdpage + tpd_e_offset + sizeof(TPDEntryHeaderData);
+	tpd_entry_data = tpdpage + tpd_e_offset + SizeofTPDEntryHeader;
 
 	/* Get TPD entry map */
 	if (tpd_e_hdr.tpe_flags & TPE_ONE_BYTE)
@@ -1224,6 +1286,8 @@ TPDPageSetUndo(Page heappage, int trans_slot_id, uint32 epoch,
 	int		buf_idx;
 	int		i;
 	char	*tpd_entry_data;
+	OffsetNumber	tpdItemOff;
+	ItemId	itemId;
 	uint16	tpd_e_offset;
 	bool	already_exists;
 
@@ -1236,7 +1300,7 @@ TPDPageSetUndo(Page heappage, int trans_slot_id, uint32 epoch,
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
 	tpdblk = last_trans_slot_info.xid_epoch;
-	tpd_e_offset = last_trans_slot_info.xid & OFFSET_MASK;
+	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
 
 	buf_idx = GetTPDBuffer(NULL, tpdblk, InvalidBuffer, TPD_BUF_FIND,
 						   &already_exists);
@@ -1257,12 +1321,13 @@ TPDPageSetUndo(Page heappage, int trans_slot_id, uint32 epoch,
 	Assert(BufferGetBlockNumber(tpd_buf) == tpdblk);
 
 	tpdpage = BufferGetPage(tpd_buf);
+	itemId = PageGetItemId(tpdpage, tpdItemOff);
+	tpd_e_offset = ItemIdGetOffset(itemId);
 
-	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset,
-		   sizeof(TPDEntryHeaderData));
+	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
 
 	tpd_e_num_map_entries = tpd_e_hdr.tpe_num_map_entries;
-	tpd_entry_data = tpdpage + tpd_e_offset + sizeof(TPDEntryHeaderData);
+	tpd_entry_data = tpdpage + tpd_e_offset + SizeofTPDEntryHeader;
 
 	/* Update TPD entry map for all the modified offsets. */
 	if (tpd_e_hdr.tpe_flags & TPE_ONE_BYTE)
@@ -1485,6 +1550,9 @@ UnlockReleaseTPDBuffers(void)
 /*
  * PageGetTPDFreeSpace
  *		Returns the size of the free (allocatable) space on a page.
+ *
+ * As of now, this is just a wrapper over PageGetFreeSpace, however in future,
+ * the space management in TPD pages could be different.
  */
 static Size
 PageGetTPDFreeSpace(Page page)
@@ -1495,8 +1563,7 @@ PageGetTPDFreeSpace(Page page)
 	 * Use signed arithmetic here so that we behave sensibly if pd_lower >
 	 * pd_upper.
 	 */
-	space = (int) ((PageHeader) page)->pd_upper -
-		(int) ((PageHeader) page)->pd_lower;
+	space = PageGetFreeSpace(page);
 
 	return (Size) space;
 }

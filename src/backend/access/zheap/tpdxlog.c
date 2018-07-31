@@ -54,17 +54,19 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 	{
 		char	*tpd_entry;
 		Size	size_tpd_entry;
-		uint16	offset PG_USED_FOR_ASSERTS_ONLY;
+		OffsetNumber	offnum;
 
 		tpd_entry = XLogRecGetBlockData(record, 0, &size_tpd_entry);
 		tpdpage = BufferGetPage(tpdbuffer);
-		offset = TPDPageAddEntry(tpdpage, tpd_entry, size_tpd_entry,
-								 xlrec->offset);
+		offnum = TPDPageAddEntry(tpdpage, tpd_entry, size_tpd_entry,
+								 xlrec->offnum);
+		if (offnum == InvalidOffsetNumber)
+			elog(PANIC, "failed to add TPD entry");
 		MarkBufferDirty(tpdbuffer);
 		PageSetLSN(tpdpage, lsn);
 
 		/* The TPD entry must be added at the provided offset. */
-		Assert(offset == xlrec->offset);
+		Assert(offnum == xlrec->offnum);
 
 		tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(tpdpage);
 		tpdopaque->tpd_prevblkno = xlrec->prevblk;
@@ -90,7 +92,7 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 	if (XLogReadBufferForRedo(record, 1, &heap_page_buffer) == BLK_NEEDS_REDO)
 	{
 		/* Set the TPD location in last transaction slot of heap page. */
-		SetTPDLocation(heap_page_buffer, tpdbuffer, xlrec->offset);
+		SetTPDLocation(heap_page_buffer, tpdbuffer, xlrec->offnum);
 		MarkBufferDirty(heap_page_buffer);
 
 		PageSetLSN(BufferGetPage(heap_page_buffer), lsn);

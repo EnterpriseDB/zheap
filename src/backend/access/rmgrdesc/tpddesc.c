@@ -27,7 +27,7 @@ tpd_desc(StringInfo buf, XLogReaderState *record)
 		xl_tpd_allocate_entry *xlrec = (xl_tpd_allocate_entry *) rec;
 
 		appendStringInfo(buf, "prevblk %u nextblk %u offset %u",
-						 xlrec->prevblk, xlrec->nextblk, xlrec->offset);
+						 xlrec->prevblk, xlrec->nextblk, xlrec->offnum);
 	}
 }
 
