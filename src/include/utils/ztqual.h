@@ -59,4 +59,6 @@ extern ZHeapTuple ZHeapTupleSatisfiesNonVacuumable(ZHeapTuple ztup, Snapshot sna
 extern ZHTSV_Result ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
 							  Buffer buffer, TransactionId *xid);
 
+extern ZHeapTuple ZHeapTupleSatisfiesToast(ZHeapTuple ztup, Snapshot snapshot,
+						Buffer buffer, ItemPointer ctid);
 #endif   /* ZTQUAL_H */

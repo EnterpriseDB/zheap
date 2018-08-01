@@ -89,6 +89,8 @@ create_ctas_internal(List *attrList, IntoClause *into)
 	Datum		toast_options;
 	static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
 	ObjectAddress intoRelationAddr;
+	char	   *value = NULL;
+	List	   *toast_options_list = create->options;
 
 	/* This code supports both CREATE TABLE AS and CREATE MATERIALIZED VIEW */
 	is_matview = (into->viewQuery != NULL);
@@ -121,9 +123,22 @@ create_ctas_internal(List *attrList, IntoClause *into)
 	 */
 	CommandCounterIncrement();
 
-	/* parse and validate reloptions for the toast table */
+	/*
+	 * Parse and validate reloptions for the toast table. Inherit the
+	 * storage_engine reloption from the one specified for the parent table.
+	 *
+	 * This will be required for vacuum where toast relations are
+	 * independently processed.
+	 */
+	if (StorageEngineOptionExists(create->options, &value))
+	{
+		toast_options_list = lcons(makeDefElemExtended("toast", "storage_engine",
+													   (Node *)makeString(pstrdup(value)),
+													   DEFELEM_UNSPEC, -1),
+								   list_copy(create->options));
+	}
 	toast_options = transformRelOptions((Datum) 0,
-										create->options,
+										toast_options_list,
 										"toast",
 										validnsps,
 										true, false);

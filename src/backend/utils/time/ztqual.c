@@ -2212,3 +2212,23 @@ ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
 
 	return ZHEAPTUPLE_LIVE;
 }
+
+/*
+ * ZHeapTupleSatisfiesToast
+ *
+ * True iff zheap tuple is valid as a TOAST row.
+ *
+ * Unlike heap, we don't need checks for VACUUM moving conditions as those are * for pre-9.0 and that doesn't apply for zheap.  For aborted speculative
+ * inserts, we always marks row as dead, so we don't any check for that.  So,
+ * here we can rely on the fact that if you can see the main table row that
+ * contains a TOAST reference, you should be able to see the TOASTed value.
+ */
+ZHeapTuple
+ZHeapTupleSatisfiesToast(ZHeapTuple zhtup, Snapshot snapshot,
+						 Buffer buffer, ItemPointer ctid)
+{
+	Assert(ItemPointerIsValid(&zhtup->t_self));
+	Assert(zhtup->t_tableOid != InvalidOid);
+
+	return zhtup;
+}

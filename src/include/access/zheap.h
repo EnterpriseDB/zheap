@@ -83,6 +83,7 @@ extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
 										int slot_no, TransactionId xwait);
 extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate);
+extern void simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot);
 extern HTSU_Result zheap_delete(Relation relation, ItemPointer tid,
 						CommandId cid, Snapshot crosscheck, Snapshot snapshot,
 						bool wait, HeapUpdateFailureData *hufd);

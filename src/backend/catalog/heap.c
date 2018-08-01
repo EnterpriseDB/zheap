@@ -3177,18 +3177,6 @@ heap_truncate(List *relids)
 		/* Truncate the relation */
 		heap_truncate_one_rel(rel);
 
-		if (RelationStorageIsZHeap(rel))
-				RelationSetNewRelfilenode(rel, rel->rd_rel->relpersistence,
-										  InvalidTransactionId,
-										  InvalidMultiXactId);
-		if (rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED &&
-			rel->rd_rel->relkind != 'p')
-		{
-				heap_create_init_fork(rel);
-				if (RelationStorageIsZHeap(rel))
-					ZheapInitMetaPage(rel, INIT_FORKNUM);
-		}
-
 		/* Close the relation, but keep exclusive lock on it until commit */
 		heap_close(rel, NoLock);
 	}

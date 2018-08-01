@@ -113,6 +113,7 @@ extern bool ResolveCminCmaxDuringDecoding(struct HTAB *tuplecid_data,
  */
 #define InitToastSnapshot(snapshotdata, l, w)  \
 	((snapshotdata).satisfies = HeapTupleSatisfiesToast, \
+	 (snapshotdata).zsatisfies = ZHeapTupleSatisfiesToast, \
 	 (snapshotdata).lsn = (l),					\
 	 (snapshotdata).whenTaken = (w))
 

@@ -132,6 +132,8 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define ZHEAP_XACT_SLOT				0xF800	/* 5 bits (12, 13, 14, 15 and 16) for transaction slot */
 #define	ZHEAP_XACT_SLOT_MASK		0x000B	/* 11 - mask to retrieve transaction slot */
 
+#define ZHeapTupleHasExternal(tuple) \
+		(((tuple)->t_data->t_infomask & ZHEAP_HASEXTERNAL) != 0)
 
 #define ZHEAP_XID_IS_LOCKED_ONLY(infomask) \
 ( \

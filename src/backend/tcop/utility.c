@@ -58,6 +58,7 @@
 #include "commands/vacuum.h"
 #include "commands/view.h"
 #include "miscadmin.h"
+#include "nodes/makefuncs.h"
 #include "parser/parse_utilcmd.h"
 #include "postmaster/bgwriter.h"
 #include "rewrite/rewriteDefine.h"
@@ -997,7 +998,9 @@ ProcessUtilitySlow(ParseState *pstate,
 						if (IsA(stmt, CreateStmt))
 						{
 							Datum		toast_options;
+							List	   *toast_options_list = ((CreateStmt *)stmt)->options;
 							static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
+							char	   *value = NULL;
 
 							/* Create the table itself */
 							address = DefineRelation((CreateStmt *) stmt,
@@ -1016,10 +1019,21 @@ ProcessUtilitySlow(ParseState *pstate,
 
 							/*
 							 * parse and validate reloptions for the toast
-							 * table
+							 * table. Inherit the storage_engine reloption
+							 * from the parent table.
 							 */
+							if (StorageEngineOptionExists((((CreateStmt *)
+															 stmt)->options),
+															 &value))
+							{
+								toast_options_list = lcons(makeDefElemExtended
+													 ("toast","storage_engine",
+													 (Node *)makeString(pstrdup(value)),
+													  DEFELEM_UNSPEC, -1),
+													  list_copy(((CreateStmt *) stmt)->options));
+							}
 							toast_options = transformRelOptions((Datum) 0,
-																((CreateStmt *) stmt)->options,
+																toast_options_list,
 																"toast",
 																validnsps,
 																true,

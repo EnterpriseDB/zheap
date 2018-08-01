@@ -16,6 +16,8 @@
 #include "access/htup_details.h"
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
+#include "access/zheap.h"
+#include "access/zhtup.h"
 
 /*
  * This enables de-toasting of index entries.  Needed until VACUUM is
@@ -137,6 +139,25 @@ extern HeapTuple toast_insert_or_update(Relation rel,
 					   int options);
 
 /* ----------
+ * ztoast_insert_or_update -
+ *
+ *	Called by zheap_insert() and zheap_update().
+ * ----------
+ */
+
+extern ZHeapTuple ztoast_insert_or_update(Relation rel,
+					   ZHeapTuple newtup, ZHeapTuple oldtup,
+					   int options);
+
+/* ----------
+ * ztoast_delete -
+ *
+ *	Called by zheap_delete().
+ * ----------
+ */
+extern void ztoast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative);
+
+/* ----------
  * toast_delete -
  *
  *	Called by heap_delete().
@@ -235,5 +256,15 @@ extern Size toast_datum_size(Datum value);
  * ----------
  */
 extern Oid	toast_get_valid_index(Oid toastoid, LOCKMODE lock);
+
+extern int toast_open_indexes(Relation toastrel,
+				   LOCKMODE lock,
+				   Relation **toastidxs,
+				   int *num_indexes);
+extern bool toastrel_valueid_exists(Relation toastrel, Oid valueid);
+extern bool toastid_valueid_exists(Oid toastrelid, Oid valueid);
+extern void toast_close_indexes(Relation *toastidxs, int num_indexes,
+					LOCKMODE lock);
+extern void init_toast_snapshot(Snapshot toast_snapshot);
 
 #endif							/* TUPTOASTER_H */

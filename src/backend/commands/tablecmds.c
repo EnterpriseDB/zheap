@@ -500,8 +500,6 @@ static void refuseDupeIndexAttach(Relation parentIdx, Relation partIdx,
 static void update_relispartition(Relation classRel, Oid relationId,
 					  bool newval);
 
-static bool StorageEngineOptionExists(List *options, char **value);
-
 
 /* ----------------------------------------------------------------
  *		DefineRelation
@@ -4156,6 +4154,24 @@ ATRewriteCatalogs(List **wqueue, LOCKMODE lockmode)
 	foreach(ltab, *wqueue)
 	{
 		AlteredTableInfo *tab = (AlteredTableInfo *) lfirst(ltab);
+		Relation	rel = relation_open(tab->relid, NoLock);
+		Datum		reloptions = (Datum) 0;
+
+		/* Inherit the storage_engine reloption from the parent table. */
+		if (RelationStorageIsZHeap(rel))
+		{
+			static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
+			DefElem *storage_engine;
+
+			storage_engine = makeDefElemExtended("toast", "storage_engine",
+												 (Node *) makeString("zheap"),
+												 DEFELEM_UNSPEC, -1);
+			reloptions = transformRelOptions((Datum) 0,
+											 list_make1(storage_engine),
+											 "toast",
+											 validnsps, true, false);
+		}
+		relation_close(rel, NoLock);
 
 		/*
 		 * If the table is source table of ATTACH PARTITION command, we did
@@ -4166,7 +4182,7 @@ ATRewriteCatalogs(List **wqueue, LOCKMODE lockmode)
 			  tab->relkind == RELKIND_PARTITIONED_TABLE) &&
 			 tab->partition_constraint == NULL) ||
 			tab->relkind == RELKIND_MATVIEW)
-			AlterTableCreateToastTable(tab->relid, (Datum) 0, lockmode);
+			AlterTableCreateToastTable(tab->relid, reloptions, lockmode);
 	}
 }
 

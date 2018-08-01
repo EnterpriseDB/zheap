@@ -547,15 +547,11 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 		relation->rd_rel->relkind != RELKIND_MATVIEW)
 	{
 		/* toast table entries should never be recursively toasted */
-		Assert(!HeapTupleHasExternal(tup));
+		Assert(!ZHeapTupleHasExternal(tup));
 		return tup;
 	}
-	else if (HeapTupleHasExternal(tup) || tup->t_len > TOAST_TUPLE_THRESHOLD)
-	{
-		elog(ERROR, "toast tuple is not supported for zheap");
-		return NULL;
-		/* return toast_insert_or_update(relation, tup, NULL, options); */
-	}
+	else if (ZHeapTupleHasExternal(tup) || tup->t_len > TOAST_TUPLE_THRESHOLD)
+		 return ztoast_insert_or_update(relation, tup, NULL, options);
 	else
 		return tup;
 }
@@ -957,6 +953,45 @@ prepare_xlog:
 
 	return ZHeapTupleGetOid(tup);
 }
+/*
+ *	simple_zheap_delete - delete a zheap tuple
+ *
+ * This routine may be used to delete a tuple when concurrent updates of
+ * the target tuple are not expected (for example, because we have a lock
+ * on the relation associated with the tuple).  Any failure is reported
+ * via ereport().
+ */
+void
+simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot)
+{
+	HTSU_Result result;
+	HeapUpdateFailureData hufd;
+
+	result = zheap_delete(relation, tid,
+						 GetCurrentCommandId(true), InvalidSnapshot, snapshot,
+						 true, /* wait for commit */
+						 &hufd);
+	switch (result)
+	{
+		case HeapTupleSelfUpdated:
+			/* Tuple was already updated in current command? */
+			elog(ERROR, "tuple already updated by self");
+			break;
+
+		case HeapTupleMayBeUpdated:
+			/* done successfully */
+			break;
+
+		case HeapTupleUpdated:
+			elog(ERROR, "tuple concurrently updated");
+			break;
+
+		default:
+			elog(ERROR, "unrecognized zheap_delete status: %u", result);
+			break;
+	}
+}
+
 
 /*
  * slot_getsyszattr
@@ -1706,13 +1741,24 @@ prepare_xlog:
 	if (vmbuffer != InvalidBuffer)
 		ReleaseBuffer(vmbuffer);
 
+	UnlockReleaseUndoBuffers();
 	/*
-	 * Fixme - Delete from toast table before releasing the buffer pin.
+	 * If the tuple has toasted out-of-line attributes, we need to delete
+	 * those items too.  We have to do this before releasing the buffer
+	 * because we need to look at the contents of the tuple, but it's OK to
+	 * release the content lock on the buffer first.
 	 */
+	if (relation->rd_rel->relkind != RELKIND_RELATION &&
+		relation->rd_rel->relkind != RELKIND_MATVIEW)
+	{
+		/* toast table entries should never be recursively toasted */
+		Assert(!ZHeapTupleHasExternal(&zheaptup));
+	}
+	else if (ZHeapTupleHasExternal(&zheaptup))
+		ztoast_delete(relation, &zheaptup, false);
 
 	/* Now we can release the buffer */
 	ReleaseBuffer(buffer);
-	UnlockReleaseUndoBuffers();
 	UnlockReleaseTPDBuffers();
 
 	/*
@@ -1757,6 +1803,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	Bitmapset  *modified_attrs = NULL;
 	ItemId		lp;
 	ZHeapTupleData oldtup;
+	ZHeapTuple	zheaptup;
 	UndoRecPtr	urecptr, prev_urecptr, new_prev_urecptr;
 	UndoRecPtr	new_urecptr = InvalidUndoRecPtr;
 	UnpackedUndoRecord	undorecord, new_undorecord;
@@ -1791,6 +1838,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	bool		locker_remains = false;
 	bool		any_multi_locker_member_alive = false;
 	bool		lock_reacquired;
+	bool		need_toast;
 	xl_undolog_meta	undometa;
 
 	Assert(ItemPointerIsValid(otid));
@@ -1900,11 +1948,24 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 
 	is_index_updated = bms_overlap(modified_attrs, inplace_upd_attrs);
 
+	if (relation->rd_rel->relkind != RELKIND_RELATION &&
+		relation->rd_rel->relkind != RELKIND_MATVIEW)
+	{
+		/* toast table entries should never be recursively toasted */
+		Assert(!ZHeapTupleHasExternal(&oldtup));
+		Assert(!ZHeapTupleHasExternal(newtup));
+		need_toast = false;
+	}
+	else
+		need_toast = (newtup->t_len >= TOAST_TUPLE_THRESHOLD ||
+					 ZHeapTupleHasExternal(&oldtup) ||
+					 ZHeapTupleHasExternal(newtup));
 	/*
 	 * inplace updates can be done only if the length of new tuple is lesser
-	 * than or equal to old tuple and there are no index column updates.
+	 * than or equal to old tuple and there are no index column updates and
+	 * the tuple does not require TOAST-ing.
 	 */
-	if ((newtup->t_len <= oldtup.t_len) && !is_index_updated)
+	if ((newtup->t_len <= oldtup.t_len) && !is_index_updated && !need_toast)
 		use_inplace_update = true;
 	else
 		use_inplace_update = false;
@@ -2495,8 +2556,11 @@ zheap_tuple_updated:
 	/* transaction slot must be reserved before adding tuple to page */
 	Assert(trans_slot_id != InvalidXactSlotId);	
 
-	/* updated tuple doesn't fit on current page */
-	if (!use_inplace_update && newtupsize > pagefree)
+	/*
+	 * updated tuple doesn't fit on current page or the toaster needs
+	 * to be activated
+	 */
+	if ((!use_inplace_update && newtupsize > pagefree) || need_toast)
 	{
 		uint16	lock_old_infomask;
 		BlockNumber	oldblk, newblk;
@@ -2659,14 +2723,60 @@ prepare_xlog:
 		UnlockReleaseUndoBuffers();
 		UnlockReleaseTPDBuffers();
 
+		/*
+		 * Let the toaster do its thing, if needed.
+		 *
+		 * Note: below this point, zheaptup is the data we actually intend to
+		 * store into the relation; newtup is the caller's original untoasted
+		 * data.
+		 */
+		if (need_toast)
+		{
+			zheaptup = ztoast_insert_or_update(relation, newtup, &oldtup, 0);
+			if (data_alignment_zheap == 0)
+				newtupsize = newtup->t_len;	/* no alignment */
+			else if (data_alignment_zheap == 4)
+				newtupsize = INTALIGN(newtup->t_len);	/* four byte alignment */
+			else
+				newtupsize = MAXALIGN(newtup->t_len);
+		}
+		else
+			zheaptup = newtup;
 reacquire_buffer:
 		/*
 		 * Get a new page for inserting tuple.  We will need to acquire buffer
 		 * locks on both old and new pages.  See heap_update.
 		 */
-		newbuf = RelationGetBufferForZTuple(relation, newtup->t_len,
-											buffer, 0, NULL,
-											&vmbuffer_new, &vmbuffer);
+		if (newtupsize > pagefree)
+		{
+			newbuf = RelationGetBufferForZTuple(relation, zheaptup->t_len,
+												buffer, 0, NULL,
+												&vmbuffer_new, &vmbuffer);
+		}
+		else
+		{
+			/* Re-acquire the lock on the old tuple's page. */
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+			/* Re-check using the up-to-date free space */
+			pagefree = PageGetZHeapFreeSpace(page);
+			if (newtupsize > pagefree)
+			{
+				/*
+				 * Rats, it doesn't fit anymore.  We must now unlock and
+				 * relock to avoid deadlock.  Fortunately, this path should
+				 * seldom be taken.
+				 */
+				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+				newbuf = RelationGetBufferForZTuple(relation, zheaptup->t_len,
+													buffer, 0, NULL,
+													&vmbuffer_new, &vmbuffer);
+			}
+			else
+			{
+				/* OK, it fits here, so we're done. */
+				newbuf = buffer;
+			}
+		}
 
 		max_offset = PageGetMaxOffsetNumber(BufferGetPage(newbuf));
 		oldblk = BufferGetBlockNumber(buffer);
@@ -2751,7 +2861,7 @@ reacquire_buffer:
 
 		if (new_trans_slot_id == InvalidXactSlotId)
 		{
-			/* release the new bufeer and lock on old buffer */
+			/* release the new buffer and lock on old buffer */
 			UnlockReleaseBuffer(newbuf);
 			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 			UnlockReleaseTPDBuffers();
@@ -2776,8 +2886,10 @@ reacquire_buffer:
 	}
 	else
 	{
+		/* No TOAST work needed, and it'll fit on same page */
 		newbuf = buffer;
 		new_trans_slot_id = trans_slot_id;
+		zheaptup = newtup;
 	}
 
 	/*
@@ -3009,7 +3121,7 @@ reacquire_buffer:
 	 * become DEAD sooner or later.  If the transaction finally aborts, the
 	 * subsequent page pruning will be a no-op and the hint will be cleared.
 	 */
-	if (!use_inplace_update || (newtup->t_len < oldtup.t_len))
+	if (!use_inplace_update || (zheaptup->t_len < oldtup.t_len))
 		ZPageSetPrunable(page, xid);
 
 	/* oldtup should be pointing to right place in page */
@@ -3020,9 +3132,9 @@ reacquire_buffer:
 	oldtup.t_data->t_infomask |= infomask_old_tuple;
 
 	/* keep the new tuple copy updated for the caller */
-	ZHeapTupleHeaderSetXactSlot(newtup->t_data, new_trans_slot_id);
-	newtup->t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
-	newtup->t_data->t_infomask |= infomask_new_tuple;
+	ZHeapTupleHeaderSetXactSlot(zheaptup->t_data, new_trans_slot_id);
+	zheaptup->t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
+	zheaptup->t_data->t_infomask |= infomask_new_tuple;
 
 	if (use_inplace_update)
 	{
@@ -3034,8 +3146,8 @@ reacquire_buffer:
 		 * the new tuple is bigger, we need to adjust the old tuple's location
 		 * so that new tuple can be copied at that location as it is.
 		 */
-		ItemIdChangeLen(lp, newtup->t_len);
-		if (newtup->t_len > oldtup.t_len)
+		ItemIdChangeLen(lp, zheaptup->t_len);
+		if (zheaptup->t_len > oldtup.t_len)
 		{
 			ZHeapTupleHeader new_pos;
 
@@ -3056,8 +3168,8 @@ reacquire_buffer:
 		}
 
 		memcpy((char *) oldtup.t_data + SizeofZHeapTupleHeader,
-			   (char *) newtup->t_data + SizeofZHeapTupleHeader,
-			   newtup->t_len - SizeofZHeapTupleHeader);
+			   (char *) zheaptup->t_data + SizeofZHeapTupleHeader,
+			   zheaptup->t_len - SizeofZHeapTupleHeader);
 
 		/*
 		 * Copy everything from new tuple in infomask apart from visibility
@@ -3065,31 +3177,31 @@ reacquire_buffer:
 		 */
 		oldtup.t_data->t_infomask = oldtup.t_data->t_infomask &
 											ZHEAP_VIS_STATUS_MASK;
-		oldtup.t_data->t_infomask |= (newtup->t_data->t_infomask &
+		oldtup.t_data->t_infomask |= (zheaptup->t_data->t_infomask &
 										~ZHEAP_VIS_STATUS_MASK);
 		/* Copy number of attributes in infomask2 of new tuple. */
 		oldtup.t_data->t_infomask2 &= ~ZHEAP_NATTS_MASK;
 		oldtup.t_data->t_infomask2 |=
 					newtup->t_data->t_infomask2 & ZHEAP_NATTS_MASK;
 		/* also update the tuple length and self pointer */
-		oldtup.t_len = newtup->t_len;
-		ItemPointerCopy(&oldtup.t_self, &newtup->t_self);
+		oldtup.t_len = zheaptup->t_len;
+		ItemPointerCopy(&oldtup.t_self, &zheaptup->t_self);
 	}
 	else
 	{
 		/* insert tuple at new location */
-		RelationPutZHeapTuple(relation, newbuf, newtup);
+		RelationPutZHeapTuple(relation, newbuf, zheaptup);
 
 		/* update new tuple location in undo record */
 		appendBinaryStringInfoNoExtend(&undorecord.uur_payload,
-									   (char *) &newtup->t_self,
+									   (char *) &zheaptup->t_self,
 									   sizeof(ItemPointerData));
 		if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			appendBinaryStringInfoNoExtend(&undorecord.uur_payload,
 										  (char *) &tup_trans_slot_id,
 										  sizeof(tup_trans_slot_id));
 
-		new_undorecord.uur_offset = ItemPointerGetOffsetNumber(&(newtup->t_self));
+		new_undorecord.uur_offset = ItemPointerGetOffsetNumber(&(zheaptup->t_self));
 	}
 
 	InsertPreparedUndo();
@@ -3148,7 +3260,7 @@ reacquire_buffer:
 
 		log_zheap_update(relation, undorecord, new_undorecord,
 						 urecptr, new_urecptr, buffer, newbuf,
-						 &oldtup, newtup, tup_trans_slot_id,
+						 &oldtup, zheaptup, tup_trans_slot_id,
 						 trans_slot_id, new_trans_slot_id,
 						 use_inplace_update, all_visible_cleared,
 						 new_all_visible_cleared, &undometa);
@@ -3200,6 +3312,15 @@ reacquire_buffer:
 
 	data_alignment_zheap = 1;
 
+	/*
+	 * If heaptup is a private copy, release it.  Don't forget to copy t_self
+	 * back to the caller's image, too.
+	 */
+	if (zheaptup != newtup)
+	{
+		newtup->t_self = zheaptup->t_self;
+		zheap_freetuple(zheaptup);
+	}
 	bms_free(inplace_upd_attrs);
 	bms_free(interesting_attrs);
 	bms_free(modified_attrs);
@@ -5451,10 +5572,11 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
-	/*
-	 * Fixme - need to delete from toast table once we have support for toast
-	 * tables in zheap.
-	 */
+	if (ZHeapTupleHasExternal(tuple))
+	{
+		Assert(!IsToastRelation(relation));
+		ztoast_delete(relation, tuple, true);
+	}
 
 	/*
 	 * Never need to mark tuple for invalidation, since catalogs don't support
