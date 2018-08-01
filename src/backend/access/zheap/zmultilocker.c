@@ -650,7 +650,7 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	UndoRecPtr		urec_ptr;
 	UndoRecPtr		save_urec_ptr = InvalidUndoRecPtr;
 	TransInfo *tpd_trans_slots;
-	TransInfo *trans_slots;
+	TransInfo *trans_slots = NULL;
 	TransactionId	xid;
 	CommandId	cid = InvalidCommandId;
 	uint64	epoch;
