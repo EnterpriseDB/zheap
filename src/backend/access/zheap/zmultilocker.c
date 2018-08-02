@@ -170,7 +170,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			trans_slot_id;
 	uint8	uur_type;
 	int		slot_no;
-	int		total_trans_slots;
+	int		total_trans_slots = 0;
 	bool	tpd_e_pruned;
 
 	if (nobuflock)
@@ -658,7 +658,7 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	int		trans_slot_id;
 	uint8	uur_type;
 	int		slot_no;
-	int		total_trans_slots;
+	int		total_trans_slots = 0;
 	bool	found = false;
 	bool	tpd_e_pruned;
 

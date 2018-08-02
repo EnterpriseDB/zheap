@@ -911,7 +911,8 @@ UndoRecordAllocateMulti(UnpackedUndoRecord *undorecords, int nrecords,
 	int	i;
 
 	/* There must be at least one undo record. */
-	Assert(nrecords > 0);
+	if (nrecords <= 0)
+		elog(ERROR, "cannot allocate space for zero undo records");
 
 	/*
 	 * If this is the first undo record for this transaction then set the
