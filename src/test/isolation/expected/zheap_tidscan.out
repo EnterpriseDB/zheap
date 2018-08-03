@@ -1,0 +1,16 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1u s2f s2u s1c s2c s2s
+step s1u: UPDATE tidscan SET a = a + 1;
+step s2f: DECLARE c CURSOR FOR SELECT a FROM tidscan; FETCH FIRST FROM c;
+a              
+
+1              
+step s2u: UPDATE tidscan SET a = a + 2, v = 'session2' WHERE CURRENT  OF c; <waiting ...>
+step s1c: COMMIT;
+step s2u: <... completed>
+step s2c: COMMIT;
+step s2s: SELECT * from tidscan ORDER BY a;
+a              v              
+
+4              session2       

@@ -10481,6 +10481,15 @@ zheap_get_latest_tid(Relation relation,
 		}
 
 		/*
+		 * Get the transaction which modified this tuple. Ideally we need to
+		 * get this only when there is a ctid chain to follow. But since the
+		 * visibility function frees the tuple, we have to do this here
+		 * regardless of the existence of a ctid chain.
+		 */
+		ZHeapTupleGetTransInfo(tp, buffer, NULL, NULL, &priorXmax, NULL, NULL,
+							   false);
+
+		/*
 		 * Check time qualification of tuple; if visible, set it as the new
 		 * result candidate.
 		 */
@@ -10511,11 +10520,6 @@ zheap_get_latest_tid(Relation relation,
 			UnlockReleaseBuffer(buffer);
 			break;
 		}
-
-		/* Get the transaction who modified this tuple */
-		ZHeapTupleGetTransInfo(resulttup != NULL ? resulttup : tp,
-							   buffer, NULL, NULL, &priorXmax, NULL, NULL,
-							   false);
 
 		ctid = new_ctid;
 
