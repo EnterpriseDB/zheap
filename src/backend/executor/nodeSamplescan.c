@@ -17,6 +17,7 @@
 #include "access/hash.h"
 #include "access/relscan.h"
 #include "access/tsmapi.h"
+#include "access/visibilitymap.h"
 #include "executor/executor.h"
 #include "executor/nodeSamplescan.h"
 #include "miscadmin.h"
@@ -678,9 +679,24 @@ zheap_tablesample_getnext(SampleScanState *scanstate)
 	 */
 	if (!pagemode)
 	{
+		uint8		vmstatus;
+		Buffer		vmbuffer = InvalidBuffer;
+
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 		page = (Page) BufferGetPage(scan->rs_cbuf);
-		all_visible = PageIsAllVisible(page) && !snapshot->takenDuringRecovery;
+		vmstatus = visibilitymap_get_status(scan->rs_rd,
+										BufferGetBlockNumber(scan->rs_cbuf),
+										&vmbuffer);
+
+		all_visible = (vmstatus & VISIBILITYMAP_ALL_VISIBLE) &&
+					  !snapshot->takenDuringRecovery;
+
+		if (BufferIsValid(vmbuffer))
+		{
+			ReleaseBuffer(vmbuffer);
+			vmbuffer = InvalidBuffer;
+		}
+
 		maxoffset = PageGetMaxOffsetNumber(page);
 	}
 	else
@@ -847,9 +863,24 @@ get_next_page:
 		/* Re-establish state for new page */
 		if (!pagemode)
 		{
+			uint8		vmstatus;
+			Buffer		vmbuffer = InvalidBuffer;
+
 			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
+			vmstatus = visibilitymap_get_status(scan->rs_rd,
+									BufferGetBlockNumber(scan->rs_cbuf),
+									&vmbuffer);
+
+			all_visible = (vmstatus & VISIBILITYMAP_ALL_VISIBLE) &&
+						  !snapshot->takenDuringRecovery;
+
+			if (BufferIsValid(vmbuffer))
+			{
+				ReleaseBuffer(vmbuffer);
+				vmbuffer = InvalidBuffer;
+			}
+
 			page = (Page) BufferGetPage(scan->rs_cbuf);
-			all_visible = PageIsAllVisible(page) && !snapshot->takenDuringRecovery;
 			maxoffset = PageGetMaxOffsetNumber(page);
 		}
 		else

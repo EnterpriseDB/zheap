@@ -180,9 +180,6 @@ zheap_xlog_insert(XLogReaderState *record)
 					NULL, 0);
 		PageSetLSN(page, lsn);
 
-		if (xlrec->flags & XLZ_INSERT_ALL_VISIBLE_CLEARED)
-			PageClearAllVisible(page);
-
 		MarkBufferDirty(buffer);
 	}
 
@@ -386,9 +383,6 @@ zheap_xlog_delete(XLogReaderState *record)
 
 		/* Mark the page as a candidate for pruning */
 		ZPageSetPrunable(page, XLogRecGetXid(record));
-
-		if (xlrec->flags & XLZ_DELETE_ALL_VISIBLE_CLEARED)
-			PageClearAllVisible(page);
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
@@ -729,9 +723,6 @@ zheap_xlog_update(XLogReaderState *record)
 		if (!inplace_update)
 			ZPageSetPrunable(oldpage, XLogRecGetXid(record));
 
-		if (xlrec->flags & XLZ_UPDATE_OLD_ALL_VISIBLE_CLEARED)
-			PageClearAllVisible(oldpage);
-
 		PageSetLSN(oldpage, lsn);
 		MarkBufferDirty(oldbuffer);
 	}
@@ -904,9 +895,6 @@ zheap_xlog_update(XLogReaderState *record)
 						newbuffer, trans_slot_id, xid_epoch, xid, newurecptr,
 						NULL, 0);
 		}
-
-		if (xlrec->flags & XLZ_UPDATE_NEW_ALL_VISIBLE_CLEARED)
-			PageClearAllVisible(newpage);
 
 		freespace = PageGetHeapFreeSpace(newpage); /* needed to update FSM below */
 
@@ -1505,8 +1493,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 						xid_epoch, xid, urecptr, NULL, 0);
 
 		PageSetLSN(page, lsn);
-		if (xlrec->flags & XLZ_INSERT_ALL_VISIBLE_CLEARED)
-			PageClearAllVisible(page);
+
 		MarkBufferDirty(buffer);
 
 		if (tupdata != endptr)
@@ -1833,6 +1820,73 @@ zheap_xlog_unused(XLogReaderState *record)
 		XLogRecordPageWithFreeSpace(rnode, blkno, freespace);
 }
 
+/*
+ * Replay XLOG_ZHEAP_VISIBLE record.
+ */
+static void
+zheap_xlog_visible(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_zheap_visible *xlrec = (xl_zheap_visible *) XLogRecGetData(record);
+	Buffer		vmbuffer = InvalidBuffer;
+	RelFileNode rnode;
+	BlockNumber blkno;
+
+	XLogRecGetBlockTag(record, 1, &rnode, NULL, &blkno);
+
+	/*
+	 * If there are any Hot Standby transactions running that have an xmin
+	 * horizon old enough that this page isn't all-visible for them, they
+	 * might incorrectly decide that an index-only scan can skip a zheap fetch.
+	 *
+	 * NB: It might be better to throw some kind of "soft" conflict here that
+	 * forces any index-only scan that is in flight to perform zheap fetches,
+	 * rather than killing the transaction outright.
+	 */
+	if (InHotStandby)
+		ResolveRecoveryConflictWithSnapshot(xlrec->cutoff_xid, rnode);
+
+	if (XLogReadBufferForRedoExtended(record, 0, RBM_ZERO_ON_ERROR, false,
+									  &vmbuffer) == BLK_NEEDS_REDO)
+	{
+		Page		vmpage = BufferGetPage(vmbuffer);
+		Relation	reln;
+
+		/* initialize the page if it was read as zeros */
+		if (PageIsNew(vmpage))
+			PageInit(vmpage, BLCKSZ, 0);
+
+		/*
+		 * XLogReadBufferForRedoExtended locked the buffer. But
+		 * visibilitymap_set will handle locking itself.
+		 */
+		LockBuffer(vmbuffer, BUFFER_LOCK_UNLOCK);
+
+		reln = CreateFakeRelcacheEntry(rnode);
+		visibilitymap_pin(reln, blkno, &vmbuffer);
+
+		/*
+		 * Don't set the bit if replay has already passed this point.
+		 *
+		 * It might be safe to do this unconditionally; if replay has passed
+		 * this point, we'll replay at least as far this time as we did
+		 * before, and if this bit needs to be cleared, the record responsible
+		 * for doing so should be again replayed, and clear it.  For right
+		 * now, out of an abundance of conservatism, we use the same test here
+		 * we did for the zheap page.  If this results in a dropped bit, no
+		 * real harm is done; and the next VACUUM will fix it.
+		 */
+		if (lsn > PageGetLSN(vmpage))
+			visibilitymap_set(reln, blkno, InvalidBuffer, lsn, vmbuffer,
+							  xlrec->cutoff_xid, xlrec->flags);
+
+		ReleaseBuffer(vmbuffer);
+		FreeFakeRelcacheEntry(reln);
+	}
+	else if (BufferIsValid(vmbuffer))
+		UnlockReleaseBuffer(vmbuffer);
+}
+
 void
 zheap_redo(XLogReaderState *record)
 {
@@ -1881,6 +1935,9 @@ zheap2_redo(XLogReaderState *record)
 			break;
 		case XLOG_ZHEAP_UNUSED:
 			zheap_xlog_unused(record);
+			break;
+		case XLOG_ZHEAP_VISIBLE:
+			zheap_xlog_visible(record);
 			break;
 		default:
 			elog(PANIC, "zheap2_redo: unknown op code %u", info);

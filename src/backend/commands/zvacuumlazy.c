@@ -31,6 +31,7 @@
 
 #include "access/genam.h"
 #include "access/tpd.h"
+#include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "access/zhtup.h"
 #include "access/zheapam_xlog.h"
@@ -49,6 +50,12 @@
 #include "utils/memutils.h"
 #include "utils/pg_rusage.h"
 
+/*
+ * Before we consider skipping a page that's marked as clean in
+ * visibility map, we must've seen at least this many clean pages.
+ */
+#define SKIP_PAGES_THRESHOLD	((BlockNumber) 32)
+
 /* A few variables that don't seem worth passing around as parameters */
 static int	elevel = -1;
 static TransactionId OldestXmin;
@@ -64,16 +71,21 @@ static BufferAccessStrategy vac_strategy;
 /* non-export function prototypes */
 static int
 lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
-				  int tupindex, LVRelStats *vacrelstats);
+				  int tupindex, LVRelStats *vacrelstats, Buffer *vmbuffer);
 static int
 lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
-							int tupindex, LVRelStats *vacrelstats);
+							int tupindex, LVRelStats *vacrelstats,
+							Buffer *vmbuffer,
+							TransactionId *global_visibility_cutoff_xid);
 static void
 lazy_space_zalloc(LVRelStats *vacrelstats, BlockNumber relblocks);
 static void
 lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 				Relation *Irel, int nindexes,
 				BufferAccessStrategy vac_strategy, bool aggressive);
+static bool
+zheap_page_is_all_visible(Relation rel, Buffer buf,
+						  TransactionId *visibility_cutoff_xid);
 
 /*
  *	lazy_vacuum_zpage() -- free dead tuples on a page
@@ -87,11 +99,12 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
  */
 static int
 lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
-				  int tupindex, LVRelStats *vacrelstats)
+				  int tupindex, LVRelStats *vacrelstats, Buffer *vmbuffer)
 {
 	Page		page = BufferGetPage(buffer);
 	OffsetNumber unused[MaxOffsetNumber];
 	int			uncnt = 0;
+	TransactionId visibility_cutoff_xid;
 
 	START_CRIT_SECTION();
 
@@ -131,6 +144,26 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 
 	END_CRIT_SECTION();
 
+	/*
+	 * Now that we have removed the dead tuples from the page, once again
+	 * check if the page has become all-visible.  The page is already marked
+	 * dirty, exclusively locked.
+	 */
+	if (zheap_page_is_all_visible(onerel, buffer, &visibility_cutoff_xid))
+	{
+		uint8		vm_status = visibilitymap_get_status(onerel, blkno, vmbuffer);
+		uint8		flags = 0;
+
+		/* Set the VM all-visible bit to flag, if needed */
+		if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) == 0)
+			flags |= VISIBILITYMAP_ALL_VISIBLE;
+
+		Assert(BufferIsValid(*vmbuffer));
+		if (flags != 0)
+			visibilitymap_set(onerel, blkno, buffer, InvalidXLogRecPtr,
+							  *vmbuffer, visibility_cutoff_xid, flags);
+	}
+
 	return tupindex;
 }
 
@@ -142,7 +175,9 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
  */
 static int
 lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
-							int tupindex, LVRelStats *vacrelstats)
+							int tupindex, LVRelStats *vacrelstats,
+							Buffer *vmbuffer,
+							TransactionId *global_visibility_cutoff_xid)
 {
 	TransactionId xid = GetTopTransactionId();
 	uint32	epoch = GetEpochForXid(xid);
@@ -156,6 +191,7 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 	XLogRecPtr	RedoRecPtr;
 	bool		doPageWrites;
 	bool		lock_reacquired;
+	TransactionId visibility_cutoff_xid;
 
 	for (; tupindex < vacrelstats->num_dead_tuples; tupindex++)
 	{
@@ -330,7 +366,86 @@ prepare_xlog:
 	UnlockReleaseUndoBuffers();
 	UnlockReleaseTPDBuffers();
 
+	/*
+	 * Now that we have removed the dead tuples from the page, once again
+	 * check if the page has become potentially all-visible.  The page is
+	 * already marked dirty, exclusively locked.  We can't mark the page
+	 * as all-visible here because we have yet to remove index entries
+	 * corresponding dead tuples.  So, we mark them potentially all-visible
+	 * and later after removing index entries, if still the bit is set, we
+	 * mark them as all-visible.
+	 */
+	if (zheap_page_is_all_visible(onerel, buffer, &visibility_cutoff_xid))
+	{
+		uint8		vm_status = visibilitymap_get_status(onerel, blkno, vmbuffer);
+		uint8		flags = 0;
+
+		/* Set the VM to become potentially all-visible, if needed */
+		if ((vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE) == 0)
+			flags |= VISIBILITYMAP_POTENTIAL_ALL_VISIBLE;
+
+		if (TransactionIdFollows(visibility_cutoff_xid,
+								*global_visibility_cutoff_xid))
+			*global_visibility_cutoff_xid = visibility_cutoff_xid;
+
+		Assert(BufferIsValid(*vmbuffer));
+		if (flags != 0)
+			visibilitymap_set(onerel, blkno, buffer, InvalidXLogRecPtr,
+							  *vmbuffer, InvalidTransactionId, flags);
+	}
+
 	return tupindex;
+}
+
+/*
+ *	MarkPagesAsAllVisible() -- Mark all the pages corresponding to dead tuples
+ *		as all-visible.
+ *
+ * We mark the page as all-visible, if it is already marked as potential
+ * all-visible.
+ */
+static void
+MarkPagesAsAllVisible(Relation rel, LVRelStats *vacrelstats,
+					  TransactionId visibility_cutoff_xid)
+{
+	int		idx = 0;
+
+	for (; idx < vacrelstats->num_dead_tuples; idx++)
+	{
+		BlockNumber tblk;
+		BlockNumber prev_tblk = InvalidBlockNumber;
+		Buffer		vmbuffer = InvalidBuffer;
+		uint8		vm_status;
+
+		tblk = ItemPointerGetBlockNumber(&vacrelstats->dead_tuples[idx]);
+
+		/* Avoid processing same block again and again. */
+		if (tblk == prev_tblk)
+			continue;
+
+		visibilitymap_pin(rel, tblk, &vmbuffer);
+		vm_status = visibilitymap_get_status(rel, tblk, &vmbuffer);
+
+		/* Set the VM all-visible bit, if needed */
+		if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) == 0 &&
+			(vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
+		{
+			visibilitymap_clear(rel, tblk, vmbuffer,
+								VISIBILITYMAP_VALID_BITS);
+			visibilitymap_set(rel, tblk, InvalidBuffer,
+							  InvalidXLogRecPtr, vmbuffer,
+							  visibility_cutoff_xid,
+							  VISIBILITYMAP_ALL_VISIBLE);
+		}
+
+		if (BufferIsValid(vmbuffer))
+		{
+			ReleaseBuffer(vmbuffer);
+			vmbuffer = InvalidBuffer;
+		}
+
+		prev_tblk = tblk;
+	}
 }
 
 /*
@@ -375,6 +490,10 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 	int			i;
 	int			tupindex = 0;
 	PGRUsage	ru0;
+	BlockNumber next_unskippable_block;
+	bool		skipping_blocks;
+	Buffer		vmbuffer = InvalidBuffer;
+	TransactionId visibility_cutoff_xid = InvalidTransactionId;
 
 	pg_rusage_init(&ru0);
 
@@ -405,6 +524,30 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 	vacrelstats->latestRemovedXid = InvalidTransactionId;
 
 	lazy_space_zalloc(vacrelstats, nblocks);
+	next_unskippable_block = ZHEAP_METAPAGE + 1;
+	if (!aggressive)
+	{
+	
+		Assert((options & VACOPT_DISABLE_PAGE_SKIPPING) == 0);
+		while (next_unskippable_block < nblocks)
+		{
+			uint8       vmstatus;
+
+			vmstatus = visibilitymap_get_status(onerel, next_unskippable_block,
+												&vmbuffer);
+
+			if ((vmstatus & VISIBILITYMAP_ALL_VISIBLE) == 0)
+				break;
+
+			vacuum_delay_point();
+			next_unskippable_block++;
+       }
+   }
+
+   if (next_unskippable_block >= SKIP_PAGES_THRESHOLD)
+       skipping_blocks = true;
+   else
+       skipping_blocks = false;
 
 	for (blkno = ZHEAP_METAPAGE + 1; blkno < nblocks; blkno++)
 	{
@@ -416,6 +559,50 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 		Size		freespace;
 		bool		tupgone,
 					hastup;
+		bool		all_visible_according_to_vm = false;
+		bool		all_visible;
+		bool		has_dead_tuples;
+
+		if (blkno == next_unskippable_block)
+		{
+			/* Time to advance next_unskippable_block */
+			next_unskippable_block++;
+			if (!aggressive)
+			{
+				while (next_unskippable_block < nblocks)
+				{
+					uint8		vmskipflags;
+
+					vmskipflags = visibilitymap_get_status(onerel,
+														   next_unskippable_block,
+														   &vmbuffer);
+					if ((vmskipflags & VISIBILITYMAP_ALL_VISIBLE) == 0)
+						break;
+
+					vacuum_delay_point();
+					next_unskippable_block++;
+				}
+			}
+
+			/*
+			 * We know we can't skip the current block.  But set up
+			 * skipping_blocks to do the right thing at the following blocks.
+			 */
+			if (next_unskippable_block - blkno > SKIP_PAGES_THRESHOLD)
+				skipping_blocks = true;
+			else
+				skipping_blocks = false;
+		}
+		else
+		{
+			/*
+			 * The current block is potentially skippable; if we've seen a
+			 * long enough run of skippable blocks to justify skipping it.
+			 */
+			if (skipping_blocks)
+				continue;
+			all_visible_according_to_vm = true;
+		}
 
 		vacuum_delay_point();
 
@@ -427,6 +614,18 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 			vacrelstats->num_dead_tuples > 0)
 		{
 			/*
+			 * Before beginning index vacuuming, we release any pin we may
+			 * hold on the visibility map page.  This isn't necessary for
+			 * correctness, but we do it anyway to avoid holding the pin
+			 * across a lengthy, unrelated operation.
+			 */
+			if (BufferIsValid(vmbuffer))
+			{
+				ReleaseBuffer(vmbuffer);
+				vmbuffer = InvalidBuffer;
+			}
+
+			/*
 			 * Remove index entries.  Unlike, heap we don't need to log special
 			 * cleanup info which includes latest latestRemovedXid for standby.
 			 * This is because we have covered all the dead tuples in the first
@@ -436,15 +635,44 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 				lazy_vacuum_index(Irel[i],
 								  &indstats[i],
 								  vacrelstats);
+			/*
+			 * XXX - The cutoff xid used here is the highest xmin of all the heap
+			 * pages scanned.  This can lead to more query cancellations on
+			 * standby.  However, alternative is that we track cutoff_xid for
+			 * each page in first-pass of vacuum and then use it after removing
+			 * index entries.  We didn't pursue the alternative because it would
+			 * require more work memory which means it can lead to more index
+			 * passes.
+			 */
+			MarkPagesAsAllVisible(onerel, vacrelstats, visibility_cutoff_xid);
 
 			/*
 			 * Forget the now-vacuumed tuples, and press on, but be careful
 			 * not to reset latestRemovedXid since we want that value to be
 			 * valid.
 			 */
+			tupindex = 0;
 			vacrelstats->num_dead_tuples = 0;
 			vacrelstats->num_index_scans++;
+
+			/*
+			 * Vacuum the Free Space Map to make newly-freed space visible on
+			 * upper-level FSM pages.  Note we have not yet processed blkno.
+			 */
+			FreeSpaceMapVacuumRange(onerel, next_fsm_block_to_vacuum, blkno);
+			next_fsm_block_to_vacuum = blkno;
 		}
+
+		/*
+		 * Pin the visibility map page in case we need to mark the page
+		 * all-visible.  In most cases this will be very cheap, because we'll
+		 * already have the correct page pinned anyway.  However, it's
+		 * possible that (a) next_unskippable_block is covered by a different
+		 * VM page than the current block or (b) we released our pin and did a
+		 * cycle of index vacuuming.
+		 *
+		 */
+		visibilitymap_pin(onerel, blkno, &vmbuffer);
 
 		buf = ReadBufferExtended(onerel, MAIN_FORKNUM, blkno,
 								 RBM_NORMAL, vac_strategy);
@@ -498,11 +726,9 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 		{
 			empty_pages++;
 			freespace = PageGetZHeapFreeSpace(page);
-			/*
-			 * Fixme: If we need to support visibility map or visbile bit on
-			 * page, then we need to handle that case in lazy_scan_heap.
-			 */
-
+			visibilitymap_set(onerel, blkno, buf, InvalidXLogRecPtr,
+							  vmbuffer, InvalidTransactionId,
+							  VISIBILITYMAP_ALL_VISIBLE);
 			UnlockReleaseBuffer(buf);
 			RecordPageWithFreeSpace(onerel, blkno, freespace);
 			continue;
@@ -518,6 +744,8 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 		hastup = false;
 		freespace = 0;
 		maxoff = PageGetMaxOffsetNumber(page);
+		all_visible = true;
+		has_dead_tuples = false;
 
 		for (offnum = FirstOffsetNumber;
 			 offnum <= maxoff;
@@ -538,6 +766,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 			if (ItemIdIsDeleted(itemid))
 			{
 				hastup = true;	/* this page won't be truncatable */
+				all_visible = false;
 				continue;
 			}
 
@@ -551,6 +780,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 			 */
 			if (ItemIdIsDead(itemid))
 			{
+				all_visible = false;
 				lazy_record_dead_tuple(vacrelstats, &(tuple.t_self));
 				continue;
 			}
@@ -576,6 +806,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 					 * cannot be considered an error condition.
 					 */
 					tupgone = true; /* we can delete the tuple */
+					all_visible = false;
 					break;
 				case ZHEAPTUPLE_LIVE:
 					/* Tuple is good --- but let's do some validity checks */
@@ -583,6 +814,18 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 						!OidIsValid(ZHeapTupleGetOid(&tuple)))
 						elog(WARNING, "relation \"%s\" TID %u/%u: OID is invalid",
 							 relname, blkno, offnum);
+					if (all_visible)
+					{
+						if (!TransactionIdPrecedes(xid, OldestXmin))
+						{
+							all_visible = false;
+							break;
+						}
+					}
+
+					/* Track newest xmin on page. */
+					if (TransactionIdFollows(xid, visibility_cutoff_xid))
+						visibility_cutoff_xid = xid;
 					break;
 				case ZHEAPTUPLE_RECENTLY_DEAD:
 
@@ -591,10 +834,12 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 					 * from relation.
 					 */
 					nkeep += 1;
+					all_visible = false;
 					break;
 				case ZHEAPTUPLE_INSERT_IN_PROGRESS:
 				case ZHEAPTUPLE_DELETE_IN_PROGRESS:
 					/* This is an expected case during concurrent vacuum */
+					all_visible = false;
 					break;
 				case ZHEAPTUPLE_ABORT_IN_PROGRESS:
 					/*
@@ -602,6 +847,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 					 * some aborted transaction and its rollback is still pending. It'll
 					 * be taken care of by future vacuum calls.
 					 */
+					all_visible = false;
 					break;
 				default:
 					elog(ERROR, "unexpected ZHeapTupleSatisfiesVacuum result");
@@ -614,6 +860,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 				ZHeapTupleHeaderAdvanceLatestRemovedXid(tuple.t_data, xid,
 													   &vacrelstats->latestRemovedXid);
 				tups_vacuumed += 1;
+				has_dead_tuples = true;
 			}
 			else
 			{
@@ -632,7 +879,8 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 			{
 				/* Remove tuples from zheap */
 				tupindex = lazy_vacuum_zpage(onerel, blkno, buf, tupindex,
-											 vacrelstats);
+											 vacrelstats, &vmbuffer);
+				has_dead_tuples = false;
 
 				/*
 				 * Forget the now-vacuumed tuples, and press on, but be careful
@@ -660,12 +908,28 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 
 				/* Remove tuples from zheap and write the undo for it. */
 				tupindex = lazy_vacuum_zpage_with_undo(onerel, blkno, buf,
-													   tupindex, vacrelstats);
+													   tupindex, vacrelstats,
+													   &vmbuffer,
+													   &visibility_cutoff_xid);
 			}
 		}
 
 		/* Now that we are done with the page, get its available space */
 		freespace = PageGetZHeapFreeSpace(page);
+
+		/* mark page all-visible, if appropriate */
+		if (all_visible && !all_visible_according_to_vm)
+		{
+			uint8       flags = VISIBILITYMAP_ALL_VISIBLE;
+
+			visibilitymap_set(onerel, blkno, buf, InvalidXLogRecPtr,
+							  vmbuffer, visibility_cutoff_xid, flags);
+		}
+		else if (has_dead_tuples && all_visible_according_to_vm)
+		{
+    		visibilitymap_clear(onerel, blkno, vmbuffer,
+								VISIBILITYMAP_VALID_BITS);
+		}
 
 		UnlockReleaseBuffer(buf);
 
@@ -691,6 +955,15 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 														 vacrelstats->tupcount_pages,
 														 num_tuples);
 
+	/*
+	 * Release any remaining pin on visibility map page.
+	 */
+	if (BufferIsValid(vmbuffer))
+	{
+		ReleaseBuffer(vmbuffer);
+		vmbuffer = InvalidBuffer;
+	}
+
 	if (vacrelstats->num_dead_tuples > 0)
 	{
 		/*
@@ -703,6 +976,17 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 			lazy_vacuum_index(Irel[i],
 							  &indstats[i],
 							  vacrelstats);
+
+		/*
+		 * XXX - The cutoff xid used here is the highest xmin of all the heap
+		 * pages scanned.  This can lead to more query cancellations on
+		 * standby.  However, alternative is that we track cutoff_xid for
+		 * each page in first-pass of vacuum and then use it after removing
+		 * index entries.  We didn't pursue the alternative because it would
+		 * require more work memory which means it can lead to more index
+		 * passes.
+		 */
+		MarkPagesAsAllVisible(onerel, vacrelstats, visibility_cutoff_xid);
 
 		vacrelstats->num_index_scans++;
 
@@ -981,4 +1265,96 @@ lazy_space_zalloc(LVRelStats *vacrelstats, BlockNumber relblocks)
 	vacrelstats->max_dead_tuples = (int) maxtuples;
 	vacrelstats->dead_tuples = (ItemPointer)
 		palloc(maxtuples * sizeof(ItemPointerData));
+}
+
+/*
+ * Check if every tuple in the given page is visible to all current and future
+ * transactions. Also return the visibility_cutoff_xid which is the highest
+ * xmin amongst the visible tuples.
+ */
+static bool
+zheap_page_is_all_visible(Relation rel, Buffer buf,
+						  TransactionId *visibility_cutoff_xid)
+{
+	Page		page = BufferGetPage(buf);
+	BlockNumber blockno = BufferGetBlockNumber(buf);
+	OffsetNumber offnum,
+				maxoff;
+	bool		all_visible = true;
+
+	*visibility_cutoff_xid = InvalidTransactionId;
+
+	/*
+	 * This is a stripped down version of the line pointer scan in
+	 * lazy_scan_zheap(). So if you change anything here, also check that code.
+	 */
+	maxoff = PageGetMaxOffsetNumber(page);
+	for (offnum = FirstOffsetNumber;
+		 offnum <= maxoff && all_visible;
+		 offnum = OffsetNumberNext(offnum))
+	{
+		ItemId		itemid;
+		TransactionId xid;
+		ZHeapTupleData tuple;
+
+		itemid = PageGetItemId(page, offnum);
+
+		/* Unused or redirect line pointers are of no interest */
+		if (!ItemIdIsUsed(itemid) || ItemIdIsRedirected(itemid))
+			continue;
+
+		ItemPointerSet(&(tuple.t_self), blockno, offnum);
+
+		/*
+		 * Dead line pointers can have index pointers pointing to them. So
+		 * they can't be treated as visible
+		 */
+		if (ItemIdIsDead(itemid))
+		{
+			all_visible = false;
+			break;
+		}
+
+		Assert(ItemIdIsNormal(itemid));
+
+		tuple.t_data = (ZHeapTupleHeader) PageGetItem(page, itemid);
+		tuple.t_len = ItemIdGetLength(itemid);
+		tuple.t_tableOid = RelationGetRelid(rel);
+
+		switch (ZHeapTupleSatisfiesVacuum(&tuple, OldestXmin, buf, &xid))
+		{
+			case ZHEAPTUPLE_LIVE:
+				{
+					/*
+					 * The inserter definitely committed. But is it old enough
+					 * that everyone sees it as committed?
+					 */
+					if (!TransactionIdPrecedes(xid, OldestXmin))
+					{
+						all_visible = false;
+						break;
+					}
+
+					/* Track newest xmin on page. */
+					if (TransactionIdFollows(xid, *visibility_cutoff_xid))
+						*visibility_cutoff_xid = xid;
+				}
+				break;
+
+			case ZHEAPTUPLE_DEAD:
+			case ZHEAPTUPLE_RECENTLY_DEAD:
+			case ZHEAPTUPLE_INSERT_IN_PROGRESS:
+			case ZHEAPTUPLE_DELETE_IN_PROGRESS:
+			case ZHEAPTUPLE_ABORT_IN_PROGRESS:
+				{
+					all_visible = false;
+					break;
+				}
+			default:
+				elog(ERROR, "unexpected ZHeapTupleSatisfiesVacuum result");
+				break;
+		}
+	}							/* scan along page */
+
+	return all_visible;
 }

@@ -109,6 +109,13 @@ zheap2_desc(StringInfo buf, XLogReaderState *record)
 						 xlrec->latestRemovedXid, xlrec->trans_slot_id,
 						 xlundohdr->blkprev);
 	}
+	else if (info == XLOG_ZHEAP_VISIBLE)
+	{
+		xl_zheap_visible *xlrec = (xl_zheap_visible *) rec;
+
+		appendStringInfo(buf, "cutoff xid %u flags %d",
+						 xlrec->cutoff_xid, xlrec->flags);
+	}
 }
 
 const char *
@@ -168,6 +175,9 @@ zheap2_identify(uint8 info)
 			break;
 		case XLOG_ZHEAP_UNUSED:
 			id = "UNUSED";
+			break;
+		case XLOG_ZHEAP_VISIBLE:
+			id = "VISIBLE";
 			break;
 	}
 

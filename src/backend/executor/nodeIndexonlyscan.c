@@ -32,6 +32,7 @@
 
 #include "access/relscan.h"
 #include "access/visibilitymap.h"
+#include "access/zheaputils.h"
 #include "executor/execdebug.h"
 #include "executor/nodeIndexonlyscan.h"
 #include "executor/nodeIndexscan.h"
@@ -163,7 +164,18 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			 * Rats, we have to visit the heap to check visibility.
 			 */
 			InstrCountTuples2(node, 1);
-			tuple = index_fetch_heap(scandesc);
+			if (RelationStorageIsZHeap(scandesc->heapRelation))
+			{
+				ZHeapTuple zheapTuple = index_fetch_zheap(scandesc);
+				if (zheapTuple != NULL)
+					tuple = zheap_to_heap(zheapTuple,
+										  scandesc->heapRelation->rd_att);
+				else
+					tuple = NULL;
+			}
+			else
+				tuple = index_fetch_heap(scandesc);
+
 			if (tuple == NULL)
 				continue;		/* no visible tuple, try next index entry */
 
@@ -515,12 +527,6 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	 * open the scan relation
 	 */
 	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
-
-	/*
-	 * FIXME: We are yet to support index-only scan for zheap tables.
-	 */
-	if (RelationStorageIsZHeap(currentRelation))
-		elog(ERROR, "index-only scans are not supported for zheap tables");
 
 	indexstate->ss.ss_currentRelation = currentRelation;
 	indexstate->ss.ss_currentScanDesc = NULL;	/* no heap scan here */

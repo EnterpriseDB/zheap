@@ -644,6 +644,7 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	Page		page;
 	UndoRecPtr	urecptr, prev_urecptr;
 	xl_undolog_meta	undometa;
+	uint8		vm_status;
 	bool		lock_reacquired;
 
 	data_alignment_zheap = data_alignment;
@@ -661,6 +662,12 @@ reacquire_buffer:
 	 * Find buffer to insert this tuple into.  If the page is all visible,
 	 * this will also pin the requisite visibility map page.
 	 */
+	if (BufferIsValid(vmbuffer))
+	{
+		ReleaseBuffer(vmbuffer);
+		vmbuffer = InvalidBuffer;
+	}
+
 	buffer = RelationGetBufferForZTuple(relation, zheaptup->t_len,
 										InvalidBuffer, options, bistate,
 										&vmbuffer, NULL);
@@ -765,6 +772,17 @@ reacquire_buffer:
 								InvalidTransactionId,
 								&undometa);
 
+	/*
+	 * If there is a valid vmbuffer get its status.  The vmbuffer will not
+	 * be valid if operated page is newly extended, see
+	 * RelationGetBufferForZTupleand. Also, anyway by default vm status
+	 * bits are clear for those pages hence no need to clear it again!
+	 */
+
+	vm_status = visibilitymap_get_status(relation,
+								BufferGetBlockNumber(buffer),
+								&vmbuffer);
+
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
 
@@ -773,13 +791,13 @@ reacquire_buffer:
 
 	RelationPutZHeapTuple(relation, buffer, zheaptup);
 
-	if (PageIsAllVisible(BufferGetPage(buffer)))
+	if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) ||
+		(vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
 	{
 		all_visible_cleared = true;
-		PageClearAllVisible(BufferGetPage(buffer));
 		visibilitymap_clear(relation,
-							ItemPointerGetBlockNumber(&(zheaptup->t_self)),
-							vmbuffer, VISIBILITYMAP_VALID_BITS);
+						ItemPointerGetBlockNumber(&(zheaptup->t_self)),
+						vmbuffer, VISIBILITYMAP_VALID_BITS);
 	}
 
 	MarkBufferDirty(buffer);
@@ -1063,6 +1081,7 @@ zheap_delete(Relation relation, ItemPointer tid,
 	bool		any_multi_locker_member_alive = false;
 	bool		lock_reacquired;
 	xl_undolog_meta undometa;
+	uint8		vm_status;
 
 	Assert(ItemPointerIsValid(tid));
 
@@ -1081,28 +1100,12 @@ zheap_delete(Relation relation, ItemPointer tid,
 	page = BufferGetPage(buffer);
 
 	/*
-	 * Before locking the buffer, pin the visibility map page if it appears to
-	 * be necessary.  Since we haven't got the lock yet, someone else might be
-	 * in the middle of changing this, so we'll need to recheck after we have
-	 * the lock.
+	 * Before locking the buffer, pin the visibility map page mainly to avoid
+	 * doing I/O after locking the buffer.
 	 */
-	if (PageIsAllVisible(page))
-		visibilitymap_pin(relation, blkno, &vmbuffer);
+	visibilitymap_pin(relation, blkno, &vmbuffer);
 
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-
-	/*
-	 * If we didn't pin the visibility map page and the page has become all
-	 * visible while we were busy locking the buffer, we'll have to unlock and
-	 * re-lock, to avoid holding the buffer lock across an I/O.  That's a bit
-	 * unfortunate, but hopefully shouldn't happen often.
-	 */
-	if (vmbuffer == InvalidBuffer && PageIsAllVisible(page))
-	{
-		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-		visibilitymap_pin(relation, blkno, &vmbuffer);
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-	}
 
 	offnum = ItemPointerGetOffsetNumber(tid);
 	lp = PageGetItemId(page, offnum);
@@ -1611,13 +1614,17 @@ zheap_tuple_updated:
 								UndoPersistenceForRelation(relation),
 								InvalidTransactionId,
 								&undometa);
+	/* We must have a valid vmbuffer. */
+	Assert(BufferIsValid(vmbuffer));
+	vm_status = visibilitymap_get_status(relation,
+								BufferGetBlockNumber(buffer), &vmbuffer);
 
 	START_CRIT_SECTION();
 
-	if (PageIsAllVisible(page))
+	if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) ||
+		(vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
 	{
 		all_visible_cleared = true;
-		PageClearAllVisible(page);
 		visibilitymap_clear(relation, BufferGetBlockNumber(buffer),
 							vmbuffer, VISIBILITYMAP_VALID_BITS);
 	}
@@ -1840,6 +1847,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	bool		lock_reacquired;
 	bool		need_toast;
 	xl_undolog_meta	undometa;
+	uint8		vm_status;
+	uint8		vm_status_new;
 
 	Assert(ItemPointerIsValid(otid));
 
@@ -1880,13 +1889,10 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	interesting_attrs = NULL;
 
 	/*
-	 * Before locking the buffer, pin the visibility map page if it appears to
-	 * be necessary.  Since we haven't got the lock yet, someone else might be
-	 * in the middle of changing this, so we'll need to recheck after we have
-	 * the lock.
+	 * Before locking the buffer, pin the visibility map page mainly to avoid
+	 * doing I/O after locking the buffer.
 	 */
-	if (PageIsAllVisible(page))
-		visibilitymap_pin(relation, block, &vmbuffer);
+	visibilitymap_pin(relation, block, &vmbuffer);
 
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
@@ -2420,36 +2426,6 @@ zheap_tuple_updated:
 	}
 
 	/*
-	 * Try to acquire the pin on visibility map if it is not already pinned.
-	 * See heap_update for the detailed reason.
-	 */
-	if (vmbuffer == InvalidBuffer && PageIsAllVisible(page))
-	{
-		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-		visibilitymap_pin(relation, block, &vmbuffer);
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-
-		/*
-		 * Also take care of cases when page is pruned after we release the
-		 * buffer lock. For this we check if ItemId is not deleted and refresh
-		 * the tuple offset position in page.  If TID is already delete marked
-		 * due to pruning, then get new ctid, so that we can update the new
-		 * tuple.
-		 */
-		if (ItemIdIsDeleted(lp))
-		{
-			ctid = *otid;
-			ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
-			result = HeapTupleUpdated;
-			goto zheap_tuple_updated;
-		}
-
-		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-		oldtup.t_len = ItemIdGetLength(lp);
-		goto check_tup_satisfies_update;
-	}
-
-	/*
 	 * Save the xid that has updated the tuple to compute infomask for
 	 * tuple.
 	 */
@@ -2747,6 +2723,12 @@ reacquire_buffer:
 		 * Get a new page for inserting tuple.  We will need to acquire buffer
 		 * locks on both old and new pages.  See heap_update.
 		 */
+		if (BufferIsValid(vmbuffer_new))
+		{
+			ReleaseBuffer(vmbuffer_new);
+			vmbuffer_new = InvalidBuffer;
+		}
+
 		if (newtupsize > pagefree)
 		{
 			newbuf = RelationGetBufferForZTuple(relation, zheaptup->t_len,
@@ -3098,21 +3080,36 @@ reacquire_buffer:
 		infomask_new_tuple = new_infomask;
 	}
 
+	/* We must have a valid buffer. */
+	Assert(BufferIsValid(vmbuffer));
+	vm_status = visibilitymap_get_status(relation,
+								BufferGetBlockNumber(buffer), &vmbuffer);
+	if (newbuf != buffer)
+	{
+		Assert(vmbuffer_new);
+		vm_status_new = visibilitymap_get_status(relation,
+								BufferGetBlockNumber(newbuf), &vmbuffer_new);
+	}
+
 	START_CRIT_SECTION();
 
-	if (PageIsAllVisible(page))
+	if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) ||
+		(vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
 	{
 		all_visible_cleared = true;
-		PageClearAllVisible(page);
 		visibilitymap_clear(relation, BufferGetBlockNumber(buffer),
 							vmbuffer, VISIBILITYMAP_VALID_BITS);
 	}
-	if (newbuf != buffer && PageIsAllVisible(BufferGetPage(newbuf)))
+
+	if (newbuf != buffer)
 	{
-		new_all_visible_cleared = true;
-		PageClearAllVisible(BufferGetPage(newbuf));
-		visibilitymap_clear(relation, BufferGetBlockNumber(newbuf),
-							vmbuffer_new, VISIBILITYMAP_VALID_BITS);
+		if ((vm_status_new & VISIBILITYMAP_ALL_VISIBLE) ||
+			(vm_status_new & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
+		{
+			new_all_visible_cleared = true;
+			visibilitymap_clear(relation, BufferGetBlockNumber(newbuf),
+					vmbuffer_new, VISIBILITYMAP_VALID_BITS);
+		}
 	}
 
 	/*
@@ -5494,12 +5491,6 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 	page = BufferGetPage(buffer);
 
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-
-	/*
-	 * Page can't be all visible, we just inserted into it, and are still
-	 * running.
-	 */
-	Assert(!PageIsAllVisible(page));
 
 	offnum = ItemPointerGetOffsetNumber(tid);
 	lp = PageGetItemId(page, offnum);
@@ -7971,6 +7962,8 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 	OffsetNumber lineoff;
 	ItemId		lpp;
 	bool		all_visible;
+	uint8		vmstatus;
+	Buffer		vmbuffer = InvalidBuffer;
 
 	Assert(page < scan->rs_nblocks);
 	Assert(page != ZHEAP_METAPAGE);
@@ -8048,16 +8041,19 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 	 * page all-visible on master and WAL log that along with the visibility
 	 * map SET operation. In hot standby, we wait for (or abort) all
 	 * transactions that can potentially may not see one or more tuples on the
-	 * page. That's how index-only scans work fine in hot standby. A crucial
-	 * difference between index-only scans and heap scans is that the
-	 * index-only scan completely relies on the visibility map where as heap
-	 * scan looks at the page-level PD_ALL_VISIBLE flag. We are not sure if
-	 * the page-level flag can be trusted in the same way, because it might
-	 * get propagated somehow without being explicitly WAL-logged, e.g. via a
-	 * full page write. Until we can prove that beyond doubt, let's check each
-	 * tuple for visibility the hard way.
+	 * page. That's how index-only scans work fine in hot standby.
 	 */
-	all_visible = PageIsAllVisible(dp) && !snapshot->takenDuringRecovery;
+
+	vmstatus = visibilitymap_get_status(scan->rs_rd, page, &vmbuffer);
+
+	all_visible = (vmstatus & VISIBILITYMAP_ALL_VISIBLE) &&
+				  !snapshot->takenDuringRecovery;
+
+	if (BufferIsValid(vmbuffer))
+	{
+		ReleaseBuffer(vmbuffer);
+		vmbuffer = InvalidBuffer;
+	}
 
 	for (lineoff = FirstOffsetNumber, lpp = PageGetItemId(dp, lineoff);
 		 lineoff <= lines;
@@ -9844,6 +9840,7 @@ zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
 		ZHeapFreeOffsetRanges	*zfree_offset_ranges;
 		OffsetNumber	usedoff[MaxOffsetNumber];
 		OffsetNumber	max_required_offset;
+		uint8		vm_status;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -9852,6 +9849,12 @@ reacquire_buffer:
 		 * Find buffer where at least the next tuple will fit.  If the page is
 		 * all-visible, this will also pin the requisite visibility map page.
 		 */
+		if (BufferIsValid(vmbuffer))
+		{
+			ReleaseBuffer(vmbuffer);
+			vmbuffer = InvalidBuffer;
+		}
+
 		buffer = RelationGetBufferForZTuple(relation, zheaptuples[ndone]->t_len,
 											InvalidBuffer, options, bistate,
 											&vmbuffer, NULL);
@@ -9958,6 +9961,15 @@ reacquire_buffer:
 			/* End UNDO prepare Stuff */
 		}
 
+		/*
+		 * If there is a valid vmbuffer get its status.  The vmbuffer will not
+		 * be valid if operated page is newly extended, see
+		 * RelationGetBufferForZTupleand. Also, anyway by default vm status
+		 * bits are clear for those pages hence no need to clear it again!
+		 */
+		vm_status = visibilitymap_get_status(relation,
+										BufferGetBlockNumber(buffer), &vmbuffer);
+
 		/* NO EREPORT(ERROR) from here till changes are logged */
 		START_CRIT_SECTION();
 
@@ -10033,12 +10045,11 @@ reacquire_buffer:
 				 zfree_offset_ranges->startOffset[i], zfree_offset_ranges->endOffset[i]);
 		}
 
-		if (PageIsAllVisible(page))
+		if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) ||
+			(vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
 		{
 			all_visible_cleared = true;
-			PageClearAllVisible(page);
-			visibilitymap_clear(relation,
-								BufferGetBlockNumber(buffer),
+			visibilitymap_clear(relation, BufferGetBlockNumber(buffer),
 								vmbuffer, VISIBILITYMAP_VALID_BITS);
 		}
 
@@ -10527,4 +10538,30 @@ zheap_get_latest_tid(Relation relation,
 			zheap_freetuple(resulttup);
 		UnlockReleaseBuffer(buffer);
 	}							/* end of loop */
+}
+
+/*
+ * Perform XLogInsert for a zheap-visible operation. vm_buffer is the buffer
+ * containing the corresponding visibility map block.  The vm_buffer should
+ * have already been modified and dirtied.
+ */
+XLogRecPtr
+log_zheap_visible(RelFileNode rnode, Buffer vm_buffer,
+				 TransactionId cutoff_xid, uint8 vmflags)
+{
+	xl_zheap_visible xlrec;
+	XLogRecPtr	recptr;
+
+	Assert(BufferIsValid(vm_buffer));
+
+	xlrec.cutoff_xid = cutoff_xid;
+	xlrec.flags = vmflags;
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlrec, SizeOfZHeapVisible);
+
+	XLogRegisterBuffer(0, vm_buffer, 0);
+
+	recptr = XLogInsert(RM_ZHEAP2_ID, XLOG_ZHEAP_VISIBLE);
+
+	return recptr;
 }

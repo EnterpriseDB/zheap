@@ -151,24 +151,21 @@ loop:
 		{
 			/* easy case */
 			buffer = ReadBufferBI(relation, targetBlock, bistate);
-			if (PageIsAllVisible(BufferGetPage(buffer)))
-				visibilitymap_pin(relation, targetBlock, vmbuffer);
+			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		}
 		else if (otherBlock == targetBlock)
 		{
 			/* also easy case */
 			buffer = otherBuffer;
-			if (PageIsAllVisible(BufferGetPage(buffer)))
-				visibilitymap_pin(relation, targetBlock, vmbuffer);
+			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		}
 		else if (otherBlock < targetBlock)
 		{
 			/* lock other buffer first */
 			buffer = ReadBuffer(relation, targetBlock);
-			if (PageIsAllVisible(BufferGetPage(buffer)))
-				visibilitymap_pin(relation, targetBlock, vmbuffer);
+			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		}
@@ -176,8 +173,7 @@ loop:
 		{
 			/* lock target buffer first */
 			buffer = ReadBuffer(relation, targetBlock);
-			if (PageIsAllVisible(BufferGetPage(buffer)))
-				visibilitymap_pin(relation, targetBlock, vmbuffer);
+			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 			LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
 		}

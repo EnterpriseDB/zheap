@@ -17,6 +17,7 @@
 #include "access/undoaction_xlog.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
+#include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "access/zheap.h"
 #include "nodes/pg_list.h"
@@ -806,12 +807,14 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 				{
 					int item_count, i;
 					OffsetNumber *unused;
+					Buffer		vmbuffer = InvalidBuffer;
+					uint8		vm_status;
 
 					unused = ((OffsetNumber *) uur->uur_payload.data);
 					item_count = (uur->uur_payload.len / sizeof(OffsetNumber));
 
 					/*
-					 * We need to preserve all the unused items in heap so
+					 * We need to preserve all the unused items in zheap so
 					 * that they can't be reused till the corresponding index
 					 * entries are removed.  So, marking them dead is
 					 * a sufficient indication for the index to remove the
@@ -824,6 +827,27 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 						itemid = PageGetItemId(page, unused[i]);
 						ItemIdSetDead(itemid);
 					}
+
+					vm_status = visibilitymap_get_status(rel, blkno,
+														 &vmbuffer);
+
+					if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) ||
+						(vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
+					{
+						/* clear visibility map */
+						visibilitymap_pin(rel, blkno, &vmbuffer);
+						visibilitymap_clear(rel, blkno, vmbuffer,
+										VISIBILITYMAP_VALID_BITS);
+					}
+
+		    		/*
+		    		 * Release any remaining pin on visibility map page.
+		    		 */
+		    		if (BufferIsValid(vmbuffer))
+		    		{
+		    			ReleaseBuffer(vmbuffer);
+		    			vmbuffer = InvalidBuffer;
+		    		}
 				}
 				break;
 			default:

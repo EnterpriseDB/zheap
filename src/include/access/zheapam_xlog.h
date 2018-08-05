@@ -56,6 +56,7 @@
  */
 #define XLOG_ZHEAP_CONFIRM		0x00
 #define XLOG_ZHEAP_UNUSED		0x10
+#define XLOG_ZHEAP_VISIBLE		0x20
 
 /*
  * All that we need to regenerate the meta-data page
@@ -296,6 +297,17 @@ typedef struct xl_zheap_confirm
 } xl_zheap_confirm;
 
 #define SizeOfZHeapConfirm	(offsetof(xl_zheap_confirm, flags) + sizeof(uint8))
+
+/*
+ * This is what we need to know about setting a visibility map bit
+ */
+typedef struct xl_zheap_visible
+{
+	TransactionId cutoff_xid;
+	uint8		flags;
+} xl_zheap_visible;
+
+#define SizeOfZHeapVisible (offsetof(xl_zheap_visible, flags) + sizeof(uint8))
 
 extern void zheap_redo(XLogReaderState *record);
 extern void zheap_desc(StringInfo buf, XLogReaderState *record);

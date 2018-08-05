@@ -2130,7 +2130,7 @@ ZHeapTupleSatisfiesNonVacuumable(ZHeapTuple ztup, Snapshot snapshot,
  */
 ZHTSV_Result
 ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
-							  Buffer buffer, TransactionId *xid)
+						  Buffer buffer, TransactionId *xid)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	UndoRecPtr	urec_ptr;
