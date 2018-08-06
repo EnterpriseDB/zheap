@@ -1,0 +1,358 @@
+create extension test_undo;
+create view undo_logs as
+  select log_number,
+         persistence,
+         tablespace,
+         discard,
+         insert,
+         "end",
+         pid = pg_backend_pid() as my_pid,
+         xid = txid_current()::text::xid as my_xid
+    from pg_stat_undo_logs;
+begin;
+-- permanent storage
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'permanent');
+NOTICE:  will copy 20 bytes into undo log at 0000000000000018
+NOTICE:  writing chunk at offset 24
+NOTICE:  will copy 16 bytes into undo log at 000000000000002C
+NOTICE:  writing chunk at offset 44
+ undo_append_transaction_header 
+--------------------------------
+ 0000000000000018
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000018 | 000000000000003C | 0000000000100000 | t      | t
+(1 row)
+
+-- write a short message
+select undo_append('[permanent]'::bytea, 'permanent');
+NOTICE:  will copy 11 bytes into undo log at 000000000000003C
+NOTICE:  writing chunk at offset 60
+   undo_append    
+------------------
+ 000000000000003C
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000018 | 0000000000000047 | 0000000000100000 | t      | t
+(1 row)
+
+-- see if we can read it back
+select undo_dump('000000000000003C', 11, 'permanent');
+NOTICE:  0000000000000038: 00 00 00 00 5b 70 65 72 ....[per
+NOTICE:  0000000000000040: 6d 61 6e 65 6e 74 5d 00 manent].
+ undo_dump 
+-----------
+ 
+(1 row)
+
+-- unlogged storage
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'unlogged');
+NOTICE:  will copy 20 bytes into undo log at 0000010000000018
+NOTICE:  writing chunk at offset 24
+NOTICE:  will copy 16 bytes into undo log at 000001000000002C
+NOTICE:  writing chunk at offset 44
+ undo_append_transaction_header 
+--------------------------------
+ 0000010000000018
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000018 | 0000000000000047 | 0000000000100000 | t      | t
+          1 | unlogged    | pg_default | 0000010000000018 | 000001000000003C | 0000010000100000 | t      | t
+(2 rows)
+
+-- write a short message
+select undo_append('<unlogged> '::bytea, 'unlogged');
+NOTICE:  will copy 11 bytes into undo log at 000001000000003C
+NOTICE:  writing chunk at offset 60
+   undo_append    
+------------------
+ 000001000000003C
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000018 | 0000000000000047 | 0000000000100000 | t      | t
+          1 | unlogged    | pg_default | 0000010000000018 | 0000010000000047 | 0000010000100000 | t      | t
+(2 rows)
+
+-- see if we can read it back
+select undo_dump('000001000000003C', 11, 'unlogged');
+NOTICE:  0000010000000038: 00 00 00 00 3c 75 6e 6c ....<unl
+NOTICE:  0000010000000040: 6f 67 67 65 64 3e 20 00 ogged> .
+ undo_dump 
+-----------
+ 
+(1 row)
+
+-- temporary storage
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'temporary');
+NOTICE:  will copy 20 bytes into undo log at 0000020000000018
+NOTICE:  writing chunk at offset 24
+NOTICE:  will copy 16 bytes into undo log at 000002000000002C
+NOTICE:  writing chunk at offset 44
+ undo_append_transaction_header 
+--------------------------------
+ 0000020000000018
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000018 | 0000000000000047 | 0000000000100000 | t      | t
+          1 | unlogged    | pg_default | 0000010000000018 | 0000010000000047 | 0000010000100000 | t      | t
+          2 | temporary   | pg_default | 0000020000000018 | 000002000000003C | 0000020000100000 | t      | t
+(3 rows)
+
+-- write a short message
+select undo_append('{temporary}'::bytea, 'temporary');
+NOTICE:  will copy 11 bytes into undo log at 000002000000003C
+NOTICE:  writing chunk at offset 60
+   undo_append    
+------------------
+ 000002000000003C
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000018 | 0000000000000047 | 0000000000100000 | t      | t
+          1 | unlogged    | pg_default | 0000010000000018 | 0000010000000047 | 0000010000100000 | t      | t
+          2 | temporary   | pg_default | 0000020000000018 | 0000020000000047 | 0000020000100000 | t      | t
+(3 rows)
+
+-- see if we can read it back
+select undo_dump('000002000000003C', 11, 'temporary');
+NOTICE:  0000020000000038: 00 00 00 00 7b 74 65 6d ....{tem
+NOTICE:  0000020000000040: 70 6f 72 61 72 79 7d 00 porary}.
+ undo_dump 
+-----------
+ 
+(1 row)
+
+-- discard the data we wrote in each of those logs
+select undo_discard('0000000000000047');
+ undo_discard 
+--------------
+ 
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000047 | 0000000000000047 | 0000000000100000 | t      | t
+          1 | unlogged    | pg_default | 0000010000000018 | 0000010000000047 | 0000010000100000 | t      | t
+          2 | temporary   | pg_default | 0000020000000018 | 0000020000000047 | 0000020000100000 | t      | t
+(3 rows)
+
+select undo_discard('0000010000000047');
+ undo_discard 
+--------------
+ 
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000047 | 0000000000000047 | 0000000000100000 | t      | t
+          1 | unlogged    | pg_default | 0000010000000047 | 0000010000000047 | 0000010000100000 | t      | t
+          2 | temporary   | pg_default | 0000020000000018 | 0000020000000047 | 0000020000100000 | t      | t
+(3 rows)
+
+select undo_discard('0000020000000047');
+ undo_discard 
+--------------
+ 
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000047 | 0000000000000047 | 0000000000100000 | t      | t
+          1 | unlogged    | pg_default | 0000010000000047 | 0000010000000047 | 0000010000100000 | t      | t
+          2 | temporary   | pg_default | 0000020000000047 | 0000020000000047 | 0000020000100000 | t      | t
+(3 rows)
+
+commit;
+create tablespace ts1 location '@testtablespace@1';
+create tablespace ts2 location '@testtablespace@2';
+begin;
+set undo_tablespaces = ts1;
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'permanent');
+NOTICE:  will copy 20 bytes into undo log at 0000030000000018
+NOTICE:  writing chunk at offset 24
+NOTICE:  will copy 16 bytes into undo log at 000003000000002C
+NOTICE:  writing chunk at offset 44
+ undo_append_transaction_header 
+--------------------------------
+ 0000030000000018
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000047 | 0000000000000047 | 0000000000100000 |        | 
+          1 | unlogged    | pg_default | 0000010000000047 | 0000010000000047 | 0000010000100000 |        | 
+          2 | temporary   | pg_default | 0000020000000047 | 0000020000000047 | 0000020000100000 |        | 
+          3 | permanent   | ts1        | 0000030000000018 | 000003000000003C | 0000030000100000 | t      | t
+(4 rows)
+
+-- write a short message
+select undo_append('ts1:perm---'::bytea, 'permanent');
+NOTICE:  will copy 11 bytes into undo log at 000003000000003C
+NOTICE:  writing chunk at offset 60
+   undo_append    
+------------------
+ 000003000000003C
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000047 | 0000000000000047 | 0000000000100000 |        | 
+          1 | unlogged    | pg_default | 0000010000000047 | 0000010000000047 | 0000010000100000 |        | 
+          2 | temporary   | pg_default | 0000020000000047 | 0000020000000047 | 0000020000100000 |        | 
+          3 | permanent   | ts1        | 0000030000000018 | 0000030000000047 | 0000030000100000 | t      | t
+(4 rows)
+
+-- discard
+select undo_discard('0000030000000047');
+ undo_discard 
+--------------
+ 
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000047 | 0000000000000047 | 0000000000100000 |        | 
+          1 | unlogged    | pg_default | 0000010000000047 | 0000010000000047 | 0000010000100000 |        | 
+          2 | temporary   | pg_default | 0000020000000047 | 0000020000000047 | 0000020000100000 |        | 
+          3 | permanent   | ts1        | 0000030000000047 | 0000030000000047 | 0000030000100000 | t      | t
+(4 rows)
+
+commit;
+begin;
+set undo_tablespaces = ts2;
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'permanent');
+NOTICE:  will copy 20 bytes into undo log at 0000040000000018
+NOTICE:  writing chunk at offset 24
+NOTICE:  will copy 16 bytes into undo log at 000004000000002C
+NOTICE:  writing chunk at offset 44
+ undo_append_transaction_header 
+--------------------------------
+ 0000040000000018
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000047 | 0000000000000047 | 0000000000100000 |        | 
+          1 | unlogged    | pg_default | 0000010000000047 | 0000010000000047 | 0000010000100000 |        | 
+          2 | temporary   | pg_default | 0000020000000047 | 0000020000000047 | 0000020000100000 |        | 
+          3 | permanent   | ts1        | 0000030000000047 | 0000030000000047 | 0000030000100000 |        | 
+          4 | permanent   | ts2        | 0000040000000018 | 000004000000003C | 0000040000100000 | t      | t
+(5 rows)
+
+-- write a short message
+select undo_append('ts2:perm---', 'permanent');
+NOTICE:  will copy 11 bytes into undo log at 000004000000003C
+NOTICE:  writing chunk at offset 60
+   undo_append    
+------------------
+ 000004000000003C
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000047 | 0000000000000047 | 0000000000100000 |        | 
+          1 | unlogged    | pg_default | 0000010000000047 | 0000010000000047 | 0000010000100000 |        | 
+          2 | temporary   | pg_default | 0000020000000047 | 0000020000000047 | 0000020000100000 |        | 
+          3 | permanent   | ts1        | 0000030000000047 | 0000030000000047 | 0000030000100000 |        | 
+          4 | permanent   | ts2        | 0000040000000018 | 0000040000000047 | 0000040000100000 | t      | t
+(5 rows)
+
+-- discard
+select undo_discard('0000040000000047');
+ undo_discard 
+--------------
+ 
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000047 | 0000000000000047 | 0000000000100000 |        | 
+          1 | unlogged    | pg_default | 0000010000000047 | 0000010000000047 | 0000010000100000 |        | 
+          2 | temporary   | pg_default | 0000020000000047 | 0000020000000047 | 0000020000100000 |        | 
+          3 | permanent   | ts1        | 0000030000000047 | 0000030000000047 | 0000030000100000 |        | 
+          4 | permanent   | ts2        | 0000040000000047 | 0000040000000047 | 0000040000100000 | t      | t
+(5 rows)
+
+commit;
+-- check that we can drop tablespaces (because there is nothing in them)
+drop tablespace ts1;
+drop tablespace ts2;
+-- we fail to allocate space now that ts2 is gone
+begin;
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'permanent');
+ERROR:  tablespace "ts2" does not exist
+HINT:  Create the tablespace or set undo_tablespaces to a valid or empty list.
+select * from undo_logs order by log_number;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+commit;
+-- we go back to allocating from log 0 if we clear the GUC
+begin;
+set undo_tablespaces = '';
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'permanent');
+NOTICE:  will copy 20 bytes into undo log at 0000000000000047
+NOTICE:  writing chunk at offset 71
+NOTICE:  will copy 16 bytes into undo log at 000000000000005B
+NOTICE:  writing chunk at offset 91
+ undo_append_transaction_header 
+--------------------------------
+ 0000000000000047
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 0000000000000047 | 000000000000006B | 0000000000100000 | t      | t
+          1 | unlogged    | pg_default | 0000010000000047 | 0000010000000047 | 0000010000100000 |        | 
+          2 | temporary   | pg_default | 0000020000000047 | 0000020000000047 | 0000020000100000 |        | 
+(3 rows)
+
+-- discard
+select undo_discard('000000000000006B');
+ undo_discard 
+--------------
+ 
+(1 row)
+
+select * from undo_logs order by log_number;
+ log_number | persistence | tablespace |     discard      |      insert      |       end        | my_pid | my_xid 
+------------+-------------+------------+------------------+------------------+------------------+--------+--------
+          0 | permanent   | pg_default | 000000000000006B | 000000000000006B | 0000000000100000 | t      | t
+          1 | unlogged    | pg_default | 0000010000000047 | 0000010000000047 | 0000010000100000 |        | 
+          2 | temporary   | pg_default | 0000020000000047 | 0000020000000047 | 0000020000100000 |        | 
+(3 rows)
+
+commit;
+drop view undo_logs;
