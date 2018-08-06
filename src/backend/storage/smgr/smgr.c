@@ -58,6 +58,8 @@ typedef struct f_smgr
 	BlockNumber (*smgr_nblocks) (SMgrRelation reln, ForkNumber forknum);
 	void		(*smgr_truncate) (SMgrRelation reln, ForkNumber forknum,
 								  BlockNumber nblocks);
+	void		(*smgr_requestsync) (RelFileNode rnode, ForkNumber forknum,
+									 int segno);
 	void		(*smgr_immedsync) (SMgrRelation reln, ForkNumber forknum);
 	void		(*smgr_pre_ckpt) (void);	/* may be NULL */
 	void		(*smgr_sync) (void);	/* may be NULL */
@@ -69,12 +71,30 @@ static const f_smgr smgrsw[] = {
 	/* magnetic disk */
 	{mdinit, NULL, mdclose, mdcreate, mdexists, mdunlink, mdextend,
 		mdprefetch, mdread, mdwrite, mdwriteback, mdnblocks, mdtruncate,
+		mdrequestsync,
 		mdimmedsync, mdpreckpt, mdsync, mdpostckpt
+	},
+	/* undo logs */
+	{undofile_init, undofile_shutdown, undofile_close, undofile_create,
+	 undofile_exists, undofile_unlink, undofile_extend, undofile_prefetch,
+	 undofile_read, undofile_write, undofile_writeback, undofile_nblocks,
+	 undofile_truncate,
+	 undofile_requestsync,
+	 undofile_immedsync, undofile_preckpt, undofile_sync,
+	 undofile_postckpt
 	}
 };
 
 static const int NSmgr = lengthof(smgrsw);
 
+/*
+ * In ancient Postgres the catalog entry for each relation controlled the
+ * choice of storage manager implementation.  Now we have only md.c for
+ * regular relations, and undofile.c for undo log storage in the undolog
+ * pseudo-database.
+ */
+#define SmgrWhichForRelFileNode(rfn)			\
+	((rfn).dbNode == 9 ? 1 : 0)
 
 /*
  * Each backend has a hashtable that stores all extant SMgrRelation objects.
@@ -170,11 +190,18 @@ smgropen(RelFileNode rnode, BackendId backend)
 		reln->smgr_targblock = InvalidBlockNumber;
 		reln->smgr_fsm_nblocks = InvalidBlockNumber;
 		reln->smgr_vm_nblocks = InvalidBlockNumber;
-		reln->smgr_which = 0;	/* we only have md.c at present */
+
+		/* Which storage manager implementation? */
+		reln->smgr_which = SmgrWhichForRelFileNode(rnode);
 
 		/* mark it not open */
 		for (forknum = 0; forknum <= MAX_FORKNUM; forknum++)
+		{
 			reln->md_num_open_segs[forknum] = 0;
+			reln->md_seg_fds[forknum] = NULL;
+		}
+
+		reln->private_data = NULL;
 
 		/* it has no owner yet */
 		add_to_unowned_list(reln);
@@ -705,6 +732,14 @@ smgrtruncate(SMgrRelation reln, ForkNumber forknum, BlockNumber nblocks)
 	 * Do the truncation.
 	 */
 	smgrsw[reln->smgr_which].smgr_truncate(reln, forknum, nblocks);
+}
+
+/*
+ *	smgrrequestsync() -- Enqueue a request for smgrsync() to flush data.
+ */
+void smgrrequestsync(RelFileNode rnode, ForkNumber forknum, int segno)
+{
+	smgrsw[SmgrWhichForRelFileNode(rnode)].smgr_requestsync(rnode, forknum, segno);
 }
 
 /*
