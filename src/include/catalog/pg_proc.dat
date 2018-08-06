@@ -10206,4 +10206,11 @@
   proisstrict => 'f', prorettype => 'bool', proargtypes => 'oid int4 int4 any',
   proargmodes => '{i,i,i,v}', prosrc => 'satisfies_hash_partition' },
 
+# undo logs
+{ oid => '5030', descr => 'list undo logs',
+  proname => 'pg_stat_get_undo_logs', procost => '1', prorows => '10', proretset => 't',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{oid,text,text,text,text,text,xid,int4}', proargmodes => '{o,o,o,o,o,o,o,o}',
+  proargnames => '{log_number,persistence,tablespace,discard,insert,end,xid,pid}', prosrc => 'pg_stat_get_undo_logs' },
+
 ]
