@@ -230,8 +230,10 @@ tpd_redo(XLogReaderState *record)
 			break;
 		case XLOG_TPD_CLEAN:
 			tpd_xlog_clean(record);
+			break;
 		case XLOG_TPD_CLEAR_LOCATION:
 			tpd_xlog_clear_location(record);
+			break;
 		default:
 			elog(PANIC, "tpd_redo: unknown op code %u", info);
 	}
