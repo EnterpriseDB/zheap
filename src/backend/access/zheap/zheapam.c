@@ -1191,6 +1191,59 @@ check_tup_satisfies_update:
 			TransactionId	update_xact;
 			bool			upd_xact_aborted;
 
+			/*
+			 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if current
+			 * transaction has already locked the tuple for update because of
+			 * multilocker flag. In that case, we've to check whether the current
+			 * transaction has already locked the tuple for update.
+			 */
+
+			/*
+			 * Get the transaction slot and undo record pointer if we are already in a
+			 * transaction.
+			 */
+			trans_slot_id = PageGetTransactionSlotId(relation, buffer, epoch, xid,
+													 &prev_urecptr, false);
+
+			if (trans_slot_id != InvalidXactSlotId)
+			{
+				List	*mlmembers;
+				ListCell   *lc;
+
+				/*
+				 * If any subtransaction of the current top transaction already holds
+				 * a lock as strong as or stronger than what we're requesting, we
+				 * effectively hold the desired lock already.  We *must* succeed
+				 * without trying to take the tuple lock, else we will deadlock
+				 * against anyone wanting to acquire a stronger lock.
+				 */
+				mlmembers = ZGetMultiLockMembersForCurrentXact(&zheaptup,
+													trans_slot_id, prev_urecptr);
+
+				foreach(lc, mlmembers)
+				{
+					ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
+
+					/*
+					 * Only members of our own transaction must be present in
+					 * the list.
+					 */
+					Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
+
+					if (mlmember->mode >= LockTupleExclusive)
+					{
+						result = HeapTupleMayBeUpdated;
+						/*
+						 * There is no other active locker on the tuple except
+						 * current transaction id, so we can delete the tuple.
+						 */
+						goto zheap_tuple_updated;
+					}
+				}
+
+				list_free_deep(mlmembers);
+			}
+
 			old_lock_mode = get_old_lock_mode(infomask);
 
 			/*
@@ -2049,6 +2102,62 @@ check_tup_satisfies_update:
 			int			remain;
 			bool		isAborted;
 			bool		upd_xact_aborted;
+
+			/*
+			 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if current
+			 * transaction has already locked the tuple for update because of
+			 * multilocker flag. In that case, we've to check whether the current
+			 * transaction has already locked the tuple for update.
+			 */
+
+			/*
+			 * Get the transaction slot and undo record pointer if we are already in a
+			 * transaction.
+			 */
+			trans_slot_id = PageGetTransactionSlotId(relation, buffer, epoch, xid,
+													 &prev_urecptr, false);
+
+			if (trans_slot_id != InvalidXactSlotId)
+			{
+				List	*mlmembers;
+				ListCell   *lc;
+
+				/*
+				 * If any subtransaction of the current top transaction already holds
+				 * a lock as strong as or stronger than what we're requesting, we
+				 * effectively hold the desired lock already.  We *must* succeed
+				 * without trying to take the tuple lock, else we will deadlock
+				 * against anyone wanting to acquire a stronger lock.
+				 */
+				mlmembers = ZGetMultiLockMembersForCurrentXact(&oldtup,
+													trans_slot_id, prev_urecptr);
+
+				foreach(lc, mlmembers)
+				{
+					ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
+
+					/*
+					 * Only members of our own transaction must be present in
+					 * the list.
+					 */
+					Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
+
+					if (mlmember->mode >= *lockmode)
+					{
+						result = HeapTupleMayBeUpdated;
+
+						/*
+						 * There is no other active locker on the tuple except
+						 * current transaction id, so we can update the tuple.
+						 */
+						checked_lockers = true;
+						locker_remains = false;
+						goto zheap_tuple_updated;
+					}
+				}
+
+				list_free_deep(mlmembers);
+			}
 
 			old_lock_mode = get_old_lock_mode(infomask);
 
