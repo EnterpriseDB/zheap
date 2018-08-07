@@ -8087,7 +8087,7 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 			{
 				if (all_visible)
 				{
-					valid = true;
+					valid = false;
 					resulttup = NULL;
 				}
 				else
