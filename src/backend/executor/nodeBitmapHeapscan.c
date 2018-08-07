@@ -494,9 +494,10 @@ bitgetpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 			if (valid)
 			{
 				scan->rs_vistuples[ntup++] = offnum;
-				PredicateLockTuple(scan->rs_rd, &loctup, snapshot);
+				PredicateLockTid(scan->rs_rd, &(loctup.t_self), snapshot,
+								   HeapTupleHeaderGetXmin(loctup.t_data));
 			}
-			CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
+			CheckForSerializableConflictOut(valid, scan->rs_rd, (void *) &loctup,
 											buffer, snapshot);
 		}
 	}

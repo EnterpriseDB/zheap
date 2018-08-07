@@ -488,7 +488,7 @@ heap_tablesample_getnext(SampleScanState *scanstate)
 
 			/* in pagemode, heapgetpage did this for us */
 			if (!pagemode)
-				CheckForSerializableConflictOut(visible, scan->rs_rd, tuple,
+				CheckForSerializableConflictOut(visible, scan->rs_rd, (void *) tuple,
 												scan->rs_cbuf, snapshot);
 
 			if (visible)

@@ -62,6 +62,9 @@ extern bool HeapTupleSatisfiesNonVacuumable(HeapTuple htup,
 								Snapshot snapshot, Buffer buffer);
 extern bool HeapTupleSatisfiesHistoricMVCC(HeapTuple htup,
 							   Snapshot snapshot, Buffer buffer);
+extern bool	HeapTupleHasSerializableConflictOut(bool visible,
+								HeapTuple htup, Buffer buffer,
+								TransactionId *xid);
 
 /* Special "satisfies" routines with different APIs */
 extern HTSU_Result HeapTupleSatisfiesUpdate(HeapTuple htup,
