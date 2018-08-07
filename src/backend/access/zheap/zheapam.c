@@ -598,11 +598,10 @@ zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no,
 										  &xid,
 										  &urec_ptr,
 										  true,
-										  false);
+										  true);
 
 	/* As the rollback is pending, the slot can't be frozen. */
 	Assert(out_slot_no != ZHTUP_SLOT_FROZEN);
-	Assert(xid != InvalidTransactionId);
 
 	if (xwait != xid)
 		return false;
@@ -805,8 +804,8 @@ reacquire_buffer:
 	Assert(undorecord.uur_block == ItemPointerGetBlockNumber(&(zheaptup->t_self)));
 	undorecord.uur_offset = ItemPointerGetOffsetNumber(&(zheaptup->t_self));
 	InsertPreparedUndo();
-	PageSetUNDO(undorecord, buffer, trans_slot_id, epoch, xid, urecptr, NULL,
-				0);
+	PageSetUNDO(undorecord, buffer, trans_slot_id, true, epoch, xid,
+				urecptr, NULL, 0);
 
 	/* XLOG stuff */
 	if (RelationNeedsWAL(relation))
@@ -1630,8 +1629,8 @@ zheap_tuple_updated:
 	}
 
 	InsertPreparedUndo();
-	PageSetUNDO(undorecord, buffer, trans_slot_id, epoch, xid, urecptr,
-				NULL, 0);
+	PageSetUNDO(undorecord, buffer, trans_slot_id, true, epoch, xid,
+				urecptr, NULL, 0);
 
 	/*
 	 * If this transaction commits, the tuple will become DEAD sooner or
@@ -2613,8 +2612,8 @@ zheap_tuple_updated:
 		START_CRIT_SECTION();
 
 		InsertPreparedUndo();
-		PageSetUNDO(undorecord, buffer, trans_slot_id, epoch, xid, urecptr,
-					NULL, 0);
+		PageSetUNDO(undorecord, buffer, trans_slot_id, true, epoch,
+					xid, urecptr, NULL, 0);
 
 		ZHeapTupleHeaderSetXactSlot(oldtup.t_data, result_trans_slot_id);
 
@@ -3203,8 +3202,8 @@ reacquire_buffer:
 
 	InsertPreparedUndo();
 	if (use_inplace_update)
-		PageSetUNDO(undorecord, buffer, trans_slot_id, epoch, xid, urecptr,
-					NULL, 0);
+		PageSetUNDO(undorecord, buffer, trans_slot_id, true, epoch,
+					xid, urecptr, NULL, 0);
 	else
 	{
 		if (newbuf == buffer)
@@ -3214,18 +3213,19 @@ reacquire_buffer:
 			usedoff[0] = undorecord.uur_offset;
 			usedoff[1] = new_undorecord.uur_offset;
 
-			PageSetUNDO(undorecord, buffer, trans_slot_id, epoch, xid,
-						new_urecptr, usedoff, 2);
+			PageSetUNDO(undorecord, buffer, trans_slot_id, true, epoch,
+						xid, new_urecptr, usedoff, 2);
 		}
 		else
 		{
 			/* set transaction slot information for old page */
-			PageSetUNDO(undorecord, buffer, trans_slot_id, epoch, xid,
-						urecptr, NULL, 0);
+			PageSetUNDO(undorecord, buffer, trans_slot_id, true, epoch,
+						xid, urecptr, NULL, 0);
 			/* set transaction slot information for new page */
 			PageSetUNDO(new_undorecord,
 						newbuf,
 						new_trans_slot_id,
+						true,
 						epoch,
 						xid,
 						new_urecptr,
@@ -5067,7 +5067,15 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	START_CRIT_SECTION();
 
 	InsertPreparedUndo();
-	PageSetUNDO(undorecord, buf, trans_slot_id, epoch, xid, urecptr, NULL, 0);
+
+	/*
+	 * We never set the locker slot on the tuple, so pass set_tpd_map_slot flag
+	 * as false from the locker.  From all other places it should always be
+	 * passed as true so that the proper slot get set in the TPD offset map if
+	 * its a TPD slot.
+	 */
+	PageSetUNDO(undorecord, buf, trans_slot_id, false, epoch, xid,
+				urecptr, NULL, 0);
 
 	ZHeapTupleHeaderSetXactSlot(zhtup->t_data, new_trans_slot_id);
 	zhtup->t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
@@ -6233,6 +6241,7 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 		}
 		else
 		{
+			Assert(offset != InvalidOffsetNumber);
 			out_trans_slot_id = TPDPageGetTransactionSlotInfo(buf,
 															  trans_slot_id,
 															  offset,
@@ -6253,8 +6262,8 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
  */
 void
 PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
-			uint32 epoch, TransactionId xid, UndoRecPtr urecptr,
-			OffsetNumber *usedoff, int ucnt)
+			bool set_tpd_map_slot, uint32 epoch, TransactionId xid,
+			UndoRecPtr urecptr, OffsetNumber *usedoff, int ucnt)
 {
 	ZHeapPageOpaque	opaque;
 	Page	page = BufferGetPage(buffer);
@@ -6291,8 +6300,8 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
 			ucnt++;
 		}
 
-		TPDPageSetUndo(buffer, trans_slot_id, epoch, xid, urecptr, usedoff,
-					   ucnt);
+		TPDPageSetUndo(buffer, trans_slot_id, set_tpd_map_slot, epoch, xid,
+					   urecptr, usedoff, ucnt);
 	}
 
 	elog(DEBUG1, "undo record: TransSlot: %d, Epoch: %d, TransactionId: %d, urec: " UndoRecPtrFormat ", prev_urec: " UINT64_FORMAT ", block: %d, offset: %d, undo_op: %d, xid_tup: %d, reloid: %d",
@@ -10073,6 +10082,7 @@ reacquire_buffer:
 				PageSetUNDO(undorecord[zfree_offset_ranges->nranges - 1],
 							buffer,
 							trans_slot_id,
+							true,
 							epoch,
 							xid,
 							urecptr,
@@ -10084,6 +10094,7 @@ reacquire_buffer:
 				PageSetUNDO(undorecord[zfree_offset_ranges->nranges - 1],
 							buffer,
 							trans_slot_id,
+							true,
 							epoch,
 							xid,
 							urecptr,

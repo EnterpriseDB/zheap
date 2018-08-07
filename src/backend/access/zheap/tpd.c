@@ -1484,9 +1484,9 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
  * information can get lost.
  */
 void
-TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, uint32 epoch,
-			   TransactionId xid, UndoRecPtr urec_ptr, OffsetNumber *usedoff,
-			   int ucnt)
+TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
+			   uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr,
+			   OffsetNumber *usedoff, int ucnt)
 {
 	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
 	Page	heappage = BufferGetPage(heapbuf);
@@ -1559,47 +1559,59 @@ TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, uint32 epoch,
 	tpd_e_num_map_entries = tpd_e_hdr.tpe_num_map_entries;
 	tpd_entry_data = tpdpage + tpd_e_offset + SizeofTPDEntryHeader;
 
-	/* Update TPD entry map for all the modified offsets. */
 	if (tpd_e_hdr.tpe_flags & TPE_ONE_BYTE)
-	{
-		uint8	offset_tpd_e_loc;
-
-		offset_tpd_e_loc = (uint8) trans_slot_id;
-
-		for (i = 0; i < ucnt; i++)
-		{
-			/*
-			 * The item for which we want to update the transaction slot information
-			 * must be present in this TPD entry.
-			 */
-			Assert (usedoff[i] <= tpd_e_num_map_entries);
-			/*
-			 * One byte access shouldn't cause unaligned access, but using memcpy
-			 * for the sake of consistency.
-			 */
-			memcpy(tpd_entry_data + (usedoff[i] - 1), (char *) &offset_tpd_e_loc,
-				   sizeof(uint8));
-		}
 		size_tpd_e_map = tpd_e_num_map_entries * sizeof(uint8);
-	}
 	else
-	{
-		uint32	offset_tpd_e_loc;
-
-		Assert(tpd_e_hdr.tpe_flags & TPE_FOUR_BYTE);
-
-		offset_tpd_e_loc = trans_slot_id;
-		for (i = 0; i < ucnt; i++)
-		{
-			/*
-			 * The item for which we want to update the transaction slot information
-			 * must be present in this TPD entry.
-			 */
-			Assert (usedoff[i] <= tpd_e_num_map_entries);
-			memcpy(tpd_entry_data + (usedoff[i] - 1), (char *) &offset_tpd_e_loc,
-				   sizeof(uint32));
-		}
 		size_tpd_e_map = tpd_e_num_map_entries * sizeof(uint32);
+
+	/*
+	 * Update TPD entry map for all the modified offsets if we
+	 * have asked to do so.
+	 */
+	if (set_tpd_map_slot)
+	{
+		/*  */
+		if (tpd_e_hdr.tpe_flags & TPE_ONE_BYTE)
+		{
+			uint8	offset_tpd_e_loc;
+
+			offset_tpd_e_loc = (uint8) trans_slot_id;
+
+			for (i = 0; i < ucnt; i++)
+			{
+				/*
+				 * The item for which we want to update the transaction slot information
+				 * must be present in this TPD entry.
+				 */
+				Assert (usedoff[i] <= tpd_e_num_map_entries);
+				/*
+				 * One byte access shouldn't cause unaligned access, but using memcpy
+				 * for the sake of consistency.
+				 */
+				memcpy(tpd_entry_data + (usedoff[i] - 1),
+					   (char *) &offset_tpd_e_loc,
+					   sizeof(uint8));
+			}
+		}
+		else
+		{
+			uint32	offset_tpd_e_loc;
+
+			Assert(tpd_e_hdr.tpe_flags & TPE_FOUR_BYTE);
+
+			offset_tpd_e_loc = trans_slot_id;
+			for (i = 0; i < ucnt; i++)
+			{
+				/*
+				 * The item for which we want to update the transaction slot
+				 * information must be present in this TPD entry.
+				 */
+				Assert (usedoff[i] <= tpd_e_num_map_entries);
+				memcpy(tpd_entry_data + (usedoff[i] - 1),
+					   (char *) &offset_tpd_e_loc,
+					   sizeof(uint32));
+			}
+		}
 	}
 
 	/* Update the required transaction slot information. */

@@ -120,8 +120,9 @@ extern XLogRecPtr log_zheap_visible(RelFileNode rnode, Buffer vm_buffer,
 extern void PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id,
 					uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr);
 extern void PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer,
-				int trans_slot_id, uint32 epoch, TransactionId xid,
-				UndoRecPtr urecptr, OffsetNumber *usedoff, int ucnt);
+				int trans_slot_id, bool set_tpd_map_slot, uint32 epoch,
+				TransactionId xid, UndoRecPtr urecptr, OffsetNumber *usedoff,
+				int ucnt);
 extern UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
 extern void zheap_page_prune_opt(Relation relation, Buffer buffer);
 extern int zheap_page_prune_guts(Relation relation, Buffer buffer,

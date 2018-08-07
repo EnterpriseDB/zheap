@@ -262,6 +262,18 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		trans_slot_id = slot_no + 1;
 		undo_tup = zhtup;
 
+		/*
+		 * If the page contains TPD slots and it's not pruned, the last slot
+		 * contains the information about the corresponding TPD entry.
+		 * Hence, if current slot refers to some TPD slot, we should skip
+		 * the last slot in the page by increasing the slot index by 1.
+		 */
+		if ((trans_slot_id >= ZHEAP_PAGE_TRANS_SLOTS) &&
+			(ZHeapPageHasTPDSlot(phdr) || !tpd_e_pruned))
+		{
+			trans_slot_id += 1;
+		}
+
 		do
 		{
 			prev_trans_slot_id = trans_slot_id;
@@ -802,6 +814,19 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		{
 			/* Transaction slots in the page start from 1. */
 			trans_slot_id = slot_no + 1;
+
+			/*
+			 * If the page contains TPD slots and it's not pruned, the last slot
+			 * contains the information about the corresponding TPD entry.
+			 * Hence, if current slot refers to some TPD slot, we should skip
+			 * the last slot in the page by increasing the slot index by 1.
+			 */
+			if ((trans_slot_id >= ZHEAP_PAGE_TRANS_SLOTS) &&
+				(ZHeapPageHasTPDSlot(phdr) || !tpd_e_pruned))
+			{
+				trans_slot_id += 1;
+			}
+
 			break;
 		}
 	}
