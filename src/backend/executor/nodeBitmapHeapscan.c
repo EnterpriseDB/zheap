@@ -813,15 +813,17 @@ bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 		for (offnum = FirstOffsetNumber; offnum <= maxoff; offnum = OffsetNumberNext(offnum))
 		{
 			ItemId		lpp;
-			ZHeapTuple	loctup;
-			ZHeapTuple	resulttup;
+			ZHeapTuple	loctup = NULL;
+			ZHeapTuple	resulttup = NULL;
 			Size		loctup_len;
 			bool		valid = false;
+			ItemPointerData	tid;
 
 			lpp = PageGetItemId(dp, offnum);
 			if (!ItemIdIsNormal(lpp))
 				continue;
 
+			ItemPointerSet(&tid, page, offnum);
 			loctup_len = ItemIdGetLength(lpp);
 
 			loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
@@ -829,7 +831,7 @@ bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 
 			loctup->t_tableOid = RelationGetRelid(scan->rs_rd);
 			loctup->t_len = loctup_len;
-			ItemPointerSet(&(loctup->t_self), page, offnum);
+			loctup->t_self = tid;
 
 			/*
 			 * We always need to make a copy of zheap tuple as once we release

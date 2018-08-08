@@ -723,14 +723,17 @@ get_next_tuple:
 			{
 				ItemId		itemid;
 				bool		visible;
-				ZHeapTuple loctup;
+				ZHeapTuple loctup = NULL;
 				Size		loctup_len;
+				ItemPointerData	tid;
 
 				/* Skip invalid tuple pointers. */
 				itemid = PageGetItemId(page, tupoffset);
 				if (!ItemIdIsNormal(itemid))
 					continue;
 
+				tuple = NULL;
+				ItemPointerSet(&tid, blockno, tupoffset);
 				loctup_len = ItemIdGetLength(itemid);
 
 				loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
@@ -739,7 +742,7 @@ get_next_tuple:
 
 				loctup->t_tableOid = RelationGetRelid(scan->rs_rd);
 				loctup->t_len = loctup_len;
-				ItemPointerSet(&(loctup->t_self), blockno, tupoffset);
+				loctup->t_self = tid;
 
 				/*
 				 * We always need to make a copy of zheap tuple as once we release

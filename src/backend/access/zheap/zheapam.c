@@ -8336,19 +8336,14 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 	{
 		if (ItemIdIsNormal(lpp) || ItemIdIsDeleted(lpp))
 		{
-			ZHeapTuple loctup;
-			ZHeapTuple	resulttup;
+			ZHeapTuple	loctup = NULL;
+			ZHeapTuple	resulttup = NULL;
 			Size		loctup_len;
 			bool		valid = false;
+			ItemPointerData	tid;
 
-			loctup_len = ItemIdGetLength(lpp);
+			ItemPointerSet(&tid, page, lineoff);
 
-			loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
-			loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
-
-			loctup->t_tableOid = RelationGetRelid(scan->rs_rd);
-			loctup->t_len = loctup_len;
-			ItemPointerSet(&(loctup->t_self), page, lineoff);
 			if (ItemIdIsDeleted(lpp))
 			{
 				if (all_visible)
@@ -8365,6 +8360,15 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 			}
 			else
 			{
+				loctup_len = ItemIdGetLength(lpp);
+
+				loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
+				loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
+
+				loctup->t_tableOid = RelationGetRelid(scan->rs_rd);
+				loctup->t_len = loctup_len;
+				loctup->t_self = tid;
+
 				/*
 				 * We always need to make a copy of zheap tuple as once we
 				 * release the buffer, an in-place update can change the tuple.
@@ -8818,10 +8822,13 @@ get_next_tuple:
 	{
 		if (ItemIdIsNormal(lpp))
 		{
-			ZHeapTuple	tuple;
-			ZHeapTuple loctup;
+			ZHeapTuple	tuple = NULL;
+			ZHeapTuple loctup = NULL;
 			Size		loctup_len;
 			bool		valid = false;
+			ItemPointerData	tid;
+
+			ItemPointerSet(&tid, page, lineoff);
 
 			loctup_len = ItemIdGetLength(lpp);
 
@@ -8830,7 +8837,7 @@ get_next_tuple:
 
 			loctup->t_tableOid = RelationGetRelid(scan->rs_rd);
 			loctup->t_len = loctup_len;
-			ItemPointerSet(&(loctup->t_self), page, lineoff);
+			loctup->t_self = tid;
 
 			/*
 			 * We always need to make a copy of zheap tuple as once we release
@@ -9049,7 +9056,7 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	Page		dp = (Page) BufferGetPage(buffer);
 	ItemId		lp;
 	OffsetNumber offnum;
-	ZHeapTuple	loctup;
+	ZHeapTuple	loctup = NULL;
 	ZHeapTupleData	loctup_tmp;
 	ZHeapTuple	resulttup = NULL;
 	Size		loctup_len;
@@ -9246,15 +9253,15 @@ zheap_fetch(Relation relation,
 		return false;
 	}
 
+	*tuple = NULL;
 	if (ItemIdIsDeleted(lp))
 	{
 		CommandId		tup_cid;
 		TransactionId	tup_xid;
 
-		*tuple = ZHeapGetVisibleTuple(offnum, snapshot, buffer, NULL);
+		resulttup = ZHeapGetVisibleTuple(offnum, snapshot, buffer, NULL);
 		ctid = *tid;
 		ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
-		resulttup = *tuple;
 		valid = resulttup ? true : false;
 	}
 	else
@@ -10707,8 +10714,8 @@ zheap_get_latest_tid(Relation relation,
 		Page		page;
 		OffsetNumber offnum;
 		ItemId		lp;
-		ZHeapTuple	tp;
-		ZHeapTuple	resulttup;
+		ZHeapTuple	tp = NULL;
+		ZHeapTuple	resulttup = NULL;
 		ItemPointerData new_ctid;
 		uint16		infomask;
 
