@@ -512,6 +512,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	uint32		epoch;
 	int			slot_no = 0;
 	UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
+	Buffer		vmbuffer = InvalidBuffer;
 
 	/*
 	 * FIXME: If reloid is not valid then we have nothing to do. In future,
@@ -544,6 +545,25 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	}
 
 	buffer = ReadBuffer(rel, blkno);
+
+	/*
+	 * If there is a undo action of type UNDO_ITEMID_UNUSED then might need
+	 * to clear visibility_map. Since we cannot call visibilitymap_pin or
+	 * visibilitymap_status within a critical section it shall be called
+	 * here and let it be before taking the buffer lock on page.
+	 */
+	foreach(l_iter, luinfo)
+	{
+		UndoRecInfo *urec_info = (UndoRecInfo *) lfirst(l_iter);
+		UnpackedUndoRecord *uur = urec_info->uur;
+
+		if (uur->uur_type == UNDO_ITEMID_UNUSED)
+		{
+			visibilitymap_pin(rel, blkno, &vmbuffer);
+			break;
+		}
+	}
+
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	page = BufferGetPage(buffer);
 
@@ -807,8 +827,6 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 				{
 					int item_count, i;
 					OffsetNumber *unused;
-					Buffer		vmbuffer = InvalidBuffer;
-					uint8		vm_status;
 
 					unused = ((OffsetNumber *) uur->uur_payload.data);
 					item_count = (uur->uur_payload.len / sizeof(OffsetNumber));
@@ -828,26 +846,11 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 						ItemIdSetDead(itemid);
 					}
 
-					vm_status = visibilitymap_get_status(rel, blkno,
-														 &vmbuffer);
-
-					if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) ||
-						(vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
-					{
-						/* clear visibility map */
-						visibilitymap_pin(rel, blkno, &vmbuffer);
-						visibilitymap_clear(rel, blkno, vmbuffer,
+					/* clear visibility map */
+					Assert(BufferIsValid(vmbuffer));
+					visibilitymap_clear(rel, blkno, vmbuffer,
 										VISIBILITYMAP_VALID_BITS);
-					}
 
-		    		/*
-		    		 * Release any remaining pin on visibility map page.
-		    		 */
-		    		if (BufferIsValid(vmbuffer))
-		    		{
-		    			ReleaseBuffer(vmbuffer);
-		    			vmbuffer = InvalidBuffer;
-		    		}
 				}
 				break;
 			default:
@@ -887,6 +890,8 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 
 		if (slot_no > ZHEAP_PAGE_TRANS_SLOTS)
 			flags |= XLU_PAGE_CONTAINS_TPD_SLOT;
+		if (BufferIsValid(vmbuffer))
+			flags |= XLU_PAGE_CLEAR_VISIBILITY_MAP;
 
 		XLogBeginInsert();
 
@@ -913,6 +918,13 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	}
 
 	END_CRIT_SECTION();
+
+
+	/*
+	 * Release any remaining pin on visibility map page.
+	 */
+	if (BufferIsValid(vmbuffer))
+		ReleaseBuffer(vmbuffer);
 
 	UnlockReleaseBuffer(buffer);
 	UnlockReleaseTPDBuffers();

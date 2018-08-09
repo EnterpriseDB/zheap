@@ -16,6 +16,7 @@
 
 #include "access/tpd.h"
 #include "access/undoaction_xlog.h"
+#include "access/visibilitymap.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
 #include "access/zheap.h"
@@ -95,6 +96,21 @@ undo_xlog_page(XLogReaderState *record)
 										  xid_epoch, xid, xldata->urec_ptr);
 			TPDPageSetLSN(BufferGetPage(buf), lsn);
 		}
+	}
+
+	if (*flags & XLU_PAGE_CLEAR_VISIBILITY_MAP)
+	{
+		Relation	reln;
+		Buffer		vmbuffer = InvalidBuffer;
+		RelFileNode target_node;
+		BlockNumber blkno;
+
+		XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
+		reln = CreateFakeRelcacheEntry(target_node);
+		visibilitymap_pin(reln, blkno, &vmbuffer);
+		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		ReleaseBuffer(vmbuffer);
+		FreeFakeRelcacheEntry(reln);
 	}
 
 	UnlockReleaseBuffer(buf);
