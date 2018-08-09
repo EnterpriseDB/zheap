@@ -6816,7 +6816,10 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 						ItemIdSetDead(itemid);
 					}
 					else
+					{
+						tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
 						ZHeapTupleHeaderSetXactSlot(tup_hdr, ZHTUP_SLOT_FROZEN);
+					}
 				}
 				else
 				{
@@ -6841,7 +6844,10 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 					else if (ItemIdIsDeleted(itemid))
 						ItemIdSetInvalidXact(itemid);
 					else
+					{
+						tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
 						tup_hdr->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+					}
 					break;
 				}
 				break;

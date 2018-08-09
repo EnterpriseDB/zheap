@@ -1599,8 +1599,9 @@ TPDPageSetOffsetMapSlot(Buffer heapbuf, int trans_slot_id,
 						OffsetNumber offset)
 {
 	char   *tpd_entry_data;
-	int		num_entries, entry_size;
-	Buffer	tpd_buf;
+	int		num_entries = 0,
+			entry_size = 0;
+	Buffer	tpd_buf = InvalidBuffer;
 
 	tpd_entry_data = GetTPDEntryData(heapbuf, &num_entries, &entry_size,
 									 &tpd_buf);
@@ -1697,8 +1698,9 @@ void
 TPDPageSetOffsetMap(Buffer heapbuf, char *tpd_offset_map)
 {
 	char	*tpd_entry_data;
-	int		 num_entries, entry_size;
-	Buffer	 tpd_buf;
+	int		 num_entries = 0,
+			 entry_size = 0;
+	Buffer	 tpd_buf = InvalidBuffer;
 
 	/* This function should only be called during recovery. */
 	Assert(InRecovery);

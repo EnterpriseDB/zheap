@@ -66,7 +66,8 @@ undo_xlog_page(XLogReaderState *record)
 	XLogRecPtr	lsn = record->EndRecPtr;
 	Buffer	buf;
 	xl_undoaction_page	*xlrec = NULL;
-	char	*offsetmap, *data;
+	char	*offsetmap = NULL,
+			*data = NULL;
 	XLogRedoAction action;
 	uint8	*flags = (uint8 *) XLogRecGetData(record);
 
@@ -108,7 +109,7 @@ undo_xlog_page(XLogReaderState *record)
 				TPDPageSetTransactionSlotInfo(buf, xlrec->trans_slot_id,
 											  xid_epoch, xid, xlrec->urec_ptr);
 
-			if (*flags & XLU_CONTAINS_TPD_OFFSET_MAP)
+			if (offsetmap)
 				TPDPageSetOffsetMap(buf, offsetmap);
 
 			TPDPageSetLSN(BufferGetPage(buf), lsn);
