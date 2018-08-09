@@ -29,6 +29,7 @@
  */
 #define XLU_PAGE_CONTAINS_TPD_SLOT			(1<<0)
 #define XLU_PAGE_CLEAR_VISIBILITY_MAP		(1<<1)
+#define XLU_CONTAINS_TPD_OFFSET_MAP			(1<<2)
 
 /* This is what we need to know about delete */
 typedef struct xl_undoaction_page

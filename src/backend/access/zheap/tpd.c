@@ -1468,6 +1468,213 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 }
 
 /*
+ * GetTPDEntryData - Helper function for TPDPageGetOffsetMap and
+ *					 TPDPageSetOffsetMap.
+ *
+ * Caller must ensure that it has acquired lock on the TPD buffer.
+ */
+static char *
+GetTPDEntryData(Buffer heapbuf, int *num_entries, int *entry_size,
+				Buffer *tpd_buffer)
+{
+	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
+	ZHeapPageOpaque	zopaque;
+	TransInfo	last_trans_slot_info;
+	BufferDesc *tpdbufhdr PG_USED_FOR_ASSERTS_ONLY;
+	Buffer	tpd_buf;
+	Page	tpdpage;
+	Page	heappage;
+	BlockNumber	tpdblk;
+	TPDEntryHeaderData	tpd_e_hdr;
+	int		buf_idx;
+	char	*tpd_entry_data;
+	OffsetNumber	tpdItemOff;
+	ItemId	itemId;
+	uint16	tpd_e_offset;
+	bool	already_exists PG_USED_FOR_ASSERTS_ONLY;
+
+	heappage = BufferGetPage(heapbuf);
+	phdr = (PageHeader) heappage;
+
+	/* Heap page must have a TPD entry. */
+	Assert(phdr->pd_flags & PD_PAGE_HAS_TPD_SLOT);
+
+	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
+	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
+
+	tpdblk = last_trans_slot_info.xid_epoch;
+	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
+
+	buf_idx = GetTPDBuffer(NULL, tpdblk, InvalidBuffer, TPD_BUF_FIND,
+						   &already_exists);
+	/* We must get a valid buffer. */
+	Assert(buf_idx != -1);
+	Assert(already_exists);
+	tpd_buf = tpd_buffers[buf_idx].buf;
+	Assert(BufferIsValid(tpd_buf));
+	tpdbufhdr = GetBufferDescriptor(tpd_buf - 1);
+	Assert(LWLockHeldByMeInMode(BufferDescriptorGetContentLock(tpdbufhdr),
+								LW_EXCLUSIVE));
+	Assert(BufferGetBlockNumber(tpd_buf) == tpdblk);
+
+	tpdpage = BufferGetPage(tpd_buf);
+	itemId = PageGetItemId(tpdpage, tpdItemOff);
+
+	/* TPD entry is already pruned away. */
+	if (!ItemIdIsUsed(itemId))
+		return NULL;
+
+	tpd_e_offset = ItemIdGetOffset(itemId);
+
+	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
+
+	/* TPD entry is pruned away. */
+	if (tpd_e_hdr.blkno != BufferGetBlockNumber(heapbuf));
+		return NULL;
+
+	tpd_entry_data = tpdpage + tpd_e_offset + SizeofTPDEntryHeader;
+	*num_entries = tpd_e_hdr.tpe_num_map_entries;
+
+	if (tpd_e_hdr.tpe_flags & TPE_ONE_BYTE)
+		*entry_size = sizeof(uint8);
+	else
+		*entry_size = sizeof(uint32);
+
+	if (tpd_buffer)
+		*tpd_buffer = tpd_buf;
+
+	return tpd_entry_data;
+}
+
+/*
+ * TPDPageSetOffsetMapSlot - Set the transaction slot for given offset in TPD
+ *							 offset map.
+ *
+ * Caller must ensure that it has required lock on tpd buffer which is going to
+ * be updated here.  We can't lock the buffer here as this API is supposed to
+ * be called from critical section and lock acquisition can fail.
+ */
+void
+TPDPageSetOffsetMapSlot(Buffer heapbuf, int trans_slot_id,
+						OffsetNumber offset)
+{
+	char   *tpd_entry_data;
+	int		num_entries, entry_size;
+	Buffer	tpd_buf;
+
+	tpd_entry_data = GetTPDEntryData(heapbuf, &num_entries, &entry_size,
+									 &tpd_buf);
+
+	/*
+	 * Caller would have checked that the entry is not pruned after taking
+	 * lock on the tpd page.
+	 */
+	Assert(tpd_entry_data);
+
+	Assert (offset <= num_entries);
+
+	if (entry_size == sizeof(uint8))
+	{
+		uint8 offset_tpd_e_loc = trans_slot_id;
+
+		/*
+		 * One byte access shouldn't cause unaligned access, but using memcpy
+		 * for the sake of consistency.
+		 */
+		memcpy(tpd_entry_data + (offset - 1),
+			   (char *) &offset_tpd_e_loc,
+			   sizeof(uint8));
+	}
+	else
+	{
+		uint32	offset_tpd_e_loc;
+
+		offset_tpd_e_loc = trans_slot_id;
+		memcpy(tpd_entry_data + (offset - 1),
+			   (char *) &offset_tpd_e_loc,
+			   sizeof(uint32));
+	}
+
+	MarkBufferDirty(tpd_buf);
+}
+
+/*
+ * TPDPageGetOffsetMap - Get the Offset map array of the TPD entry.
+ *
+ * This function copy the offset map into tpd_offset_map array allocated by the
+ * caller.
+ */
+void
+TPDPageGetOffsetMap(Buffer heapbuf, char *tpd_offset_map, int map_size)
+{
+	char	*tpd_entry_data;
+	int		 num_entries, entry_size;
+
+	tpd_entry_data = GetTPDEntryData(heapbuf, &num_entries, &entry_size, NULL);
+
+	/*
+	 * Caller would have checked that the entry is not pruned after taking
+	 * lock on the tpd page.
+	 */
+	Assert(tpd_entry_data);
+
+	Assert(map_size == num_entries * entry_size);
+
+	memcpy(tpd_offset_map, tpd_entry_data, map_size);
+}
+
+/*
+ * TPDPageGetOffsetMapSize - Get the Offset map size of the TPD entry.
+ *
+ * Caller must ensure that it has acquired lock on tpd buffer corresponding to
+ * passed heap buffer.
+ *
+ * Returns 0, if the tpd entry gets pruned away, otherwise, return the size of
+ * TPD offset-map.
+ */
+int
+TPDPageGetOffsetMapSize(Buffer heapbuf)
+{
+	int		 num_entries, entry_size;
+
+	if (GetTPDEntryData(heapbuf, &num_entries, &entry_size, NULL) == NULL)
+		return 0;
+
+	return (num_entries * entry_size);
+}
+
+/*
+ * TPDPageSetOffsetMap - Overwrite TPD offset map array with input offset map
+ *						 array.
+ *
+ * This function returns a pointer to an array of offset map, it is the
+ * responsibility of the caller to free it.
+ *
+ * Caller must ensure that it has acquired lock on the TPD buffer which is
+ * going to be updated here.
+ */
+void
+TPDPageSetOffsetMap(Buffer heapbuf, char *tpd_offset_map)
+{
+	char	*tpd_entry_data;
+	int		 num_entries, entry_size;
+	Buffer	 tpd_buf;
+
+	/* This function should only be called during recovery. */
+	Assert(InRecovery);
+
+	tpd_entry_data = GetTPDEntryData(heapbuf, &num_entries, &entry_size,
+									 &tpd_buf);
+
+	/* Entry can't be pruned during recovery. */
+	Assert(tpd_entry_data);
+
+	memcpy(tpd_entry_data, tpd_offset_map, num_entries * entry_size);
+
+	MarkBufferDirty(tpd_buf);
+}
+
+/*
  * TPDPageSetUndo - Set the transaction information for a given transaction
  *		slot in the TPD entry.  The difference between this function and
  *		TPDPageSetTransactionSlotInfo is that here along with transaction
@@ -1638,6 +1845,47 @@ TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
 	}
 
 	MarkBufferDirty(tpd_buf);
+}
+
+/*
+ * TPDPageLock - Routine to lock the TPD page corresponding to heap page
+ *
+ * Caller should not already hold the lock.
+ */
+void
+TPDPageLock(Relation relation, Buffer heapbuf)
+{
+	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
+	Page		heappage = BufferGetPage(heapbuf);
+	ZHeapPageOpaque	zopaque;
+	TransInfo	last_trans_slot_info;
+	Buffer	tpd_buf;
+	BlockNumber	tpdblk;
+	int		buf_idx;
+	bool	already_exists;
+
+	phdr = (PageHeader) heappage;
+
+	/* Heap page must have TPD entry. */
+	Assert(phdr->pd_flags & PD_PAGE_HAS_TPD_SLOT);
+
+	/* The last in page has the address of the required TPD entry. */
+	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
+	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
+
+	tpdblk = last_trans_slot_info.xid_epoch;
+
+	/*
+	 * Fetch the required TPD entry.  We need to lock the buffer in exclusive
+	 * mode as we later want to set the values in one of the transaction slot.
+	 */
+	buf_idx = GetTPDBuffer(relation, tpdblk, InvalidBuffer,
+						   TPD_BUF_FIND_OR_ENTER, &already_exists);
+	tpd_buf = tpd_buffers[buf_idx].buf;
+
+	Assert(!already_exists);
+
+	LockBuffer(tpd_buf, BUFFER_LOCK_EXCLUSIVE);
 }
 
 /*

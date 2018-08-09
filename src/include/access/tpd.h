@@ -105,6 +105,13 @@ extern void TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 extern void TPDPageSetUndo(Buffer heapbuf, int trans_slot_id,
 				bool set_tpd_map_slot, uint32 epoch, TransactionId xid,
 				UndoRecPtr urec_ptr, OffsetNumber *usedoff, int ucnt);
+extern void TPDPageSetOffsetMapSlot(Buffer heapbuf, int trans_slot_id,
+									OffsetNumber offset);
+extern void TPDPageGetOffsetMap(Buffer heapbuf, char *tpd_entry_data,
+								int map_size);
+extern int TPDPageGetOffsetMapSize(Buffer heapbuf);
+extern void TPDPageSetOffsetMap(Buffer heapbuf, char *tpd_offset_map);
+extern void TPDPageLock(Relation relation, Buffer heapbuf);
 extern XLogRedoAction XLogReadTPDBuffer(XLogReaderState *record,
 										uint8 block_id);
 extern uint8 RegisterTPDBuffer(Page heappage, uint8 block_id);

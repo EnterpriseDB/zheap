@@ -15,6 +15,13 @@
 #include "access/undoinsert.h"
 #include "utils/relcache.h"
 
+
+/* Various options while executing the undo actions for the page. */
+typedef enum UndoActionOptions
+{
+	UNDO_ACTION_UPDATE_TPD
+} UndoActionOptions;
+
 /* Remembers the last seen RecentGlobalXmin */
 TransactionId latestRecentGlobalXmin;
 

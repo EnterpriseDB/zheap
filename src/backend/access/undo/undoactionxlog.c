@@ -65,12 +65,23 @@ undo_xlog_page(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	Buffer	buf;
-	xl_undoaction_page	*xldata = NULL;
+	xl_undoaction_page	*xlrec = NULL;
+	char	*offsetmap, *data;
 	XLogRedoAction action;
 	uint8	*flags = (uint8 *) XLogRecGetData(record);
 
-	if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
-		xldata = (xl_undoaction_page *) ((char *) flags + sizeof(uint8));
+	if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT ||
+		*flags & XLU_CONTAINS_TPD_OFFSET_MAP)
+	{
+		data = (char *) flags + sizeof(uint8);
+		if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
+		{
+			xlrec = (xl_undoaction_page *) data;
+			data += sizeof(xl_undoaction_page);
+		}
+		if (*flags & XLU_CONTAINS_TPD_OFFSET_MAP)
+			offsetmap = data;
+	}
 
 	if (XLogReadBufferForRedo(record, 0, &buf) != BLK_RESTORED)
 		elog(ERROR, "Undo page record did not contain a full-page image");
@@ -88,12 +99,18 @@ undo_xlog_page(XLogReaderState *record)
 		 * We need to replay the record for TPD only when this record contains
 		 * slot from TPD.
 		 */
-		Assert(*flags & XLU_PAGE_CONTAINS_TPD_SLOT);
+		Assert(*flags & XLU_PAGE_CONTAINS_TPD_SLOT ||
+			   *flags & XLU_CONTAINS_TPD_OFFSET_MAP);
 		action = XLogReadTPDBuffer(record, 1);
 		if (action == BLK_NEEDS_REDO)
 		{
-			TPDPageSetTransactionSlotInfo(buf, xldata->trans_slot_id,
-										  xid_epoch, xid, xldata->urec_ptr);
+			if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
+				TPDPageSetTransactionSlotInfo(buf, xlrec->trans_slot_id,
+											  xid_epoch, xid, xlrec->urec_ptr);
+
+			if (*flags & XLU_CONTAINS_TPD_OFFSET_MAP)
+				TPDPageSetOffsetMap(buf, offsetmap);
+
 			TPDPageSetLSN(BufferGetPage(buf), lsn);
 		}
 	}

@@ -102,7 +102,7 @@ extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
 									  bool *lock_reacquired);
 extern int PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
 									TransactionId xid, UndoRecPtr *urec_ptr,
-									bool keepTPDBufLock);
+									bool keepTPDBufLock, bool locktpd);
 extern void PageGetTransactionSlotInfo(Buffer buf, int slot_no,
 									   uint32 *epoch, TransactionId *xid,
 									   UndoRecPtr *urec_ptr,
