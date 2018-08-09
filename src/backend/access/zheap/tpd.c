@@ -1037,8 +1037,8 @@ failed:
  * updates if it is able to reserve a slot.
  */
 int
-TPDPageReserveTransSlot(Relation relation, Buffer heapbuf, OffsetNumber offnum,
-						UndoRecPtr *urec_ptr)
+TPDPageReserveTransSlot(Relation relation, Buffer buf, OffsetNumber offnum,
+						UndoRecPtr *urec_ptr, bool *lock_reacquired)
 {
 	TransInfo	*trans_slots;
 	int		slot_no;
@@ -1047,7 +1047,7 @@ TPDPageReserveTransSlot(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 	int		buf_idx;
 	bool	tpd_e_pruned;
 
-	trans_slots = TPDPageGetTransactionSlots(relation, heapbuf, offnum,
+	trans_slots = TPDPageGetTransactionSlots(relation, buf, offnum,
 											 true, true, &num_slots, &buf_idx,
 											 &tpd_e_pruned);
 	if (tpd_e_pruned)
@@ -1063,8 +1063,47 @@ TPDPageReserveTransSlot(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 		{
 			result_slot_no = slot_no;
 			*urec_ptr = trans_slots[slot_no].urec_ptr;
-			break;
+			goto cleanup;
 		}
+	}
+
+	/* no transaction slot available, try to reuse some existing slot */
+	if (num_slots > 0 &&
+		PageFreezeTransSlots(relation, buf, lock_reacquired, trans_slots, num_slots))
+	{
+		pfree(trans_slots);
+
+		/*
+		 * If the lock is re-acquired inside, then the callers must recheck
+		 * that whether they can still perform the required operation.
+		 */
+		if (*lock_reacquired)
+			return InvalidXactSlotId;
+
+		trans_slots = TPDPageGetTransactionSlots(relation, buf, offnum, true,
+												 true, &num_slots, &buf_idx,
+												 &tpd_e_pruned);
+		/*
+		 * We are already holding TPD buffer lock so the TPD entry can not be
+		 * pruned away.
+		 */
+		Assert(!tpd_e_pruned);
+
+		for (slot_no = 0; slot_no < num_slots; slot_no++)
+		{
+			if (trans_slots[slot_no].xid == InvalidTransactionId)
+			{
+				*urec_ptr = trans_slots[slot_no].urec_ptr;
+				result_slot_no = slot_no;
+				break;
+			}
+		}
+
+		/*
+		 * After freezing transaction slots, we should get at least one free
+		 * slot.
+		 */
+		Assert(result_slot_no != InvalidXactSlotId);
 	}
 
 	/*
@@ -1072,6 +1111,7 @@ TPDPageReserveTransSlot(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 	 * allocate a bigger TPD entry with more transaction slots.
 	 */
 
+cleanup:
 	/* be tidy */
 	if (trans_slots != NULL)
 		pfree(trans_slots);

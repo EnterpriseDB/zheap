@@ -94,7 +94,6 @@ zheap_beginscan_internal(Relation relation, Snapshot snapshot,
 						 bool is_samplescan,
 						 bool temp_snap);
 
-static bool PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired);
 static void RelationPutZHeapTuple(Relation relation, Buffer buffer,
 								  ZHeapTuple tuple);
 static void log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
@@ -6636,7 +6635,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 	}
 
 	/* no transaction slot available, try to reuse some existing slot */
-	if (PageFreezeTransSlots(relation, buf, lock_reacquired))
+	if (PageFreezeTransSlots(relation, buf, lock_reacquired, NULL, 0))
 	{
 		/*
 		 * If the lock is reacquired inside, then we allow callers to reverify
@@ -6681,7 +6680,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 		int tpd_e_slot;
 
 		tpd_e_slot = TPDPageReserveTransSlot(relation, buf, offset,
-											 urec_ptr);
+											 urec_ptr, lock_reacquired);
 
 		if (tpd_e_slot != InvalidXactSlotId)
 			return tpd_e_slot;
@@ -6714,10 +6713,11 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
  *  ZHEAP_INVALID_XACT_SLOT flag on the tuple
  */
 void
-zheap_freeze_or_invalidate_tuples(Page page, int nSlots, int *slots,
-								  bool isFrozen)
+zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
+								  bool isFrozen, bool TPDSlot)
 {
 	OffsetNumber offnum, maxoff;
+	Page page = BufferGetPage(buf);
 	int	i;
 
 	/* clear the slot info from tuples */
@@ -6752,14 +6752,41 @@ zheap_freeze_or_invalidate_tuples(Page page, int nSlots, int *slots,
 			trans_slot = ZHeapTupleHeaderGetXactSlot(tup_hdr);
 		}
 
-		for (i = 0; i < nSlots; i++)
+		/* If we are freezing TPD slot then get the actual slot from the TPD. */
+		if (TPDSlot)
+		{
+			/* Tuple is not pointing to TPD slot so skip it. */
+			if (trans_slot < ZHEAP_PAGE_TRANS_SLOTS)
+				continue;
+
+			/*
+			 * If we come for freezing the TPD slot the fetch the exact slot
+			 * info from the TPD.
+			 */
+			trans_slot = TPDPageGetTransactionSlotInfo(buf, trans_slot, offnum,
+													   NULL, NULL, NULL, false,
+													   false);
+
+			/*
+			 * The input slots array always stores the slot index which starts
+			 * from 0, even for TPD slots, the index will start from 0.
+			 * So convert it into the slot index.
+			 */
+			trans_slot -= (ZHEAP_PAGE_TRANS_SLOTS + 1);
+		}
+		else
 		{
 			/*
 			 * The slot number on tuple is always array location of slot plus
 			 * one, so we need to subtract one here before comparing it with
 			 * frozen slots.  See PageReserveTransactionSlot.
 			 */
-			if ((trans_slot - 1) == slots[i])
+			trans_slot -= 1;
+		}
+
+		for (i = 0; i < nSlots; i++)
+		{
+			if (trans_slot == slots[i])
 			{
 				/*
 				 * Set transaction slots of tuple as frozen to indicate tuple
@@ -6943,32 +6970,53 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
  *	This function returns true if it manages to free some transaction slot,
  *	false otherwise.
  */
-static bool
-PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
+bool
+PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
+					 TransInfo *transinfo, int num_slots)
 {
-	Page	page;
-	PageHeader	phdr;
-	ZHeapPageOpaque	opaque;
-	uint64		oldestXidWithEpochHavingUndo;
+	uint64	oldestXidWithEpochHavingUndo;
 	int		slot_no;
-	int		frozen_slots[ZHEAP_PAGE_TRANS_SLOTS];
+	int		*frozen_slots = NULL;
 	int		nFrozenSlots = 0;
-	int		completed_xact_slots[ZHEAP_PAGE_TRANS_SLOTS];
+	int		*completed_xact_slots = NULL;
 	int		nCompletedXactSlots = 0;
-	int		aborted_xact_slots[ZHEAP_PAGE_TRANS_SLOTS];
+	int		*aborted_xact_slots = NULL;
 	int		nAbortedXactSlots = 0;
-	int     total_slots_in_page;
+	bool	TPDSlot;
+	Page	page;
+	bool	result = false;
+
+	page = BufferGetPage(buf);
+
+	/*
+	 * If the num_slots is 0 then the caller wants to freeze the page slots so
+	 * get the transaction slots information from the page.
+	 */
+	if (num_slots == 0)
+	{
+		PageHeader	phdr;
+		ZHeapPageOpaque	opaque;
+
+		phdr = (PageHeader) page;
+		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+		if (ZHeapPageHasTPDSlot(phdr))
+			num_slots = ZHEAP_PAGE_TRANS_SLOTS - 1;
+		else
+			num_slots = ZHEAP_PAGE_TRANS_SLOTS;
+
+		transinfo = opaque->transinfo;
+		TPDSlot = false;
+	}
+	else
+	{
+		Assert(num_slots > 0);
+		TPDSlot = true;
+	}
 
 	oldestXidWithEpochHavingUndo = pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
 
-	page = BufferGetPage(buf);
-	phdr = (PageHeader) page;
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-
-	if (ZHeapPageHasTPDSlot(phdr))
-		total_slots_in_page = ZHEAP_PAGE_TRANS_SLOTS - 1;
-	else
-		total_slots_in_page = ZHEAP_PAGE_TRANS_SLOTS;
+	frozen_slots = palloc0(num_slots * sizeof(int));
 
 	/*
 	 * Clear the slot information from tuples.  The basic idea is to collect
@@ -6976,10 +7024,10 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 	 * to see if any tuple has marking for any of the slots, if so, just clear
 	 * the slot information from the tuple.
 	 */
-	for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
+	for (slot_no = 0; slot_no < num_slots; slot_no++)
 	{
-		uint64	slot_xid_epoch = opaque->transinfo[slot_no].xid_epoch;
-		TransactionId	slot_xid = opaque->transinfo[slot_no].xid;
+		uint64	slot_xid_epoch = transinfo[slot_no].xid_epoch;
+		TransactionId	slot_xid = transinfo[slot_no].xid;
 
 		/*
 		 * Transaction slot can be considered frozen if it belongs to previous
@@ -6991,30 +7039,55 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 			frozen_slots[nFrozenSlots++] = slot_no;
 	}
 
-	if (nFrozenSlots)
+	if (nFrozenSlots > 0)
 	{
 		TransactionId	latestxid = InvalidTransactionId;
 		int		i;
+		int		slot_no;
 
 
 		START_CRIT_SECTION();
 
 		/* clear the transaction slot info on tuples */
-		zheap_freeze_or_invalidate_tuples(page, nFrozenSlots, frozen_slots,
-										  true);
+		zheap_freeze_or_invalidate_tuples(buf, nFrozenSlots, frozen_slots,
+										  true, TPDSlot);
 
 		/* Initialize the frozen slots. */
-		for (i = 0; i < nFrozenSlots; i++)
+		if (TPDSlot)
 		{
-			slot_no = frozen_slots[i];
+			for (i = 0; i < nFrozenSlots; i++)
+			{
+				int	tpd_slot_id;
 
-			/* Remember the latest xid. */
-			if (TransactionIdFollows(opaque->transinfo[slot_no].xid, latestxid))
-				latestxid = opaque->transinfo[slot_no].xid;
+				slot_no = frozen_slots[i];
 
-			opaque->transinfo[slot_no].xid_epoch = 0;
-			opaque->transinfo[slot_no].xid = InvalidTransactionId;
-			opaque->transinfo[slot_no].urec_ptr = InvalidUndoRecPtr;
+				/* Remember the latest xid. */
+				if (TransactionIdFollows(transinfo[slot_no].xid, latestxid))
+					latestxid = transinfo[slot_no].xid;
+
+				/* Calculate the actual slot no. */
+				tpd_slot_id = slot_no + ZHEAP_PAGE_TRANS_SLOTS + 1;
+
+				/* Initialize the TPD slot. */
+				TPDPageSetTransactionSlotInfo(buf, tpd_slot_id, 0,
+											  InvalidTransactionId,
+											  InvalidUndoRecPtr);
+			}
+		}
+		else
+		{
+			for (i = 0; i < nFrozenSlots; i++)
+			{
+				slot_no = frozen_slots[i];
+
+				/* Remember the latest xid. */
+				if (TransactionIdFollows(transinfo[slot_no].xid, latestxid))
+					latestxid = transinfo[slot_no].xid;
+
+				transinfo[slot_no].xid_epoch = 0;
+				transinfo[slot_no].xid = InvalidTransactionId;
+				transinfo[slot_no].urec_ptr = InvalidUndoRecPtr;
+			}
 		}
 
 		MarkBufferDirty(buf);
@@ -7029,7 +7102,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 		 */
 		if (RelationNeedsWAL(relation))
 		{
-			xl_zheap_freeze_xact_slot xlrec;
+			xl_zheap_freeze_xact_slot xlrec = {0};
 			XLogRecPtr	recptr;
 
 			XLogBeginInsert();
@@ -7039,17 +7112,37 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 
 			XLogRegisterData((char *) &xlrec, SizeOfZHeapFreezeXactSlot);
 
+			/*
+			 * Ideally we need the frozen slots information when WAL needs to be
+			 * applied on the page, but in case of the TPD slots freeze we need
+			 * the frozen slot information for both heap page as well as for the
+			 * TPD page.  So the problem is that if we register with any one of
+			 * the buffer it might happen that the data did not registered due
+			 * to fpw of that buffer but we need that data for another buffer.
+			 */
+			XLogRegisterData((char *) frozen_slots, nFrozenSlots * sizeof(int));
 			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
-			XLogRegisterBufData(0, (char *) &frozen_slots, nFrozenSlots * sizeof(int));
+			if (TPDSlot)
+			{
+				RegisterTPDBuffer(page, 1);
+				xlrec.flags |= XLZ_FREEZE_TPD_SLOT;
+			}
 
 			recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_FREEZE_XACT_SLOT);
 			PageSetLSN(page, recptr);
+
+			if (TPDSlot)
+				TPDPageSetLSN(page, recptr);
 		}
 
 		END_CRIT_SECTION();
 
-		return true;
+		result = true;
+		goto cleanup;
 	}
+
+	completed_xact_slots = palloc0(num_slots * sizeof(int));
+	aborted_xact_slots = palloc0(num_slots * sizeof(int));
 
 	/*
 	 * Try to reuse transaction slots of committed/aborted transactions. This
@@ -7058,27 +7151,28 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 	 * is still any alive snapshot to which this transaction is not visible,
 	 * it can fetch the record from undo and check the visibility.
 	 */
-	for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
+	for (slot_no = 0; slot_no < num_slots; slot_no++)
 	{
-		if (!TransactionIdIsInProgress(opaque->transinfo[slot_no].xid))
+		if (!TransactionIdIsInProgress(transinfo[slot_no].xid))
 		{
-			if (TransactionIdDidCommit(opaque->transinfo[slot_no].xid))
+			if (TransactionIdDidCommit(transinfo[slot_no].xid))
 				completed_xact_slots[nCompletedXactSlots++] = slot_no;
 			else
 				aborted_xact_slots[nAbortedXactSlots++] = slot_no;
 		}
 	}
 
-	if (nCompletedXactSlots)
+	if (nCompletedXactSlots > 0)
 	{
-		int i;
+		int		i;
+		int		slot_no;
 
-		/* NO EREPORT(ERROR) from here till changes are logged */
+
 		START_CRIT_SECTION();
 
-		/* Mark INVALID_XACT_SLOT flag on the tuple. */
-		zheap_freeze_or_invalidate_tuples(page, nCompletedXactSlots,
-										  completed_xact_slots, false);
+		/* clear the transaction slot info on tuples */
+		zheap_freeze_or_invalidate_tuples(buf, nCompletedXactSlots,
+										  completed_xact_slots, false, TPDSlot);
 
 		/*
 		 * Clear the xid information from the slot but keep the undo record
@@ -7086,13 +7180,31 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 		 * accessible by traversing slot's undo chain even though the slots
 		 * are reused.
 		 */
-		for (i = 0; i < nCompletedXactSlots; i++)
+		if (TPDSlot)
 		{
-			slot_no = completed_xact_slots[i];
-			opaque->transinfo[slot_no].xid_epoch = 0;
-			opaque->transinfo[slot_no].xid = InvalidTransactionId;
-		}
+			for (i = 0; i < nCompletedXactSlots; i++)
+			{
+				int tpd_slot_id;
 
+				slot_no = completed_xact_slots[i];
+				/* calculate the actual slot no. */
+				tpd_slot_id = slot_no + ZHEAP_PAGE_TRANS_SLOTS + 1;
+
+				/* Clear xid from the TPD slot but keep the urec_ptr intact. */
+				TPDPageSetTransactionSlotInfo(buf, tpd_slot_id, 0,
+											  InvalidTransactionId,
+											  transinfo[slot_no].urec_ptr);
+			}
+		}
+		else
+		{
+			for (i = 0; i < nCompletedXactSlots; i++)
+			{
+				slot_no = completed_xact_slots[i];
+				transinfo[slot_no].xid_epoch = 0;
+				transinfo[slot_no].xid = InvalidTransactionId;
+			}
+		}
 		MarkBufferDirty(buf);
 
 		/*
@@ -7100,7 +7212,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 		 */
 		if (RelationNeedsWAL(relation))
 		{
-			xl_zheap_invalid_xact_slot xlrec;
+			xl_zheap_invalid_xact_slot xlrec = {0};
 			XLogRecPtr	recptr;
 
 			XLogBeginInsert();
@@ -7109,16 +7221,28 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 
 			XLogRegisterData((char *) &xlrec, SizeOfZHeapInvalidXactSlot);
 
+			/* See comments while registering frozen slot. */
+			XLogRegisterData((char *) completed_xact_slots, nCompletedXactSlots * sizeof(int));
+
 			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
-			XLogRegisterBufData(0, (char *) &completed_xact_slots, nCompletedXactSlots * sizeof(int));
+
+			if (TPDSlot)
+			{
+				RegisterTPDBuffer(page, 1);
+				xlrec.flags |= XLZ_INVALID_XACT_TPD_SLOT;
+			}
 
 			recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_INVALID_XACT_SLOT);
 			PageSetLSN(page, recptr);
+
+			if (TPDSlot)
+				TPDPageSetLSN(page, recptr);
 		}
 
 		END_CRIT_SECTION();
 
-		return true;
+		result = true;
+		goto cleanup;
 	}
 	else if (nAbortedXactSlots)
 	{
@@ -7131,9 +7255,9 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 		/* Collect slot information before releasing the lock. */
 		for (i = 0; i < nAbortedXactSlots; i++)
 		{
-			urecptr[i] = opaque->transinfo[aborted_xact_slots[i]].urec_ptr;
-			xid[i] = opaque->transinfo[aborted_xact_slots[i]].xid;
-			epoch[i] = opaque->transinfo[aborted_xact_slots[i]].xid_epoch;
+			urecptr[i] = transinfo[aborted_xact_slots[i]].urec_ptr;
+			xid[i] = transinfo[aborted_xact_slots[i]].xid;
+			epoch[i] = transinfo[aborted_xact_slots[i]].xid_epoch;
 		}
 
 		/*
@@ -7141,6 +7265,15 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 		 * page as we might need to traverse the long undo chain for a page.
 		 */
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+		/*
+		 * Instead of just unlocking the TPD buffer like heap buffer its ok to
+		 * unlock and release, because next time while trying to reserve the
+		 * slot if we get the slot in TPD then anyway we will pin it again.
+		 */
+		if (TPDSlot)
+			UnlockReleaseTPDBuffers();
+
 		for (i = 0; i < nAbortedXactSlots; i++)
 		{
 			slot_no = aborted_xact_slots[i] + 1;
@@ -7156,10 +7289,20 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired)
 		pfree(urecptr);
 		pfree(xid);
 		pfree(epoch);
-		return true;
+
+		result = true;
+		goto cleanup;
 	}
 
-	return false;
+cleanup:
+	if (frozen_slots != NULL)
+		pfree(frozen_slots);
+	if (completed_xact_slots != NULL)
+		pfree(completed_xact_slots);
+	if (aborted_xact_slots != NULL)
+		pfree(aborted_xact_slots);
+
+	return result;
 }
 
 /*

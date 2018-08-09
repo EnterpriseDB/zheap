@@ -168,9 +168,11 @@ extern ZHeapTuple zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer,
 										ItemPointer tid);
 extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
 						TransactionId xid, TransactionId *latestRemovedXid);
-extern void zheap_freeze_or_invalidate_tuples(Page page, int nSlots, int *slots,
-											  bool isFrozen);
-
+extern void zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
+											  bool isFrozen, bool TPDSlot);
+extern bool PageFreezeTransSlots(Relation relation, Buffer buf,
+								 bool *lock_reacquired, TransInfo *transinfo,
+								 int num_slots);
 extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 									int *completed_slots,
 									OffsetNumber *offset_completed_slots,
