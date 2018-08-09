@@ -333,12 +333,7 @@ RelationGetBufferForTuple(Relation relation, Size len,
 				otherBlock;
 	bool		needLock;
 
-	if (data_alignment_zheap == 0)
-		;	/* no alignment */
-	else if (data_alignment_zheap == 4)
-		len = INTALIGN(len);	/* four byte alignment */
-	else
-		len = MAXALIGN(len);		/* be conservative */
+	len = MAXALIGN(len);		/* be conservative */
 
 	/* Bulk insert is not supported for updates, only inserts. */
 	Assert(otherBuffer == InvalidBuffer || !bistate);
@@ -402,20 +397,8 @@ RelationGetBufferForTuple(Relation relation, Size len,
 		{
 			BlockNumber nblocks = RelationGetNumberOfBlocks(relation);
 
-			if (RelationStorageIsZHeap(relation))
-			{
-				/*
-				 * In zheap, first page is always a meta page, so we need to
-				 * skip it for tuple insertions.
-				 */
-				if (nblocks > ZHEAP_METAPAGE + 1)
-					targetBlock = nblocks - 1;
-			}
-			else
-			{
-				if (nblocks > 0)
-					targetBlock = nblocks - 1;
-			}
+			if (nblocks > 0)
+				targetBlock = nblocks - 1;
 		}
 	}
 
@@ -505,10 +488,7 @@ loop:
 		 * we're done.
 		 */
 		page = BufferGetPage(buffer);
-		if (RelationStorageIsZHeap(relation))
-			pageFreeSpace = PageGetZHeapFreeSpace(page);
-		else
-			pageFreeSpace = PageGetHeapFreeSpace(page);
+		pageFreeSpace = PageGetHeapFreeSpace(page);
 		if (len + saveFreeSpace <= pageFreeSpace)
 		{
 			/* use this page as future insert target, too */
@@ -635,23 +615,12 @@ loop:
 			 BufferGetBlockNumber(buffer),
 			 RelationGetRelationName(relation));
 
-	if (RelationStorageIsZHeap(relation))
+	PageInit(page, BufferGetPageSize(buffer), 0);
+
+	if (len > PageGetHeapFreeSpace(page))
 	{
-		ZheapInitPage(page, BufferGetPageSize(buffer));
-		if (len > PageGetZHeapFreeSpace(page))
-		{
-			/* We should not get here given the test at the top */
-			elog(PANIC, "tuple is too big: size %zu", len);
-		}
-	}
-	else
-	{
-		PageInit(page, BufferGetPageSize(buffer), 0);
-		if (len > PageGetHeapFreeSpace(page))
-		{
-			/* We should not get here given the test at the top */
-			elog(PANIC, "tuple is too big: size %zu", len);
-		}
+		/* We should not get here given the test at the top */
+		elog(PANIC, "tuple is too big: size %zu", len);
 	}
 
 	/*
