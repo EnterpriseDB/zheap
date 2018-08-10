@@ -55,6 +55,8 @@
 #include "access/zheapam_xlog.h"
 #include "access/zmultilocker.h"
 #include "catalog/catalog.h"
+#include "catalog/index.h"
+#include "executor/executor.h"
 #include "executor/tuptable.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -80,6 +82,8 @@ extern bool synchronize_seqscans;
 
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
 									   int options);
+static bool ZHeapProjIndexIsUnchanged(Relation relation, ZHeapTuple oldtup,
+											 ZHeapTuple newtup);
 static Bitmapset *
 ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 							  ZHeapTuple oldtup, ZHeapTuple newtup);
@@ -1856,6 +1860,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 				  single_locker_xid;
 	CommandId	tup_cid;
 	Bitmapset  *inplace_upd_attrs = NULL;
+	Bitmapset  *inplace_upd_proj_attrs = NULL;
 	Bitmapset  *key_attrs = NULL;
 	Bitmapset  *interesting_attrs = NULL;
 	Bitmapset  *modified_attrs = NULL;
@@ -1931,6 +1936,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	 * happening midway through.
 	 */
 	inplace_upd_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_HOT);
+	inplace_upd_proj_attrs = RelationGetIndexAttrBitmap(relation,
+														INDEX_ATTR_BITMAP_PROJ);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 
 	block = ItemPointerGetBlockNumber(otid);
@@ -1997,13 +2004,23 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	}
 
 	interesting_attrs = bms_add_members(interesting_attrs, inplace_upd_attrs);
+	interesting_attrs = bms_add_members(interesting_attrs,
+										inplace_upd_proj_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
 
 	/* Determine columns modified by the update. */
 	modified_attrs = ZHeapDetermineModifiedColumns(relation, interesting_attrs,
 												   &oldtup, newtup);
 
-	is_index_updated = bms_overlap(modified_attrs, inplace_upd_attrs);
+	/*
+	 * Check if any of the index columns have been changed; or if we have
+	 * projection functional indexes, check whether the old and the new values
+	 * are the same.
+	 */
+	is_index_updated =
+		bms_overlap(modified_attrs, inplace_upd_attrs)
+		|| (bms_overlap(modified_attrs, inplace_upd_proj_attrs)
+			&& !ZHeapProjIndexIsUnchanged(relation, &oldtup, newtup));
 
 	if (relation->rd_rel->relkind != RELKIND_RELATION &&
 		relation->rd_rel->relkind != RELKIND_MATVIEW)
@@ -2528,6 +2545,7 @@ zheap_tuple_updated:
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
 		bms_free(inplace_upd_attrs);
+		bms_free(inplace_upd_proj_attrs);
 		bms_free(key_attrs);
 		return result;
 	}
@@ -3427,6 +3445,7 @@ reacquire_buffer:
 		zheap_freetuple(zheaptup);
 	}
 	bms_free(inplace_upd_attrs);
+	bms_free(inplace_upd_proj_attrs);
 	bms_free(interesting_attrs);
 	bms_free(modified_attrs);
 
@@ -6242,6 +6261,87 @@ zheap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
 		att = TupleDescAttr(tupdesc, attrnum - 1);
 		return datumIsEqual(value1, value2, att->attbyval, att->attlen);
 	}
+}
+
+/*
+ * Check whether the value is unchanged after update of a projection
+ * functional index.
+ * This is same as ProjIndexIsUnchanged() except that it takes ZHeapTuple as
+ * input.
+ */
+static bool
+ZHeapProjIndexIsUnchanged(Relation relation, ZHeapTuple oldtup,
+											 ZHeapTuple newtup)
+{
+	ListCell   *l;
+	List	   *indexoidlist = RelationGetIndexList(relation);
+	EState	   *estate = CreateExecutorState();
+	ExprContext *econtext = GetPerTupleExprContext(estate);
+	TupleTableSlot *slot = MakeSingleTupleTableSlot(RelationGetDescr(relation));
+	bool		equals = true;
+	Datum		old_values[INDEX_MAX_KEYS];
+	bool		old_isnull[INDEX_MAX_KEYS];
+	Datum		new_values[INDEX_MAX_KEYS];
+	bool		new_isnull[INDEX_MAX_KEYS];
+	int			indexno = 0;
+
+	econtext->ecxt_scantuple = slot;
+
+	foreach(l, indexoidlist)
+	{
+		if (bms_is_member(indexno, relation->rd_projidx))
+		{
+			Oid			indexOid = lfirst_oid(l);
+			Relation	indexDesc = index_open(indexOid, AccessShareLock);
+			IndexInfo  *indexInfo = BuildIndexInfo(indexDesc);
+			int			i;
+
+			ResetExprContext(econtext);
+			ExecStoreZTuple(oldtup, slot, InvalidBuffer, false);
+			FormIndexDatum(indexInfo,
+						   slot,
+						   estate,
+						   old_values,
+						   old_isnull);
+
+			ExecStoreZTuple(newtup, slot, InvalidBuffer, false);
+			FormIndexDatum(indexInfo,
+						   slot,
+						   estate,
+						   new_values,
+						   new_isnull);
+
+			for (i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
+			{
+				if (old_isnull[i] != new_isnull[i])
+				{
+					equals = false;
+					break;
+				}
+				else if (!old_isnull[i])
+				{
+					Form_pg_attribute att = TupleDescAttr(RelationGetDescr(indexDesc), i);
+
+					if (!datumIsEqual(old_values[i], new_values[i], att->attbyval, att->attlen))
+					{
+						equals = false;
+						break;
+					}
+				}
+			}
+			index_close(indexDesc, AccessShareLock);
+
+			if (!equals)
+			{
+				break;
+			}
+		}
+		indexno += 1;
+	}
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
+
+	return equals;
 }
 
 /*
