@@ -1580,6 +1580,24 @@ zheap_tuple_updated:
 	Assert(trans_slot_id != InvalidXactSlotId);
 
 	/*
+	 * It's possible that tuple slot is now marked as frozen. Hence, we refetch
+	 * the tuple here.
+	 */
+	Assert(!ItemIdIsDeleted(lp));
+	zheaptup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+	zheaptup.t_len = ItemIdGetLength(lp);
+
+	/*
+	 * If the slot is marked as frozen, the latest modifier of the tuple must be
+	 * frozen.
+	 */
+	if (ZHeapTupleHeaderGetXactSlot((ZHeapTupleHeader) (zheaptup.t_data)) == ZHTUP_SLOT_FROZEN)
+	{
+		tup_trans_slot_id = ZHTUP_SLOT_FROZEN;
+		tup_xid = InvalidTransactionId;
+	}
+
+	/*
 	 * If all the members were lockers and are all gone, we can do away
 	 * with the MULTI_LOCKERS bit.
 	 */
@@ -2559,26 +2577,6 @@ zheap_tuple_updated:
 		return result;
 	}
 
-	/*
-	 * Save the xid that has updated the tuple to compute infomask for
-	 * tuple.
-	 */
-	save_tup_xid = tup_xid;
-
-	/*
-	 * If the last transaction that has updated the tuple is already too
-	 * old, then consider it as frozen which means it is all-visible.  This
-	 * ensures that we don't need to store epoch in the undo record to check
-	 * if the undo tuple belongs to previous epoch and hence all-visible.  See
-	 * comments atop of file ztqual.c.
-	 */
-	oldestXidHavingUndo = GetXidFromEpochXid(
-						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
-	if (TransactionIdPrecedes(tup_xid, oldestXidHavingUndo))
-	{
-		tup_xid = FrozenTransactionId;
-	}
-
 	pagefree = PageGetZHeapFreeSpace(page);
 
 	if (data_alignment_zheap == 0)
@@ -2665,6 +2663,44 @@ zheap_tuple_updated:
 
 	/* transaction slot must be reserved before adding tuple to page */
 	Assert(trans_slot_id != InvalidXactSlotId);	
+
+	/*
+	 * It's possible that tuple slot is now marked as frozen. Hence, we refetch
+	 * the tuple here.
+	 */
+	Assert(!ItemIdIsDeleted(lp));
+	oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+	oldtup.t_len = ItemIdGetLength(lp);
+
+	/*
+	 * If the slot is marked as frozen, the latest modifier of the tuple must be
+	 * frozen.
+	 */
+	if (ZHeapTupleHeaderGetXactSlot((ZHeapTupleHeader) (oldtup.t_data)) == ZHTUP_SLOT_FROZEN)
+	{
+		tup_trans_slot_id = ZHTUP_SLOT_FROZEN;
+		tup_xid = InvalidTransactionId;
+	}
+
+	/*
+	 * Save the xid that has updated the tuple to compute infomask for
+	 * tuple.
+	 */
+	save_tup_xid = tup_xid;
+
+	/*
+	 * If the last transaction that has updated the tuple is already too
+	 * old, then consider it as frozen which means it is all-visible.  This
+	 * ensures that we don't need to store epoch in the undo record to check
+	 * if the undo tuple belongs to previous epoch and hence all-visible.  See
+	 * comments atop of file ztqual.c.
+	 */
+	oldestXidHavingUndo = GetXidFromEpochXid(
+						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+	if (TransactionIdPrecedes(tup_xid, oldestXidHavingUndo))
+	{
+		tup_xid = FrozenTransactionId;
+	}
 
 	/*
 	 * updated tuple doesn't fit on current page or the toaster needs
@@ -3007,6 +3043,16 @@ reacquire_buffer:
 		 */
 		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 		oldtup.t_len = ItemIdGetLength(lp);
+
+		/*
+		 * If the slot is marked as frozen, the latest modifier of the tuple must be
+		 * frozen.
+		 */
+		if (ZHeapTupleHeaderGetXactSlot((ZHeapTupleHeader) (oldtup.t_data)) == ZHTUP_SLOT_FROZEN)
+		{
+			tup_trans_slot_id = ZHTUP_SLOT_FROZEN;
+			tup_xid = InvalidTransactionId;
+		}
 	}
 	else
 	{
@@ -4633,6 +4679,24 @@ failed:
 	Assert(trans_slot_id != InvalidXactSlotId);
 
 	/*
+	 * It's possible that tuple slot is now marked as frozen. Hence, we refetch
+	 * the tuple here.
+	 */
+	Assert(!ItemIdIsDeleted(lp));
+	zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+	zhtup.t_len = ItemIdGetLength(lp);
+
+	/*
+	 * If the slot is marked as frozen, the latest modifier of the tuple must be
+	 * frozen.
+	 */
+	if (ZHeapTupleHeaderGetXactSlot((ZHeapTupleHeader) (zhtup.t_data)) == ZHTUP_SLOT_FROZEN)
+	{
+		tup_trans_slot_id = ZHTUP_SLOT_FROZEN;
+		tup_xid = InvalidTransactionId;
+	}
+
+	/*
 	 * If all the members were lockers and are all gone, we can do away
 	 * with the MULTI_LOCKERS bit.
 	 */
@@ -5047,10 +5111,24 @@ lock_tuple:
 
 		Assert(ItemIdIsNormal(lp));
 
+		/*
+		 * It's possible that tuple slot is now marked as frozen. Hence, we refetch
+		 * the tuple here.
+		 */
 		zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 		zhtup.t_len = ItemIdGetLength(lp);
 		zhtup.t_tableOid = mytup->t_tableOid;
 		zhtup.t_self = mytup->t_self;
+
+		/*
+		 * If the slot is marked as frozen, the latest modifier of the tuple must be
+		 * frozen.
+		 */
+		if (ZHeapTupleHeaderGetXactSlot((ZHeapTupleHeader) (zhtup.t_data)) == ZHTUP_SLOT_FROZEN)
+		{
+			tup_trans_slot = ZHTUP_SLOT_FROZEN;
+			tup_xid = InvalidTransactionId;
+		}
 
 		zheap_lock_tuple_guts(rel, buf, &zhtup, tup_xid, xid, mode, epoch,
 							  tup_trans_slot, trans_slot_id,
