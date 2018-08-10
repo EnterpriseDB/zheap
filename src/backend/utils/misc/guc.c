@@ -63,6 +63,7 @@
 #include "postmaster/bgwriter.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
+#include "postmaster/undoworker.h"
 #include "postmaster/walwriter.h"
 #include "replication/logicallauncher.h"
 #include "replication/slot.h"
@@ -1830,6 +1831,17 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&jit_tuple_deforming,
 		true,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"disable_undo_launcher", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Decides whether to launch an undo worker."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&disable_undo_launcher,
+		false,
 		NULL, NULL, NULL
 	},
 

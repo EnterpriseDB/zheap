@@ -247,6 +247,8 @@ bool		enable_bonjour = false;
 char	   *bonjour_name;
 bool		restart_after_crash = true;
 
+bool		disable_undo_launcher;
+
 /* PIDs of special child processes; 0 when not running */
 static pid_t StartupPID = 0,
 			BgWriterPID = 0,
@@ -980,7 +982,8 @@ PostmasterMain(int argc, char *argv[])
 	ApplyLauncherRegister();
 
 	/* Register the Undo worker launcher. */
-	UndoLauncherRegister();
+	if (!disable_undo_launcher)
+		UndoLauncherRegister();
 
 	/*
 	 * process any libraries that should be preloaded at postmaster start
