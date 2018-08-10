@@ -1569,7 +1569,7 @@ GetTPDEntryData(Buffer heapbuf, int *num_entries, int *entry_size,
 	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
 
 	/* TPD entry is pruned away. */
-	if (tpd_e_hdr.blkno != BufferGetBlockNumber(heapbuf));
+	if (tpd_e_hdr.blkno != BufferGetBlockNumber(heapbuf))
 		return NULL;
 
 	tpd_entry_data = tpdpage + tpd_e_offset + SizeofTPDEntryHeader;
