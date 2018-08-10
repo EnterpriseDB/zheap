@@ -9938,6 +9938,11 @@
   proname => 'pg_stat_get_tuples_inplace_updated', provolatile => 's', proparallel => 'r',
   prorettype => 'int8', proargtypes => 'oid',
   prosrc => 'pg_stat_get_tuples_inplace_updated' },
+{ oid => '6123',
+  descr => 'statistics: number of inplace updates performed in current transaction',
+  proname => 'pg_stat_get_xact_tuples_inplace_updated', provolatile => 'v',
+  proparallel => 'r', prorettype => 'int8', proargtypes => 'oid',
+  prosrc => 'pg_stat_get_xact_tuples_inplace_updated' },
 
 # rls
 { oid => '3298',

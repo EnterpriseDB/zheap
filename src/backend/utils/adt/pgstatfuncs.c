@@ -1735,6 +1735,29 @@ pg_stat_get_xact_tuples_hot_updated(PG_FUNCTION_ARGS)
 }
 
 Datum
+pg_stat_get_xact_tuples_inplace_updated(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	int64		result;
+	PgStat_TableStatus *tabentry;
+	Relation	rel = heap_open(relid, NoLock);
+
+	/*
+	 * Counter t_tuples_hot_updated stores number of hot updates for heap table
+	 * and the number of inplace updates for zheap table.
+	 */
+	if ((tabentry = find_tabstat_entry(relid)) == NULL ||
+		!RelationStorageIsZHeap(rel))
+		result = 0;
+	else
+		result = (int64) (tabentry->t_counts.t_tuples_hot_updated);
+
+	heap_close(rel, NoLock);
+
+	PG_RETURN_INT64(result);
+}
+
+Datum
 pg_stat_get_xact_blocks_fetched(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
