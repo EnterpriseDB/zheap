@@ -6720,8 +6720,24 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 		check_tpd = false;
 	}
 
-	for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
+	/*
+	 * For temp relations, we don't have to check all the slots since
+	 * no other backend can access the same relation. If a slot is available,
+	 * we return it from here. Else, we freeze the slot in PageFreezeTransSlots.
+	 *
+	 * XXX For temp tables, oldestXidWithEpochHavingUndo is not relevant as
+	 * the undo for them can be discarded on commit.  Hence, comparing xid
+	 * with oldestXidWithEpochHavingUndo during visibility checks can lead to
+	 * incorrect behavior.  To avoid that, we can mark the tuple as frozen
+	 * for any previous transaction id.  In that way, we don't have to
+	 * compare the previous xid of tuple with oldestXidWithEpochHavingUndo.
+	 */
+	if (RELATION_IS_LOCAL(relation))
 	{
+		/*  We can't access temp tables of other backends. */
+		Assert(!RELATION_IS_OTHER_TEMP(relation));
+
+		slot_no = 0;
 		if (opaque->transinfo[slot_no].xid_epoch == epoch &&
 			opaque->transinfo[slot_no].xid == xid)
 		{
@@ -6731,6 +6747,21 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 		else if (opaque->transinfo[slot_no].xid == InvalidTransactionId &&
 				 latestFreeTransSlot == InvalidXactSlotId)
 			latestFreeTransSlot = slot_no;
+	}
+	else
+	{
+		for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
+		{
+			if (opaque->transinfo[slot_no].xid_epoch == epoch &&
+				opaque->transinfo[slot_no].xid == xid)
+			{
+				*urec_ptr = opaque->transinfo[slot_no].urec_ptr;
+				return (slot_no + 1);
+			}
+			else if (opaque->transinfo[slot_no].xid == InvalidTransactionId &&
+					 latestFreeTransSlot == InvalidXactSlotId)
+				latestFreeTransSlot = slot_no;
+		}
 	}
 
 	/* Check if we already have a slot on the TPD page */
@@ -6786,6 +6817,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 		 */
 		Assert(false);
 	}
+	Assert (RELATION_IS_LOCAL(relation));
 
 	/*
 	 * Reserve the transaction slot in TPD.  First we check if there already
@@ -7146,20 +7178,28 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 	 * all the transaction slots that can be cleared.  Then traverse the page
 	 * to see if any tuple has marking for any of the slots, if so, just clear
 	 * the slot information from the tuple.
+	 *
+	 * For temp relations, we can freeze the first slot since no other backend
+	 * can access the same relation.
 	 */
-	for (slot_no = 0; slot_no < num_slots; slot_no++)
+	if (RELATION_IS_LOCAL(relation))
+		frozen_slots[nFrozenSlots++] = 0;
+	else
 	{
-		uint64	slot_xid_epoch = transinfo[slot_no].xid_epoch;
-		TransactionId	slot_xid = transinfo[slot_no].xid;
+		for (slot_no = 0; slot_no < num_slots; slot_no++)
+		{
+			uint64	slot_xid_epoch = transinfo[slot_no].xid_epoch;
+			TransactionId	slot_xid = transinfo[slot_no].xid;
 
-		/*
-		 * Transaction slot can be considered frozen if it belongs to previous
-		 * epoch or transaction id is old enough that it is all visible.
-		 */
-		slot_xid_epoch = MakeEpochXid(slot_xid_epoch, slot_xid);
+			/*
+			 * Transaction slot can be considered frozen if it belongs to previous
+			 * epoch or transaction id is old enough that it is all visible.
+			 */
+			slot_xid_epoch = MakeEpochXid(slot_xid_epoch, slot_xid);
 
-		if (slot_xid_epoch < oldestXidWithEpochHavingUndo)
-			frozen_slots[nFrozenSlots++] = slot_no;
+			if (slot_xid_epoch < oldestXidWithEpochHavingUndo)
+				frozen_slots[nFrozenSlots++] = slot_no;
+		}
 	}
 
 	if (nFrozenSlots > 0)
@@ -7264,6 +7304,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		goto cleanup;
 	}
 
+	Assert(!RELATION_IS_LOCAL(relation));
 	completed_xact_slots = palloc0(num_slots * sizeof(int));
 	aborted_xact_slots = palloc0(num_slots * sizeof(int));
 
