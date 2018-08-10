@@ -17,10 +17,7 @@
 
 
 /* Various options while executing the undo actions for the page. */
-typedef enum UndoActionOptions
-{
-	UNDO_ACTION_UPDATE_TPD
-} UndoActionOptions;
+#define UNDO_ACTION_UPDATE_TPD		0x0001
 
 /* Remembers the last seen RecentGlobalXmin */
 TransactionId latestRecentGlobalXmin;

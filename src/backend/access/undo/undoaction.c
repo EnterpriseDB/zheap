@@ -35,8 +35,7 @@
 
 static bool execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr,
 					 Oid reloid, TransactionId xid, BlockNumber blkno,
-					 bool blk_chain_complete, bool norellock,
-					 UndoActionOptions options);
+					 bool blk_chain_complete, bool norellock, int options);
 static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
 									  TransactionId xid);
 
@@ -83,7 +82,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	BlockNumber	prev_block = InvalidBlockNumber;
 	List	   *luinfo = NIL;
 	bool		more_undo;
-	UndoActionOptions options = 0;
+	int			options = 0;
 	TransactionId xid = InvalidTransactionId;
 	UndoRecInfo	*urec_info;
 
@@ -321,7 +320,7 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 	Page		page;
 	UndoRecInfo	*urec_info;
 	bool	actions_applied = false;
-	UndoActionOptions options = 0;
+	int		options = 0;
 
 	Assert(TransactionIdDidAbort(xid));
 
@@ -520,8 +519,7 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
 static bool
 execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 						  TransactionId xid, BlockNumber blkno,
-						  bool blk_chain_complete, bool rellock,
-						  UndoActionOptions options)
+						  bool blk_chain_complete, bool rellock, int options)
 {
 	ListCell   *l_iter;
 	Relation	rel;
@@ -621,7 +619,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	 * section.  It is quite possible that the TPD entry is already pruned
 	 * by this time, in which case, we will mark the slot as frozen.
 	 */
-	if (options & UNDO_ACTION_UPDATE_TPD)
+	if ((options & UNDO_ACTION_UPDATE_TPD) != 0)
 	{
 		tpd_map_size = TPDPageGetOffsetMapSize(buffer);
 		if (tpd_map_size > 0)
