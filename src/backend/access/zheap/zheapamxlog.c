@@ -466,7 +466,7 @@ zheap_xlog_update(XLogReaderState *record)
 	{
 		inplace_update = false;
 		if (old_tup_trans_slot_id)
-			xlnewundohdr = (xl_undo_header *) ((char *) old_tup_trans_slot_id + sizeof(old_tup_trans_slot_id));
+			xlnewundohdr = (xl_undo_header *) ((char *) old_tup_trans_slot_id + sizeof(*old_tup_trans_slot_id));
 		else
 			xlnewundohdr = (xl_undo_header *) ((char *) xlrec + SizeOfZHeapUpdate);
 
@@ -579,7 +579,7 @@ zheap_xlog_update(XLogReaderState *record)
 		}
 
 		memcpy((char *) &xlhdr, data, SizeOfZHeapHeader);
-		data += SizeOfZHeapHeader;			
+		data += SizeOfZHeapHeader;
 
 		zhtup = &tbuf.hdr;
 		MemSet((char *) zhtup, 0, SizeofZHeapTupleHeader);
@@ -920,26 +920,23 @@ zheap_xlog_update(XLogReaderState *record)
 				usedoff[1] = newundorecord.uur_offset;
 				ucnt = 2;
 			}
-			else if (newbuffer == oldbuffer)
+			else
 			{
 				usedoff[0] = undorecord.uur_offset;
 				ucnt = 1;
 			}
-			else
+			if (xlrec->old_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			{
-				usedoff[0] = newundorecord.uur_offset;
-				ucnt = 1;
+				TPDPageSetUndo(oldbuffer,
+							   xlrec->old_trans_slot_id,
+							   true,
+							   xid_epoch,
+							   xid,
+							   inplace_update ? urecptr : newurecptr,
+							   usedoff,
+							   ucnt);
+				TPDPageSetLSN(oldpage, lsn);
 			}
-
-			TPDPageSetUndo(oldbuffer,
-						   xlrec->old_trans_slot_id,
-						   true,
-						   xid_epoch,
-						   xid,
-						   inplace_update ? urecptr : newurecptr,
-						   usedoff,
-						   ucnt);
-			TPDPageSetLSN(oldpage, lsn);
 		}
 	}
 
@@ -959,7 +956,18 @@ zheap_xlog_update(XLogReaderState *record)
 			TPDPageSetLSN(newpage, lsn);
 		}
 	}
-
+	else if (new_trans_slot_id && (*new_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS))
+	{
+		TPDPageSetUndo(newbuffer,
+					   *new_trans_slot_id,
+					   true,
+					   xid_epoch,
+					   xid,
+					   newurecptr,
+					   &newundorecord.uur_offset,
+					   1);
+		TPDPageSetLSN(newpage, lsn);
+	}
 	if (BufferIsValid(newbuffer) && newbuffer != oldbuffer)
 		UnlockReleaseBuffer(newbuffer);
 	if (BufferIsValid(oldbuffer))
@@ -1175,6 +1183,8 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
+
+		UnlockReleaseTPDBuffers();
 }
 
 static void
@@ -1260,8 +1270,8 @@ zheap_xlog_lock(XLogReaderState *record)
 							SizeofZHeapTupleHeader + sizeof(LockTupleMode));
 		if (xlrec->trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			appendBinaryStringInfo(&undorecord.uur_payload,
-								   (char *) &xlrec->trans_slot_id,
-								   sizeof(xlrec->trans_slot_id));
+								   (char *) trans_slot_for_urec,
+								   sizeof(*trans_slot_for_urec));
 	}
 	else if (xlrec->flags & XLZ_LOCK_CONTAINS_TPD_SLOT)
 	{

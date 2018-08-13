@@ -1002,7 +1002,8 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 		size_tpd_e_map = tpd_e_hdr.tpe_num_map_entries * sizeof(uint32);
 	}
 
-	*num_trans_slots = tpd_e_hdr.tpe_num_slots;
+	if (num_trans_slots)
+		*num_trans_slots = tpd_e_hdr.tpe_num_slots;
 	size_tpd_e_slots = tpd_e_hdr.tpe_num_slots * sizeof(TransInfo);
 	loc_trans_slots = tpd_e_offset + SizeofTPDEntryHeader + size_tpd_e_map;
 
