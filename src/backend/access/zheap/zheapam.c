@@ -2165,9 +2165,10 @@ check_tup_satisfies_update:
 						/*
 						 * There is no other active locker on the tuple except
 						 * current transaction id, so we can update the tuple.
+						 * However, we need to propagate lockers information.
 						 */
 						checked_lockers = true;
-						locker_remains = false;
+						locker_remains = true;
 						goto zheap_tuple_updated;
 					}
 				}
