@@ -6072,7 +6072,7 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 			if(ZHeapTupleHeaderGetXactSlot(zhtup->t_data) == ZHTUP_SLOT_FROZEN)
 				result = TransactionIdGetDatum(FrozenTransactionId);
 			else if (IsZHeapTupleModified(zhtup->t_data->t_infomask) ||
-					 zhtup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+					 ZHeapTupleHasInvalidXact(zhtup->t_data->t_infomask))
 				result = TransactionIdGetDatum(zheap_fetchinsertxid(zhtup, buf));
 			else
 			{
@@ -7002,7 +7002,7 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 		else
 		{
 			tup_hdr = (ZHeapTupleHeader) PageGetItem(page, itemid);
-			if (tup_hdr->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+			if (ZHeapTupleHasInvalidXact(tup_hdr->t_infomask))
 				continue;
 			trans_slot = ZHeapTupleHeaderGetXactSlot(tup_hdr);
 		}
@@ -7606,7 +7606,7 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, int *trans_slot,
 		 */
 		if (trans_slot_id == ZHTUP_SLOT_FROZEN)
 			goto slot_is_frozen;
-		if (tuple->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+		if (ZHeapTupleHasInvalidXact(tuple->t_infomask))
 			is_invalid_slot = true;
 	}
 	else

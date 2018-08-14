@@ -223,7 +223,7 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 		!TransactionIdEquals(xid, FrozenTransactionId) &&
 		!TransactionIdPrecedes(xid, oldestXidHavingUndo))
 	{
-		if (undo_tup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+		if (ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
 		{
 			FetchTransInfoFromUndo(undo_tup, NULL, &xid, &cid, &prev_urec_ptr, false);
 		}
@@ -400,7 +400,7 @@ fetch_prior_undo_record:
 	 * If the tuple points to a slot that gets invalidated for reuse at some
 	 * point of time, then undo_tup is the latest committed version of the tuple.
 	 */
-	if (undo_tup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+	if (ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
 		return undo_tup;
 
 	/*
@@ -582,7 +582,7 @@ fetch_prior_undo_record:
 		!TransactionIdEquals(xid, FrozenTransactionId) &&
 		!TransactionIdPrecedes(xid, oldestXidHavingUndo))
 	{
-		if (undo_tup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+		if (ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
 		{
 			FetchTransInfoFromUndo(undo_tup, NULL, &xid, &cid, &prev_urec_ptr, false);
 		}
@@ -871,7 +871,7 @@ fetch_prior_undo_record:
 		!TransactionIdEquals(xid, FrozenTransactionId) &&
 		!TransactionIdPrecedes(xid, oldestXidHavingUndo))
 	{
-		if (undo_tup->t_data->t_infomask & ZHEAP_INVALID_XACT_SLOT)
+		if (ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
 		{
 			FetchTransInfoFromUndo(undo_tup, NULL, &xid, &cid, &prev_urec_ptr, false);
 		}
