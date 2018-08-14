@@ -344,12 +344,13 @@ get_next_page:
 				pgstat_count_heap_fetch(scan->rs_rd);
 
 				/*
-				 * Set up the result slot to point to this tuple. Note that the slot
-				 * acquires a pin on the buffer.
+				 * Set up the result slot to point to this tuple. We don't need
+				 * to keep the pin on the buffer, since we only scan tuples in page
+				 * mode.
 				 */
 				ExecStoreZTuple(scan->rs_cztup,
 							   slot,
-							   scan->rs_cbuf,
+							   InvalidBuffer,
 							   true);
 			}
 			else
