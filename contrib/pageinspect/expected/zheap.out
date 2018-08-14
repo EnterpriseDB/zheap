@@ -48,28 +48,17 @@ select * from test_zheap where a=6 for update;
 (1 row)
 
 commit;
-select  lp,lp_off,lp_flags,lp_len,t_slot,t_infomask2,t_infomask,t_hoff,t_bits,
+select  lp,lp_flags,t_slot,t_infomask2,t_infomask,t_hoff,t_bits,
 		t_infomask_info from zheap_page_items(get_raw_page('test_zheap', 1));
- lp | lp_off | lp_flags | lp_len | t_slot | t_infomask2 | t_infomask | t_hoff |  t_bits  | t_infomask_info 
-----+--------+----------+--------+--------+-------------+------------+--------+----------+-----------------
-  1 |   8112 |        1 |     12 |      1 |        2050 |          1 |      8 | 10000000 | 
-  2 |   8096 |        1 |     12 |      1 |        2050 |         33 |      8 | 10000000 | {in-updated}
-  3 |   8080 |        1 |     12 |      1 |        2050 |         65 |      8 | 10000000 | {updated}
-  4 |   8064 |        1 |     12 |      1 |        2050 |       1041 |      8 | 10000000 | {deleted,l-ex}
-  5 |   8048 |        1 |     12 |      1 |        2050 |        897 |      8 | 10000000 | {l-share}
-  6 |   8032 |        1 |     12 |      1 |        2050 |       1153 |      8 | 10000000 | {l-ex}
-  7 |   8008 |        1 |     17 |      1 |        2050 |          2 |      8 |          | 
+ lp | lp_flags | t_slot | t_infomask2 | t_infomask | t_hoff |  t_bits  | t_infomask_info 
+----+----------+--------+-------------+------------+--------+----------+-----------------
+  1 |        1 |      1 |        2050 |          1 |      8 | 10000000 | 
+  2 |        1 |      1 |        2050 |         33 |      8 | 10000000 | {in-updated}
+  3 |        1 |      1 |        2050 |         65 |      8 | 10000000 | {updated}
+  4 |        1 |      1 |        2050 |       1041 |      8 | 10000000 | {deleted,l-ex}
+  5 |        1 |      1 |        2050 |        897 |      8 | 10000000 | {l-share}
+  6 |        1 |      1 |        2050 |       1153 |      8 | 10000000 | {l-ex}
+  7 |        1 |      1 |        2050 |          2 |      8 |          | 
 (7 rows)
-
--- Here, we can only check the undo pointer since transaction information may
--- vary with the database state. Let's hope we don't change the size of existing
--- undo records. If undo record size changes in future, we've modify the undoptr
--- here.
-select slot_id , undoptr from zheap_page_slots(get_raw_page('test_zheap', 1))
-		where slot_id=1;
- slot_id | undoptr 
----------+---------
-       1 |     573
-(1 row)
 
 drop table test_zheap;
