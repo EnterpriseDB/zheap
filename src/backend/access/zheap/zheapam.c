@@ -3190,7 +3190,7 @@ reacquire_buffer:
 		 */
 		new_infomask = ZHEAP_XID_KEYSHR_LOCK;
 		if (ZHeapTupleHasMultiLockers(old_infomask))
-			new_infomask |= ZHEAP_MULTI_LOCKERS;
+			new_infomask |= ZHEAP_MULTI_LOCKERS | ZHEAP_XID_LOCK_ONLY;
 		else
 			new_infomask |= ZHEAP_XID_LOCK_ONLY;
 	}
