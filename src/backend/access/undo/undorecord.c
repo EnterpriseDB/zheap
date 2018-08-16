@@ -48,6 +48,7 @@
 #include "catalog/pg_tablespace.h"
 #include "storage/block.h"
 #include "storage/buf.h"
+#include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
 #include "miscadmin.h"
 #include "commands/tablecmds.h"
@@ -838,7 +839,8 @@ UndoRecordSetInfo(UnpackedUndoRecord *uur)
 
 /*
  * Find the block number in undo buffer array, if it's present then just return
- * its index otherwise search the buffer and insert an entry.
+ * its index otherwise search the buffer and insert an entry and lock the buffer
+ * in exclusive mode.
  *
  * Undo log insertions are append-only.  If the caller is writing new data
  * that begins exactly at the beginning of a page, then there cannot be any
@@ -860,7 +862,14 @@ InsertFindBufferSlot(RelFileNode rnode,
 	for (i = 0; i < buffer_idx; i++)
 	{
 		if (blk == undo_buffer[i].blk)
+		{
+			/* caller must hold exclusive lock on buffer */
+			Assert(BufferIsLocal(undo_buffer[i].buf) ||
+				   LWLockHeldByMeInMode(BufferDescriptorGetContentLock(
+										GetBufferDescriptor(undo_buffer[i].buf - 1)),
+										LW_EXCLUSIVE));
 			break;
+		}
 	}
 
 	/*
@@ -878,6 +887,10 @@ InsertFindBufferSlot(RelFileNode rnode,
 										   rbm,
 										   NULL,
 										   RelPersistenceForUndoPersistence(persistence));
+
+		/* Lock the buffer */
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
 		undo_buffer[buffer_idx].buf = buffer;
 		undo_buffer[buffer_idx].blk = blk;
 		buffer_idx++;
@@ -1212,10 +1225,6 @@ InsertPreparedUndo(void)
 
 	Assert(prepare_idx > 0);
 
-	/* Lock all the buffers and mark them dirty. */
-	for (idx = 0; idx < buffer_idx; idx++)
-		LockBuffer(undo_buffer[idx].buf, BUFFER_LOCK_EXCLUSIVE);
-
 	for (idx = 0; idx < prepare_idx; idx++)
 	{
 		uur = prepared_undo[idx].urec;
@@ -1321,7 +1330,7 @@ UnlockReleaseUndoBuffers(void)
 	{
 		UnlockReleaseBuffer(undo_buffer[i].buf);
 		undo_buffer[i].blk = InvalidBlockNumber;
-		undo_buffer[i].buf = InvalidBlockNumber;
+		undo_buffer[i].buf = InvalidBuffer;
 	}
 
 	prev_txn_undo_record.num_blocks = 0;
