@@ -1184,7 +1184,7 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
 
-		UnlockReleaseTPDBuffers();
+	UnlockReleaseTPDBuffers();
 }
 
 static void
