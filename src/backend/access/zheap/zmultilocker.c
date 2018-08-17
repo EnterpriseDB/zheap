@@ -269,7 +269,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		 * the last slot in the page by increasing the slot index by 1.
 		 */
 		if ((trans_slot_id >= ZHEAP_PAGE_TRANS_SLOTS) &&
-			(ZHeapPageHasTPDSlot(phdr) || !tpd_e_pruned))
+			(ZHeapPageHasTPDSlot(phdr) && !tpd_e_pruned))
 		{
 			trans_slot_id += 1;
 		}
