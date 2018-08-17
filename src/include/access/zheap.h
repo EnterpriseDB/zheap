@@ -115,8 +115,8 @@ extern void zheap_multi_insert(Relation relation, ZHeapTuple *tuples,
 extern void zheap_get_latest_tid(Relation relation,
 					 Snapshot snapshot,
 					 ItemPointer tid);
-extern XLogRecPtr log_zheap_visible(RelFileNode rnode, Buffer vm_buffer,
-							TransactionId cutoff_xid, uint8 flags);
+extern XLogRecPtr log_zheap_visible(RelFileNode rnode, Buffer heap_buffer,
+							Buffer vm_buf, TransactionId cutoff_xid, uint8 flags);
 extern void PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id,
 					uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr);
 extern void PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer,

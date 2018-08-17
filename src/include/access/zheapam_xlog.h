@@ -310,6 +310,7 @@ typedef struct xl_zheap_confirm
 typedef struct xl_zheap_visible
 {
 	TransactionId cutoff_xid;
+	BlockNumber	heapBlk;
 	uint8		flags;
 } xl_zheap_visible;
 

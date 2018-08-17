@@ -417,9 +417,12 @@ MarkPagesAsAllVisible(Relation rel, LVRelStats *vacrelstats,
 		BlockNumber tblk;
 		BlockNumber prev_tblk = InvalidBlockNumber;
 		Buffer		vmbuffer = InvalidBuffer;
+		Buffer		buf = InvalidBuffer;
 		uint8		vm_status;
 
 		tblk = ItemPointerGetBlockNumber(&vacrelstats->dead_tuples[idx]);
+		buf = ReadBufferExtended(rel, MAIN_FORKNUM, tblk,
+								 RBM_NORMAL, NULL);
 
 		/* Avoid processing same block again and again. */
 		if (tblk == prev_tblk)
@@ -434,16 +437,26 @@ MarkPagesAsAllVisible(Relation rel, LVRelStats *vacrelstats,
 		{
 			visibilitymap_clear(rel, tblk, vmbuffer,
 								VISIBILITYMAP_VALID_BITS);
-			visibilitymap_set(rel, tblk, InvalidBuffer,
-							  InvalidXLogRecPtr, vmbuffer,
-							  visibility_cutoff_xid,
-							  VISIBILITYMAP_ALL_VISIBLE);
+
+			Assert(BufferIsValid(buf));
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+
+			visibilitymap_set(rel, tblk, buf, InvalidXLogRecPtr, vmbuffer,
+							  visibility_cutoff_xid, VISIBILITYMAP_ALL_VISIBLE);
+
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		}
 
 		if (BufferIsValid(vmbuffer))
 		{
 			ReleaseBuffer(vmbuffer);
 			vmbuffer = InvalidBuffer;
+		}
+
+		if (BufferIsValid(buf))
+		{
+			ReleaseBuffer(buf);
+			buf = InvalidBuffer;
 		}
 
 		prev_tblk = tblk;

@@ -10948,16 +10948,19 @@ zheap_get_latest_tid(Relation relation,
  * have already been modified and dirtied.
  */
 XLogRecPtr
-log_zheap_visible(RelFileNode rnode, Buffer vm_buffer,
+log_zheap_visible(RelFileNode rnode, Buffer heap_buffer, Buffer vm_buffer,
 				 TransactionId cutoff_xid, uint8 vmflags)
 {
 	xl_zheap_visible xlrec;
 	XLogRecPtr	recptr;
 
+	Assert(BufferIsValid(heap_buffer));
 	Assert(BufferIsValid(vm_buffer));
 
 	xlrec.cutoff_xid = cutoff_xid;
 	xlrec.flags = vmflags;
+	xlrec.heapBlk = BufferGetBlockNumber(heap_buffer);
+
 	XLogBeginInsert();
 	XLogRegisterData((char *) &xlrec, SizeOfZHeapVisible);
 

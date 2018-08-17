@@ -1931,9 +1931,8 @@ zheap_xlog_visible(XLogReaderState *record)
 	xl_zheap_visible *xlrec = (xl_zheap_visible *) XLogRecGetData(record);
 	Buffer		vmbuffer = InvalidBuffer;
 	RelFileNode rnode;
-	BlockNumber blkno;
 
-	XLogRecGetBlockTag(record, 1, &rnode, NULL, &blkno);
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
 
 	/*
 	 * If there are any Hot Standby transactions running that have an xmin
@@ -1952,6 +1951,7 @@ zheap_xlog_visible(XLogReaderState *record)
 	{
 		Page		vmpage = BufferGetPage(vmbuffer);
 		Relation	reln;
+		BlockNumber blkno = xlrec->heapBlk;;
 
 		/* initialize the page if it was read as zeros */
 		if (PageIsNew(vmpage))

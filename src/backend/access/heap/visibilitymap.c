@@ -318,7 +318,7 @@ visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
 				Assert(!InRecovery);
 				if (RelationStorageIsZHeap(rel))
 				{
-					recptr = log_zheap_visible(rel->rd_node, vmBuf,
+					recptr = log_zheap_visible(rel->rd_node, heapBuf, vmBuf,
 											   cutoff_xid, flags);
 					/*
 					 * We do not have a page wise visibility flag in zheap.
