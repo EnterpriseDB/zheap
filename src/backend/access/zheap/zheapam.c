@@ -2783,9 +2783,15 @@ zheap_tuple_updated:
 			xlrec.prev_xid = tup_xid;
 			xlrec.offnum = ItemPointerGetOffsetNumber(&(oldtup.t_self));
 			xlrec.infomask = oldtup.t_data->t_infomask;
-			xlrec.trans_slot_id = trans_slot_id;
+			xlrec.trans_slot_id = result_trans_slot_id;
 			xlrec.flags = 0;
-			if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+
+			if (result_trans_slot_id != trans_slot_id)
+			{
+				Assert(result_trans_slot_id == tup_trans_slot_id);
+				xlrec.flags |= XLZ_LOCK_TRANS_SLOT_FOR_UREC;
+			}
+			else if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 				xlrec.flags |= XLZ_LOCK_CONTAINS_TPD_SLOT;
 
 prepare_xlog:
@@ -2812,7 +2818,9 @@ prepare_xlog:
 			XLogRegisterData((char *) undorecord.uur_tuple.data,
 							 SizeofZHeapTupleHeader);
 			XLogRegisterData((char *) (lockmode), sizeof(LockTupleMode));
-			if (xlrec.flags & XLZ_LOCK_CONTAINS_TPD_SLOT)
+			if (xlrec.flags & XLZ_LOCK_TRANS_SLOT_FOR_UREC)
+				XLogRegisterData((char *) &trans_slot_id, sizeof(trans_slot_id));
+			else if (xlrec.flags & XLZ_LOCK_CONTAINS_TPD_SLOT)
 				XLogRegisterData((char *) &tup_trans_slot_id, sizeof(tup_trans_slot_id));
 
 			recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK, RedoRecPtr,
