@@ -966,6 +966,14 @@ prepare_xlog:
 	if (zheaptup != tup)
 	{
 		tup->t_self = zheaptup->t_self;
+
+		/*
+		 * Since, in ZHeap we have speculative flag in the tuple header only,
+		 * copy the speculative flag to the new tuple if required.
+		 */
+		if (ZHeapTupleHeaderIsSpeculative(zheaptup->t_data))
+			tup->t_data->t_infomask |= ZHEAP_SPECULATIVE_INSERT;
+
 		zheap_freetuple(zheaptup);
 	}
 
