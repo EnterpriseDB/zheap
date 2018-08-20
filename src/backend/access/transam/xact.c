@@ -4075,16 +4075,20 @@ UserAbortTransactionBlock(void)
 					uint64 size = latest_urec_ptr[i] - s->start_urec_ptr[i];
 					bool result = false;
 
-				/*
-				 * If this is a large rollback request then push it to undo-worker
-				 * through RollbackHT, undo-worker will perform it's undo actions
-				 * later.
-				 */
-				if (size >= rollback_overflow_size * 1024 * 1024)
-					result = PushRollbackReq(s->start_urec_ptr[i], latest_urec_ptr[i]);
+					/*
+					 * If this is a large rollback request then push it to undo-worker
+					 * through RollbackHT, undo-worker will perform it's undo actions
+					 * later.
+					 */
+					if (size >= rollback_overflow_size * 1024 * 1024)
+						result = PushRollbackReq(UndoActionStartPtr[i], UndoActionEndPtr[i]);
 
-				if (!result)
-					UndoActionStartPtr[i] = InvalidUndoRecPtr;
+					if (!result)
+					{
+						execute_undo_actions(UndoActionStartPtr[i], UndoActionEndPtr[i],
+											false, true, true);
+						UndoActionStartPtr[i] = InvalidUndoRecPtr;
+					}
 				}
 			}
 		}
