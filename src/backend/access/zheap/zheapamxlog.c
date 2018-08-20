@@ -81,7 +81,7 @@ zheap_xlog_insert(XLogReaderState *record)
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;
 	undorecord.uur_relfilenode = xlundohdr->relfilenode;
-	undorecord.uur_prevxid = xid;
+	undorecord.uur_prevxid = FrozenTransactionId;
 	undorecord.uur_xid = xid;
 	undorecord.uur_cid = FirstCommandId;
 	undorecord.uur_tsid = xlundohdr->tsid;
@@ -1449,7 +1449,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			undorecord[i].uur_prevlen = 0;
 			undorecord[i].uur_relfilenode = xlundohdr->relfilenode;
 			undorecord[i].uur_prevxid = xid;
-			undorecord[i].uur_xid = xid;
+			undorecord[i].uur_prevxid = FrozenTransactionId;
 			undorecord[i].uur_cid = FirstCommandId;
 			undorecord[i].uur_tsid = xlundohdr->tsid;
 			undorecord[i].uur_fork = MAIN_FORKNUM;

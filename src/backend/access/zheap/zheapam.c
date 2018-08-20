@@ -802,13 +802,13 @@ reacquire_buffer:
 						vmbuffer, VISIBILITYMAP_VALID_BITS);
 	}
 
-	MarkBufferDirty(buffer);
-
 	Assert(undorecord.uur_block == ItemPointerGetBlockNumber(&(zheaptup->t_self)));
 	undorecord.uur_offset = ItemPointerGetOffsetNumber(&(zheaptup->t_self));
 	InsertPreparedUndo();
 	PageSetUNDO(undorecord, buffer, trans_slot_id, true, epoch, xid,
 				urecptr, NULL, 0);
+
+	MarkBufferDirty(buffer);
 
 	/* XLOG stuff */
 	if (RelationNeedsWAL(relation))
