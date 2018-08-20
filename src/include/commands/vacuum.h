@@ -232,9 +232,11 @@ extern Relation vacuum_open_relation(Oid relid, RangeVar *relation,
 extern void lazy_vacuum_rel(Relation onerel, int options,
 				VacuumParams *params, BufferAccessStrategy bstrategy);
 extern void lazy_vacuum_index(Relation indrel, IndexBulkDeleteResult **stats,
-							  LVRelStats *vacrelstats);
+							  LVRelStats *vacrelstats,
+							  BufferAccessStrategy vac_strategy);
 extern void lazy_cleanup_index(Relation indrel, IndexBulkDeleteResult *stats,
-							   LVRelStats *vacrelstats);
+							   LVRelStats *vacrelstats,
+							   BufferAccessStrategy vac_strategy);
 extern void lazy_record_dead_tuple(LVRelStats *vacrelstats,
 					   ItemPointer itemptr);
 extern bool should_attempt_truncation(LVRelStats *vacrelstats);

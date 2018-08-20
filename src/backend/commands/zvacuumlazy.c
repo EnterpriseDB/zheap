@@ -636,7 +636,8 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 			for (i = 0; i < nindexes; i++)
 				lazy_vacuum_index(Irel[i],
 								  &indstats[i],
-								  vacrelstats);
+								  vacrelstats,
+								  vac_strategy);
 			/*
 			 * XXX - The cutoff xid used here is the highest xmin of all the heap
 			 * pages scanned.  This can lead to more query cancellations on
@@ -977,7 +978,8 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 		for (i = 0; i < nindexes; i++)
 			lazy_vacuum_index(Irel[i],
 							  &indstats[i],
-							  vacrelstats);
+							  vacrelstats,
+							  vac_strategy);
 
 		/*
 		 * XXX - The cutoff xid used here is the highest xmin of all the heap
@@ -1009,7 +1011,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 
 	/* Do post-vacuum cleanup and statistics update for each index */
 	for (i = 0; i < nindexes; i++)
-		lazy_cleanup_index(Irel[i], indstats[i], vacrelstats);
+		lazy_cleanup_index(Irel[i], indstats[i], vacrelstats, vac_strategy);
 
 	/*
 	 * This is pretty messy, but we split it up so that we can skip emitting
