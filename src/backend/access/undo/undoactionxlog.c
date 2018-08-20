@@ -159,9 +159,9 @@ undo_xlog_reset_xid(XLogReaderState *record)
 		page = BufferGetPage(buf);
 		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 
-		opaque->transinfo[slot_no].xid_epoch = 0;
-		opaque->transinfo[slot_no].xid = InvalidTransactionId;
-		opaque->transinfo[slot_no].urec_ptr = xlrec->urec_ptr;
+		opaque->transinfo[slot_no - 1].xid_epoch = 0;
+		opaque->transinfo[slot_no - 1].xid = InvalidTransactionId;
+		opaque->transinfo[slot_no - 1].urec_ptr = xlrec->urec_ptr;
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buf);
