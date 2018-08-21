@@ -412,5 +412,4 @@ TempUndoDiscard(UndoLogNumber logno)
 	/* Process the undo log. */
 	UndoLogDiscard(MakeUndoRecPtr(log->logno, log->meta.insert),
 				   InvalidTransactionId);
-	elog(LOG, "Undo discarded for temp tables");
 }

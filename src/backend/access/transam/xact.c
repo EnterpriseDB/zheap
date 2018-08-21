@@ -3330,14 +3330,17 @@ XactPerformUndoActionsIfPending()
 		if (!UndoRecPtrIsValid(UndoActionStartPtr[i]))
 			continue;
 
-		if (i != UNDO_TEMP)
+		if (i == UNDO_TEMP)
+			goto perform_rollback;
+		else
 			rollback_size = UndoActionStartPtr[i] - UndoActionEndPtr[i];
 
-		if (new_xact && rollback_size >= rollback_overflow_size * 1024 * 1024)
+		if (new_xact && rollback_size > rollback_overflow_size * 1024 * 1024)
 			result = PushRollbackReq(UndoActionStartPtr[i], UndoActionEndPtr[i]);
 
 		if (!result)
 		{
+perform_rollback:
 			if (new_xact)
 			{
 				TransactionState xact;
