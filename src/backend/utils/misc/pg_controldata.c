@@ -91,7 +91,7 @@ pg_control_checkpoint(PG_FUNCTION_ARGS)
 	 * Construct a tuple descriptor for the result row.  This must match this
 	 * function's pg_proc entry!
 	 */
-	tupdesc = CreateTemplateTupleDesc(18, false);
+	tupdesc = CreateTemplateTupleDesc(19, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "checkpoint_lsn",
 					   LSNOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "redo_lsn",
@@ -129,7 +129,7 @@ pg_control_checkpoint(PG_FUNCTION_ARGS)
 	TupleDescInitEntry(tupdesc, (AttrNumber) 18, "checkpoint_time",
 					   TIMESTAMPTZOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 19, "oldest_xid_with_epoch_having_undo",
-					   TIMESTAMPTZOID, -1, 0);
+					   INT8OID, -1, 0);
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	/* Read the control file. */
