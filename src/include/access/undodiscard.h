@@ -14,7 +14,6 @@
 #define UNDODISCARD_H
 
 #include "access/undolog.h"
-#include "access/undorecord.h"
 #include "access/xlogdefs.h"
 #include "catalog/pg_class.h"
 #include "storage/lwlock.h"

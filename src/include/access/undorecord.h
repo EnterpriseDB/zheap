@@ -14,7 +14,6 @@
 #define UNDORECORD_H
 
 #include "access/undolog.h"
-#include "common/relpath.h"
 #include "lib/stringinfo.h"
 #include "storage/block.h"
 #include "storage/bufpage.h"
@@ -200,7 +199,7 @@ extern Size UndoRecordExpectedSize(UnpackedUndoRecord *uur);
  * This function sets uur->uur_info as a side effect.
  */
 extern bool InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
-				 int starting_byte, int *already_written);
+				 int starting_byte, int *already_written, bool header_only);
 
 /*
  * Call UnpackUndoRecord() one or more times to unpack an undo record.  For
@@ -213,18 +212,6 @@ extern bool InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
  * sizeof(PageHeaderData).
  */
 extern bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page,
-				 int starting_byte, int *already_decoded);
-
-/*
- * Typedef for callback function for UndoFetchRecord.
- *
- * This checks whether an undorecord satisfies the given conditions.
- */
-typedef bool (*SatisfyUndoRecordCallback) (UnpackedUndoRecord* urec,
-											BlockNumber blkno,
-											OffsetNumber offset,
-											TransactionId xid);
-
-extern void UndoRecordOnUndoLogChange(UndoPersistence persistence);
+				 int starting_byte, int *already_decoded, bool header_only);
 
 #endif   /* UNDORECORD_H */

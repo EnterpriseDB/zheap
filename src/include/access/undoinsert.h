@@ -19,6 +19,16 @@
 #include "catalog/pg_class.h"
 
 /*
+ * Typedef for callback function for UndoFetchRecord.
+ *
+ * This checks whether an undorecord satisfies the given conditions.
+ */
+typedef bool (*SatisfyUndoRecordCallback) (UnpackedUndoRecord* urec,
+											BlockNumber blkno,
+											OffsetNumber offset,
+											TransactionId xid);
+
+/*
  * Call PrepareUndoInsert to tell the undo subsystem about the undo record you
  * intended to insert.  Upon return, the necessary undo buffers are pinned.
  * This should be done before any critical section is established, since it
@@ -82,5 +92,8 @@ extern void UndoSetPrepareSize(int max_prepare, UnpackedUndoRecord *undorecords,
  * return the previous undo record pointer.
  */
 extern UndoRecPtr UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen);
+
+extern void UndoRecordOnUndoLogChange(UndoPersistence persistence);
+
 
 #endif   /* UNDOINSERT_H */
