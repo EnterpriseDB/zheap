@@ -72,7 +72,7 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 		}
 
 		/* don't free the tuple passed by caller */
-		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
+		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id, NULL,
 										   (undo_tup) == (zhtup) ? false : true);
 
 		if (uur_type == UNDO_XID_LOCK_ONLY ||
@@ -312,7 +312,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 			/* don't free the tuple passed by caller */
 			undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
-											   (undo_tup) == (zhtup) ? false : true);
+										NULL, (undo_tup) == (zhtup) ? false : true);
 
 			if (uur_type == UNDO_XID_LOCK_ONLY ||
 				uur_type == UNDO_XID_MULTI_LOCK_ONLY)

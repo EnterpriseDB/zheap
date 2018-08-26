@@ -1851,6 +1851,7 @@ ExecOnConflictZUpdate(ModifyTableState *mtstate,
 			break;
 
 		case HeapTupleInvisible:
+		case HeapTupleSelfUpdated:
 
 			/*
 			 * This can occur when a just inserted tuple is updated again in
@@ -1867,6 +1868,9 @@ ExecOnConflictZUpdate(ModifyTableState *mtstate,
 			 * occurring.  These problems are why SQL-2003 similarly specifies
 			 * that for SQL MERGE, an exception must be raised in the event of
 			 * an attempt to update the same row twice.
+			 *
+			 * Unlike heap, we expect HeapTupleSelfUpdated in the same scenario
+			 * as the new tuple could have been in-place updated.
 			 */
 			ZHeapTupleGetTransInfo(&tuple, buffer, NULL, NULL, &xid, NULL,
 								   NULL, true);
@@ -1878,15 +1882,6 @@ ExecOnConflictZUpdate(ModifyTableState *mtstate,
 
 			/* This shouldn't happen */
 			elog(ERROR, "attempted to lock invisible tuple");
-
-		case HeapTupleSelfUpdated:
-
-			/*
-			 * This state should never be reached. As a dirty snapshot is used
-			 * to find conflicting tuples, speculative insertion wouldn't have
-			 * seen this row to conflict with.
-			 */
-			elog(ERROR, "unexpected self-updated tuple");
 
 		case HeapTupleUpdated:
 			if (IsolationUsesXactSnapshot())

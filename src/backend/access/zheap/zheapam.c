@@ -6063,7 +6063,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 			}
 
 			undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
-						 (undo_tup) == (zhtup) ? false : true);
+						 NULL, (undo_tup) == (zhtup) ? false : true);
 
 			xid = urec->uur_prevxid;
 			urec_ptr = urec->uur_blkprev;
@@ -8043,7 +8043,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		}
 
 		/* don't free the tuple passed by caller */
-		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
+		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id, NULL,
 										   (undo_tup) == (&zhtup) ? false : true);
 
 		Assert(!TransactionIdPrecedes(urec->uur_prevxid, RecentGlobalXmin));
@@ -9623,7 +9623,7 @@ zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer, ItemPointer tid)
 	Assert(urec != NULL);
 	Assert(urec->uur_type == UNDO_INPLACE_UPDATE);
 
-	undo_tup = CopyTupleFromUndoRecord(urec, NULL, NULL, false);
+	undo_tup = CopyTupleFromUndoRecord(urec, NULL, NULL, NULL, false);
 	UndoRecordRelease(urec);
 
 	return undo_tup;
@@ -9999,11 +9999,12 @@ RelationPutZHeapTuple(Relation relation,
  *
  *	trans_slot_id - If non-NULL, then populate it with the transaction slot of
  *			transaction that has modified the tuple.
+ *  cid - output command id
  *	free_zhtup - if true, free the previous version of tuple.
  */
 ZHeapTuple
 CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
-						int *trans_slot_id, bool free_zhtup)
+						int *trans_slot_id, CommandId *cid, bool free_zhtup)
 {
 	ZHeapTuple	undo_tup;
 
@@ -10051,6 +10052,8 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 					else
 						*trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 				}
+				if (cid)
+					*cid = urec->uur_cid;
 			}
 			break;
 		case UNDO_XID_LOCK_ONLY:

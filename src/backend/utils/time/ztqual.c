@@ -190,9 +190,8 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
 static ZHeapTuple
 GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 					 Snapshot snapshot, Buffer buffer, TransactionId xid,
-					 int trans_slot_id)
+					 int trans_slot_id, CommandId cid)
 {
-	CommandId	cid = InvalidCommandId;
 	int			undo_oper = -1;
 	TransactionId	oldestXidHavingUndo;
 
@@ -227,7 +226,7 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 		{
 			FetchTransInfoFromUndo(undo_tup, NULL, &xid, &cid, &prev_urec_ptr, false);
 		}
-		else
+		else if (cid == InvalidCommandId)
 		{
 			/*
  			 * we don't use prev_undo_xid to fetch the undo record for cid as it is
@@ -255,11 +254,9 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 	{
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
-			if (undo_oper == ZHEAP_XID_LOCK_ONLY)
-				return undo_tup;
 			if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
 			{
-				/* updated after scan started */
+				/* updated/locked after scan started */
 				return GetTupleFromUndo(prev_urec_ptr,
 										undo_tup,
 										snapshot,
@@ -365,7 +362,8 @@ fetch_prior_undo_record:
 		return undo_tup;
 
 	/* Here, we free the previous version and palloc a new tuple from undo. */
-	undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id, true);
+	undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id, NULL,
+									   true);
 
 	prev_urec_ptr = urec->uur_blkprev;
 	*xid = urec->uur_prevxid;
@@ -514,7 +512,7 @@ fetch_prior_undo_record:
 	if (urec == NULL)
 		return zhtup;
 
-	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, &trans_slot_id, true);
+	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, &trans_slot_id, &cid, true);
 	prev_urec_ptr = urec->uur_blkprev;
 	xid = urec->uur_prevxid;
 
@@ -586,7 +584,7 @@ fetch_prior_undo_record:
 		{
 			FetchTransInfoFromUndo(undo_tup, NULL, &xid, &cid, &prev_urec_ptr, false);
 		}
-		else
+		else if (cid == InvalidCommandId)
 		{
 			/*
 			 * we don't use prev_undo_xid to fetch the undo record for cid as it is
@@ -614,14 +612,12 @@ fetch_prior_undo_record:
 	{
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
-			if (undo_oper == ZHEAP_XID_LOCK_ONLY)
-				return undo_tup;
 			if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
 			{
 				/*
-					* Updated after scan started, need to fetch prior tuple
-					* in undo chain.
-					*/
+				 * Updated after scan started, need to fetch prior tuple
+				 * in undo chain.
+				 */
 				urec_ptr = prev_urec_ptr;
 				zhtup = undo_tup;
 				prev_undo_xid = xid;
@@ -701,6 +697,7 @@ GetTupleFromUndoWithOffset(UndoRecPtr urec_ptr, Snapshot snapshot,
 	ZHeapTuple	undo_tup;
 	UndoRecPtr	prev_urec_ptr = InvalidUndoRecPtr;
 	TransactionId	xid;
+	CommandId	cid = InvalidCommandId;
 	int	trans_slot_id = InvalidXactSlotId;
 	int	prev_trans_slot_id = trans_slot;
 
@@ -718,7 +715,7 @@ GetTupleFromUndoWithOffset(UndoRecPtr urec_ptr, Snapshot snapshot,
 
 	/* need to ensure that undo record contains complete tuple */
 	Assert(urec->uur_type == UNDO_DELETE || urec->uur_type == UNDO_UPDATE);
-	undo_tup = CopyTupleFromUndoRecord(urec, NULL, &trans_slot_id, false);
+	undo_tup = CopyTupleFromUndoRecord(urec, NULL, &trans_slot_id, &cid, false);
 	prev_urec_ptr = urec->uur_blkprev;
 	xid = urec->uur_prevxid;
 
@@ -742,7 +739,7 @@ GetTupleFromUndoWithOffset(UndoRecPtr urec_ptr, Snapshot snapshot,
 	}
 
 	return GetVisibleTupleIfAny(prev_urec_ptr, undo_tup,
-								snapshot, buffer, xid, trans_slot_id);
+								snapshot, buffer, xid, trans_slot_id, cid);
 }
 
 /*
@@ -801,7 +798,7 @@ fetch_prior_undo_record:
 		goto result_available;
 	}
 
-	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, &trans_slot_id,
+	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, &trans_slot_id, &cid,
 									   free_zhtup);
 	prev_urec_ptr = urec->uur_blkprev;
 	xid = urec->uur_prevxid;
@@ -875,7 +872,7 @@ fetch_prior_undo_record:
 		{
 			FetchTransInfoFromUndo(undo_tup, NULL, &xid, &cid, &prev_urec_ptr, false);
 		}
-		else
+		else if (cid == InvalidCommandId)
 		{
 			/*
  			 * we don't use prev_undo_xid to fetch the undo record for cid as it is
@@ -906,17 +903,12 @@ fetch_prior_undo_record:
 	{
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
-			if (undo_oper == ZHEAP_XID_LOCK_ONLY)
-			{
-				result = true;
-				goto result_available;
-			}
 			if (cid >= curcid)
 			{
 				/*
-					* Updated after scan started, need to fetch prior tuple
-					* in undo chain.
-					*/
+				 * Updated after scan started, need to fetch prior tuple
+				 * in undo chain.
+				 */
 				urec_ptr = prev_urec_ptr;
 				zhtup = undo_tup;
 				prev_undo_xid = xid;
@@ -1114,11 +1106,12 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
-			if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
-				return zhtup;
 			if (cid >= snapshot->curcid)
 			{
-				/* updated after scan started, get previous tuple from undo */
+				/*
+				 * updated/locked after scan started, get previous tuple from
+				 * undo.
+				 */
 				return GetTupleFromUndo(urec_ptr,
 										zhtup,
 										snapshot,
@@ -1496,12 +1489,12 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 
 		if (TransactionIdIsCurrentTransactionId(*xid))
 		{
-			if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
-				return HeapTupleBeingUpdated;
-
 			if (*cid >= curcid)
 			{
-				/* updated after scan started, check previous tuple from undo */
+				/*
+				 * updated/locked after scan started, check previous tuple
+				 * from undo
+				 */
 				visible = UndoTupleSatisfiesUpdate(urec_ptr,
 												   zhtup,
 												   curcid,
@@ -1512,12 +1505,27 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 												   free_zhtup,
 												   in_place_updated_or_locked);
 				if (visible)
-					return HeapTupleSelfUpdated;
-				else
-					return HeapTupleInvisible;
+				{
+					if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
+						return HeapTupleBeingUpdated;
+					else
+						return HeapTupleSelfUpdated;
+				}
 			}
 			else
-				return HeapTupleMayBeUpdated;	/* updated before scan started */
+			{
+				if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
+				{
+					/*
+					 * Locked before scan;  caller can check if it is locked
+					 * in lock mode higher or equal to the required mode, then
+					 * it can skip locking the tuple.
+					 */
+					return HeapTupleBeingUpdated;
+				}
+				else
+					return HeapTupleMayBeUpdated;	/* updated before scan started */
+			}
 		}
 		else if (TransactionIdIsInProgress(*xid))
 		{
@@ -2218,7 +2226,8 @@ ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
  *
  * True iff zheap tuple is valid as a TOAST row.
  *
- * Unlike heap, we don't need checks for VACUUM moving conditions as those are * for pre-9.0 and that doesn't apply for zheap.  For aborted speculative
+ * Unlike heap, we don't need checks for VACUUM moving conditions as those are
+ * for pre-9.0 and that doesn't apply for zheap.  For aborted speculative
  * inserts, we always marks row as dead, so we don't any check for that.  So,
  * here we can rely on the fact that if you can see the main table row that
  * contains a TOAST reference, you should be able to see the TOASTed value.
