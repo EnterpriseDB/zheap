@@ -6895,7 +6895,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 		 */
 		Assert(false);
 	}
-	Assert (RELATION_IS_LOCAL(relation));
+	Assert (!RELATION_IS_LOCAL(relation));
 
 	/*
 	 * Reserve the transaction slot in TPD.  First we check if there already
