@@ -332,6 +332,14 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       </entry>
      </row>
 
+     <row>
+      <entry><structname>pg_stat_undo_logs</structname><indexterm><primary>pg_stat_undo_logs</primary></indexterm></entry>
+      <entry>One row for each undo log, showing current pointers,
+       transactions and backends.
+       See <xref linkend="pg-stat-undo-logs-view"/> for details.
+      </entry>
+     </row>
+
     </tbody>
    </tgroup>
   </table>
@@ -548,7 +556,6 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
    in combination with operating system utilities that allow insight
    into the kernel's handling of I/O.
   </para>
-
 
   <table id="pg-stat-activity-view" xreflabel="pg_stat_activity">
    <title><structname>pg_stat_activity</structname> View</title>
@@ -1639,6 +1646,30 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
          <entry>Waiting for a write of a two phase state file.</entry>
         </row>
         <row>
+         <entry><literal>UndoCheckpointRead</literal></entry>
+         <entry>Waiting for a read from an undo checkpoint file.</entry>
+        </row>
+        <row>
+         <entry><literal>UndoCheckpointSync</literal></entry>
+         <entry>Waiting for changes to an undo checkpoint file to reach stable storage.</entry>
+        </row>
+        <row>
+         <entry><literal>UndoCheckpointWrite</literal></entry>
+         <entry>Waiting for a write to an undo checkpoint file.</entry>
+        </row>
+         <row>
+         <entry><literal>UndoFileRead</literal></entry>
+         <entry>Waiting for a read from an undo data file.</entry>
+        </row>
+        <row>
+         <entry><literal>UndoFileSync</literal></entry>
+         <entry>Waiting for changes to an undo data file to reach stable storage.</entry>
+        </row>
+        <row>
+         <entry><literal>UndoFileWrite</literal></entry>
+         <entry>Waiting for a write to an undo data file.</entry>
+        </row>
+        <row>
          <entry><literal>WALBootstrapSync</literal></entry>
          <entry>Waiting for WAL to reach stable storage during bootstrapping.</entry>
         </row>
@@ -1714,6 +1745,80 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
 </programlisting>
    </para>
 
+  <table id="pg-stat-undo-logs-view" xreflabel="pg_stat_undo_logs">
+   <title><structname>pg_stat_undo_logs</structname> View</title>
+
+   <tgroup cols="3">
+    <thead>
+    <row>
+      <entry>Column</entry>
+      <entry>Type</entry>
+      <entry>Description</entry>
+     </row>
+    </thead>
+
+   <tbody>
+    <row>
+     <entry><structfield>log_number</structfield></entry>
+     <entry><type>oid</type></entry>
+     <entry>Identifier of this undo log</entry>
+    </row>
+    <row>
+     <entry><structfield>persistence</structfield></entry>
+     <entry><type>text</type></entry>
+     <entry>Persistence level of data stored in this undo log; one of
+      <literal>permanent</literal>, <literal>unlogged</literal> or
+      <literal>temporary</literal>.</entry>
+    </row>
+    <row>
+     <entry><structfield>tablespace</structfield></entry>
+     <entry><type>text</type></entry>
+     <entry>Tablespace that holds physical storage of this undo log.</entry>
+    </row>
+    <row>
+     <entry><structfield>discard</structfield></entry>
+     <entry><type>text</type></entry>
+     <entry>Location of the oldest data in this undo log.</entry>
+    </row>
+    <row>
+     <entry><structfield>insert</structfield></entry>
+     <entry><type>text</type></entry>
+     <entry>Location where the next data will be written in this undo
+      log.</entry>
+    </row>
+    <row>
+     <entry><structfield>end</structfield></entry>
+     <entry><type>text</type></entry>
+     <entry>Location one byte past the end of the allocated physical storage
+      backing this undo log.</entry>
+    </row>
+    <row>
+     <entry><structfield>xid</structfield></entry>
+     <entry><type>xid</type></entry>
+     <entry>Transaction currently attached to this undo log
+      for writing.</entry>
+    </row>
+    <row>
+     <entry><structfield>pid</structfield></entry>
+     <entry><type>integer</type></entry>
+     <entry>Process ID of the backend currently attached to this undo log
+      for writing.</entry>
+    </row>
+   </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   The <structname>pg_stat_undo_logs</structname> view will have one row for
+   each undo log that exists.  Undo logs are extents within a contiguous
+   addressing space that have their own head and tail pointers.
+   Each  backend that has written undo data is associated with one or more undo
+   log, and is the only backend that is allowed to write data to those undo
+   logs.  Backends can be associated with up to three undo logs at a time,
+   because different undo logs are used for the undo data associated with
+   permanent, unlogged and temporary relations.
+  </para>
+ 
   <table id="pg-stat-replication-view" xreflabel="pg_stat_replication">
    <title><structname>pg_stat_replication</structname> View</title>
    <tgroup cols="3">
