@@ -20,7 +20,7 @@ RETURNS text
 AS 'MODULE_PATHNAME'
 LANGUAGE C;
 
-CREATE FUNCTION undo_append_file(path text)
+CREATE FUNCTION undo_append_file(path text, persistence text)
 RETURNS text
 AS 'MODULE_PATHNAME'
 LANGUAGE C;
