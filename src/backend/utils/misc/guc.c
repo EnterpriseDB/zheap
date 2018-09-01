@@ -117,6 +117,7 @@ extern int	CommitDelay;
 extern int	CommitSiblings;
 extern char *default_tablespace;
 extern char *temp_tablespaces;
+extern char *undo_tablespaces;
 extern bool ignore_checksum_failure;
 extern bool synchronize_seqscans;
 
@@ -3347,6 +3348,17 @@ static struct config_string ConfigureNamesString[] =
 		&temp_tablespaces,
 		"",
 		check_temp_tablespaces, assign_temp_tablespaces, NULL
+	},
+
+	{
+		{"undo_tablespaces", PGC_USERSET, CLIENT_CONN_STATEMENT,
+			gettext_noop("Sets the tablespace(s) to use for undo logs."),
+			NULL,
+			GUC_LIST_INPUT | GUC_LIST_QUOTE
+		},
+		&undo_tablespaces,
+		"",
+		check_undo_tablespaces, assign_undo_tablespaces, NULL
 	},
 
 	{

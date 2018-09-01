@@ -426,6 +426,8 @@ extern void GUC_check_errcode(int sqlerrcode);
 extern bool check_default_tablespace(char **newval, void **extra, GucSource source);
 extern bool check_temp_tablespaces(char **newval, void **extra, GucSource source);
 extern void assign_temp_tablespaces(const char *newval, void *extra);
+extern bool check_undo_tablespaces(char **newval, void **extra, GucSource source);
+extern void assign_undo_tablespaces(const char *newval, void *extra);
 
 /* in catalog/namespace.c */
 extern bool check_search_path(char **newval, void **extra, GucSource source);
