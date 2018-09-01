@@ -1,0 +1,167 @@
+src/backend/access/undo/README
+
+Undo Logs
+=========
+
+The undo log subsystem provides a way to store data that is needed for
+a limited time.  Undo data is generated whenever zheap relations are
+modified, but it is only useful until (1) the generating transaction
+is committed or rolled back and (2) there is no snapshot that might
+need it for MVCC purposes.  See src/backend/access/zheap/README for
+more information on zheap.  The undo log subsystem is concerned with
+raw storage optimized for efficient recycling and buffered random
+access.
+
+Like redo data (the WAL), undo data consists of records identified by
+their location within a 64 bit address space.  Unlike redo data, the
+addressing space is internally divided up unto multiple numbered logs.
+The first 24 bits of an UndoRecPtr identify the undo log number, and
+the remaining 40 bits address the space within that undo log.  Higher
+level code (zheap) is largely oblivious to this internal structure and
+deals mostly in opaque UndoRecPtr values.
+
+Using multiple undo logs instead of a single uniform space avoids the
+contention that would result from a single insertion point, since each
+session can be given sole access to write data into a given undo log.
+It also allows for parallelized space reclamation.
+
+Like redo data, undo data is stored on disk in numbered segment files
+that are recycled as required.  Unlike redo data, undo data is
+accessed through the buffer pool.  In this respect it is similar to
+regular relation data.  Buffer content is written out to disk during
+checkpoints and whenever it is evicted to make space for another page.
+However, unlike regular relation data, undo data has a chance of never
+being written to disk at all: if a page is allocated and and then
+later discarded without an intervening checkpoint and without an
+eviction provoked by memory pressure, then no disk IO is generated.
+
+Keeping the undo data physically separate from redo data and accessing
+it though the existing shared buffers mechanism allows it to be
+accessed efficiently for MVCC purposes.
+
+Meta-Data
+=========
+
+At any given time the set of undo logs that exists is tracked in
+shared memory and can be inspected in the pg_stat_undo_logs view.  For
+each undo log, a set of properties called the undo log's meta-data are
+tracked:
+
+* the tablespace that holds its segment files
+* the persistence level (permanent, unlogged, temporary)
+* the "discard" pointer; data before this point has been discarded
+* the "insert" pointer: new data will be written here
+* the "end" pointer: a new undo segment file will be needed at this point
+
+The three pointers discard, insert and end move strictly forwards
+until the whole undo log has been exhausted.  At all times discard <=
+insert <= end.  When discard == insert, the undo log is empty
+(everything that has ever been inserted has since been discarded).
+The insert pointer advances when regular backends allocate new space,
+and the discard pointer usually advances when an undo worker process
+determines that no session could need the data either for rollback or
+for finding old versions of tuples to satisfy a snapshot.  In some
+special cases including single-user mode and temporary undo logs the
+discard pointer might also be advanced synchronously by a foreground
+session.
+
+UndoLogControl objects corresponding to the current set of active undo
+logs are held in a fixed-sized pool in shared memory.  The size of
+the array is a multiple of max_connections, and limits the total size of
+transactions.
+
+In order to provide constant time access to undo log meta-data given
+an UndoRecPtr, each backend maintains a hash table mapping undo log
+number to shared UndoLogControl objects.
+
+The meta-data for all undo logs is written to disk at every
+checkpoint.  It is stored in files under PGDATA/pg_undo/, using the
+checkpoint's redo point (a WAL LSN) as its filename.  At startup time,
+the redo point's file can be used to restore all undo logs' meta-data
+as of the moment of the redo point into shared memory.  Changes to the
+discard pointer and end pointer are WAL-logged by undolog.c and will
+bring the in-memory meta-data up to date in the event of recovery
+after a crash.  Changes to insert pointers are included in other WAL
+records (see below).
+
+Responsibility for creating, deleting and recycling undo log segment
+files and WAL logging the associated meta-data changes lies with
+src/backend/storage/undo/undolog.c.
+
+Persistence Levels and Tablespaces
+==================================
+
+When new undo log space is requested by client code, the persistence
+level of the relation being modified and the current value of the GUC
+"undo_tablespaces" controls which undo log is selected.  If the
+session is already attached to a suitable undo log and it hasn't run
+out of address space, it can be used immediately.  Otherwise a
+suitable undo log must be either found or created.  The system should
+stabilize on one undo log per active writing backend (or more if
+different tablespaces are persistence levels are used).
+
+When an unlogged relation is modified, undo data generated by the
+operation must be stored in an unlogged undo log.  This causes the
+undo data to be deleted along with all unlogged relations during
+recovery from a non-shutdown checkpoint.  Likewise, temporary
+relations require special treatment: their buffers are backend-local
+and they cannot be accessed by other backend including undo workers.
+
+Non-empty undo logs in a tablespace prevent the tablespace from being
+dropped.
+
+Undo Log Contents
+=================
+
+Undo log contents are written into 1MB segment files under
+PGDATA/base/undo/ or PGDATA/pg_tblspc/VERSION/undo/ using filenames
+that encode the address (UndoRecPtr) of their first byte.  A period
+'.'  separates the undo log number part from the offset part, for the
+benefit of human administrators.
+
+Undo logs are page-oriented and use regular PosgreSQL page headers
+including checksums (if enabled) and LSNs.  An UndoRecPtr can be used
+to obtain a buffer and an offset within the buffer, and then regular
+buffer locking and page LSN rules apply.  While space is allocated by
+asking for a given number of usable bytes (not including page
+headers), client code is responsible for stepping over the page
+headers and advancing to the next page.
+
+Responsibility for WAL-logging the contents of the undo log lies with
+client code (ie zheap).  While undolog.c WAL-logs all meta-data
+changes except insert points and checkpoints all meta-data including
+insert points, client code is responsible for allocating undo log
+space in the same sequence at recovery time.  This avoids having to
+WAL-log insertion points explicitly and separately for every insertion
+into an undo log, greatly reducing WAL traffic.  (WAL is still
+generated by undolog.c whenever a 1MB segment boundary is crossed,
+since that also advances the end pointer.)
+
+One complication of this scheme for implicit insert pointer movement
+is that recovery doesn't naturally have access to the association
+between transactions and undo logs.  That is, while 'do' sessions have
+a currently attached undo log from which they allocate new space,
+recovery is performed by a single startup process which has no concept
+of the sessions that generated the WAL it is replaying.  For that
+reason, an xid->undo log number map is maintained at recovery time.
+At 'do' time, a WAL record is emitted the first time any permanent
+undo log is used in a given transaction, so that the mapping can be
+recovered at redo time.  That allows a stream of allocations to be
+directed to the appropriate undo logs so that the same resulting
+stream of undo log pointer can be produced.  (Unlogged and temporary
+undo logs don't have this problem since they aren't used at recovery
+time.)
+
+Another complication is that the checkpoint files written under pg_undo
+may contain inconsistent data during recovery from an online checkpoint
+(after a crash or base backup).  To compensate for this, client code
+must arrange to log an undo log meta-data record when inserting the
+first WAL record that might cause undo log access during recovery.
+This is conceptually similar to full page images after checkpoints,
+but limited to one meta-data WAL record per undo log per checkpoint.
+
+src/backend/storage/buffer/bufmgr.c is unaware of the existence of
+undo log as a separate category of buffered data.  Reading and writing
+of buffered undo log pages is handled by a new storage manager in
+src/backend/storage/smgr/undo_file.c.  See
+src/backend/storage/smgr/README for more details.
