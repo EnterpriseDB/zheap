@@ -1,0 +1,107 @@
+create extension test_undo;
+
+create view undo_logs as
+  select logno,
+         persistence,
+         tablespace,
+         discard,
+         insert,
+         "end",
+         pid = pg_backend_pid() as my_pid,
+         xid = txid_current()::text::xid as my_xid
+    from pg_stat_undo_logs;
+
+begin;
+
+-- permanent storage
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'permanent');
+select * from undo_logs order by logno;
+-- write a short message
+select undo_append('[permanent]'::bytea, 'permanent');
+select * from undo_logs order by logno;
+-- see if we can read it back
+select undo_dump('000000000000003C', 11, 'permanent');
+
+-- unlogged storage
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'unlogged');
+select * from undo_logs order by logno;
+-- write a short message
+select undo_append('<unlogged> '::bytea, 'unlogged');
+select * from undo_logs order by logno;
+-- see if we can read it back
+select undo_dump('000001000000003C', 11, 'unlogged');
+
+-- temporary storage
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'temporary');
+select * from undo_logs order by logno;
+-- write a short message
+select undo_append('{temporary}'::bytea, 'temporary');
+select * from undo_logs order by logno;
+-- see if we can read it back
+select undo_dump('000002000000003C', 11, 'temporary');
+
+-- discard the data we wrote in each of those logs
+select undo_discard('0000000000000047');
+select * from undo_logs order by logno;
+select undo_discard('0000010000000047');
+select * from undo_logs order by logno;
+select undo_discard('0000020000000047');
+select * from undo_logs order by logno;
+
+commit;
+
+create tablespace ts1 location '@testtablespace@1';
+create tablespace ts2 location '@testtablespace@2';
+
+begin;
+set undo_tablespaces = ts1;
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'permanent');
+select * from undo_logs order by logno;
+-- write a short message
+select undo_append('ts1:perm---'::bytea, 'permanent');
+select * from undo_logs order by logno;
+-- discard
+select undo_discard('0000030000000047');
+select * from undo_logs order by logno;
+commit;
+
+begin;
+set undo_tablespaces = ts2;
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'permanent');
+select * from undo_logs order by logno;
+-- write a short message
+select undo_append('ts2:perm---', 'permanent');
+select * from undo_logs order by logno;
+-- discard
+select undo_discard('0000040000000047');
+select * from undo_logs order by logno;
+commit;
+
+-- check that we can drop tablespaces (because there is nothing in them)
+drop tablespace ts1;
+drop tablespace ts2;
+
+-- we fail to allocate space now that ts2 is gone
+begin;
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'permanent');
+select * from undo_logs order by logno;
+commit;
+
+-- we go back to allocating from log 0 if we clear the GUC
+begin;
+set undo_tablespaces = '';
+-- write a transaction header to avoid upsetting undo workers
+select undo_append_transaction_header(txid_current()::text::xid, 'permanent');
+select * from undo_logs order by logno;
+-- discard
+select undo_discard('000000000000006B');
+select * from undo_logs order by logno;
+commit;
+
+drop view undo_logs;
