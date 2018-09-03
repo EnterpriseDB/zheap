@@ -55,8 +55,8 @@ test_undo_insert(PG_FUNCTION_ARGS)
 	}
 
 	memset(pages, 0, 2 * BLCKSZ);
-	if (!InsertUndoRecord(&uur, p1, PG_GETARG_INT32(5), &aw) &&
-		!InsertUndoRecord(&uur, p2, MAXALIGN(sizeof(PageHeaderData)), &aw))
+	if (!InsertUndoRecord(&uur, p1, PG_GETARG_INT32(5), &aw, false) &&
+		!InsertUndoRecord(&uur, p2, MAXALIGN(sizeof(PageHeaderData)), &aw, false))
 		elog(NOTICE, "couldn't fit in 2 pages?!");
 
 	PG_RETURN_BYTEA_P(cstring_to_text_with_len(pages, sizeof pages));
