@@ -46,14 +46,13 @@ typedef struct
 
 	/*
 	 * Fixme - arrays must use MaxZHeapTuplesPerPage, once we have constant
-	 * value for the same.  we can get maximum 1164 tuples considering no
-	 * alignment, so using 1200 seems sane.
+	 * value for the same.
 	 */
-	OffsetNumber nowdeleted[1200];
-	OffsetNumber nowdead[1200];
-	OffsetNumber nowunused[1200];
+	OffsetNumber nowdeleted[MaxZHeapTuplesPerPageAlign0];
+	OffsetNumber nowdead[MaxZHeapTuplesPerPageAlign0];
+	OffsetNumber nowunused[MaxZHeapTuplesPerPageAlign0];
 	/* marked[i] is TRUE if item i is entered in one of the above arrays */
-	bool		marked[1200 + 1];
+	bool		marked[MaxZHeapTuplesPerPageAlign0 + 1];
 }			ZPruneState;
 
 static int zheap_prune_item(Relation relation, Buffer buffer,
@@ -478,7 +477,7 @@ zheap_prune_record_prunable(ZPruneState * prstate, TransactionId xid)
 static void
 zheap_prune_record_dead(ZPruneState * prstate, OffsetNumber offnum)
 {
-	Assert(prstate->ndead < 1200);
+	Assert(prstate->ndead < MaxZHeapTuplesPerPageAlign0);
 	prstate->nowdead[prstate->ndead] = offnum;
 	prstate->ndead++;
 	Assert(!prstate->marked[offnum]);
@@ -489,7 +488,7 @@ zheap_prune_record_dead(ZPruneState * prstate, OffsetNumber offnum)
 static void
 zheap_prune_record_deleted(ZPruneState * prstate, OffsetNumber offnum)
 {
-	Assert(prstate->ndead < 1200);
+	Assert(prstate->ndead < MaxZHeapTuplesPerPageAlign0);
 	prstate->nowdeleted[prstate->ndeleted] = offnum;
 	prstate->ndeleted++;
 	Assert(!prstate->marked[offnum]);

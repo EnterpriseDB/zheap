@@ -82,10 +82,9 @@ typedef struct HeapScanDescData
 	OffsetNumber rs_vistuples[MaxHeapTuplesPerPage];	/* their offsets */
 	/*
 	 * Fixme - array for zheap tuples must use MaxZHeapTuplesPerPage,
-	 * once we have constant value for the same.  we can get maximum 1164
-	 * tuples considering no alignment, so using 1200 seems sane.
+	 * once we have constant value for the same.
 	 */
-	ZHeapTuple      rs_visztuples[1200];
+	ZHeapTuple      rs_visztuples[MaxZHeapTuplesPerPageAlign0];
 }			HeapScanDescData;
 
 /*
