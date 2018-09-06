@@ -2888,11 +2888,11 @@ prepare_xlog:
 		{
 			zheaptup = ztoast_insert_or_update(relation, newtup, &oldtup, 0);
 			if (data_alignment_zheap == 0)
-				newtupsize = newtup->t_len;	/* no alignment */
+				newtupsize = zheaptup->t_len;	/* no alignment */
 			else if (data_alignment_zheap == 4)
-				newtupsize = INTALIGN(newtup->t_len);	/* four byte alignment */
+				newtupsize = INTALIGN(zheaptup->t_len);	/* four byte alignment */
 			else
-				newtupsize = MAXALIGN(newtup->t_len);
+				newtupsize = MAXALIGN(zheaptup->t_len);
 		}
 		else
 			zheaptup = newtup;
