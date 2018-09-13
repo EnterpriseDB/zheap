@@ -460,7 +460,6 @@ static void SetNewSxactGlobalXmin(void);
 static void ClearOldPredicateLocks(void);
 static void ReleaseOneSerializableXact(SERIALIZABLEXACT *sxact, bool partial,
 						   bool summarize);
-static bool XidIsConcurrent(TransactionId xid);
 static void CheckTargetForConflictsIn(PREDICATELOCKTARGETTAG *targettag);
 static void FlagRWConflict(SERIALIZABLEXACT *reader, SERIALIZABLEXACT *writer);
 static void OnConflict_CheckForSerializationFailure(const SERIALIZABLEXACT *reader,
@@ -3848,7 +3847,7 @@ ReleaseOneSerializableXact(SERIALIZABLEXACT *sxact, bool partial,
  * that to this function to save the overhead of checking the snapshot's
  * subxip array.
  */
-static bool
+bool
 XidIsConcurrent(TransactionId xid)
 {
 	Snapshot	snap;
@@ -3914,8 +3913,17 @@ CheckForSerializableConflictOut(bool visible, Relation relation,
 				 errhint("The transaction might succeed if retried.")));
 	}
 
-	if (!HeapTupleHasSerializableConflictOut(visible, (HeapTuple) stup, buffer, &xid))
-		return;
+	if (RelationStorageIsZHeap(relation))
+	{
+		if (!ZHeapTupleHasSerializableConflictOut(visible, relation,
+												(ItemPointer) stup, buffer, &xid))
+			return;
+	}
+	else
+	{
+		if (!HeapTupleHasSerializableConflictOut(visible, (HeapTuple) stup, buffer, &xid))
+			return;
+	}
 
 	/*
 	 * Find sxact or summarized info for the top level xid.

@@ -28,6 +28,7 @@
 
 #include "postgres.h"
 
+#include "access/subtrans.h"
 #include "access/xact.h"
 #include "access/zheap.h"
 #include "access/zheaputils.h"
@@ -2240,4 +2241,142 @@ ZHeapTupleSatisfiesToast(ZHeapTuple zhtup, Snapshot snapshot,
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	return zhtup;
+}
+
+/*
+ * This is a helper function for CheckForSerializableConflictOut.
+ *
+ * Check to see whether the tuple has been written to by a concurrent
+ * transaction, either to create it not visible to us, or to delete it
+ * while it is visible to us.  The "visible" bool indicates whether the
+ * tuple is visible to us, while ZHeapTupleSatisfiesOldestXmin checks what
+ * else is going on with it. The caller should have a share lock on the buffer.
+ */
+bool
+ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
+									 ItemPointer tid, Buffer buffer,
+									 TransactionId *xid)
+{
+	HTSV_Result		htsvResult;
+	ItemId			lp;
+	OffsetNumber	offnum;
+	Page			dp;
+	ZHeapTuple		tuple;
+	Size			tuple_len;
+	bool			tuple_inplace_updated = false;
+	Snapshot		snap;
+
+	Assert(ItemPointerGetBlockNumber(tid) == BufferGetBlockNumber(buffer));
+	offnum = ItemPointerGetOffsetNumber(tid);
+	dp = BufferGetPage(buffer);
+
+	/* check for bogus TID */
+	Assert (offnum >= FirstOffsetNumber &&
+			offnum <= PageGetMaxOffsetNumber(dp));
+
+	lp = PageGetItemId(dp, offnum);
+
+	/* check for unused or dead items */
+	Assert (ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
+
+	/*
+	 * If the record is deleted and pruned, its place in the page might have
+	 * been taken by another of its kind.
+	 */
+	if (ItemIdIsDeleted(lp))
+	{
+		/*
+		 * If the tuple is still visible to us, then we've a conflict. Becasue,
+		 * the transaction that deleted the tuple already got committed.
+		 */
+		if (visible)
+		{
+			snap = GetTransactionSnapshot();
+			tuple = ZHeapGetVisibleTuple(offnum, snap, buffer, NULL);
+			ZHeapTupleGetTransInfo(tuple, buffer, NULL, NULL, xid,
+								   NULL, NULL, false);
+			pfree(tuple);
+			return true;
+		}
+		else
+			return false;
+	}
+
+	tuple_len = ItemIdGetLength(lp);
+	tuple = palloc(ZHEAPTUPLESIZE + tuple_len);
+	tuple->t_data = (ZHeapTupleHeader) ((char *) tuple + ZHEAPTUPLESIZE);
+	tuple->t_tableOid = RelationGetRelid(relation);
+	tuple->t_len = tuple_len;
+	ItemPointerSet(&tuple->t_self, ItemPointerGetBlockNumber(tid), offnum);
+	memcpy(tuple->t_data,
+		   ((ZHeapTupleHeader) PageGetItem((Page) dp, lp)), tuple_len);
+
+	if (tuple->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
+				tuple_inplace_updated = true;
+
+	htsvResult = ZHeapTupleSatisfiesOldestXmin(&tuple, TransactionXmin, buffer, xid);
+	pfree(tuple);
+	switch (htsvResult)
+	{
+		case HEAPTUPLE_LIVE:
+			if (tuple_inplace_updated)
+			{
+				/*
+				 * We can't rely on callers visibility information for
+				 * in-place updated tuples because they consider the tuple as
+				 * visible if any version of the tuple is visible whereas we
+				 * want to know the status of current tuple.  In case of
+				 * aborted transactions, it is quite possible that the rollback
+				 * actions aren't yet applied and we need the status of last
+				 * committed transaction; ZHeapTupleSatisfiesOldestXmin returns
+				 * us that information.
+				 */
+				if (XidIsConcurrent(*xid))
+					visible = false;
+			}
+			if (visible)
+				return false;
+			break;
+		case HEAPTUPLE_RECENTLY_DEAD:
+			if (!visible)
+				return false;
+			break;
+		case HEAPTUPLE_DELETE_IN_PROGRESS:
+			break;
+		case HEAPTUPLE_INSERT_IN_PROGRESS:
+			break;
+		case HEAPTUPLE_DEAD:
+			return false;
+		default:
+
+			/*
+			 * The only way to get to this default clause is if a new value is
+			 * added to the enum type without adding it to this switch
+			 * statement.  That's a bug, so elog.
+			 */
+			elog(ERROR, "unrecognized return value from ZHeapTupleSatisfiesOldestXmin: %u", htsvResult);
+
+			/*
+			 * In spite of having all enum values covered and calling elog on
+			 * this default, some compilers think this is a code path which
+			 * allows xid to be used below without initialization. Silence
+			 * that warning.
+			 */
+			*xid = InvalidTransactionId;
+	}
+	Assert(TransactionIdIsValid(*xid));
+	Assert(TransactionIdFollowsOrEquals(*xid, TransactionXmin));
+
+	/*
+	 * Find top level xid.  Bail out if xid is too early to be a conflict, or
+	 * if it's our own xid.
+	 */
+	if (TransactionIdEquals(*xid, GetTopTransactionIdIfAny()))
+		return false;
+	if (TransactionIdPrecedes(*xid, TransactionXmin))
+		return false;
+	if (TransactionIdEquals(*xid, GetTopTransactionIdIfAny()))
+		return false;
+
+	return true;
 }

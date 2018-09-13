@@ -65,6 +65,9 @@ extern bool HeapTupleSatisfiesHistoricMVCC(HeapTuple htup,
 extern bool	HeapTupleHasSerializableConflictOut(bool visible,
 								HeapTuple htup, Buffer buffer,
 								TransactionId *xid);
+extern bool ZHeapTupleHasSerializableConflictOut(bool visible,
+						Relation relation, ItemPointer tid, Buffer buffer,
+						TransactionId *xid);
 
 /* Special "satisfies" routines with different APIs */
 extern HTSU_Result HeapTupleSatisfiesUpdate(HeapTuple htup,

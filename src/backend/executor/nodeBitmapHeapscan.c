@@ -844,9 +844,17 @@ bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 			resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer, NULL);
 			valid = resulttup ? true : false;
 
-			/* Fixme - Serialization failures needs to be detected for zheap. */
-			/* CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
-											buffer, snapshot); */
+			/*
+			 * If any prior version is visible, we pass latest visible as
+			 * true. The state of latest version of tuple is determined by
+			 * the called function.
+			 *
+			 * Note that, it's possible that tuple is updated in-place and
+			 * we're seeing some prior version of that. We handle that case
+			 * in ZHeapTupleHasSerializableConflictOut.
+			 */
+			CheckForSerializableConflictOut(valid, scan->rs_rd, (void *) &tid,
+											buffer, snapshot);
 
 			if (valid)
 				scan->rs_visztuples[ntup++] = resulttup;

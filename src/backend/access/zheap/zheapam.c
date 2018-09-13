@@ -1628,11 +1628,7 @@ zheap_tuple_updated:
 	if (TransactionIdPrecedes(tup_xid, oldestXidHavingUndo))
 		tup_xid = FrozenTransactionId;
 
-	/*
-	 * Fixme: Api's for serializable isolation level that take zheaptuple as
-	 * input needs to be written.
-	 */
-	/* CheckForSerializableConflictIn(relation, &tp, buffer); */
+	CheckForSerializableConflictIn(relation, &(zheaptup.t_self), buffer);
 
 	/*
 	 * Prepare an undo record.  We need to separately store the latest
@@ -3062,11 +3058,7 @@ reacquire_buffer:
 		zheaptup = newtup;
 	}
 
-	/*
-	 * Fixme: Api's for serializable isolation level that take zheaptuple as
-	 * input needs to be written.
-	 */
-	/* CheckForSerializableConflictIn(relation, &oldtup, buffer); */
+	CheckForSerializableConflictIn(relation, &(oldtup.t_self), buffer);
 
 	/*
 	 * Prepare an undo record for old tuple.  We need to separately store the
@@ -8628,9 +8620,17 @@ zheapgetpage(HeapScanDesc scan, BlockNumber page)
 				}
 			}
 
-			/* Fixme - Serialization failures needs to be detected for zheap. */
-			/* CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
-											buffer, snapshot); */
+			/*
+			 * If any prior version is visible, we pass latest visible as
+			 * true. The state of latest version of tuple is determined by
+			 * the called function.
+			 *
+			 * Note that, it's possible that tuple is updated in-place and
+			 * we're seeing some prior version of that. We handle that case
+			 * in ZHeapTupleHasSerializableConflictOut.
+			 */
+			CheckForSerializableConflictOut(valid, scan->rs_rd, (void *) &tid,
+											buffer, snapshot);
 
 			if (valid)
 				scan->rs_visztuples[ntup++] = resulttup;
@@ -9086,9 +9086,17 @@ get_next_tuple:
 			tuple = ZHeapTupleSatisfiesVisibility(loctup, snapshot, scan->rs_cbuf, NULL);
 			valid = tuple ? true : false;
 
-			/* FIXME - Serialization failures needs to be detected for zheap. */
-			/* CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
-											buffer, snapshot); */
+			/*
+			 * If any prior version is visible, we pass latest visible as
+			 * true. The state of latest version of tuple is determined by
+			 * the called function.
+			 *
+			 * Note that, it's possible that tuple is updated in-place and
+			 * we're seeing some prior version of that. We handle that case
+			 * in ZHeapTupleHasSerializableConflictOut.
+			 */
+			CheckForSerializableConflictOut(valid, scan->rs_rd, (void *) &tid,
+											scan->rs_cbuf, snapshot);
 
 			if (valid)
 			{
@@ -9348,9 +9356,21 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer, NULL);
 	}
 
-	/* Fixme - Serialization failures needs to be detected for zheap. */
-	/* CheckForSerializableConflictOut(valid, relation, zheapTuple,
-									buffer, snapshot); */
+	if (resulttup)
+		PredicateLockTid(relation, &(resulttup->t_self), snapshot,
+						 zheap_fetchinsertxid(resulttup, buffer));
+
+	/*
+	 * If any prior version is visible, we pass latest visible as
+	 * true. The state of latest version of tuple is determined by
+	 * the called function.
+	 *
+	 * Note that, it's possible that tuple is updated in-place and
+	 * we're seeing some prior version of that. We handle that case
+	 * in ZHeapTupleHasSerializableConflictOut.
+	 */
+	CheckForSerializableConflictOut((resulttup != NULL), relation, (void *) tid,
+									buffer, snapshot);
 
 	if (resulttup)
 	{
@@ -9530,6 +9550,22 @@ zheap_fetch(Relation relation,
 		valid = resulttup ? true : false;
 	}
 
+	if (valid)
+		PredicateLockTid(relation, &((resulttup)->t_self), snapshot,
+						 zheap_fetchinsertxid(resulttup, buffer));
+
+	/*
+	 * If any prior version is visible, we pass latest visible as
+	 * true. The state of latest version of tuple is determined by
+	 * the called function.
+	 *
+	 * Note that, it's possible that tuple is updated in-place and
+	 * we're seeing some prior version of that. We handle that case
+	 * in ZHeapTupleHasSerializableConflictOut.
+	 */
+	CheckForSerializableConflictOut(valid, relation, (void *) tid,
+									buffer, snapshot);
+
 	/*
 	 * Pass back the ctid if the tuple is invisible because it was updated.
 	 * Apart from SnapshotAny, ctid must be changed only when current
@@ -9542,14 +9578,6 @@ zheap_fetch(Relation relation,
 			*tid = ctid;
 		}
 	}
-
-	/*
-	 * Fixme - Serializable isolation level is not supportted for zheap tuples
-	 */
-	/* if (valid)
-		PredicateLockTuple(relation, tuple, snapshot);
-
-	CheckForSerializableConflictOut(valid, relation, tuple, buffer, snapshot);*/
 
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
@@ -11034,14 +11062,18 @@ zheap_get_latest_tid(Relation relation,
 		resulttup = ZHeapTupleSatisfiesVisibility(tp, snapshot, buffer,
 												  &new_ctid);
 
-#if 0
 		/*
-		 * Fixme - Serializable isolation level is not supportted for zheap
-		 * tuples.
+		 * If any prior version is visible, we pass latest visible as
+		 * true. The state of latest version of tuple is determined by
+		 * the called function.
+		 *
+		 * Note that, it's possible that tuple is updated in-place and
+		 * we're seeing some prior version of that. We handle that case
+		 * in ZHeapTupleHasSerializableConflictOut.
 		 */
-		CheckForSerializableConflictOut(resulttup != NULL, relation, tp,
+		CheckForSerializableConflictOut((resulttup != NULL), relation,
+										(void *) &ctid,
 										buffer, snapshot);
-#endif
 
 		/* Pass back the tuple ctid if it's visible */
 		if (resulttup != NULL)

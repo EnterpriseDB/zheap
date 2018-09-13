@@ -1807,7 +1807,7 @@ HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
  */
 bool
 HeapTupleHasSerializableConflictOut(bool visible, HeapTuple tuple, Buffer buffer,
-										 TransactionId *xid)
+									TransactionId *xid)
 {
 	HTSV_Result htsvResult;
 	htsvResult = HeapTupleSatisfiesVacuum(tuple, TransactionXmin, buffer);
