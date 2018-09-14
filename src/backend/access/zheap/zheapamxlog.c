@@ -1041,6 +1041,7 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 		if (xlrec->flags & XLZ_FREEZE_TPD_SLOT)
 		{
 			Assert(XLogRecHasBlockRef(record, 1));
+			action = XLogReadTPDBuffer(record, 1);
 			zheap_freeze_or_invalidate_tuples(buffer, xlrec->nFrozen, frozen,
 											  true, true);
 		}
@@ -1050,7 +1051,6 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 
 		if (xlrec->flags & XLZ_FREEZE_TPD_SLOT)
 		{
-			action = XLogReadTPDBuffer(record, 1);
 			if (action == BLK_NEEDS_REDO)
 			{
 				/* Initialize the frozen slots. */
