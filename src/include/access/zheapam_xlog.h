@@ -210,7 +210,7 @@ typedef struct xl_zheap_invalid_xact_slot
  * xl_zheap_lock flag values, 8 bits are available.
  */
 #define XLZ_LOCK_TRANS_SLOT_FOR_UREC		(1<<0)
-#define XLZ_LOCK_CONTAINS_TPD_SLOT			(1<<2)
+#define XLZ_LOCK_CONTAINS_TPD_SLOT			(1<<1)
 
 /* This is what we need to know about zheap lock tuple. */
 typedef struct xl_zheap_lock
