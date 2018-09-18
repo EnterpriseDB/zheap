@@ -1144,8 +1144,8 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 				 */
 				tpd_slots = TPDPageGetTransactionSlots(NULL, buffer,
 													   InvalidOffsetNumber,
-													   true, false, NULL,
-													   NULL, NULL);
+													   true, false, NULL, NULL,
+													   NULL, NULL, NULL);
 
 				for (i = 0; i < xlrec->nCompletedSlots; i++)
 				{

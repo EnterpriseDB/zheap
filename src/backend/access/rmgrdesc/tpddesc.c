@@ -47,6 +47,9 @@ tpd_identify(uint8 info)
 		case XLOG_TPD_CLEAR_LOCATION:
 			id = "TPD CLEAR LOCATION";
 			break;
+		case XLOG_INPLACE_UPDATE_TPD_ENTRY:
+			id = "INPLACE UPDATE TPD ENTRY";
+			break;
 	}
 
 	return id;

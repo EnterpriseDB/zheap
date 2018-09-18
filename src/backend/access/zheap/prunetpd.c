@@ -133,6 +133,14 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate)
 	tpd_e_offset = ItemIdGetOffset(itemId);
 
 	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
+
+	/*
+	 * We can prune the deleted entries as no one will be referring to such
+	 * entries.
+	 */
+	if (TPDEntryIsDeleted(tpd_e_hdr))
+		goto prune_tpd_entry;
+
 	if (tpd_e_hdr.tpe_flags & TPE_ONE_BYTE)
 		size_tpd_e_map = tpd_e_hdr.tpe_num_map_entries * sizeof(uint8);
 	else
@@ -171,6 +179,7 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate)
 
 	pfree(trans_slots);
 
+prune_tpd_entry:
 	if (prune_entry)
 	{
 		Assert (prstate->nunused < MaxTPDTuplesPerPage);

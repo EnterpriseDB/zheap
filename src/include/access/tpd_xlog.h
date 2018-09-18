@@ -26,6 +26,7 @@
 #define XLOG_ALLOCATE_TPD_ENTRY			0x00
 #define XLOG_TPD_CLEAN					0x10
 #define XLOG_TPD_CLEAR_LOCATION			0x20
+#define XLOG_INPLACE_UPDATE_TPD_ENTRY	0x30
 
 #define	XLOG_TPD_OPMASK				0x70
 
@@ -35,6 +36,8 @@
  */
 #define XLOG_TPD_INIT_PAGE				0x80
 
+#define XLOG_OLD_TPD_BUF_EQ_LAST_TPD_BUF	0x01
+
 /* This is what we need to know about tpd entry allocation */
 typedef struct xl_tpd_allocate_entry
 {
@@ -43,10 +46,11 @@ typedef struct xl_tpd_allocate_entry
 	BlockNumber	nextblk;
 	OffsetNumber offnum;		/* inserted entry's offset */
 
+	uint8		flags;
 	/* TPD entry data in backup block 0 */
 } xl_tpd_allocate_entry;
 
-#define SizeOfTPDAllocateEntry	(offsetof(xl_tpd_allocate_entry, offnum) + sizeof(OffsetNumber))
+#define SizeOfTPDAllocateEntry	(offsetof(xl_tpd_allocate_entry, flags) + sizeof(uint8))
 
 extern void tpd_redo(XLogReaderState *record);
 extern void tpd_desc(StringInfo buf, XLogReaderState *record);

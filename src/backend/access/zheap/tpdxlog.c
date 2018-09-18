@@ -31,6 +31,7 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 	Buffer	heap_page_buffer;
 	Buffer	metabuf = InvalidBuffer;
 	Buffer	last_used_buf = InvalidBuffer;
+	Buffer	old_tpd_buf = InvalidBuffer;
 	Page	tpdpage;
 	TPDPageOpaque tpdopaque;
 	XLogRedoAction action;
@@ -137,8 +138,67 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 				last_tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(last_used_page);
 				last_tpdopaque->tpd_nextblkno = xlrec->nextblk;
 
+				/* old and last tpd buffer are same. */
+				if (xlrec->flags & XLOG_OLD_TPD_BUF_EQ_LAST_TPD_BUF)
+				{
+					TPDEntryHeader	old_tpd_entry;
+					Page	otpdpage;
+					char	*data;
+					OffsetNumber	*off_num;
+					Size	datalen PG_USED_FOR_ASSERTS_ONLY;
+					ItemId	old_item_id;
+
+					if (action == BLK_NEEDS_REDO)
+					{
+						data = XLogRecGetBlockData(record, 3, &datalen);
+
+						off_num = (OffsetNumber *)data;
+						Assert(datalen == sizeof(OffsetNumber));
+
+						otpdpage = BufferGetPage(last_used_buf);
+						old_item_id = PageGetItemId(otpdpage, *off_num);
+						old_tpd_entry = (TPDEntryHeader)PageGetItem(otpdpage, old_item_id);
+						old_tpd_entry->tpe_flags |= TPE_DELETED;
+					}
+
+					/* We can't have a separate reference for old tpd buffer. */
+					Assert(!XLogRecHasBlockRef(record, 4));
+				}
+
 				MarkBufferDirty(last_used_buf);
 				PageSetLSN(last_used_page, lsn);
+			}
+		}
+
+		/*
+		 * We can have reference of block 4, iff we have reference for block
+		 * 2.
+		 */
+		if (XLogRecHasBlockRef(record, 4))
+		{
+			TPDEntryHeader	old_tpd_entry;
+			Page	otpdpage;
+			char	*data;
+			OffsetNumber	*off_num;
+			Size	datalen PG_USED_FOR_ASSERTS_ONLY;
+			ItemId	old_item_id;
+
+			action = XLogReadBufferForRedo(record, 4, &old_tpd_buf);
+
+			if (action == BLK_NEEDS_REDO)
+			{
+				data = XLogRecGetBlockData(record, 4, &datalen);
+
+				off_num = (OffsetNumber *) data;
+				Assert(datalen == sizeof(OffsetNumber));
+
+				otpdpage = BufferGetPage(old_tpd_buf);
+				old_item_id = PageGetItemId(otpdpage, *off_num);
+				old_tpd_entry = (TPDEntryHeader) PageGetItem(otpdpage, old_item_id);
+				old_tpd_entry->tpe_flags |= TPE_DELETED;
+
+				MarkBufferDirty(old_tpd_buf);
+				PageSetLSN(BufferGetPage(old_tpd_buf), lsn);
 			}
 		}
 	}
@@ -151,6 +211,8 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 		UnlockReleaseBuffer(metabuf);
 	if (BufferIsValid(last_used_buf))
 		UnlockReleaseBuffer(last_used_buf);
+	if (BufferIsValid(old_tpd_buf))
+		UnlockReleaseBuffer(old_tpd_buf);
 }
 
 /*
@@ -210,7 +272,7 @@ tpd_xlog_clear_location(XLogReaderState *record)
 	{
 		Page	page = (Page) BufferGetPage(buffer);
 
-		ClearTPDLocation(page);
+		ClearTPDLocation(buffer);
 		MarkBufferDirty(buffer);
 		PageSetLSN(page, lsn);
 	}

@@ -32,7 +32,7 @@ typedef struct TPDPageOpaqueData
 
 typedef TPDPageOpaqueData *TPDPageOpaque;
 
-#define SizeofTPDPageOpaque offsetof(TPDPageOpaqueData, tpd_latest_xid)
+#define SizeofTPDPageOpaque (offsetof(TPDPageOpaqueData, tpd_latest_xid) + sizeof(TransactionId))
 
 /* TPD entry information */
 #define INITIAL_TRANS_SLOTS_IN_TPD_ENTRY	8
@@ -59,11 +59,18 @@ typedef TPDEntryHeaderData *TPDEntryHeader;
 
 #define	TPE_ONE_BYTE	0x0001
 #define	TPE_FOUR_BYTE	0x0002
+#define	TPE_DELETED		0x0004
 
 #define	OFFSET_MASK	0x3FFFFF
 
-#define InvalidTPDOffset	0
-#define MaxTPDOffset		(BLCKSZ - sizeof(TPDPageOpaqueData))
+#define TPDEntryIsDeleted(tpd_e_hdr) \
+( \
+	(tpd_e_hdr.tpe_flags & TPE_DELETED) != 0 \
+)
+
+/* Maximum size of one TPD entry. */
+#define MaxTPDEntrySize \
+	((int) (BLCKSZ - SizeOfPageHeaderData - SizeofTPDPageOpaque - sizeof(ItemIdData)))
 
 /*
  * MaxTPDTuplesPerPage is an upper bound on the number of tuples that can
@@ -73,25 +80,18 @@ typedef TPDEntryHeaderData *TPDEntryHeader;
 	((int) ((BLCKSZ - SizeOfPageHeaderData - SizeofTPDPageOpaque) / \
 			(SizeofTPDEntryHeader  + sizeof(ItemIdData))))
 
-/*
- * TPDOffsetIsValid
- *		True iff the offset is valid.
- */
-#define TPDOffsetIsValid(offset) \
-	((bool) ((offset != InvalidTPDOffset) && \
-			 (offset <= MaxTPDOffset)))
-
 extern OffsetNumber TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 							OffsetNumber offset);
 extern void SetTPDLocation(Buffer heapbuffer, Buffer tpdbuffer, uint16 offset);
-extern void ClearTPDLocation(Page heappage);
+extern void ClearTPDLocation(Buffer heapbuf);
 extern void TPDInitPage(Page page, Size pageSize);
 extern int TPDAllocateAndReserveTransSlot(Relation relation, Buffer buf,
 								OffsetNumber offnum, UndoRecPtr *urec_ptr);
 extern TransInfo *TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 						   OffsetNumber offnum, bool keepTPDBufLock,
-						   bool checkOffset, int *num_trans_slots,
-						   int *tpd_buf_idx, bool *tpd_e_pruned);
+						   bool checkOffset, int *num_map_entries,
+						   int *num_trans_slots, int *tpd_buf_id,
+						   bool *tpd_e_pruned, bool *alloc_bigger_map);
 extern int TPDPageReserveTransSlot(Relation relation, Buffer heapbuf,
 						OffsetNumber offset, UndoRecPtr *urec_ptr, bool *lock_reacquired);
 extern int TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,

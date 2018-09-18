@@ -50,7 +50,8 @@ RelationGetBufferForZTuple(Relation relation, Size len,
 				saveFreeSpace = 0;
 	BlockNumber targetBlock,
 				otherBlock;
-	bool		needLock;
+	bool		needLock = false;
+	bool		recheck = true;
 	bool		tpdPage = false;
 
 	if (data_alignment_zheap == 0)
@@ -269,6 +270,7 @@ loop:
 	 */
 	needLock = !RELATION_IS_LOCAL(relation);
 
+recheck:
 	/*
 	 * If we need the lock but are not able to acquire it immediately, we'll
 	 * consider extending the relation by multiple blocks at a time to manage
@@ -318,9 +320,10 @@ loop:
 
 	/*
 	 * We can be certain that locking the otherBuffer first is OK, since it
-	 * must have a lower page number.
+	 * must have a lower page number.  We don't lock other buffer while holding
+	 * extension lock.  See comments below.
 	 */
-	if (otherBuffer != InvalidBuffer)
+	if (otherBuffer != InvalidBuffer && !needLock)
 		LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
 
 	/*
@@ -350,8 +353,26 @@ loop:
 			 RelationGetRelationName(relation));
 
 	ZheapInitPage(page, BufferGetPageSize(buffer));
+
+	/*
+	 * We don't acquire lock on otherBuffer while holding extension lock as it
+	 * can create a deadlock against extending TPD entry where we take extension
+	 * lock while holding the heap buffer lock.  See TPDAllocatePageAndAddEntry.
+	 */
+	if (needLock &&
+		otherBuffer != InvalidBuffer &&
+		BufferGetBlockNumber(buffer) > otherBlock)
+	{
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		recheck = true;
+	}	
 	if (len > PageGetZHeapFreeSpace(page))
 	{
+		if (recheck)
+			goto recheck;
+		
 		/* We should not get here given the test at the top */
 		elog(PANIC, "tuple is too big: size %zu", len);
 	}

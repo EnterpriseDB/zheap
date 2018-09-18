@@ -207,9 +207,11 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 													 InvalidOffsetNumber,
 													 false,
 													 false,
+													 NULL,
 													 &num_tpd_trans_slots,
 													 NULL,
-													 &tpd_e_pruned);
+													 &tpd_e_pruned,
+													 NULL);
 		if (!tpd_e_pruned)
 		{
 			/*
@@ -686,9 +688,11 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 													 InvalidOffsetNumber,
 													 false,
 													 false,
+													 NULL,
 													 &num_tpd_trans_slots,
 													 NULL,
-													 &tpd_e_pruned);
+													 &tpd_e_pruned,
+													 NULL);
 		if (!tpd_e_pruned)
 		{
 			/*
