@@ -240,7 +240,8 @@ extern void lazy_cleanup_index(Relation indrel, IndexBulkDeleteResult *stats,
 extern void lazy_record_dead_tuple(LVRelStats *vacrelstats,
 					   ItemPointer itemptr);
 extern bool should_attempt_truncation(LVRelStats *vacrelstats);
-extern void lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats);
+extern void lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats,
+							   BufferAccessStrategy vac_strategy);
 
 /* in commands/zvacuumlazy.c */
 extern void lazy_vacuum_zheap_rel(Relation onerel, int options,

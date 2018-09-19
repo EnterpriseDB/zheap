@@ -122,7 +122,8 @@ static bool lazy_check_needs_freeze(Buffer buf, bool *hastup);
 static int lazy_vacuum_page(Relation onerel, BlockNumber blkno, Buffer buffer,
 				 int tupindex, LVRelStats *vacrelstats, Buffer *vmbuffer);
 static BlockNumber count_nondeletable_pages(Relation onerel,
-						 LVRelStats *vacrelstats);
+						 LVRelStats *vacrelstats,
+						 BufferAccessStrategy vac_strategy);
 static void lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks);
 static bool lazy_tid_reaped(ItemPointer itemptr, void *state);
 static int	vac_cmp_itemptr(const void *left, const void *right);
@@ -240,7 +241,7 @@ lazy_vacuum_rel(Relation onerel, int options, VacuumParams *params,
 	 * Optionally truncate the relation.
 	 */
 	if (should_attempt_truncation(vacrelstats))
-		lazy_truncate_heap(onerel, vacrelstats);
+		lazy_truncate_heap(onerel, vacrelstats, vac_strategy);
 
 	/* Report that we are now doing final cleanup */
 	pgstat_progress_update_param(PROGRESS_VACUUM_PHASE,
@@ -1772,7 +1773,8 @@ should_attempt_truncation(LVRelStats *vacrelstats)
  * lazy_truncate_heap - try to truncate off any empty pages at the end
  */
 void
-lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats)
+lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats,
+				   BufferAccessStrategy vac_strategy)
 {
 	BlockNumber old_rel_pages = vacrelstats->rel_pages;
 	BlockNumber new_rel_pages;
@@ -1852,7 +1854,8 @@ lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats)
 		 * other backends could have added tuples to these pages whilst we
 		 * were vacuuming.
 		 */
-		new_rel_pages = count_nondeletable_pages(onerel, vacrelstats);
+		new_rel_pages = count_nondeletable_pages(onerel, vacrelstats,
+												 vac_strategy);
 
 		if (new_rel_pages >= old_rel_pages)
 		{
@@ -1900,7 +1903,8 @@ lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats)
  * Returns number of nondeletable pages (last nonempty page + 1).
  */
 static BlockNumber
-count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats)
+count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats,
+						 BufferAccessStrategy vac_strategy)
 {
 	BlockNumber blkno;
 	BlockNumber prefetchedUntil;

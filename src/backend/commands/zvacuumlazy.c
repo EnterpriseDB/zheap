@@ -1135,7 +1135,7 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 	 * Optionally truncate the relation.
 	 */
 	if (should_attempt_truncation(vacrelstats))
-		lazy_truncate_heap(onerel, vacrelstats);
+		lazy_truncate_heap(onerel, vacrelstats, vac_strategy);
 
 	/*
 	 * Update statistics in pg_class.
