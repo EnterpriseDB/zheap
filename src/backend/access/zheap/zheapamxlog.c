@@ -131,6 +131,8 @@ zheap_xlog_insert(XLogReaderState *record)
 	 */
 	if (XLogRecGetInfo(record) & XLOG_ZHEAP_INIT_PAGE)
 	{
+		/* It is asked for page init, insert should not have tpd slot. */
+		Assert(!(xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT));
 		buffer = XLogInitBufferForRedo(record, 0);
 		page = BufferGetPage(buffer);
 		ZheapInitPage(page, BufferGetPageSize(buffer));
@@ -1402,6 +1404,8 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 
 	if (isinit)
 	{
+		/* It is asked for page init, insert should not have tpd slot. */
+		Assert(!(xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT));
 		buffer = XLogInitBufferForRedo(record, 0);
 		page = BufferGetPage(buffer);
 		ZheapInitPage(page, BufferGetPageSize(buffer));

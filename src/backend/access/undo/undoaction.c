@@ -532,6 +532,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	char	   *tpd_offset_map = NULL;
 	UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
 	Buffer		vmbuffer = InvalidBuffer;
+	bool		need_init = false;
 
 	/*
 	 * FIXME: If reloid is not valid then we have nothing to do. In future,
@@ -644,12 +645,11 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					int			i,
 								nline;
 					ItemId		lp;
-					bool		need_init = true;
 
 					undo_action_insert(rel, page, uur->uur_offset, xid);
 
 					nline = PageGetMaxOffsetNumber(page);
-
+					need_init = true;
 					for (i = FirstOffsetNumber; i <= nline; i++)
 					{
 						lp = PageGetItemId(page, i);
@@ -659,16 +659,6 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 							break;
 						}
 					}
-
-					/*
-					 * In zheap_xlog_insert we see insert of first and only
-					 * tuple on the page we re-initialize the page. Force
-					 * ZheapInitPage on insert or multi insert rollback if
-					 * all line pointers in it is unused to satisfy wal
-					 * consistency check on standby.
-					 */
-					if (need_init)
-						ZheapInitPage(page, (Size)BLCKSZ);
 				}
 				break;
 			case UNDO_MULTI_INSERT:
@@ -679,7 +669,6 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					int				i,
 									nline;
 					ItemId			lp;
-					bool			need_init = true;
 
 					start_offset = ((OffsetNumber *) uur->uur_payload.data)[0];
 					end_offset = ((OffsetNumber *) uur->uur_payload.data)[1];
@@ -692,6 +681,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					}
 
 					nline = PageGetMaxOffsetNumber(page);
+					need_init = true;
 					for (i = FirstOffsetNumber; i <= nline; i++)
 					{
 						lp = PageGetItemId(page, i);
@@ -701,16 +691,6 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 							break;
 						}
 					}
-
-					/*
-					 * In zheap_xlog_insert we see insert of first and only
-					 * tuple on the page we re-initialize the page. Force
-					 * ZheapInitPage on insert or multi insert rollback if
-					 * all line pointers in it is unused to satisfy wal
-					 * consistency check on standby.
-					 */
-					if (need_init)
-						ZheapInitPage(page, (Size)BLCKSZ);
 				}
 				break;
 			case UNDO_DELETE:
@@ -970,6 +950,8 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 			flags |= XLU_PAGE_CLEAR_VISIBILITY_MAP;
 		if (tpd_offset_map)
 			flags |= XLU_CONTAINS_TPD_OFFSET_MAP;
+		if (need_init)
+			flags |= XLU_INIT_PAGE;
 
 		XLogBeginInsert();
 
@@ -1014,6 +996,21 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 			flags & XLU_CONTAINS_TPD_OFFSET_MAP)
 			TPDPageSetLSN(page, recptr);
 	}
+
+	/*
+	 * During rollback, if all the itemids are marked as unused, we need
+	 * to initialize the page, so that the next insertion can see the
+	 * page as initialized.  This serves two purposes (a) On next insertion,
+	 * we can safely set the XLOG_ZHEAP_INIT_PAGE flag in WAL (OTOH, if we
+	 * don't initialize the page here and set the flag, wal consistency
+	 * checker can complain), (b) we don't accumulate the dead space in the
+	 * page.
+	 *
+	 * Note that we initialize the page after writing WAL because the TPD
+	 * routines use last slot in page to determine TPD block number.
+	 */
+	if (need_init)
+		ZheapInitPage(page, (Size) BLCKSZ);
 
 	END_CRIT_SECTION();
 

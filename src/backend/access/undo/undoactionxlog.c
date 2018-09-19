@@ -131,6 +131,13 @@ undo_xlog_page(XLogReaderState *record)
 		FreeFakeRelcacheEntry(reln);
 	}
 
+	/*
+	 * Reset Page only at the end if asked, page level flag
+	 * PD_PAGE_HAS_TPD_SLOT and TPD slot are needed before that TPD routines.
+	 */
+	if (*flags & XLU_INIT_PAGE)
+		ZheapInitPage(BufferGetPage(buf), (Size) BLCKSZ);
+
 	UnlockReleaseBuffer(buf);
 	UnlockReleaseTPDBuffers();
 }

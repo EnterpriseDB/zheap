@@ -28,6 +28,8 @@ undoaction_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, "page_contains_tpd_slot: %c ",
 						 (*flags & XLU_PAGE_CONTAINS_TPD_SLOT) ? 'T' : 'F');
+		appendStringInfo(buf, "is_page_initialized: %c ",
+						 (*flags & XLU_INIT_PAGE) ? 'T' : 'F');
 		if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
 		{
 			xl_undoaction_page *xlrec =
