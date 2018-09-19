@@ -60,10 +60,6 @@ zheap_xlog_insert(XLogReaderState *record)
 	/*
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
-	 *
-	 * Fixme - This is just for future support of visibility maps with zheap.
-	 * Once that is supported, we can test if this code works and remove this
-	 * comment after it works.
 	 */
 	if (xlrec->flags & XLZ_INSERT_ALL_VISIBLE_CLEARED)
 	{
@@ -249,10 +245,6 @@ zheap_xlog_delete(XLogReaderState *record)
 	/*
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
-	 *
-	 * Fixme - This is just for future support of visibility maps with zheap.
-	 * Once that is supported, we can test if this code works and remove this
-	 * comment after it works.
 	 */
 	if (xlrec->flags & XLZ_DELETE_ALL_VISIBLE_CLEARED)
 	{
@@ -497,10 +489,6 @@ zheap_xlog_update(XLogReaderState *record)
 	/*
 	 * The visibility map may need to be fixed even if the zheap page is
 	 * already up-to-date.
-	 *
-	 * Fixme - This is just for future support of visibility maps with zheap.
-	 * Once that is supported, we can test if this code works and remove this
-	 * comment after it works.
 	 */
 	if (xlrec->flags & XLZ_UPDATE_OLD_ALL_VISIBLE_CLEARED)
 	{
@@ -1386,10 +1374,6 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	/*
 	 * The visibility map may need to be fixed even if the heap page is
 	 * already up-to-date.
-	 *
-	 * Fixme - This is just for future support of visibility maps with zheap.
-	 * Once that is supported, we can test if this code works and remove this
-	 * comment after it works.
 	 */
 	if (xlrec->flags & XLZ_INSERT_ALL_VISIBLE_CLEARED)
 	{
