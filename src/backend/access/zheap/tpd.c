@@ -470,7 +470,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 		 * FIXME:  what we should do if TPD entry can not fit in one page?
 		 * currently we are forcing it to retry.
 		 */
-		elog(LOG, "TPD entry size (%u) cannot be greater than \
+		elog(LOG, "TPD entry size (%lu) cannot be greater than \
 			 MaxTPDEntrySize (%u)", new_size_tpd_entry, MaxTPDEntrySize);
 
 		*reserved_slot_no = InvalidXactSlotId;
@@ -1293,10 +1293,7 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 	ZHeapMetaPage	metapage;
 	Buffer	metabuf;
 	Buffer	tpd_buf = InvalidBuffer;
-	Buffer	last_used_tpd_buf = InvalidBuffer;
 	Page	heappage;
-	BlockNumber	prevblk = InvalidBlockNumber;
-	BlockNumber	nextblk = InvalidBlockNumber;
 	uint32		first_used_tpd_page;
 	uint32		last_used_tpd_page;
 	char		*tpd_entry;
