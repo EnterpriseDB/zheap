@@ -266,16 +266,22 @@ typedef struct xl_multi_insert_ztuple
  * Note that nunused is not explicitly stored, but may be found by reference to the
  * total record length.
  */
+#define XLZ_CLEAN_CONTAINS_OFFSET			(1<<0)
+#define XLZ_CLEAN_ALLOW_PRUNING				(1<<1)
+
 typedef struct xl_zheap_clean
 {
 
 	TransactionId latestRemovedXid;
 	uint16          ndeleted;
 	uint16          ndead;
+	uint8			flags;
 	/* OFFSET NUMBERS are in the block reference 0 */
 } xl_zheap_clean;
 
-#define SizeOfZHeapClean (offsetof(xl_zheap_clean, ndead) + sizeof(uint16))
+#define SizeOfZHeapClean (offsetof(xl_zheap_clean, flags) + sizeof(uint8))
+
+#define XLZ_UNUSED_ALLOW_PRUNING				(1<<0)
 
 typedef struct xl_zheap_unused
 {
@@ -283,10 +289,11 @@ typedef struct xl_zheap_unused
 	TransactionId latestRemovedXid;
 	uint16          nunused;
 	uint8			trans_slot_id;
+	uint8			flags;
 	/* OFFSET NUMBERS are in the block reference 0 */
 } xl_zheap_unused;
 
-#define SizeOfZHeapUnused (offsetof(xl_zheap_unused, trans_slot_id) + sizeof(uint8))
+#define SizeOfZHeapUnused (offsetof(xl_zheap_unused, flags) + sizeof(uint8))
 
 /* This is what we need to know about confirmation of speculative insertion */
 /*

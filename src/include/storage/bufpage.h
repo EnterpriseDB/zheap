@@ -457,7 +457,6 @@ extern Page PageGetTempPageCopySpecial(Page page);
 extern void PageRestoreTempPage(Page tempPage, Page oldPage);
 extern void compactify_tuples(itemIdSort itemidbase, int nitems, Page page);
 extern void PageRepairFragmentation(Page page);
-extern void ZPageRepairFragmentation(Buffer buffer);
 extern Size PageGetFreeSpace(Page page);
 extern Size PageGetFreeSpaceForMultipleTuples(Page page, int ntups);
 extern Size PageGetExactFreeSpace(Page page);

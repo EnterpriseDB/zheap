@@ -174,7 +174,6 @@ CREATE TABLE update_test_zheap(c1 int,c2 char(1000),c3 varchar(10))
 INSERT INTO update_test_zheap VALUES(generate_series(1,7), 'aaa', 'aaa');
 UPDATE update_test_zheap SET c3 = 'bbbbb' WHERE c1=1;
 
--- record c1 = 1 should be the last record as it moves to next page.
 SELECT c1 from update_test_zheap;
 
 UPDATE update_test_zheap SET c3 = 'bbbbb' WHERE c1 = 2;

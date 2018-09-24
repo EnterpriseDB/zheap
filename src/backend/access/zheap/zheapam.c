@@ -1900,6 +1900,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 				vmbuffer = InvalidBuffer,
 				vmbuffer_new = InvalidBuffer;
 	Size		newtupsize,
+				oldtupsize,
 				pagefree;
 	uint32		epoch = GetEpochForXid(xid);
 	int			tup_trans_slot_id,
@@ -2056,12 +2057,29 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 		need_toast = (newtup->t_len >= TOAST_TUPLE_THRESHOLD ||
 					 ZHeapTupleHasExternal(&oldtup) ||
 					 ZHeapTupleHasExternal(newtup));
+
+	if (data_alignment_zheap == 0)
+	{
+		oldtupsize = oldtup.t_len;	/* no alignment */
+		newtupsize = newtup->t_len;
+	}
+	else if (data_alignment_zheap == 4)
+	{
+		oldtupsize = INTALIGN(oldtup.t_len);	/* four byte alignment */
+		newtupsize = INTALIGN(newtup->t_len);	/* four byte alignment */
+	}
+	else
+	{
+		oldtupsize = MAXALIGN(oldtup.t_len);
+		newtupsize = MAXALIGN(newtup->t_len);
+	}
+
 	/*
 	 * inplace updates can be done only if the length of new tuple is lesser
 	 * than or equal to old tuple and there are no index column updates and
 	 * the tuple does not require TOAST-ing.
 	 */
-	if ((newtup->t_len <= oldtup.t_len) && !is_index_updated && !need_toast)
+	if ((newtupsize <= oldtupsize) && !is_index_updated && !need_toast)
 		use_inplace_update = true;
 	else
 		use_inplace_update = false;
@@ -2573,39 +2591,32 @@ zheap_tuple_updated:
 		return result;
 	}
 
-	pagefree = PageGetZHeapFreeSpace(page);
-
-	if (data_alignment_zheap == 0)
-		newtupsize = newtup->t_len;	/* no alignment */
-	else if (data_alignment_zheap == 4)
-		newtupsize = INTALIGN(newtup->t_len);	/* four byte alignment */
-	else
-		newtupsize = MAXALIGN(newtup->t_len);
-
 	/*
 	 * If it is a non inplace update then check we have sufficient free space
 	 * to insert in same page. If not try defragmentation and recheck the
 	 * freespace again.
 	 */
-	if (!use_inplace_update && newtupsize > pagefree)
+	if (!use_inplace_update && !is_index_updated && !need_toast)
 	{
-		zheap_page_prune_opt(relation, buffer);
-		pagefree = PageGetZHeapFreeSpace(page);
+		bool	pruned;
+
+		/* Here, we pass delta space required to accomodate the new tuple. */
+		pruned = zheap_page_prune_opt(relation, buffer, old_offnum,
+									  (newtupsize - oldtupsize));
+
 		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+
+		/*
+		 * Check if the non-inplace update is due to non-index update and we
+		 * are able to perform pruning, then we must be able to perform
+		 * inplace update.
+		 */
+		if (pruned)
+			use_inplace_update = true;
 	}
 	
 	max_offset = PageGetMaxOffsetNumber(BufferGetPage(buffer));
-
-	/*
-	 * In one special case if we are updating the last tuple of page,
-	 * we can combine free space immediately next to that tuple with
-	 * the original tuple space and try to do inplace update there!
-	 */
-	if (!use_inplace_update &&
-		ItemIdGetOffset(lp) == ((PageHeader) page)->pd_upper &&
-		(pagefree + oldtup.t_len) >= newtupsize &&
-		!is_index_updated)
-		use_inplace_update = true;
+	pagefree = PageGetZHeapFreeSpace(page);
 
 	/* 
 	 * Incase of the non in-place update we also need to
@@ -3324,26 +3335,6 @@ reacquire_buffer:
 		 * so that new tuple can be copied at that location as it is.
 		 */
 		ItemIdChangeLen(lp, zheaptup->t_len);
-		if (zheaptup->t_len > oldtup.t_len)
-		{
-			ZHeapTupleHeader new_pos;
-
-			((PageHeader) page)->pd_upper =
-								(((PageHeader) page)->pd_upper + oldtup.t_len) -
-								newtupsize;
-			ItemIdChangeOff(lp, ((PageHeader) page)->pd_upper);
-			new_pos= (ZHeapTupleHeader) PageGetItem(page, lp);
-
-			/*
-			 * Since the source and destination may overlap, use memmove() as
-			 * against memcpy().
-			 */
-			memmove((char *) new_pos, (char *) oldtup.t_data,
-					SizeofZHeapTupleHeader);
-
-			oldtup.t_data = new_pos;
-		}
-
 		memcpy((char *) oldtup.t_data + SizeofZHeapTupleHeader,
 			   (char *) zheaptup->t_data + SizeofZHeapTupleHeader,
 			   zheaptup->t_len - SizeofZHeapTupleHeader);

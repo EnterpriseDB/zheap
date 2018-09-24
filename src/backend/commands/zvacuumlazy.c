@@ -102,9 +102,18 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 				  int tupindex, LVRelStats *vacrelstats, Buffer *vmbuffer)
 {
 	Page		page = BufferGetPage(buffer);
+	Page		tmppage;
 	OffsetNumber unused[MaxOffsetNumber];
 	int			uncnt = 0;
 	TransactionId visibility_cutoff_xid;
+	bool		pruned = false;
+
+	/*
+	 * We prepare the temporary copy of the page so that during page
+	 * repair fragmentation we can use it to copy the actual tuples.
+	 * See comments atop zheap_page_prune_guts.
+	 */
+	tmppage = PageGetTempPageCopy(page);
 
 	START_CRIT_SECTION();
 
@@ -123,7 +132,7 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 		unused[uncnt++] = toff;
 	}
 
-	ZPageRepairFragmentation(buffer);
+	ZPageRepairFragmentation(buffer, tmppage, InvalidOffsetNumber, 0, &pruned);
 
 	/*
 	 * Mark buffer dirty before we write WAL.
@@ -135,14 +144,17 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 	{
 		XLogRecPtr	recptr;
 
-		recptr = log_zheap_clean(onerel, buffer,
+		recptr = log_zheap_clean(onerel, buffer, InvalidOffsetNumber, 0,
 								 NULL, 0, NULL, 0,
 								 unused, uncnt,
-								 vacrelstats->latestRemovedXid);
+								 vacrelstats->latestRemovedXid, pruned);
 		PageSetLSN(page, recptr);
 	}
 
 	END_CRIT_SECTION();
+
+	/* be tidy */
+	pfree(tmppage);
 
 	/*
 	 * Now that we have removed the dead tuples from the page, once again
@@ -179,9 +191,11 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 							Buffer *vmbuffer,
 							TransactionId *global_visibility_cutoff_xid)
 {
+	TransactionId visibility_cutoff_xid;
 	TransactionId xid = GetTopTransactionId();
 	uint32	epoch = GetEpochForXid(xid);
 	Page		page = BufferGetPage(buffer);
+	Page		tmppage;
 	UnpackedUndoRecord	undorecord;
 	OffsetNumber unused[MaxOffsetNumber];
 	UndoRecPtr	urecptr, prev_urecptr;
@@ -191,7 +205,7 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 	XLogRecPtr	RedoRecPtr;
 	bool		doPageWrites;
 	bool		lock_reacquired;
-	TransactionId visibility_cutoff_xid;
+	bool		pruned = false;
 
 	for (; tupindex < vacrelstats->num_dead_tuples; tupindex++)
 	{
@@ -269,6 +283,13 @@ reacquire_slot:
 								InvalidTransactionId,
 								&undometa);
 
+	/*
+	 * We prepare the temporary copy of the page so that during page
+	 * repair fragmentation we can use it to copy the actual tuples.
+	 * See comments atop zheap_page_prune_guts.
+	 */
+	tmppage = PageGetTempPageCopy(page);
+
 	START_CRIT_SECTION();
 
 	memcpy(undorecord.uur_payload.data, unused, uncnt * sizeof(OffsetNumber));
@@ -309,7 +330,8 @@ reacquire_slot:
 		itemid = PageGetItemId(page, unused[i]);
 		ItemIdSetUnusedExtended(itemid, trans_slot_id);
 	}
-	ZPageRepairFragmentation(buffer);
+
+	ZPageRepairFragmentation(buffer, tmppage, InvalidOffsetNumber, 0, &pruned);
 
 	/*
 	 * Mark buffer dirty before we write WAL.
@@ -335,6 +357,10 @@ reacquire_slot:
 		xl_rec.latestRemovedXid = vacrelstats->latestRemovedXid;
 		xl_rec.nunused = uncnt;
 		xl_rec.trans_slot_id = trans_slot_id;
+		xl_rec.flags = 0;
+		if (pruned)
+			xl_rec.flags |= XLZ_UNUSED_ALLOW_PRUNING;
+
 prepare_xlog:
 		/*
 		 * WAL-LOG undolog meta data if this is the fisrt WAL after the
@@ -367,6 +393,9 @@ prepare_xlog:
 
 	UnlockReleaseUndoBuffers();
 	UnlockReleaseTPDBuffers();
+
+	/* be tidy */
+	pfree(tmppage);
 
 	/*
 	 * Now that we have removed the dead tuples from the page, once again
@@ -753,8 +782,11 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 		/*
 		 * We count tuples removed by the pruning step as removed by VACUUM.
 		 */
-		tups_vacuumed += zheap_page_prune_guts(onerel, buf, OldestXmin, false,
-											&vacrelstats->latestRemovedXid);
+		tups_vacuumed += zheap_page_prune_guts(onerel, buf, OldestXmin,
+											   InvalidOffsetNumber, 0, false,
+											   false,
+											   &vacrelstats->latestRemovedXid,
+											   NULL);
 
 		/* Now scan the page to collect vacuumable items. */
 		hastup = false;

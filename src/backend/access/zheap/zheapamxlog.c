@@ -849,33 +849,15 @@ zheap_xlog_update(XLogReaderState *record)
 			 * tuple header.
 			 */
 			ItemIdChangeLen(lp, newlen);
-			if (newlen > oldtup.t_len)
-			{
-				ZHeapTupleHeader new_pos;
-				Size		newtupsize;
+			memcpy((char *) oldtup.t_data, (char *) newtup, newlen);
 
-				if (data_alignment_zheap == 0)
-					newtupsize = newlen;	/* no alignment */
-				else if (data_alignment_zheap == 4)
-					newtupsize = INTALIGN(newlen);	/* four byte alignment */
-				else
-					newtupsize = MAXALIGN(newlen);
-
-				((PageHeader) newpage)->pd_upper =
-									(((PageHeader) newpage)->pd_upper + oldtup.t_len) -
-									newtupsize;
-				ItemIdChangeOff(lp, ((PageHeader) newpage)->pd_upper);
-				new_pos= (ZHeapTupleHeader) PageGetItem(newpage, lp);
-				oldtup.t_data = new_pos;
-			}
-			else if (newlen < oldtup.t_len)
+			if (newlen < oldtup.t_len)
 			{
 				/* new tuple is smaller, a prunable cadidate */
 				Assert (oldpage == newpage);
 				ZPageSetPrunable(newpage, XLogRecGetXid(record));
 			}
 
-			memcpy((char *) oldtup.t_data, (char *) newtup, newlen);
 			PageSetUNDO(undorecord, newbuffer, xlrec->old_trans_slot_id,
 						false, xid_epoch, xid, urecptr,
 						NULL, 0);
@@ -1654,6 +1636,8 @@ zheap_xlog_clean(XLogReaderState *record)
 	RelFileNode rnode;
 	BlockNumber blkno;
 	XLogRedoAction action;
+	OffsetNumber	*target_offnum;
+	Size			*space_required;
 
 	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
 
@@ -1676,15 +1660,17 @@ zheap_xlog_clean(XLogReaderState *record)
 										   &buffer);
 	if (action == BLK_NEEDS_REDO)
 	{
-		Page		page = (Page) BufferGetPage(buffer);
+		Page		page = (Page)BufferGetPage(buffer);
 		OffsetNumber *end;
 		OffsetNumber *deleted;
 		OffsetNumber *nowdead;
 		OffsetNumber *nowunused;
+		OffsetNumber tmp_target_off;
 		int			ndeleted;
 		int			ndead;
 		int			nunused;
 		Size		datalen;
+		Size		tmp_spc_rqd;
 
 		deleted = (OffsetNumber *) XLogRecGetBlockData(record, 0, &datalen);
 
@@ -1697,10 +1683,45 @@ zheap_xlog_clean(XLogReaderState *record)
 		Assert(nunused >= 0);
 
 		/* Update all item pointers per the record, and repair fragmentation */
-		zheap_page_prune_execute(buffer,
-								deleted, ndeleted,
-								nowdead, ndead,
-								nowunused, nunused);
+		if (xlrec->flags & XLZ_CLEAN_CONTAINS_OFFSET)
+		{
+			target_offnum = (OffsetNumber *) ((char *) xlrec + SizeOfZHeapClean);
+			space_required = (Size *) ((char *) target_offnum + sizeof(OffsetNumber));
+		}
+		else
+		{
+			target_offnum = &tmp_target_off;
+			*target_offnum = InvalidOffsetNumber;
+			space_required = &tmp_spc_rqd;
+			*space_required = 0;
+		}
+
+		zheap_page_prune_execute(buffer, *target_offnum, deleted, ndeleted,
+								 nowdead, ndead, nowunused, nunused);
+
+		if (xlrec->flags & XLZ_CLEAN_ALLOW_PRUNING)
+		{
+			bool	pruned = false PG_USED_FOR_ASSERTS_ONLY;
+			Page	tmppage = NULL;
+
+			/*
+			 * We prepare the temporary copy of the page so that during page
+			 * repair fragmentation we can use it to copy the actual tuples.
+			 * See comments atop zheap_page_prune_guts.
+			 */
+			tmppage = PageGetTempPageCopy(BufferGetPage(buffer));
+			ZPageRepairFragmentation(buffer, tmppage, *target_offnum,
+									 *space_required, &pruned);
+
+			/*
+			 * Pruning must be successful at redo time, otherwise the page
+			 * contents on master and standby might differ.
+			 */
+			Assert(pruned);
+
+			/* be tidy. */
+			pfree(tmppage);
+		}
 
 		freespace = PageGetZHeapFreeSpace(page); /* needed to update FSM below */
 
@@ -1861,9 +1882,32 @@ zheap_xlog_unused(XLogReaderState *record)
 			itemid = PageGetItemId(page, unused[i]);
 			ItemIdSetUnusedExtended(itemid, xlrec->trans_slot_id);
 		}
+
 		PageSetUNDO(undorecord, buffer, xlrec->trans_slot_id, false, xid_epoch,
 					xid, urecptr, NULL, 0);
-		ZPageRepairFragmentation(buffer);
+
+		if (xlrec->flags & XLZ_UNUSED_ALLOW_PRUNING)
+		{
+			bool	pruned = false PG_USED_FOR_ASSERTS_ONLY;
+			Page	tmppage = NULL;
+
+			/*
+			 * We prepare the temporary copy of the page so that during page
+			 * repair fragmentation we can use it to copy the actual tuples.
+			 * See comments atop zheap_page_prune_guts.
+			 */
+			tmppage = PageGetTempPageCopy(BufferGetPage(buffer));
+			ZPageRepairFragmentation(buffer, tmppage, InvalidOffsetNumber,
+									 0, &pruned);
+
+			/*
+			 * Pruning must be successful at redo time, otherwise the page
+			 * contents on master and standby might differ.
+			 */
+			Assert(pruned);
+
+			pfree(tmppage);
+		}
 
 		freespace = PageGetZHeapFreeSpace(page); /* needed to update FSM below */
 

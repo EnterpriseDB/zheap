@@ -124,18 +124,26 @@ extern void PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer,
 				TransactionId xid, UndoRecPtr urecptr, OffsetNumber *usedoff,
 				int ucnt);
 extern UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
-extern void zheap_page_prune_opt(Relation relation, Buffer buffer);
+
+/* Pruning related API's (prunezheap.c) */
+extern bool zheap_page_prune_opt(Relation relation, Buffer buffer,
+								 OffsetNumber offnum, Size space_required);
 extern int zheap_page_prune_guts(Relation relation, Buffer buffer,
-								 TransactionId OldestXmin, bool report_stats,
-								 TransactionId *latestRemovedXid);
-extern void zheap_page_prune_execute(Buffer buffer, OffsetNumber *deleted,
-								int ndeleted, OffsetNumber *nowdead, int ndead,
-								OffsetNumber *nowunused, int nunused);
+								 TransactionId OldestXmin, OffsetNumber target_offnum,
+								 Size space_required, bool report_stats, bool force_prune,
+								 TransactionId *latestRemovedXid, bool *pruned);
+extern void zheap_page_prune_execute(Buffer buffer, OffsetNumber target_offnum,
+						OffsetNumber *deleted, int ndeleted,
+						OffsetNumber *nowdead, int ndead,
+						OffsetNumber *nowunused, int nunused);
 extern XLogRecPtr log_zheap_clean(Relation reln, Buffer buffer,
+								  OffsetNumber target_offnum, Size space_required,
 								  OffsetNumber *nowdeleted, int ndeleted,
 								  OffsetNumber *nowdead, int ndead,
 								  OffsetNumber *nowunused, int nunused,
-								  TransactionId latestRemovedXid);
+								  TransactionId latestRemovedXid, bool pruned);
+extern void ZPageRepairFragmentation(Buffer buffer, Page tmppage, OffsetNumber target_offnum,
+							Size space_required, bool *pruned);
 
 /* Zheap scan related API's */
 extern bool zheapgetpage(HeapScanDesc scan, BlockNumber page);
