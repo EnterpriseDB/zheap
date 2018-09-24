@@ -250,29 +250,29 @@ select * from rtest_v1;
 
 -- now updates with constant expression
 update rtest_v1 set b = 42 where a = 2;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
  a | b  
 ---+----
  1 | 21
- 3 | 23
  2 | 42
+ 3 | 23
 (3 rows)
 
 update rtest_v1 set b = 99 where b = 42;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
  a | b  
 ---+----
  1 | 21
- 3 | 23
  2 | 99
+ 3 | 23
 (3 rows)
 
 update rtest_v1 set b = 88 where b < 50;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
  a | b  
 ---+----
- 2 | 99
  1 | 88
+ 2 | 99
  3 | 88
 (3 rows)
 
@@ -393,7 +393,7 @@ select * from rtest_interface;
  pluto   | eth0
 (2 rows)
 
-select * from rtest_admin;
+select * from rtest_admin order by pname, sysname;
  pname  | sysname 
 --------+---------
  bm     | pluto
@@ -2670,17 +2670,17 @@ select * from only t1;
 ---
 (0 rows)
 
-select * from only t1_1;
+select * from only t1_1 order by a;
  a 
 ---
+ 4
  6
  7
  8
  9
- 4
 (5 rows)
 
-select * from only t1_2;
+select * from only t1_2 order by a;
  a  
 ----
  10
