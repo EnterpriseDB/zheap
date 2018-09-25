@@ -10855,6 +10855,20 @@ zheap_mask(char *pagedata, BlockNumber blkno)
 	mask_page_hint_bits(page);
 	mask_unused_space(page);
 
+	if (PageGetSpecialSize(page) == MAXALIGN(BLCKSZ))
+	{
+		/* It's a meta-page, no need to mask further. */
+		Assert(metap->zhm_magic == ZHEAP_MAGIC);
+		Assert(metap->zhm_version == ZHEAP_VERSION);
+		return;
+	}
+
+	if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+	{
+		/* It's a TPD page, no need to mask further. */
+		return;
+	}
+
 	for (off = 1; off <= PageGetMaxOffsetNumber(page); off++)
 	{
 		ItemId		iid = PageGetItemId(page, off);
