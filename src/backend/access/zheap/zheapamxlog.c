@@ -1701,7 +1701,7 @@ zheap_xlog_clean(XLogReaderState *record)
 
 		if (xlrec->flags & XLZ_CLEAN_ALLOW_PRUNING)
 		{
-			bool	pruned = false PG_USED_FOR_ASSERTS_ONLY;
+			bool	pruned PG_USED_FOR_ASSERTS_ONLY = false;
 			Page	tmppage = NULL;
 
 			/*
@@ -1888,7 +1888,7 @@ zheap_xlog_unused(XLogReaderState *record)
 
 		if (xlrec->flags & XLZ_UNUSED_ALLOW_PRUNING)
 		{
-			bool	pruned = false PG_USED_FOR_ASSERTS_ONLY;
+			bool	pruned PG_USED_FOR_ASSERTS_ONLY = false;
 			Page	tmppage = NULL;
 
 			/*
