@@ -352,6 +352,7 @@ recheck:
 			 BufferGetBlockNumber(buffer),
 			 RelationGetRelationName(relation));
 
+	Assert(BufferGetBlockNumber(buffer) != ZHEAP_METAPAGE);
 	ZheapInitPage(page, BufferGetPageSize(buffer));
 
 	/*

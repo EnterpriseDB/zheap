@@ -742,7 +742,6 @@ TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 	ItemId		itemId;
 	uint16		lower;
 	uint16		upper;
-	bool		needshuffle = false;
 
 	/*
 	 * Be wary about corrupted page pointers
@@ -765,6 +764,11 @@ TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 
 	if (OffsetNumberIsValid(offnum))
 	{
+		/*
+		 * In TPD, we send valid offset number only during recovery. Hence,
+		 * we don't need to shuffle the offsets as well.
+		 */
+		Assert(InRecovery);
 		if (offnum < limit)
 		{
 			itemId = PageGetItemId(phdr, offnum);
@@ -773,8 +777,6 @@ TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 				elog(WARNING, "will not overwrite a used ItemId");
 				return InvalidOffsetNumber;
 			}
-
-			needshuffle = true;
 		}
 	}
 	else
@@ -826,7 +828,7 @@ TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 	 * Note: do arithmetic as signed ints, to avoid mistakes if, say,
 	 * alignedSize > pd_upper.
 	 */
-	if (offnum == limit || needshuffle)
+	if (offnum == limit)
 		lower = phdr->pd_lower + sizeof(ItemIdData);
 	else
 		lower = phdr->pd_lower;
@@ -838,9 +840,6 @@ TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 
 	/* OK to insert the item. */
 	itemId = PageGetItemId(phdr, offnum);
-
-	if (needshuffle)
-		memmove(itemId + 1, itemId, (limit - offnum) * sizeof(ItemIdData));
 
 	/* set the item pointer */
 	ItemIdSetNormal(itemId, upper, size);
@@ -1052,8 +1051,12 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 		bool	needLock;
 		bool	already_exists;
 
-		/* old buffer must not be valid while adding new page */
-		Assert(!BufferIsValid(old_tpd_buf));
+		/*
+		 * While adding a new page, if we've to delete the old entry,
+		 * the old buffer must be valid. Else, it should be invalid.
+		 */
+		Assert(!delete_old_entry || BufferIsValid(old_tpd_buf));
+		Assert(delete_old_entry || !BufferIsValid(old_tpd_buf));
 
 		/* Must extend the file */
 		needLock = !RELATION_IS_LOCAL(relation);
@@ -1077,6 +1080,7 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 		 * it.
 		 */
 		metapage = ZHeapPageGetMeta(BufferGetPage(metabuf));
+		Assert(metapage->zhm_magic == ZHEAP_MAGIC);
 
 recheck_meta:
 		last_used_tpd_page = metapage->zhm_last_used_tpd_page;
@@ -1152,6 +1156,15 @@ recheck_meta:
 		metapage->zhm_last_used_tpd_page = tpdblkno;
 
 		MarkBufferDirty(metabuf);
+	}
+	else
+	{
+		/*
+		 * TPD chain should remain unchanged.
+		 */
+		tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(tpdpage);
+		prevblk = tpdopaque->tpd_prevblkno;
+		nextblk = tpdopaque->tpd_nextblkno;
 	}
 
 	/* Mark the old tpd entry as dead before adding new entry. */
@@ -1251,7 +1264,7 @@ recheck_meta:
 		PageSetLSN(BufferGetPage(pagebuf), recptr);
 		if (add_new_tpd_page)
 		{
-			PageSetLSN(metapage, recptr);
+			PageSetLSN(BufferGetPage(metabuf), recptr);
 			if (BufferIsValid(last_used_tpd_buf))
 				PageSetLSN(BufferGetPage(last_used_tpd_buf), recptr);
 			if (delete_old_entry)
@@ -1307,6 +1320,7 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 	metabuf = ReadBuffer(relation, ZHEAP_METAPAGE);
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 	metapage = ZHeapPageGetMeta(BufferGetPage(metabuf));
+	Assert(metapage->zhm_magic == ZHEAP_MAGIC);
 
 	first_used_tpd_page = metapage->zhm_first_used_tpd_page;
 	last_used_tpd_page = metapage->zhm_last_used_tpd_page;

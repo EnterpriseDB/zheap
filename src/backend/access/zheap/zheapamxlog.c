@@ -976,14 +976,28 @@ zheap_xlog_update(XLogReaderState *record)
 			}
 			if (xlrec->old_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			{
-				TPDPageSetUndo(oldbuffer,
-							   xlrec->old_trans_slot_id,
-							   true,
-							   xid_epoch,
-							   xid,
-							   inplace_update ? urecptr : newurecptr,
-							   usedoff,
-							   ucnt);
+				if (inplace_update)
+				{
+					TPDPageSetUndo(oldbuffer,
+								   xlrec->old_trans_slot_id,
+								   true,
+								   xid_epoch,
+								   xid,
+								   urecptr,
+								   usedoff,
+								   ucnt);
+				}
+				else
+				{
+					TPDPageSetUndo(oldbuffer,
+								   xlrec->old_trans_slot_id,
+								   true,
+								   xid_epoch,
+								   xid,
+								   (oldblk == newblk) ? newurecptr : urecptr,
+								   usedoff,
+								   ucnt);
+				}
 				TPDPageSetLSN(oldpage, lsn);
 			}
 		}
@@ -1319,8 +1333,8 @@ zheap_xlog_lock(XLogReaderState *record)
 							SizeofZHeapTupleHeader + sizeof(LockTupleMode));
 		if (xlrec->trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			appendBinaryStringInfo(&undorecord.uur_payload,
-								   (char *) trans_slot_for_urec,
-								   sizeof(*trans_slot_for_urec));
+								   (char *) &(xlrec->trans_slot_id),
+								   sizeof(int));
 	}
 	else if (xlrec->flags & XLZ_LOCK_CONTAINS_TPD_SLOT)
 	{
@@ -1386,7 +1400,7 @@ zheap_xlog_lock(XLogReaderState *record)
 		if (action == BLK_NEEDS_REDO)
 		{
 			TPDPageSetUndo(buffer,
-						   xlrec->trans_slot_id,
+						   undo_slot_no,
 						   false,
 						   xid_epoch,
 						   xid,

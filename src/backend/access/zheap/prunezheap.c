@@ -705,7 +705,7 @@ compactify_ztuples(itemIdSort itemidbase, int nitems, Page page, Page tmppage)
 		upper -= itemidptr->alignedlen;
 		memcpy((char *) page + upper,
 			   (char *) tmppage + itemidptr->itemoff,
-			   itemidptr->alignedlen);
+			   lp->lp_len);
 		lp->lp_off = upper;
 	}
 

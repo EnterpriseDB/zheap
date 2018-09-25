@@ -22,6 +22,7 @@ tpd_desc(StringInfo buf, XLogReaderState *record)
 	char	   *rec = XLogRecGetData(record);
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
+	info &= XLOG_TPD_OPMASK;
 	if (info == XLOG_ALLOCATE_TPD_ENTRY)
 	{
 		xl_tpd_allocate_entry *xlrec = (xl_tpd_allocate_entry *) rec;
@@ -40,6 +41,9 @@ tpd_identify(uint8 info)
 	{
 		case XLOG_ALLOCATE_TPD_ENTRY:
 			id = "ALLOCATE TPD ENTRY";
+			break;
+		case XLOG_ALLOCATE_TPD_ENTRY | XLOG_TPD_INIT_PAGE:
+			id = "ALLOCATE TPD ENTRY+INIT";
 			break;
 		case XLOG_TPD_CLEAN:
 			id = "TPD CLEAN";

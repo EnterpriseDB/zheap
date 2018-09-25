@@ -745,6 +745,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 				ereport(WARNING,
 						(errmsg("relation \"%s\" page %u is uninitialized --- fixing",
 								relname, blkno)));
+				Assert(BufferGetBlockNumber(buf) != ZHEAP_METAPAGE);
 				ZheapInitPage(page, BufferGetPageSize(buf));
 				empty_pages++;
 			}

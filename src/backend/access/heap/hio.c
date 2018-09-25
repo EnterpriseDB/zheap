@@ -220,6 +220,7 @@ RelationAddExtraBlocks(Relation relation, BulkInsertState bistate)
 
 		if (RelationStorageIsZHeap(relation))
 		{
+			Assert(BufferGetBlockNumber(buffer) != ZHEAP_METAPAGE);
 			ZheapInitPage(page, BufferGetPageSize(buffer));
 			freespace = PageGetZHeapFreeSpace(page);
 		}

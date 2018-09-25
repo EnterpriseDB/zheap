@@ -2865,7 +2865,14 @@ zheap_tuple_updated:
 		START_CRIT_SECTION();
 
 		InsertPreparedUndo();
-		PageSetUNDO(undorecord, buffer, trans_slot_id, true, epoch,
+
+		/*
+		 * We never set the locker slot on the tuple, so pass set_tpd_map_slot
+		 * flag as false from the locker.  From all other places it should
+		 * always be passed as true so that the proper slot get set in the TPD
+		 * offset map if its a TPD slot.
+		 */
+		PageSetUNDO(undorecord, buffer, trans_slot_id, false, epoch,
 					xid, urecptr, NULL, 0);
 
 		ZHeapTupleHeaderSetXactSlot(oldtup.t_data, result_trans_slot_id);
@@ -8388,8 +8395,8 @@ zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
 	metap = ZHeapPageGetMeta(page);
 	metap->zhm_magic = ZHEAP_MAGIC;
 	metap->zhm_version = ZHEAP_VERSION;
-	metap->zhm_first_used_tpd_page = InvalidBlockNumber;
-	metap->zhm_last_used_tpd_page = InvalidBlockNumber;
+	metap->zhm_first_used_tpd_page = first_blkno;
+	metap->zhm_last_used_tpd_page = last_blkno;
 
 	/*
 	 * Set pd_lower just past the end of the metadata.  This is essential,
