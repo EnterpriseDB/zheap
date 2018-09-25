@@ -227,6 +227,23 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 		{
 			FetchTransInfoFromUndo(undo_tup, NULL, &xid, &cid, &prev_urec_ptr, false);
 		}
+		/*
+		 * If we already have a valid cid then don't fetch it from the undo.
+		 * This is the case when old locker got transferred to the newly
+		 * inserted tuple of the non-in place update.  In such case undo chain
+		 * will not have a separate undo-record for the locker so we have to
+		 * use the cid we have got from the insert undo record because in this
+		 * case the actual previous version of the locker is insert only and
+		 * that is what we are interested in.
+		 */
+		/* 
+		 * If we already have a valid cid then don't fetch it from the undo.
+		 * For detailed comment refer GetVisibleTupleIfAny.
+		 */
+		/* 
+		 * If we already have a valid cid then don't fetch it from the undo.
+		 * For detailed comment refer GetVisibleTupleIfAny.
+		 */		
 		else if (cid == InvalidCommandId)
 		{
 			/*
