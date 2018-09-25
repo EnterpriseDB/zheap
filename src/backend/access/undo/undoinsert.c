@@ -76,6 +76,7 @@ static TransactionId	prev_txid[UndoPersistenceLevels] = { 0 };
 /* Undo block number to buffer mapping. */
 typedef struct UndoBuffers
 {
+	UndoLogNumber	logno;			/* Undo log number */
 	BlockNumber		blk;			/* block number */
 	Buffer			buf;			/* buffer allocated for the block */
 } UndoBuffers;
@@ -352,7 +353,14 @@ InsertFindBufferSlot(RelFileNode rnode,
 	/* Don't do anything, if we already have a buffer pinned for the block. */
 	for (i = 0; i < buffer_idx; i++)
 	{
-		if (blk == undo_buffer[i].blk)
+		/*
+		 * It's not enough to just compare the block number because the
+		 * undo_buffer might holds the undo from different undo logs (e.g
+		 * when previous transaction start header is in previous undo log)
+		 * so compare (logno + blkno).
+		 */
+		if ((blk == undo_buffer[i].blk) &&
+			(undo_buffer[i].logno == rnode.relNode))
 		{
 			/* caller must hold exclusive lock on buffer */
 			Assert(BufferIsLocal(undo_buffer[i].buf) ||
@@ -384,6 +392,7 @@ InsertFindBufferSlot(RelFileNode rnode,
 
 		undo_buffer[buffer_idx].buf = buffer;
 		undo_buffer[buffer_idx].blk = blk;
+		undo_buffer[buffer_idx].logno = rnode.relNode;
 		buffer_idx++;
 	}
 
