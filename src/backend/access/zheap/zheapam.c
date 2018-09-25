@@ -10857,6 +10857,8 @@ zheap_mask(char *pagedata, BlockNumber blkno)
 
 	if (PageGetSpecialSize(page) == MAXALIGN(BLCKSZ))
 	{
+		ZHeapMetaPage metap PG_USED_FOR_ASSERTS_ONLY;
+		metap = ZHeapPageGetMeta(page);
 		/* It's a meta-page, no need to mask further. */
 		Assert(metap->zhm_magic == ZHEAP_MAGIC);
 		Assert(metap->zhm_version == ZHEAP_VERSION);
