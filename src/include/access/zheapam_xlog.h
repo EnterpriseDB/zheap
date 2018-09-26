@@ -123,6 +123,7 @@ typedef struct xl_zheap_insert
 /* undo tuple is present in xlog record? */
 #define XLZ_HAS_DELETE_UNDOTUPLE				(1<<1)
 #define XLZ_DELETE_CONTAINS_TPD_SLOT			(1<<2)
+#define XLZ_DELETE_CONTAINS_SUBXACT				(1<<3)
 
 /* This is what we need to know about delete */
 typedef struct xl_zheap_delete
@@ -153,6 +154,7 @@ typedef struct xl_zheap_delete
 #define	XLZ_HAS_UPDATE_UNDOTUPLE				(1<<5)
 #define	XLZ_UPDATE_OLD_CONTAINS_TPD_SLOT		(1<<6)
 #define	XLZ_UPDATE_NEW_CONTAINS_TPD_SLOT		(1<<7)
+#define XLZ_UPDATE_CONTAINS_SUBXACT				(1<<8)
 
 /*
  * This is what we need to know about update|inplace_update
@@ -177,7 +179,7 @@ typedef struct xl_zheap_update
 	OffsetNumber old_offnum;	/* old tuple's offset */
 	uint16		old_infomask;	/* infomask bits to set on old tuple */
 	uint8		old_trans_slot_id;	/* old tuple's transaction slot id */
-	uint8		flags;
+	uint16		flags;
 	OffsetNumber new_offnum;	/* new tuple's offset */
 } xl_zheap_update;
 
@@ -211,6 +213,7 @@ typedef struct xl_zheap_invalid_xact_slot
  */
 #define XLZ_LOCK_TRANS_SLOT_FOR_UREC		(1<<0)
 #define XLZ_LOCK_CONTAINS_TPD_SLOT			(1<<1)
+#define XLZ_LOCK_CONTAINS_SUBXACT			(1<<2)
 
 /* This is what we need to know about zheap lock tuple. */
 typedef struct xl_zheap_lock

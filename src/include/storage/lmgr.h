@@ -81,6 +81,17 @@ extern bool ConditionalXactLockTableWait(TransactionId xid);
 extern void WaitForLockers(LOCKTAG heaplocktag, LOCKMODE lockmode);
 extern void WaitForLockersMultiple(List *locktags, LOCKMODE lockmode);
 
+/*
+ * Lock a subtranasction (used to wait for a subtransaction to finish).  This
+ * is used for zheap, but is generic enough to be used elsewhere.
+ */
+extern void SubXactLockTableInsert(SubTransactionId	subxid);
+extern void SubXactLockTableDelete(SubTransactionId	subxid);
+extern void SubXactLockTableWait(TransactionId xid, SubTransactionId subxid,
+					Relation rel, ItemPointer ctid, XLTW_Oper oper);
+extern bool ConditionalSubXactLockTableWait(TransactionId xid,
+											SubTransactionId subxid);
+
 /* Lock an XID for tuple insertion (used to wait for an insertion to finish) */
 extern uint32 SpeculativeInsertionLockAcquire(TransactionId xid);
 extern void SpeculativeInsertionLockRelease(TransactionId xid);

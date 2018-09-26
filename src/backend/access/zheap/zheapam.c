@@ -1068,6 +1068,7 @@ zheap_delete(Relation relation, ItemPointer tid,
 	TransactionId	tup_xid,
 					oldestXidHavingUndo,
 					single_locker_xid;
+	SubTransactionId	tup_subxid = InvalidSubTransactionId;
 	CommandId		tup_cid;
 	ItemId		lp;
 	ZHeapTupleData zheaptup;
@@ -1090,6 +1091,8 @@ zheap_delete(Relation relation, ItemPointer tid,
 	bool		all_visible_cleared = false;
 	bool		any_multi_locker_member_alive = false;
 	bool		lock_reacquired;
+	bool		hasSubXactLock = false;
+	bool		hasPayload = false;
 	xl_undolog_meta undometa;
 	uint8		vm_status;
 
@@ -1144,9 +1147,9 @@ zheap_delete(Relation relation, ItemPointer tid,
 check_tup_satisfies_update:
 	any_multi_locker_member_alive = true;
 	result = ZHeapTupleSatisfiesUpdate(relation, &zheaptup, cid, buffer, &ctid,
-									   &tup_trans_slot_id, &tup_xid, &tup_cid,
-									   &single_locker_xid, &single_locker_trans_slot,
-									   false, false,
+									   &tup_trans_slot_id, &tup_xid, &tup_subxid,
+									   &tup_cid, &single_locker_xid,
+									   &single_locker_trans_slot, false, false,
 									   snapshot, &in_place_updated_or_locked);
 
 	if (result == HeapTupleInvisible)
@@ -1163,12 +1166,14 @@ check_tup_satisfies_update:
 	{
 		List	*mlmembers = NIL;
 		TransactionId xwait;
+		SubTransactionId	xwait_subxid;
 		int		xwait_trans_slot;
 		uint16	infomask;
 		bool    isCommitted;
 		bool	can_continue = false;
 
 		lock_reacquired = false;
+		xwait_subxid = tup_subxid;
 
 		if (TransactionIdIsValid(single_locker_xid))
 		{
@@ -1314,7 +1319,12 @@ check_tup_satisfies_update:
 			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 			heap_acquire_tuplock(relation, &(zheaptup.t_self), LockTupleExclusive,
 								 LockWaitBlock, &have_tuple_lock);
-			XactLockTableWait(xwait, relation, &(zheaptup.t_self), XLTW_Delete);
+			if (xwait_subxid != InvalidSubTransactionId)
+				SubXactLockTableWait(xwait, xwait_subxid, relation,
+									 &zheaptup.t_self, XLTW_Delete);
+			else
+				XactLockTableWait(xwait, relation, &zheaptup.t_self,
+								  XLTW_Delete);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 			lock_reacquired = true;
 		}
@@ -1534,6 +1544,16 @@ zheap_tuple_updated:
 	}
 
 	/*
+	 * Acquire subtransaction lock, if current transaction is a
+	 * subtransaction.
+	 */
+	if (IsSubTransaction())
+	{
+		SubXactLockTableInsert(GetCurrentSubTransactionId());
+		hasSubXactLock = true;
+	}
+
+	/*
 	 * The transaction information of tuple needs to be set in transaction
 	 * slot, so needs to reserve the slot before proceeding with the actual
 	 * operation.  It will be costly to wait for getting the slot, but we do
@@ -1683,8 +1703,30 @@ zheap_tuple_updated:
 		appendBinaryStringInfo(&undorecord.uur_payload,
 							   (char *) &tup_trans_slot_id,
 							   sizeof(tup_trans_slot_id));
+		hasPayload = true;
 	}
-	else
+
+	/*
+	 * Store subtransaction id in undo record.  See SubXactLockTableWait
+	 * to know why we need to store subtransaction id in undo.
+	 */
+	if (hasSubXactLock)
+	{
+		SubTransactionId subxid = GetCurrentSubTransactionId();
+
+		if (!hasPayload)
+		{
+			initStringInfo(&undorecord.uur_payload);
+			hasPayload = true;
+		}
+
+		undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SUBXACT;
+		appendBinaryStringInfo(&undorecord.uur_payload,
+							   (char *) &subxid,
+							   sizeof(subxid));
+	}
+
+	if (!hasPayload)
 		undorecord.uur_payload.len = 0;
 
 	urecptr = PrepareUndoInsert(&undorecord,
@@ -1752,6 +1794,9 @@ zheap_tuple_updated:
 		xlrec.infomask = zheaptup.t_data->t_infomask;
 		xlrec.trans_slot_id = trans_slot_id;
 		xlrec.flags = all_visible_cleared ? XLZ_DELETE_ALL_VISIBLE_CLEARED : 0;
+
+		if (hasSubXactLock)
+			xlrec.flags |= XLZ_DELETE_CONTAINS_SUBXACT;
 
 		/*
 		 * If full_page_writes is enabled, and the buffer image is not
@@ -1880,6 +1925,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 				  save_tup_xid,
 				  oldestXidHavingUndo,
 				  single_locker_xid;
+	SubTransactionId	tup_subxid = InvalidSubTransactionId;
 	CommandId	tup_cid;
 	Bitmapset  *inplace_upd_attrs = NULL;
 	Bitmapset  *inplace_upd_proj_attrs = NULL;
@@ -1925,6 +1971,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	bool		any_multi_locker_member_alive = false;
 	bool		lock_reacquired;
 	bool		need_toast;
+	bool		hasSubXactLock = false;
 	xl_undolog_meta	undometa;
 	uint8		vm_status;
 	uint8		vm_status_new;
@@ -2114,10 +2161,10 @@ check_tup_satisfies_update:
 	locker_remains = false;
 	any_multi_locker_member_alive = true;
 	result = ZHeapTupleSatisfiesUpdate(relation, &oldtup, cid, buffer, &ctid,
-									   &tup_trans_slot_id, &tup_xid, &tup_cid,
-									   &single_locker_xid, &single_locker_trans_slot,
-									   false, false, snapshot,
-									   &in_place_updated_or_locked);
+									   &tup_trans_slot_id, &tup_xid, &tup_subxid,
+									   &tup_cid, &single_locker_xid,
+									   &single_locker_trans_slot, false, false,
+									   snapshot, &in_place_updated_or_locked);
 
 	if (result == HeapTupleInvisible)
 	{
@@ -2133,9 +2180,12 @@ check_tup_satisfies_update:
 	{
 		List	*mlmembers;
 		TransactionId xwait;
+		SubTransactionId xwait_subxid;
 		int			xwait_trans_slot;
 		uint16		infomask;
 		bool		can_continue = false;
+
+		xwait_subxid = tup_subxid;
 
 		if (TransactionIdIsValid(single_locker_xid))
 		{
@@ -2391,8 +2441,12 @@ check_tup_satisfies_update:
 			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 			heap_acquire_tuplock(relation, &(oldtup.t_self), *lockmode,
 								 LockWaitBlock, &have_tuple_lock);
-			XactLockTableWait(xwait, relation, &oldtup.t_self,
-							  XLTW_Update);
+			if (xwait_subxid != InvalidSubTransactionId)
+				SubXactLockTableWait(xwait, xwait_subxid, relation,
+									 &oldtup.t_self, XLTW_Update);
+			else
+				XactLockTableWait(xwait, relation, &oldtup.t_self,
+								  XLTW_Update);
 			checked_lockers = true;
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
@@ -2591,6 +2645,13 @@ zheap_tuple_updated:
 		return result;
 	}
 
+	/* Acquire subtransaction lock, if current transaction is a subtransaction. */
+	if (IsSubTransaction())
+	{
+		SubXactLockTableInsert(GetCurrentSubTransactionId());
+		hasSubXactLock = true;
+	}
+
 	/*
 	 * If it is a non inplace update then check we have sufficient free space
 	 * to insert in same page. If not try defragmentation and recheck the
@@ -2762,6 +2823,20 @@ zheap_tuple_updated:
 								   sizeof(tup_trans_slot_id));
 		}
 
+		/*
+		 * Store subtransaction id in undo record.  See SubXactLockTableWait
+		 * to know why we need to store subtransaction id in undo.
+		 */
+		if (hasSubXactLock)
+		{
+			SubTransactionId subxid = GetCurrentSubTransactionId();
+
+			undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SUBXACT;
+			appendBinaryStringInfo(&undorecord.uur_payload,
+								   (char *) &subxid,
+								   sizeof(subxid));
+		}
+
 		urecptr = PrepareUndoInsert(&undorecord,
 									UndoPersistenceForRelation(relation),
 									InvalidTransactionId,
@@ -2836,6 +2911,9 @@ zheap_tuple_updated:
 			}
 			else if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 				xlrec.flags |= XLZ_LOCK_CONTAINS_TPD_SLOT;
+
+			if (hasSubXactLock)
+				 xlrec.flags |= XLZ_LOCK_CONTAINS_SUBXACT;
 
 prepare_xlog:
 			/* LOG undolog meta if this is the first WAL after the checkpoint. */
@@ -3115,7 +3193,10 @@ reacquire_buffer:
 
 	if (use_inplace_update)
 	{
+		bool	hasPayload = false;
+
 		undorecord.uur_type = UNDO_INPLACE_UPDATE;
+
 		/*
 		 * Store the transaction slot number for undo tuple in undo record, if
 		 * the slot belongs to TPD entry.  We can always get the current tuple's
@@ -3129,9 +3210,32 @@ reacquire_buffer:
 			appendBinaryStringInfo(&undorecord.uur_payload,
 								   (char *) &tup_trans_slot_id,
 								   sizeof(tup_trans_slot_id));
+			hasPayload = true;
 		}
-		else
+
+		/*
+		 * Store subtransaction id in undo record.  See SubXactLockTableWait
+		 * to know why we need to store subtransaction id in undo.
+		 */
+		if (hasSubXactLock)
+		{
+			SubTransactionId subxid = GetCurrentSubTransactionId();
+
+			if (!hasPayload)
+			{
+				initStringInfo(&undorecord.uur_payload);
+				hasPayload = true;
+			}
+
+			undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SUBXACT;
+			appendBinaryStringInfo(&undorecord.uur_payload,
+								   (char *) &subxid,
+								   sizeof(subxid));
+		}
+
+		if (!hasPayload)
 			undorecord.uur_payload.len = 0;
+
 		urecptr = PrepareUndoInsert(&undorecord,
 									UndoPersistenceForRelation(relation),
 									InvalidTransactionId,
@@ -3153,6 +3257,16 @@ reacquire_buffer:
 		{
 			undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SLOT;
 			payload_len += sizeof(tup_trans_slot_id);
+		}
+
+		/*
+		 * Store subtransaction id in undo record.  See SubXactLockTableWait
+		 * to know why we need to store subtransaction id in undo.
+		 */
+		if (hasSubXactLock)
+		{
+			undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SUBXACT;
+			payload_len += sizeof(SubTransactionId);
 		}
 
 		undorecord.uur_payload.len = payload_len;
@@ -3368,6 +3482,14 @@ reacquire_buffer:
 			appendBinaryStringInfoNoExtend(&undorecord.uur_payload,
 										  (char *) &tup_trans_slot_id,
 										  sizeof(tup_trans_slot_id));
+		if (hasSubXactLock)
+		{
+			SubTransactionId subxid = GetCurrentSubTransactionId();
+
+			appendBinaryStringInfoNoExtend(&undorecord.uur_payload,
+										   (char *) &subxid,
+										   sizeof(subxid));
+		}
 
 		new_undorecord.uur_offset = ItemPointerGetOffsetNumber(&(zheaptup->t_self));
 	}
@@ -3624,6 +3746,8 @@ log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 		xlrec.flags |= XLZ_UPDATE_PREFIX_FROM_OLD;
 	if (suffixlen > 0)
 		xlrec.flags |= XLZ_UPDATE_SUFFIX_FROM_OLD;
+	if (undorecord.uur_info & UREC_INFO_PAYLOAD_CONTAINS_SUBXACT)
+		xlrec.flags |= XLZ_UPDATE_CONTAINS_SUBXACT;
 
 	if (!inplace_update)
 	{
@@ -3824,6 +3948,7 @@ zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 	TransactionId xid,
 				  tup_xid,
 				  single_locker_xid;
+	SubTransactionId tup_subxid = InvalidSubTransactionId;
 	CommandId	tup_cid;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	uint32		epoch;
@@ -3882,10 +4007,10 @@ zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 check_tup_satisfies_update:
 	any_multi_locker_member_alive = true;
 	result = ZHeapTupleSatisfiesUpdate(relation, &zhtup, cid, *buffer, &ctid,
-									   &tup_trans_slot_id, &tup_xid, &tup_cid,
-									   &single_locker_xid, &single_locker_trans_slot,
-									   false, eval, snapshot,
-									   &in_place_updated_or_locked);
+									   &tup_trans_slot_id, &tup_xid, &tup_subxid,
+									   &tup_cid, &single_locker_xid,
+									   &single_locker_trans_slot, false, eval,
+									   snapshot, &in_place_updated_or_locked);
 	if (result == HeapTupleInvisible)
 	{
 		/* Give caller an opportunity to throw a more specific error. */
@@ -3898,8 +4023,11 @@ check_tup_satisfies_update:
 			  ZHeapTupleHasMultiLockers(zhtup.t_data->t_infomask)))
 	{
 		TransactionId	xwait;
+		SubTransactionId	xwait_subxid;
 		int				xwait_trans_slot;
 		uint16			infomask;
+
+		xwait_subxid = tup_subxid;
 
 		if (TransactionIdIsValid(single_locker_xid))
 		{
@@ -4340,20 +4468,44 @@ check_tup_satisfies_update:
 				switch (wait_policy)
 				{
 					case LockWaitBlock:
-						XactLockTableWait(xwait, relation, &zhtup.t_self,
-										  XLTW_Lock);
+						{
+							if (xwait_subxid != InvalidSubTransactionId)
+								SubXactLockTableWait(xwait, xwait_subxid, relation,
+													 &zhtup.t_self, XLTW_Lock);
+							else
+								XactLockTableWait(xwait, relation, &zhtup.t_self,
+												  XLTW_Lock);
+						}
 						break;
 					case LockWaitSkip:
-						if (!ConditionalXactLockTableWait(xwait))
+						if (xwait_subxid != InvalidSubTransactionId)
 						{
-							result = HeapTupleWouldBlock;
-							/* recovery code expects to have buffer lock held */
-							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-							goto failed;
+							if (!ConditionalSubXactLockTableWait(xwait, xwait_subxid))
+							{
+								result = HeapTupleWouldBlock;
+								/* recovery code expects to have buffer lock held */
+								LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+								goto failed;
+							}
+						}
+						else if (!ConditionalXactLockTableWait(xwait))
+						{
+								result = HeapTupleWouldBlock;
+								/* recovery code expects to have buffer lock held */
+								LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+								goto failed;
 						}
 						break;
 					case LockWaitError:
-						if (!ConditionalXactLockTableWait(xwait))
+						if (xwait_subxid != InvalidSubTransactionId)
+						{
+							if (!ConditionalSubXactLockTableWait(xwait, xwait_subxid))
+									ereport(ERROR,
+									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+										errmsg("could not obtain lock on row in relation \"%s\"",
+										RelationGetRelationName(relation))));
+						}
+						else if (!ConditionalXactLockTableWait(xwait))
 							ereport(ERROR,
 									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
 										errmsg("could not obtain lock on row in relation \"%s\"",
@@ -4726,10 +4878,11 @@ out_unlocked:
  * HeapTupleMayBeUpdated is returned.
  */
 static HTSU_Result
-test_lockmode_for_conflict(Relation rel, Buffer buf, LockTupleMode old_mode,
+test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
+						   UndoRecPtr urec_ptr, LockTupleMode old_mode,
 						   TransactionId xid, int trans_slot_id,
 						   LockTupleMode required_mode, bool has_update,
-						   bool *needwait)
+						   SubTransactionId *subxid, bool *needwait)
 {
 	*needwait = false;
 
@@ -4759,6 +4912,8 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, LockTupleMode old_mode,
 								HWLOCKMODE_from_locktupmode(required_mode)))
 		{
 			*needwait = true;
+			if (subxid)
+				ZHeapTupleGetSubXid(zhtup, buf, urec_ptr, subxid);
 		}
 
 		/*
@@ -4860,6 +5015,7 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 		ZHeapTupleData	zhtup;
 		ItemId	lp;
 		uint16	old_infomask;
+		UndoRecPtr	urec_ptr;
 
 		if (!zheap_fetch(rel, SnapshotAny, ctid, &mytup, &buf, false, NULL))
 		{
@@ -4894,6 +5050,8 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 		}
 
 lock_tuple:
+		urec_ptr = InvalidUndoRecPtr;
+
 		CHECK_FOR_INTERRUPTS();
 
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
@@ -4909,8 +5067,8 @@ lock_tuple:
 			return HeapTupleMayBeUpdated;
 		}
 
-		ZHeapTupleGetTransInfo(mytup, buf, &tup_trans_slot, &epoch_xid, &tup_xid, NULL, NULL,
-							   false);
+		ZHeapTupleGetTransInfo(mytup, buf, &tup_trans_slot, &epoch_xid,
+							   &tup_xid, NULL, &urec_ptr, false);
 		old_infomask = mytup->t_data->t_infomask;
 
 		/*
@@ -4933,6 +5091,7 @@ lock_tuple:
 		 */
 		if (IsZHeapTupleModified(old_infomask))
 		{
+			SubTransactionId	subxid = InvalidSubTransactionId;
 			LockTupleMode	old_lock_mode;
 			bool		needwait;
 			bool		has_update = false;
@@ -4963,10 +5122,13 @@ lock_tuple:
 
 					result = test_lockmode_for_conflict(rel,
 														buf,
+														NULL,
+														InvalidUndoRecPtr,
 														mlmember->mode,
 														mlmember->xid,
 														mlmember->trans_slot_id,
 														mode, has_update,
+														NULL,
 														&needwait);
 					if (result == HeapTupleSelfUpdated)
 					{
@@ -4977,9 +5139,16 @@ lock_tuple:
 					if (needwait)
 					{
 						LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-						XactLockTableWait(mlmember->xid, rel,
-										  &mytup->t_self,
-										  XLTW_LockUpdated);
+
+						if (mlmember->subxid != InvalidSubTransactionId)
+							SubXactLockTableWait(mlmember->xid, mlmember->subxid,
+												 rel, &mytup->t_self,
+												 XLTW_LockUpdated);
+						else
+							XactLockTableWait(mlmember->xid, rel,
+											  &mytup->t_self,
+											  XLTW_LockUpdated);
+
 						list_free_deep(mlmembers);
 						goto lock_tuple;
 					}
@@ -5030,9 +5199,10 @@ lock_tuple:
 						old_lock_mode = LockTupleNoKeyExclusive;
 				}
 
-				result = test_lockmode_for_conflict(rel, buf, old_lock_mode,
-													tup_xid, tup_trans_slot,
-													mode, has_update,
+				result = test_lockmode_for_conflict(rel, buf, mytup, urec_ptr,
+													old_lock_mode, tup_xid,
+													tup_trans_slot, mode,
+													has_update, &subxid,
 													&needwait);
 
 				/*
@@ -5050,8 +5220,13 @@ lock_tuple:
 				if (needwait)
 				{
 					LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-					XactLockTableWait(tup_xid, rel, &mytup->t_self,
-									  XLTW_LockUpdated);
+					if (subxid != InvalidSubTransactionId)
+						SubXactLockTableWait(tup_xid, subxid, rel,
+											 &mytup->t_self,
+											 XLTW_LockUpdated);
+					else
+						XactLockTableWait(tup_xid, rel, &mytup->t_self,
+										  XLTW_LockUpdated);
 					goto lock_tuple;
 				}
 				if (result != HeapTupleMayBeUpdated)
@@ -5186,6 +5361,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	uint16		  new_infomask = 0;
 	Page		  page;
 	xl_undolog_meta undometa;
+	bool		hasSubXactLock = false;
 
 	page = BufferGetPage(buf);
 
@@ -5199,6 +5375,13 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 							 single_locker_xid, mode, false,
 							 &new_infomask, &new_trans_slot_id);
 
+
+	/* Acquire subtransaction lock, if current transaction is a subtransaction. */
+	if (IsSubTransaction())
+	{
+		SubXactLockTableInsert(GetCurrentSubTransactionId());
+		hasSubXactLock = true;
+	}
 
 	/*
 	 * If the last transaction that has updated the tuple is already too
@@ -5263,6 +5446,20 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 							   sizeof(tup_trans_slot_id));
 	}
 
+	/*
+	 * Store subtransaction id in undo record.  See SubXactLockTableWait
+	 * to know why we need to store subtransaction id in undo.
+	 */
+	if (hasSubXactLock)
+	{
+		SubTransactionId subxid = GetCurrentSubTransactionId();
+
+		undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SUBXACT;
+		appendBinaryStringInfo(&undorecord.uur_payload,
+							   (char *) &subxid,
+							   sizeof(subxid));
+	}
+
 	urecptr = PrepareUndoInsert(&undorecord,
 								UndoPersistenceForRelation(rel),
 								InvalidTransactionId,
@@ -5320,6 +5517,9 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		}
 		else if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			xlrec.flags |= XLZ_LOCK_CONTAINS_TPD_SLOT;
+
+		if (hasSubXactLock)
+			xlrec.flags |= XLZ_LOCK_CONTAINS_SUBXACT;
 
 prepare_xlog:
 		/* LOG undolog meta if this is the first WAL after the checkpoint. */
@@ -7627,6 +7827,84 @@ ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 	*ctid = zhtup->t_self;
 	ZHeapPageGetCtid(ZHeapTupleHeaderGetXactSlot(zhtup->t_data), buf,
 					 urec_ptr, ctid);
+}
+
+/*
+ * ZHeapTupleGetSubXid - Retrieve subtransaction id from tuple's undo record.
+ *
+ * It is expected that caller of this function has atleast read lock.
+ *
+ * Note that we don't handle ZHEAP_INVALID_XACT_SLOT as this function is only
+ * called for in-progress transactions.  If we need to call it for some other
+ * purpose, then we might need to deal with ZHEAP_INVALID_XACT_SLOT.
+ */
+void
+ZHeapTupleGetSubXid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
+					SubTransactionId *subxid)
+{
+	UnpackedUndoRecord	*urec;
+
+	*subxid = InvalidSubTransactionId;
+
+	Assert(UndoRecPtrIsValid(urec_ptr));
+	urec = UndoFetchRecord(urec_ptr,
+						   ItemPointerGetBlockNumber(&zhtup->t_self),
+						   ItemPointerGetOffsetNumber(&zhtup->t_self),
+						   InvalidTransactionId,
+						   NULL,
+						   ZHeapSatisfyUndoRecord);
+
+	/*
+	 * We mostly expect urec here to be valid as it try to fetch
+	 * subtransactionid of tuples that are visible to the snapshot, so
+	 * corresponding undo record can't be discarded.
+	 *
+	 * In case when it is called while index creation, it might be possible
+	 * that the transaction that updated the tuple is committed and is not
+	 * present the calling transaction's snapshot (it uses snapshotany while
+	 * index creation), hence undo is discarded.
+	 */
+	if (urec == NULL)
+		return;
+
+	if (urec->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SUBXACT)
+	{
+		Assert(urec->uur_payload.len > 0);
+
+		/*
+		 * For UNDO_UPDATE, we first store the CTID, then transaction slot
+		 * and after that subtransaction id in payload.  For
+		 * UNDO_XID_LOCK_ONLY, we first store the Lockmode, then transaction
+		 * slot and after that subtransaction id.  So retrieve accordingly.
+		 */
+		if (urec->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
+		{
+			if (urec->uur_type == UNDO_UPDATE)
+				*subxid = *(int *) ((char *) urec->uur_payload.data +
+							sizeof(ItemPointerData) + sizeof(TransactionId));
+			else if (urec->uur_type == UNDO_XID_LOCK_ONLY ||
+					 urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY)
+				*subxid = *(int *) ((char *) urec->uur_payload.data +
+							sizeof(LockTupleMode) + sizeof(TransactionId));
+			else
+				*subxid = *(int *) ((char *) urec->uur_payload.data +
+								sizeof(TransactionId));
+		}
+		else
+		{
+			if (urec->uur_type == UNDO_UPDATE)
+				*subxid = *(int *) ((char *) urec->uur_payload.data +
+													sizeof(ItemPointerData));
+			else if (urec->uur_type == UNDO_XID_LOCK_ONLY ||
+					 urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY)
+				*subxid = *(int *) ((char *) urec->uur_payload.data +
+												sizeof(LockTupleMode));
+			else
+				*subxid = *(SubTransactionId *) urec->uur_payload.data;
+		}
+	}
+
+	UndoRecordRelease(urec);
 }
 
 /*

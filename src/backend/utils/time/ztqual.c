@@ -1347,6 +1347,9 @@ check_trans_slot:
  *	trans_slot - returns the transaction slot of the transaction that has
  *	modified the visible tuple.
  *	xid - returns the xid that has modified the visible tuple.
+ *	subxid - returns the subtransaction id, if any, that has modified the
+ *	visible tuple.  We fetch the subxid from undo only when it is required,
+ *	i.e when the caller would wait on it to finish.
  *	cid - returns the cid of visible tuple.
  *	single_locker_xid - returns the xid of a single in-progress locker, if any.
  *	single_locker_trans_slot - returns the transaction slot of a single
@@ -1358,8 +1361,8 @@ check_trans_slot:
 HTSU_Result
 ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 						  Buffer buffer, ItemPointer ctid, int *trans_slot,
-						  TransactionId *xid, CommandId *cid,
-						  TransactionId *single_locker_xid,
+						  TransactionId *xid, SubTransactionId *subxid,
+						  CommandId *cid, TransactionId *single_locker_xid,
 						  int *single_locker_trans_slot, bool free_zhtup,
 						  bool lock_allowed, Snapshot snapshot,
 						  bool *in_place_updated_or_locked)
@@ -1428,7 +1431,12 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 											   in_place_updated_or_locked);
 
 			if (visible)
+			{
+				if (subxid)
+					ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, subxid);
+
 				return HeapTupleBeingUpdated;
+			}
 			else
 				return HeapTupleInvisible;
 		}
@@ -1459,7 +1467,9 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			/*
 			 * If updating transaction id is aborted and the tuple is visible
 			 * then return HeapTupleBeingUpdated, so that caller can apply the
-			 * undo before modifying the page.
+			 * undo before modifying the page.  Here, we don't need to fetch
+			 * subtransaction id as it is only possible for top-level xid to
+			 * have pending undo actions.
 			 */
 			if (visible)
 				return HeapTupleBeingUpdated;
@@ -1558,7 +1568,12 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 											   in_place_updated_or_locked);
 
 			if (visible)
+			{
+				if (subxid)
+					ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, subxid);
+
 				return HeapTupleBeingUpdated;
+			}
 			else
 				return HeapTupleInvisible;
 		}
@@ -1585,7 +1600,9 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			/*
 			 * If updating transaction id is aborted and the tuple is visible
 			 * then return HeapTupleBeingUpdated, so that caller can apply the
-			 * undo before modifying the page.
+			 * undo before modifying the page.  Here, we don't need to fetch
+			 * subtransaction id as it is only possible for top-level xid to
+			 * have pending undo actions.
 			 */
 			if (visible)
 				return HeapTupleBeingUpdated;
@@ -2006,7 +2023,8 @@ ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer,
  */
 HTSV_Result
 ZHeapTupleSatisfiesOldestXmin(ZHeapTuple *ztuple, TransactionId OldestXmin,
-							  Buffer buffer, TransactionId *xid)
+							  Buffer buffer, TransactionId *xid,
+							  SubTransactionId *subxid)
 {
 	ZHeapTuple	zhtup = *ztuple;
 	ZHeapTupleHeader tuple = zhtup->t_data;
@@ -2037,6 +2055,10 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple *ztuple, TransactionId OldestXmin,
 			return HEAPTUPLE_DELETE_IN_PROGRESS;
 		else if (TransactionIdIsInProgress(*xid))
 		{
+			/* Get Sub transaction id */
+			if (subxid)
+				ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, subxid);
+
 			return HEAPTUPLE_DELETE_IN_PROGRESS;
 		}
 		else if (TransactionIdDidCommit(*xid))
@@ -2099,7 +2121,12 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple *ztuple, TransactionId OldestXmin,
 	if (TransactionIdIsCurrentTransactionId(*xid))
 		return HEAPTUPLE_INSERT_IN_PROGRESS;
 	else if (TransactionIdIsInProgress(*xid))
+	{
+		/* Get Sub transaction id */
+		if (subxid)
+			ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, subxid);
 		return HEAPTUPLE_INSERT_IN_PROGRESS;		/* in insertion by other */
+	}
 	else if (TransactionIdDidCommit(*xid))
 		return HEAPTUPLE_LIVE;
 	else	/* transaction is aborted */
@@ -2141,7 +2168,7 @@ ZHeapTupleSatisfiesNonVacuumable(ZHeapTuple ztup, Snapshot snapshot,
 {
 	TransactionId	xid;
 
-	return (ZHeapTupleSatisfiesOldestXmin(&ztup, snapshot->xmin, buffer, &xid)
+	return (ZHeapTupleSatisfiesOldestXmin(&ztup, snapshot->xmin, buffer, &xid, NULL)
 		!= HEAPTUPLE_DEAD) ? ztup : NULL;
 }
 
@@ -2331,7 +2358,7 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 	if (tuple->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
 				tuple_inplace_updated = true;
 
-	htsvResult = ZHeapTupleSatisfiesOldestXmin(&tuple, TransactionXmin, buffer, xid);
+	htsvResult = ZHeapTupleSatisfiesOldestXmin(&tuple, TransactionXmin, buffer, xid, NULL);
 	pfree(tuple);
 	switch (htsvResult)
 	{

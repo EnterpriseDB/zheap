@@ -80,6 +80,7 @@ typedef struct UndoRecordHeader
 #define UREC_INFO_PAYLOAD					0x04
 #define UREC_INFO_TRANSACTION				0x08
 #define UREC_INFO_PAYLOAD_CONTAINS_SLOT		0x10
+#define UREC_INFO_PAYLOAD_CONTAINS_SUBXACT	0x20
 /*
  * Additional information about a relation to which this record pertains,
  * namely the tablespace OID and fork number.  If the tablespace OID is

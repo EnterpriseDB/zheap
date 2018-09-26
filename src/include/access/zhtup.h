@@ -32,6 +32,7 @@
 typedef struct ZMultiLockMember
 {
 	TransactionId xid;
+	SubTransactionId subxid;
 	int		trans_slot_id;
 	LockTupleMode mode;
 } ZMultiLockMember;
@@ -315,6 +316,8 @@ extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 						UndoRecPtr *urec_ptr_out, bool nobuflock);
 extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf,
 						UndoRecPtr urec_ptr, ItemPointer ctid);
+extern void ZHeapTupleGetSubXid(ZHeapTuple zhtup, Buffer buf,
+				UndoRecPtr urec_ptr, SubTransactionId *subxid);
 extern void ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf,
 							UndoRecPtr urec_ptr, uint32 *specToken);
 extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,

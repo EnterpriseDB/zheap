@@ -164,6 +164,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	TransInfo *tpd_trans_slots;
 	TransInfo *trans_slots = NULL;
 	TransactionId	xid;
+	SubTransactionId	subxid = InvalidSubTransactionId;
 	uint64	epoch_xid;
 	uint64	epoch;
 	int		prev_trans_slot_id,
@@ -289,6 +290,9 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			/* If undo is discarded, we can't proceed further. */
 			if (!urec)
 				break;
+
+			ZHeapTupleGetSubXid(undo_tup, buf, urec_ptr, &subxid);
+
 			/*
 			 * Exclude undo records inserted by my own transaction.  We neither
 			 * need to check conflicts with them nor need to wait for them.
@@ -321,6 +325,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			{
 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
 				mlmember->xid = urec->uur_xid;
+				mlmember->subxid = subxid;
 				mlmember->trans_slot_id = prev_trans_slot_id;
 				mlmember->mode = *((LockTupleMode *) urec->uur_payload.data);
 				multilockmembers = lappend(multilockmembers, mlmember);
@@ -330,6 +335,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			{
 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
 				mlmember->xid = urec->uur_xid;
+				mlmember->subxid = subxid;
 				mlmember->trans_slot_id = prev_trans_slot_id;
 
 				if (ZHEAP_XID_IS_EXCL_LOCKED(undo_tup->t_data->t_infomask))
@@ -343,6 +349,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			{
 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
 				mlmember->xid = urec->uur_xid;
+				mlmember->subxid = subxid;
 				mlmember->trans_slot_id = prev_trans_slot_id;
 				mlmember->mode = LockTupleExclusive;
 				multilockmembers = lappend(multilockmembers, mlmember);
@@ -417,6 +424,7 @@ ZMultiLockMembersWait(Relation rel, List *mlmembers, ZHeapTuple zhtup,
 	{
 		ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
 		TransactionId	memxid = mlmember->xid;
+		SubTransactionId	memsubxid = mlmember->subxid;
 		LockTupleMode	memmode = mlmember->mode;
 
 		if (TransactionIdIsCurrentTransactionId(memxid))
@@ -437,7 +445,19 @@ ZMultiLockMembersWait(Relation rel, List *mlmembers, ZHeapTuple zhtup,
 		 * This member conflicts with our multi, so we have to sleep (or
 		 * return failure, if asked to avoid waiting.)
 		 */
-		if (nowait)
+		if (memsubxid != InvalidSubTransactionId)
+		{
+			if (nowait)
+			{
+				result = ConditionalSubXactLockTableWait(memxid, memsubxid);
+				if (!result)
+					break;
+			}
+			else
+				SubXactLockTableWait(memxid, memsubxid, rel, &zhtup->t_self,
+									 oper);
+		}
+		else if (nowait)
 		{
 			result = ConditionalXactLockTableWait(memxid);
 			if (!result)

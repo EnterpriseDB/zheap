@@ -29,6 +29,7 @@ const char *const LockTagTypeNames[] = {
 	"page",
 	"tuple",
 	"transactionid",
+	"subtransactionid",
 	"virtualxid",
 	"speculative token",
 	"object",

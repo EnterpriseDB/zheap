@@ -190,6 +190,7 @@ typedef struct TransactionStateData
 	bool		startedInRecovery;	/* did we start in recovery? */
 	bool		didLogXid;		/* has xid been included in WAL record? */
 	int			parallelModeLevel;		/* Enter/ExitParallelMode counter */
+	bool		subXactLock;		/* has lock created for subtransaction? */
 	 /* start and end undo record location for each persistence level */
 	UndoRecPtr	start_urec_ptr[UndoPersistenceLevels];
 	UndoRecPtr	latest_urec_ptr[UndoPersistenceLevels];
@@ -635,6 +636,28 @@ AssignTransactionId(TransactionState s)
 }
 
 /*
+ *	SetCurrentSubTransactionLocked
+ */
+void
+SetCurrentSubTransactionLocked()
+{
+	TransactionState s = CurrentTransactionState;
+
+	s->subXactLock = true;
+}
+
+/*
+ *	HasCurrentSubTransactionLock
+ */
+bool
+HasCurrentSubTransactionLock()
+{
+	TransactionState s = CurrentTransactionState;
+
+	return s->subXactLock;
+}
+
+/*
  *	GetCurrentSubTransactionId
  */
 SubTransactionId
@@ -643,6 +666,17 @@ GetCurrentSubTransactionId(void)
 	TransactionState s = CurrentTransactionState;
 
 	return s->subTransactionId;
+}
+
+/*
+ * GetCurrentTransactionResOwner
+ */
+ResourceOwner
+GetCurrentTransactionResOwner(void)
+{
+	TransactionState s = CurrentTransactionState;
+
+	return s->curTransactionOwner;
 }
 
 /*
@@ -1921,7 +1955,7 @@ StartTransaction(void)
 		s->start_urec_ptr[i] = InvalidUndoRecPtr;
 		s->latest_urec_ptr[i] = InvalidUndoRecPtr;
 	}
-
+	s->subXactLock = false;
 
 	/*
 	 * must initialize resource-management stuff first
@@ -5015,6 +5049,7 @@ StartSubTransaction(void)
 		s->latest_urec_ptr[i] = InvalidUndoRecPtr;
 	}
 
+	s->subXactLock = false;
 	s->state = TRANS_INPROGRESS;
 
 	/*

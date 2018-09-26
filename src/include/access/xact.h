@@ -21,6 +21,7 @@
 #include "storage/relfilenode.h"
 #include "storage/sinval.h"
 #include "utils/datetime.h"
+#include "utils/resowner.h"
 
 /*
  * Maximum size of Global Transaction ID (including '\0').
@@ -356,7 +357,10 @@ extern TransactionId GetTopTransactionIdIfAny(void);
 extern TransactionId GetCurrentTransactionId(void);
 extern TransactionId GetCurrentTransactionIdIfAny(void);
 extern TransactionId GetStableLatestTransactionId(void);
+extern void SetCurrentSubTransactionLocked();
+extern bool HasCurrentSubTransactionLock();
 extern SubTransactionId GetCurrentSubTransactionId(void);
+extern ResourceOwner GetCurrentTransactionResOwner(void);
 extern void MarkCurrentTransactionIdLoggedIfAny(void);
 extern bool SubTransactionIsActive(SubTransactionId subxid);
 extern CommandId GetCurrentCommandId(bool used);

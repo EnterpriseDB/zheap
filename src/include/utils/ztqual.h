@@ -39,7 +39,8 @@ extern ZHeapTuple ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot,
 									   Buffer buffer, bool *all_dead);
 extern HTSU_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,
 						CommandId curcid, Buffer buffer, ItemPointer ctid,
-						int *trans_slot, TransactionId *xid, CommandId *cid,
+						int *trans_slot, TransactionId *xid,
+						SubTransactionId *subxid, CommandId *cid,
 						TransactionId *single_locker_xid, int *single_locker_trans_slot,
 						bool free_zhtup, bool lock_allowed, Snapshot snapshot,
 						bool *in_place_updated_or_locked);
@@ -53,7 +54,7 @@ extern ZHeapTuple ZHeapTupleSatisfiesAny(ZHeapTuple zhtup,
 					  Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern HTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple *zhtup,
 						TransactionId OldestXmin, Buffer buffer,
-						TransactionId *xid);
+						TransactionId *xid, SubTransactionId *subxid);
 extern ZHeapTuple ZHeapTupleSatisfiesNonVacuumable(ZHeapTuple ztup, Snapshot snapshot,
 								Buffer buffer, ItemPointer ctid);
 extern ZHTSV_Result ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,

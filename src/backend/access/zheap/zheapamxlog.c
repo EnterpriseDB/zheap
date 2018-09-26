@@ -97,6 +97,9 @@ zheap_xlog_insert(XLogReaderState *record)
 	 * the same is true. However, it might not be useful in the REDO function as
 	 * it is just required in the master node to detect conflicts for insert ...
 	 * on conflict.
+	 *
+	 * Fixme - Once we have undo consistency checker that we can remove the
+	 * assertion as well dummy speculative token.
 	 */
 	if (xlrec->flags & XLZ_INSERT_IS_SPECULATIVE)
 	{
@@ -231,6 +234,7 @@ zheap_xlog_delete(XLogReaderState *record)
 	TransactionId	xid = XLogRecGetXid(record);
 	uint32	xid_epoch = GetEpochForXid(xid);
 	int		*tpd_trans_slot_id = NULL;
+	bool		hasPayload = false;
 
 	xlrec = (xl_zheap_delete *) ((char *) xlundohdr + SizeOfUndoHeader);
 	if (xlrec->flags & XLZ_DELETE_CONTAINS_TPD_SLOT)
@@ -352,8 +356,34 @@ zheap_xlog_delete(XLogReaderState *record)
 		appendBinaryStringInfo(&undorecord.uur_payload,
 							   (char *) tpd_trans_slot_id,
 							   sizeof(*tpd_trans_slot_id));
+		hasPayload = true;
 	}
-	else
+
+	/*
+	 * For sub-tranasctions, we store the dummy contains subxact token in the
+	 * undorecord so that, the size of undorecord in DO function matches with
+	 * the size of undorecord in REDO function. This ensures that, for
+	 * sub-transactions, the assert condition used later in this
+	 * function to ensure that the undo pointer in DO and REDO function remains
+	 * the same is true.
+	 */
+	if (xlrec->flags & XLZ_DELETE_CONTAINS_SUBXACT)
+	{
+		SubTransactionId dummy_subXactToken = 1;
+
+		if (!hasPayload)
+		{
+			initStringInfo(&undorecord.uur_payload);
+			hasPayload = true;
+		}
+
+		undorecord.uur_payload.len = sizeof(SubTransactionId);
+		appendBinaryStringInfo(&undorecord.uur_payload,
+								(char *) &dummy_subXactToken,
+								sizeof(SubTransactionId));
+	}
+
+	if (!hasPayload)
 		undorecord.uur_payload.len = 0;
 
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
@@ -617,6 +647,8 @@ zheap_xlog_update(XLogReaderState *record)
 
 	if (inplace_update)
 	{
+		bool	hasPayload = false;
+
 		undorecord.uur_type =  UNDO_INPLACE_UPDATE;
 		if (old_tup_trans_slot_id)
 		{
@@ -625,9 +657,36 @@ zheap_xlog_update(XLogReaderState *record)
 			appendBinaryStringInfo(&undorecord.uur_payload,
 								   (char *) old_tup_trans_slot_id,
 								   sizeof(*old_tup_trans_slot_id));
+			hasPayload = true;
 		}
-		else
+
+		/*
+		 * For sub-tranasctions, we store the dummy contains subxact token in the
+		 * undorecord so that, the size of undorecord in DO function matches with
+		 * the size of undorecord in REDO function. This ensures that, for
+		 * sub-transactions, the assert condition used later in this
+		 * function to ensure that the undo pointer in DO and REDO function remains
+		 * the same is true.
+		 */
+		if (xlrec->flags & XLZ_UPDATE_CONTAINS_SUBXACT)
+		{
+			SubTransactionId dummy_subXactToken = 1;
+
+			if (!hasPayload)
+			{
+				initStringInfo(&undorecord.uur_payload);
+				hasPayload = true;
+			}
+
+			undorecord.uur_payload.len = sizeof(SubTransactionId);
+			appendBinaryStringInfo(&undorecord.uur_payload,
+								   (char *) &dummy_subXactToken,
+								   sizeof(SubTransactionId));
+		}
+
+		if (!hasPayload)
 			undorecord.uur_payload.len = 0;
+
 		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
 	}
 	else
@@ -647,6 +706,24 @@ zheap_xlog_update(XLogReaderState *record)
 			appendBinaryStringInfo(&undorecord.uur_payload,
 								   (char *) old_tup_trans_slot_id,
 								   sizeof(*old_tup_trans_slot_id));
+		}
+
+		/*
+		 * For sub-tranasctions, we store the dummy contains subxact token in the
+		 * undorecord so that, the size of undorecord in DO function matches with
+		 * the size of undorecord in REDO function. This ensures that, for
+		 * sub-transactions, the assert condition used later in this
+		 * function to ensure that the undo pointer in DO and REDO function remains
+		 * the same is true.
+		 */
+		if (xlrec->flags & XLZ_UPDATE_CONTAINS_SUBXACT)
+		{
+			SubTransactionId dummy_subXactToken = 1;
+
+			undorecord.uur_payload.len = sizeof(SubTransactionId);
+			appendBinaryStringInfo(&undorecord.uur_payload,
+								   (char *) &dummy_subXactToken,
+								   sizeof(SubTransactionId));
 		}
 
 		/* prepare an undo record for new tuple */
@@ -1257,6 +1334,24 @@ zheap_xlog_lock(XLogReaderState *record)
 		appendBinaryStringInfo(&undorecord.uur_payload,
 							   (char *) tup_trans_slot_id,
 							   sizeof(*tup_trans_slot_id));
+	}
+
+	/*
+	 * For sub-tranasctions, we store the dummy contains subxact token in the
+	 * undorecord so that, the size of undorecord in DO function matches with
+	 * the size of undorecord in REDO function. This ensures that, for
+	 * sub-transactions, the assert condition used later in this
+	 * function to ensure that the undo pointer in DO and REDO function remains
+	 * the same is true.
+	 */
+	if (xlrec->flags & XLZ_LOCK_CONTAINS_SUBXACT)
+	{
+		SubTransactionId dummy_subXactToken = 1;
+
+		undorecord.uur_payload.len = sizeof(SubTransactionId);
+		appendBinaryStringInfo(&undorecord.uur_payload,
+							   (char *) &dummy_subXactToken,
+							   sizeof(SubTransactionId));
 	}
 
 	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);

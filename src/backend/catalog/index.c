@@ -3118,6 +3118,7 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 			/* do our own time qual check */
 			bool		indexIt;
 			TransactionId xwait;
+			SubTransactionId subxid_xwait = InvalidSubTransactionId;
 
 	recheck:
 
@@ -3130,7 +3131,8 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 
 			targztuple = zheap_copytuple(zheapTuple);
 			switch (ZHeapTupleSatisfiesOldestXmin(&targztuple, OldestXmin,
-												scan->rs_cbuf, &xwait))
+												  scan->rs_cbuf, &xwait,
+												  &subxid_xwait))
 			{
 				case HEAPTUPLE_DEAD:
 					/* Definitely dead, we can ignore it */
@@ -3191,9 +3193,14 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 							 * Must drop the lock on the buffer before we wait
 							 */
 							LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
-							XactLockTableWait(xwait, zheapRelation,
-											  &zheapTuple->t_self,
-											  XLTW_InsertIndexUnique);
+							if (subxid_xwait != InvalidSubTransactionId)
+								SubXactLockTableWait(xwait, subxid_xwait, zheapRelation,
+													&zheapTuple->t_self,
+													XLTW_InsertIndexUnique);
+							else
+								XactLockTableWait(xwait, zheapRelation,
+												  &zheapTuple->t_self,
+												  XLTW_InsertIndexUnique);
 							CHECK_FOR_INTERRUPTS();
 
 							if (targztuple != NULL)
@@ -3242,9 +3249,15 @@ IndexBuildZHeapRangeScan(Relation zheapRelation,
 							 * Must drop the lock on the buffer before we wait
 							 */
 							LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
-							XactLockTableWait(xwait, zheapRelation,
-											  &zheapTuple->t_self,
-											  XLTW_InsertIndexUnique);
+							if (subxid_xwait != InvalidTransactionId)
+								SubXactLockTableWait(xwait, subxid_xwait,
+													 zheapRelation,
+													 &zheapTuple->t_self,
+													 XLTW_InsertIndexUnique);
+							else
+								XactLockTableWait(xwait, zheapRelation,
+												  &zheapTuple->t_self,
+												  XLTW_InsertIndexUnique);
 							CHECK_FOR_INTERRUPTS();
 
 							if (targztuple != NULL)

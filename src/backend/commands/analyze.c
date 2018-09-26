@@ -1106,7 +1106,7 @@ acquire_sample_rows(Relation onerel, int elevel,
 					   ((ZHeapTupleHeader) PageGetItem((Page) targpage, itemid)),
 					   targztuple_len);
 
-				result = ZHeapTupleSatisfiesOldestXmin(&targztuple, OldestXmin, targbuffer, &xid);
+				result = ZHeapTupleSatisfiesOldestXmin(&targztuple, OldestXmin, targbuffer, &xid, NULL);
 
 				targtup = zheap_to_heap(targztuple, onerel->rd_att);
 				targtuple = *targtup;
