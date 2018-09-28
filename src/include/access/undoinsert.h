@@ -95,5 +95,7 @@ extern UndoRecPtr UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen);
 
 extern void UndoRecordOnUndoLogChange(UndoPersistence persistence);
 
+extern void PrepareUpdateUndoActionProgress(UndoRecPtr urecptr, int progress);
+extern void UndoRecordUpdateTransInfo(void);
 
 #endif   /* UNDOINSERT_H */

@@ -3370,7 +3370,7 @@ XactPerformUndoActionsIfPending()
 			rollback_size = UndoActionStartPtr[i] - UndoActionEndPtr[i];
 
 		if (new_xact && rollback_size > rollback_overflow_size * 1024 * 1024)
-			result = PushRollbackReq(UndoActionStartPtr[i], UndoActionEndPtr[i]);
+			result = PushRollbackReq(UndoActionStartPtr[i], UndoActionEndPtr[i], InvalidOid);
 
 		if (!result)
 		{
@@ -4118,12 +4118,12 @@ UserAbortTransactionBlock(void)
 					 * later.
 					 */
 					if (size >= rollback_overflow_size * 1024 * 1024)
-						result = PushRollbackReq(UndoActionStartPtr[i], UndoActionEndPtr[i]);
+						result = PushRollbackReq(UndoActionStartPtr[i], UndoActionEndPtr[i], InvalidOid);
 
 					if (!result)
 					{
 						execute_undo_actions(UndoActionStartPtr[i], UndoActionEndPtr[i],
-											false, true, true);
+											true, true, true);
 						UndoActionStartPtr[i] = InvalidUndoRecPtr;
 					}
 				}

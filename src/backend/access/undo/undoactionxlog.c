@@ -193,6 +193,19 @@ undo_xlog_reset_xid(XLogReaderState *record)
 	UnlockReleaseTPDBuffers();
 }
 
+/*
+ * Replay of undo apply progress.
+ */
+static void
+undo_xlog_apply_progress(XLogReaderState *record)
+{
+	xl_undoapply_progress	*xlrec = (xl_undoapply_progress *) XLogRecGetData(record);
+
+	/* Update the progress in the transaction header. */
+	PrepareUpdateUndoActionProgress(xlrec->urec_ptr, xlrec->progress);
+	UndoRecordUpdateTransInfo();
+}
+
 void
 undoaction_redo(XLogReaderState *record)
 {
@@ -205,6 +218,9 @@ undoaction_redo(XLogReaderState *record)
 			break;
 		case XLOG_UNDO_RESET_SLOT:
 			undo_xlog_reset_xid(record);
+			break;
+		case XLOG_UNDO_APPLY_PROGRESS:
+			undo_xlog_apply_progress(record);
 			break;
 		default:
 			elog(PANIC, "undoaction_redo: unknown op code %u", info);

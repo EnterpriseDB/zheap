@@ -13,6 +13,7 @@
 #define _UNDOLOOP_H
 
 #include "access/undoinsert.h"
+#include "utils/hsearch.h"
 #include "utils/relcache.h"
 
 
@@ -66,14 +67,19 @@ typedef struct RollbackHashEntry
 {
 	UndoRecPtr start_urec_ptr;
 	UndoRecPtr end_urec_ptr;
+	Oid		   dbid;
 } RollbackHashEntry;
 
 extern bool RollbackHTIsFull(void);
 
 /* To push the rollback requests from backend to the respective hash table */
-extern bool PushRollbackReq(UndoRecPtr, UndoRecPtr);
+extern bool PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr,
+							Oid dbid);
 
 /* To perform the undo actions reading from the hash table */
-extern void RollbackFromHT(bool *hibernate);
+extern void RollbackFromHT(Oid dbid);
 
+extern HTAB *RollbackHTGetDBList(MemoryContext tmpctx);
+extern bool ConditionTransactionUndoActionLock(TransactionId xid);
+extern void TransactionUndoActionLockRelease(TransactionId xid);
 #endif   /* _UNDOLOOP_H */

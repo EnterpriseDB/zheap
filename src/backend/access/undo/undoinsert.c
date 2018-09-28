@@ -130,7 +130,6 @@ static UnpackedUndoRecord* UndoGetOneRecord(UnpackedUndoRecord *urec,
 											UndoPersistence persistence);
 static void PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr,
 											 bool log_switched);
-static void UndoRecordUpdateTransInfo(void);
 static int InsertFindBufferSlot(RelFileNode rnode, BlockNumber blk,
 								ReadBufferMode rbm,
 								UndoPersistence persistence);
@@ -268,12 +267,60 @@ PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr, bool log_switched)
 }
 
 /*
+ * Update the progress of the undo record in the transaction header.
+ */
+void
+PrepareUpdateUndoActionProgress(UndoRecPtr urecptr, int progress)
+{
+	Buffer		buffer = InvalidBuffer;
+	BlockNumber	cur_blk;
+	RelFileNode	rnode;
+	UndoLogNumber logno = UndoRecPtrGetLogNo(urecptr);
+	UndoLogControl *log;
+	Page		page;
+	int			already_decoded = 0;
+	int			starting_byte;
+	int			bufidx;
+	int			index = 0;
+
+	log = UndoLogGet(logno);
+
+	if (log->meta.persistence == UNDO_TEMP)
+		return;
+
+	UndoRecPtrAssignRelFileNode(rnode, urecptr);
+	cur_blk = UndoRecPtrGetBlockNum(urecptr);
+	starting_byte = UndoRecPtrGetPageOffset(urecptr);
+
+	while (true)
+	{
+		bufidx = InsertFindBufferSlot(rnode, cur_blk,
+									  RBM_NORMAL,
+									  log->meta.persistence);
+		prev_txn_info.prev_txn_undo_buffers[index] = bufidx;
+		buffer = undo_buffer[bufidx].buf;
+		page = BufferGetPage(buffer);
+		index++;
+
+		if (UnpackUndoRecord(&prev_txn_info.uur, page, starting_byte,
+							 &already_decoded, true))
+			break;
+
+		starting_byte = UndoLogBlockHeaderSize;
+		cur_blk++;
+	}
+
+	prev_txn_info.prev_urecptr = urecptr;
+	prev_txn_info.uur.uur_progress = progress;
+}
+
+/*
  * Overwrite the first undo record of the previous transaction to update its
  * next pointer.  This will just insert the already prepared record by
  * PrepareUndoRecordUpdateTransInfo.  This must be called under the critical
  * section.  This will just overwrite the undo header not the data.
  */
-static void
+void
 UndoRecordUpdateTransInfo(void)
 {
 	UndoLogNumber logno = UndoRecPtrGetLogNo(prev_txn_info.prev_urecptr);
@@ -453,6 +500,8 @@ resize:
 		{
 			urec->uur_next = SpecialUndoRecPtr;
 			urec->uur_xidepoch = GetEpochForXid(txid);
+			urec->uur_progress = 0;
+			urec->uur_dbid = MyDatabaseId;
 		}
 		else
 			urec->uur_next = InvalidUndoRecPtr;

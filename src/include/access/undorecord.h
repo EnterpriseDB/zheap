@@ -116,8 +116,10 @@ typedef struct UndoRecordBlock
  */
 typedef struct UndoRecordTransaction
 {
-	uint32			urec_xidepoch; /* epoch of the current transaction */
-	uint64			urec_next;	/* urec pointer of the next transaction */
+	uint32			urec_progress;  /* undo applying progress. */
+	uint32			urec_xidepoch;  /* epoch of the current transaction */
+	Oid				urec_dbid;		/* database id */
+	uint64			urec_next;		/* urec pointer of the next transaction */
 } UndoRecordTransaction;
 
 #define SizeOfUrecNext (sizeof(UndoRecPtr))
@@ -173,6 +175,14 @@ typedef struct UnpackedUndoRecord
 	Buffer		uur_buffer;		/* buffer in which undo record data points */
 	uint32		uur_xidepoch;	/* epoch of the inserting transaction. */
 	uint64		uur_next;		/* urec pointer of the next transaction */
+	Oid			uur_dbid;		/* database id*/
+
+	/*
+	 * undo action apply progress 0 = not started, 1 = completed. In future it
+	 * can also be used to show the progress of how much undo has been applied
+	 * so far with some formulae but currently only 0 and 1 is used.
+	 */
+	uint32         uur_progress;
 	StringInfoData uur_payload;	/* payload bytes */
 	StringInfoData uur_tuple;	/* tuple bytes */
 } UnpackedUndoRecord;

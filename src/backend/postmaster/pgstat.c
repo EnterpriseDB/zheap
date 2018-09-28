@@ -3539,6 +3539,9 @@ pgstat_get_wait_activity(WaitEventActivity w)
 		case WAIT_EVENT_WAL_WRITER_MAIN:
 			event_name = "WalWriterMain";
 			break;
+		case WAIT_EVENT_UNDO_DISCARD_WORKER_MAIN:
+			event_name = "UndoDiscardWorkerMain";
+			break;
 		case WAIT_EVENT_UNDO_LAUNCHER_MAIN:
 			event_name = "UndoLauncherMain";
 			break;

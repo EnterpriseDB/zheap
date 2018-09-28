@@ -21,6 +21,7 @@
 #include "access/xact.h"
 #include "access/zheap.h"
 #include "nodes/pg_list.h"
+#include "pgstat.h"
 #include "postmaster/undoloop.h"
 #include "storage/block.h"
 #include "storage/buf.h"
@@ -29,7 +30,6 @@
 #include "miscadmin.h"
 #include "storage/shmem.h"
 #include "access/undodiscard.h"
-#include "utils/hsearch.h"
 
 #define ROLLBACK_HT_SIZE	1024
 
@@ -38,6 +38,7 @@ static bool execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr,
 					 bool blk_chain_complete, bool norellock, int options);
 static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
 									  TransactionId xid);
+static void RollbackHTRemoveEntry(UndoRecPtr start_urec_ptr);
 
 /* This is the hash table to store all the rollabck requests. */
 static HTAB *RollbackHT;
@@ -101,6 +102,28 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 
 	save_urec_ptr = urec_ptr = from_urecptr;
 
+	if (nopartial)
+	{
+		uur = UndoFetchRecord(urec_ptr, InvalidBlockNumber, InvalidOffsetNumber,
+							  InvalidTransactionId, NULL, NULL);
+		if (uur == NULL)
+			return;
+
+		xid = uur->uur_xid;
+		UndoRecordRelease(uur);
+		uur = NULL;
+
+		/*
+		 * Grab the undo action apply lock before start applying the undo action
+		 * this will prevent applying undo actions concurrently.  If we do not
+		 * get the lock that mean its already being applied concurrently or the
+		 * discard worker might be pushing its request to the rollback hash
+		 * table
+		 */
+		if (!ConditionTransactionUndoActionLock(xid))
+			return;
+	}
+
 	prev_urec_ptr = InvalidUndoRecPtr;
 	while (prev_urec_ptr != to_urecptr)
 	{
@@ -136,6 +159,10 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 				pfree(urec_info);
 				luinfo = list_delete_first(luinfo);
 			}
+
+			/* Release the undo action lock before returning. */
+			if (nopartial)
+				TransactionUndoActionLockRelease(xid);
 
 			/* Release the just-fetched record */
 			if (uur != NULL)
@@ -291,6 +318,55 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		UndoLogRewind(to_urecptr, uur->uur_prevlen);
 
 		UndoRecordRelease(uur);
+	}
+
+	if (nopartial)
+	{
+		/*
+		 * Set undo action apply completed in the transaction header if this is
+		 * a main transaction and we have not rewound its undo.
+		 */
+		if (!rewind)
+		{
+			/*
+			 * Undo action is applied so delete the hash table entry and release
+			 * the undo action lock.
+			 */
+			RollbackHTRemoveEntry(from_urecptr);
+
+			/*
+			 * Prepare and update the progress of the undo action apply in the
+			 * transaction header.
+			 */
+			PrepareUpdateUndoActionProgress(to_urecptr, 1);
+
+			START_CRIT_SECTION();
+
+			/* Update the progress in the transaction header. */
+			UndoRecordUpdateTransInfo();
+
+			/* WAL log the undo apply progress. */
+			{
+				xl_undoapply_progress xlrec;
+
+				xlrec.urec_ptr = to_urecptr;
+				xlrec.progress = 1;
+
+				/*
+				 * FIXME : We need to register undo buffers and set LSN for them
+				 * that will be required for FPW of the undo buffers.
+				 */
+				XLogBeginInsert();
+				XLogRegisterData((char *) &xlrec, sizeof(xlrec));
+
+				(void) XLogInsert(RM_UNDOACTION_ID, XLOG_UNDO_APPLY_PROGRESS);
+			}
+
+			END_CRIT_SECTION();
+			UnlockReleaseUndoBuffers();
+		}
+
+		TransactionUndoActionLockRelease(xid);
 	}
 }
 
@@ -611,6 +687,10 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	{
 		UnlockReleaseBuffer(buffer);
 		heap_close(rel, NoLock);
+
+		if ((options & UNDO_ACTION_UPDATE_TPD) != 0)
+			UnlockReleaseTPDBuffers();
+
 		return false;
 	}
 
@@ -1035,7 +1115,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 int
 RollbackHTSize(void)
 {
-	return ROLLBACK_HT_SIZE;
+	return ROLLBACK_HT_SIZE * sizeof(RollbackHashEntry);
 }
 
 /*
@@ -1049,7 +1129,7 @@ InitRollbackHashTable(void)
 	HASHCTL info;
 	MemSet(&info, 0, sizeof(info));
 
-	info.keysize = sizeof(TransactionId);
+	info.keysize = sizeof(UndoRecPtr);
 	info.entrysize = sizeof(RollbackHashEntry);
 	info.hash = tag_hash;
 
@@ -1064,7 +1144,7 @@ InitRollbackHashTable(void)
  * and the caller may execute undo actions itself.
  */
 bool
-PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr)
+PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr, Oid dbid)
 {
 	bool found = false;
 	RollbackHashEntry *rh;
@@ -1101,11 +1181,12 @@ PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr)
 		return false;
 	}
 	/* We shouldn't try to push the same rollback request again. */
-	Assert(!found);
-
-	rh->start_urec_ptr = start_urec_ptr;
-	rh->end_urec_ptr = end_urec_ptr;
-
+	if (!found)
+	{
+		rh->start_urec_ptr = start_urec_ptr;
+		rh->end_urec_ptr = end_urec_ptr;
+		rh->dbid = (dbid == InvalidOid) ? MyDatabaseId : dbid;
+	}
 	LWLockRelease(RollbackHTLock);
 
 	return true;
@@ -1119,29 +1200,31 @@ PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr)
  * hash table.
  */
 void
-RollbackFromHT(bool *hibernate)
+RollbackFromHT(Oid dbid)
 {
 	UndoRecPtr start[ROLLBACK_HT_SIZE];
 	UndoRecPtr end[ROLLBACK_HT_SIZE];
 	RollbackHashEntry *rh;
 	HASH_SEQ_STATUS status;
-	bool found;
 	int i = 0;
 
 	/* Fetch the rollback requests */
 	LWLockAcquire(RollbackHTLock, LW_SHARED);
+
+	Assert(hash_get_num_entries(RollbackHT) < ROLLBACK_HT_SIZE);
 	hash_seq_init(&status, RollbackHT);
 	while (RollbackHT != NULL &&
 		  (rh = (RollbackHashEntry *) hash_seq_search(&status)) != NULL)
 	{
-		start[i] = rh->start_urec_ptr;
-		end[i] = rh->end_urec_ptr;
+		if (rh->dbid == dbid)
+		{
+			start[i] = rh->start_urec_ptr;
+			end[i] = rh->end_urec_ptr;
+			i++;
+		}
 	}
-	LWLockRelease(RollbackHTLock);
 
-	/* Don't sleep, if there is work to do. */
-	if (i > 0)
-		*hibernate = false;
+	LWLockRelease(RollbackHTLock);
 
 	/* Execute the rollback requests */
 	while(--i >= 0)
@@ -1150,13 +1233,22 @@ RollbackFromHT(bool *hibernate)
 		Assert(UndoRecPtrIsValid(end[i]));
 
 		StartTransactionCommand();
-		execute_undo_actions(end[i], start[i], true, false, true);
+		execute_undo_actions(start[i], end[i], true, false, true);
 		CommitTransactionCommand();
-
-		LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
-		(void) hash_search(RollbackHT, &start[i], HASH_REMOVE, &found);
-		LWLockRelease(RollbackHTLock);
 	}
+}
+
+/*
+ * Remove the rollback request entry from the rollback hash table.
+ */
+static void
+RollbackHTRemoveEntry(UndoRecPtr start_urec_ptr)
+{
+	LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
+
+	hash_search(RollbackHT, &start_urec_ptr, HASH_REMOVE, NULL);
+
+	LWLockRelease(RollbackHTLock);
 }
 
 /*
@@ -1169,19 +1261,81 @@ RollbackFromHT(bool *hibernate)
 bool
 RollbackHTIsFull(void)
 {
-	RollbackHashEntry *rh;
-	HASH_SEQ_STATUS status;
-	bool result = true;
+	bool result = false;
 
 	LWLockAcquire(RollbackHTLock, LW_SHARED);
-	hash_seq_init(&status, RollbackHT);
 
-	if (hash_get_num_entries(RollbackHT) == 0 ||
-		((rh = (RollbackHashEntry *) hash_seq_search(&status)) != NULL))
-		result =  false;
+	if (hash_get_num_entries(RollbackHT) >= ROLLBACK_HT_SIZE)
+		result = true;
 
-	hash_seq_term(&status);
 	LWLockRelease(RollbackHTLock);
 
 	return result;
+}
+
+/*
+ * Get database list from the rollback hash table.
+ */
+HTAB *
+RollbackHTGetDBList(MemoryContext tmpctx)
+{
+	HTAB	*dbhash;
+	HASHCTL	 hctl;
+	HASH_SEQ_STATUS status;
+	RollbackHashEntry	*rh;
+
+	hctl.keysize = sizeof(Oid);
+	hctl.entrysize = sizeof(Oid);
+	hctl.hcxt = tmpctx;
+
+	dbhash = hash_create("db hash", 20, &hctl,
+						 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+	/* Fetch the rollback requests */
+	LWLockAcquire(RollbackHTLock, LW_SHARED);
+
+	hash_seq_init(&status, RollbackHT);
+	while (RollbackHT != NULL &&
+		  (rh = (RollbackHashEntry *) hash_seq_search(&status)) != NULL)
+		(void)hash_search(dbhash, &rh->dbid, HASH_ENTER, NULL);
+
+	LWLockRelease(RollbackHTLock);
+
+	return dbhash;
+}
+
+/*
+ *		ConditionTransactionUndoActionLock
+ *
+ * Insert a lock showing that the undo action for given transaction is in
+ * progress. This is only done for the main transaction not for the
+ * sub-transaction.
+ */
+bool
+ConditionTransactionUndoActionLock(TransactionId xid)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_TRANSACTION_UNDOACTION(tag, xid);
+
+	if (LOCKACQUIRE_NOT_AVAIL == LockAcquire(&tag, ExclusiveLock, false, true))
+		return false;
+	else
+		return true;
+}
+
+/*
+ *		TransactionUndoActionLockRelease
+ *
+ * Delete the lock showing that the undo action given transaction ID is in
+ * progress.
+ */
+void
+TransactionUndoActionLockRelease(TransactionId xid)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_TRANSACTION_UNDOACTION(tag, xid);
+
+	LockRelease(&tag, ExclusiveLock, false);
 }

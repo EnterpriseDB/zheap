@@ -4,6 +4,7 @@
  *	  Exports from postmaster/undoworker.c.
  *
  * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/postmaster/undoworker.h
  *
@@ -30,5 +31,9 @@ extern int	UndoWorkerDelay;
  */
 extern void UndoWorkerMain(Datum main_arg) pg_attribute_noreturn();
 extern void UndoLauncherRegister(void);
+extern void UndoLauncherShmemInit(void);
+extern Size UndoLauncherShmemSize(void);
+extern void UndoLauncherMain(Datum main_arg);
+extern void UndoWorkerMain(Datum main_arg);
 
 #endif   /* _UNDOWORKER_H */

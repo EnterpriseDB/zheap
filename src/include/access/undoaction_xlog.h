@@ -23,6 +23,7 @@
  */
 #define XLOG_UNDO_PAGE				0x00
 #define XLOG_UNDO_RESET_SLOT		0x10
+#define XLOG_UNDO_APPLY_PROGRESS	0x20
 
 /*
  * xl_undoaction_page flag values, 8 bits are available.
@@ -41,6 +42,15 @@ typedef struct xl_undoaction_page
 } xl_undoaction_page;
 
 #define SizeOfUndoActionPage	(offsetof(xl_undoaction_page, trans_slot_id) + sizeof(int))
+
+/* This is what we need to know about undo apply progress */
+typedef struct xl_undoapply_progress
+{
+	UndoRecPtr	urec_ptr;
+	uint32		progress;
+} xl_undoapply_progress;
+
+#define SizeOfUndoActionProgress	(offsetof(xl_undoapply_progress, progress) + sizeof(uint32))
 
 /*
  * xl_undoaction_reset_slot flag values, 8 bits are available.
