@@ -8667,6 +8667,7 @@ zheap_beginscan_internal(Relation relation, Snapshot snapshot,
 	scan->rs_bitmapscan = is_bitmapscan;
 	scan->rs_samplescan = is_samplescan;
 	scan->rs_strategy = NULL;	/* set in initscan */
+	scan->rs_startblock = 0;	/* set in initscan */
 	scan->rs_allow_strat = allow_strat;
 	scan->rs_allow_sync = allow_sync;
 	scan->rs_temp_snap = temp_snap;
