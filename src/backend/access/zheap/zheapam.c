@@ -3474,6 +3474,7 @@ reacquire_buffer:
 					newtup->t_data->t_infomask2 & ZHEAP_NATTS_MASK;
 		/* also update the tuple length and self pointer */
 		oldtup.t_len = zheaptup->t_len;
+		oldtup.t_data->t_hoff = zheaptup->t_data->t_hoff;
 		ItemPointerCopy(&oldtup.t_self, &zheaptup->t_self);
 	}
 	else
