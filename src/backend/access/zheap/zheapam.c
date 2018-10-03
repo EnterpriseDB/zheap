@@ -8720,11 +8720,22 @@ zheap_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan)
 	Snapshot	snapshot;
 
 	Assert(RelationGetRelid(relation) == parallel_scan->phs_relid);
-	snapshot = RestoreSnapshot(parallel_scan->phs_snapshot_data);
-	RegisterSnapshot(snapshot);
+
+	if (!parallel_scan->phs_snapshot_any)
+	{
+		/* Snapshot was serialized -- restore it */
+		snapshot = RestoreSnapshot(parallel_scan->phs_snapshot_data);
+		RegisterSnapshot(snapshot);
+	}
+	else
+	{
+		/* SnapshotAny passed by caller (not serialized) */
+		snapshot = SnapshotAny;
+	}
 
 	return zheap_beginscan_internal(relation, snapshot, 0, NULL, parallel_scan,
-								   true, true, true, false, false, true);
+								   true, true, true, false, false,
+								   !parallel_scan->phs_snapshot_any);
 }
 
 /*
