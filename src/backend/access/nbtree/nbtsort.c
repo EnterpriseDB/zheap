@@ -1676,7 +1676,10 @@ _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 	/* Join parallel scan */
 	indexInfo = BuildIndexInfo(btspool->index);
 	indexInfo->ii_Concurrent = btshared->isconcurrent;
-	scan = heap_beginscan_parallel(btspool->heap, &btshared->heapdesc);
+	if (RelationStorageIsZHeap(btspool->heap))
+		scan = zheap_beginscan_parallel(btspool->heap, &btshared->heapdesc);
+	else
+		scan = heap_beginscan_parallel(btspool->heap, &btshared->heapdesc);
 	reltuples = IndexBuildHeapScan(btspool->heap, btspool->index, indexInfo,
 								   true, _bt_build_callback,
 								   (void *) &buildstate, scan);
