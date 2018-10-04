@@ -1538,6 +1538,16 @@ NeedUndoMetaLog(XLogRecPtr redo_point)
 {
 	UndoLogControl *log = MyUndoLogState.logs[UNDO_PERMANENT];
 
+	/*
+	 * If the current session is not attached to any undo log then we don't
+	 * need to log meta.  It is quite possible that some operations skip
+	 * writing undo, so those won't be attached to any undo log.
+	 */
+	if (log == NULL)
+		return false;
+
+	Assert(AmAttachedToUndoLog(log));
+
 	if (log->lsn <= redo_point)
 		return true;
 

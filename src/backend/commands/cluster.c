@@ -21,10 +21,12 @@
 #include "access/multixact.h"
 #include "access/relscan.h"
 #include "access/rewriteheap.h"
+#include "access/rewritezheap.h"
 #include "access/transam.h"
 #include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/zheaputils.h"
 #include "catalog/pg_am.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
@@ -41,6 +43,7 @@
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/acl.h"
 #include "utils/fmgroids.h"
@@ -71,6 +74,9 @@ static void rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose);
 static void copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex,
 			   bool verbose, bool *pSwapToastByContent,
 			   TransactionId *pFreezeXid, MultiXactId *pCutoffMulti);
+static void copy_zheap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex,
+				bool verbose, bool *pSwapToastByContent,
+				TransactionId *pFreezeXid, MultiXactId *pCutoffMulti);
 static List *get_tables_to_cluster(MemoryContext cluster_context);
 static void reform_and_rewrite_tuple(HeapTuple tuple,
 						 TupleDesc oldTupDesc, TupleDesc newTupDesc,
@@ -127,16 +133,6 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("cannot cluster temporary tables of other sessions")));
-
-		/*
-		 * FIXME: We need to write a mechanism to support clustering of zheap
-		 * tables. Currently, we just throw an error message if clustering is
-		 * performed on zheap tables.
-		 */
-		if (RelationStorageIsZHeap(rel))
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("cannot cluster a zheap table")));
 
 		/*
 		 * Reject clustering a partitioned table.
@@ -607,8 +603,12 @@ rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose)
 							   AccessExclusiveLock);
 
 	/* Copy the heap data into the new table in the desired order */
-	copy_heap_data(OIDNewHeap, tableOid, indexOid, verbose,
-				   &swap_toast_by_content, &frozenXid, &cutoffMulti);
+	if (RelationStorageIsZHeap(OldHeap))
+		copy_zheap_data(OIDNewHeap, tableOid, indexOid, verbose,
+						&swap_toast_by_content, &frozenXid, &cutoffMulti);
+	else
+		copy_heap_data(OIDNewHeap, tableOid, indexOid, verbose,
+					   &swap_toast_by_content, &frozenXid, &cutoffMulti);
 
 	/*
 	 * Swap the physical files of the target and transient tables, then
@@ -1160,6 +1160,432 @@ copy_heap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 }
 
 /*
+ * Do the physical copying of zheap data.
+ *
+ * There are three output parameters:
+ * *pSwapToastByContent is set true if toast tables must be swapped by content.
+ * *pFreezeXid receives the TransactionId used as freeze cutoff point.
+ * *pCutoffMulti receives the MultiXactId used as a cutoff point.
+ */
+static void
+copy_zheap_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
+				bool *pSwapToastByContent, TransactionId *pFreezeXid,
+				MultiXactId *pCutoffMulti)
+{
+	Relation	NewHeap,
+	OldHeap,
+	OldIndex;
+	Relation	relRelation;
+	HeapTuple	reltup;
+	Form_pg_class relform;
+	TupleDesc	oldTupDesc;
+	TupleDesc	newTupDesc;
+	int			natts;
+	Datum	   *values;
+	bool	   *isnull;
+	IndexScanDesc indexScan;
+	HeapScanDesc heapScan;
+	bool		use_wal;
+	bool		is_system_catalog;
+	TransactionId OldestXmin;
+	RewriteState rwstate;
+	bool		use_sort;
+	Tuplesortstate *tuplesort;
+	double		num_tuples = 0,
+				tups_vacuumed = 0,
+				tups_recently_dead = 0;
+	BlockNumber num_pages;
+	int			elevel = verbose ? INFO : DEBUG2;
+	PGRUsage	ru0;
+
+	pg_rusage_init(&ru0);
+
+	/*
+	 * Open the relations we need.
+	 */
+	NewHeap = heap_open(OIDNewHeap, AccessExclusiveLock);
+	OldHeap = heap_open(OIDOldHeap, AccessExclusiveLock);
+	if (OidIsValid(OIDOldIndex))
+		OldIndex = index_open(OIDOldIndex, AccessExclusiveLock);
+	else
+		OldIndex = NULL;
+
+	/*
+	 * Their tuple descriptors should be exactly alike, but here we only need
+	 * assume that they have the same number of columns.
+	 */
+	oldTupDesc = RelationGetDescr(OldHeap);
+	newTupDesc = RelationGetDescr(NewHeap);
+	Assert(newTupDesc->natts == oldTupDesc->natts);
+
+	/* Preallocate values/isnull arrays */
+	natts = newTupDesc->natts;
+	values = (Datum *) palloc(natts * sizeof(Datum));
+	isnull = (bool *) palloc(natts * sizeof(bool));
+
+	/*
+	 * If the OldHeap has a toast table, get lock on the toast table to keep
+	 * it from being vacuumed.  This is needed because autovacuum processes
+	 * toast tables independently of their main tables, with no lock on the
+	 * latter.  If an autovacuum were to start on the toast table after we
+	 * compute our OldestXmin below, it would use a later OldestXmin, and then
+	 * possibly remove as DEAD toast tuples belonging to main tuples we think
+	 * are only RECENTLY_DEAD.  Then we'd fail while trying to copy those
+	 * tuples.
+	 *
+	 * We don't need to open the toast relation here, just lock it.  The lock
+	 * will be held till end of transaction.
+	 */
+	if (OldHeap->rd_rel->reltoastrelid)
+		LockRelationOid(OldHeap->rd_rel->reltoastrelid, AccessExclusiveLock);
+
+	/*
+	 * We need to log the copied data in WAL iff WAL archiving/streaming is
+	 * enabled AND it's a WAL-logged rel.
+	 */
+	use_wal = XLogIsNeeded() && RelationNeedsWAL(NewHeap);
+
+	/* use_wal off requires smgr_targblock be initially invalid */
+	Assert(RelationGetTargetBlock(NewHeap) == InvalidBlockNumber);
+
+	/*
+	 * If both tables have TOAST tables, perform toast swap by content.  It is
+	 * possible that the old table has a toast table but the new one doesn't,
+	 * if toastable columns have been dropped.  In that case we have to do
+	 * swap by links.  This is okay because swap by content is only essential
+	 * for system catalogs, and we don't support schema changes for them.
+	 */
+	if (OldHeap->rd_rel->reltoastrelid && NewHeap->rd_rel->reltoastrelid)
+	{
+		*pSwapToastByContent = true;
+
+		/*
+		 * When doing swap by content, any toast pointers written into NewHeap
+		 * must use the old toast table's OID, because that's where the toast
+		 * data will eventually be found.  Set this up by setting rd_toastoid.
+		 * This also tells toast_save_datum() to preserve the toast value
+		 * OIDs, which we want so as not to invalidate toast pointers in
+		 * system catalog caches, and to avoid making multiple copies of a
+		 * single toast value.
+		 *
+		 * Note that we must hold NewHeap open until we are done writing data,
+		 * since the relcache will not guarantee to remember this setting once
+		 * the relation is closed.  Also, this technique depends on the fact
+		 * that no one will try to read from the NewHeap until after we've
+		 * finished writing it and swapping the rels --- otherwise they could
+		 * follow the toast pointers to the wrong place.  (It would actually
+		 * work for values copied over from the old toast table, but not for
+		 * any values that we toast which were previously not toasted.)
+		 */
+		NewHeap->rd_toastoid = OldHeap->rd_rel->reltoastrelid;
+	}
+	else
+		*pSwapToastByContent = false;
+
+	/*
+	 * We can't ignore processes running vacuum full on zheap relations
+	 * because like other backends operating on zheap, this also reserves a
+	 * transaction slot in the page for writing undo.
+	 */
+	OldestXmin = GetOldestXmin(OldHeap, PROCARRAY_FLAGS_DEFAULT);
+
+	/*
+	 * FreezeXid/CutoffMulti are invalid as we don't perform freeze
+	 * operation in zheap.
+	 */
+	*pFreezeXid = InvalidTransactionId;
+	*pCutoffMulti = InvalidMultiXactId;
+
+	/* Remember if it's a system catalog */
+	is_system_catalog = IsSystemRelation(OldHeap);
+
+	/* Initialize the rewrite operation */
+	rwstate = begin_zheap_rewrite(OldHeap, NewHeap, OldestXmin,
+								  InvalidTransactionId, InvalidMultiXactId,
+								  use_wal);
+
+	/*
+	 * Decide whether to use an indexscan or seqscan-and-optional-sort to scan
+	 * the OldHeap.  We know how to use a sort to duplicate the ordering of a
+	 * btree index, and will use seqscan-and-sort for that case if the planner
+	 * tells us it's cheaper.  Otherwise, always indexscan if an index is
+	 * provided, else plain seqscan.
+	 */
+	if (OldIndex != NULL && OldIndex->rd_rel->relam == BTREE_AM_OID)
+		use_sort = plan_cluster_use_sort(OIDOldHeap, OIDOldIndex);
+	else
+		use_sort = false;
+
+	/* Set up sorting if wanted */
+	if (use_sort)
+		tuplesort = tuplesort_begin_cluster(oldTupDesc, OldIndex,
+											maintenance_work_mem,
+											NULL, false);
+	else
+		tuplesort = NULL;
+
+	/*
+	 * Prepare to scan the OldHeap.  To ensure we see recently-dead tuples
+	 * that still need to be copied, we scan with SnapshotAny and use
+	 * ZHeapTupleSatisfiesOldestXmin for the visibility test.  As of now,
+	 * we ignore the recently dead tuples, but we need it for the MVCC-aware
+	 * cluster/vacuum full implementation.
+	 */
+	if (OldIndex != NULL && !use_sort)
+	{
+		heapScan = NULL;
+		indexScan = index_beginscan(OldHeap, OldIndex, SnapshotAny, 0, 0);
+		index_rescan(indexScan, NULL, 0, NULL, 0);
+	}
+	else
+	{
+		heapScan = zheap_beginscan(OldHeap, SnapshotAny, 0, (ScanKey)NULL);
+		indexScan = NULL;
+	}
+
+	/* Log what we're doing */
+	if (indexScan != NULL)
+		ereport(elevel,
+		(errmsg("clustering \"%s.%s\" using index scan on \"%s\"",
+			get_namespace_name(RelationGetNamespace(OldHeap)),
+			RelationGetRelationName(OldHeap),
+			RelationGetRelationName(OldIndex))));
+	else if (tuplesort != NULL)
+		ereport(elevel,
+		(errmsg("clustering \"%s.%s\" using sequential scan and sort",
+			get_namespace_name(RelationGetNamespace(OldHeap)),
+			RelationGetRelationName(OldHeap))));
+	else
+		ereport(elevel,
+		(errmsg("vacuuming \"%s.%s\"",
+			get_namespace_name(RelationGetNamespace(OldHeap)),
+			RelationGetRelationName(OldHeap))));
+
+	/*
+	 * Scan through the OldHeap, either in OldIndex order or sequentially;
+	 * copy each tuple into the NewHeap, or transiently to the tuplesort
+	 * module.  Note that we don't bother sorting dead tuples (they won't get
+	 * to the new table anyway).  While scanning, we skip meta and tpd pages
+	 * (done by *getnext API's) which is okay because we mark the tuples as
+	 * frozen.  However, when we extend current implementation to copy
+	 * visibility information of tuples, we would require to copy meta page
+	 * and or TPD page information as well.
+	 */
+	for (;;)
+	{
+		ZHeapTuple	tuple = NULL;
+		ZHeapTuple	prevtuple = NULL;
+		ZHeapTuple	copiedtuple = NULL;
+		Buffer		buf;
+		TransactionId	xid;
+		bool		isdead;
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (indexScan != NULL)
+		{
+			tuple = index_getnext_ztuple(indexScan, ForwardScanDirection);
+			if (tuple == NULL)
+				break;
+
+			/* Since we used no scan keys, should never need to recheck */
+			if (indexScan->xs_recheck)
+				elog(ERROR, "CLUSTER does not support lossy index conditions");
+
+			buf = indexScan->xs_cbuf;
+		}
+		else
+		{
+			tuple = zheap_getnext(heapScan, ForwardScanDirection);
+
+			if (prevtuple)
+				pfree(prevtuple);
+			if (tuple == NULL)
+				break;
+			/* Save the tuple to be freed in next cycle. */
+			prevtuple = tuple;
+			buf = heapScan->rs_cbuf;
+		}
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+
+		/*
+		 * We don't have a way to copy visibility information in zheap, so we
+		 * just copy LIVE tuples.  See comments atop rewritezheap.c
+		 */
+		copiedtuple = zheap_copytuple(tuple);
+		switch (ZHeapTupleSatisfiesOldestXmin(&copiedtuple, OldestXmin, buf, &xid, NULL))
+		{
+			case HEAPTUPLE_DEAD:
+				/* Definitely dead */
+				isdead = true;
+				break;
+			case HEAPTUPLE_RECENTLY_DEAD:
+				tups_recently_dead += 1;
+				isdead = true;
+				break;
+			case HEAPTUPLE_LIVE:
+				/* Live, must copy it */
+				isdead = false;
+				break;
+			case HEAPTUPLE_INSERT_IN_PROGRESS:
+				/*
+				 * Since we hold exclusive lock on the relation, normally the
+				 * only way to see this is if it was inserted earlier in our
+				 * own transaction.  However, it can happen in system
+				 * catalogs, since we tend to release write lock before commit
+				 * there.  Give a warning if neither case applies; but in any
+				 * case we had better copy it.
+				 */
+				if (!is_system_catalog &&
+					!TransactionIdIsCurrentTransactionId(xid))
+					elog(WARNING, "concurrent insert in progress within table \"%s\"",
+						RelationGetRelationName(OldHeap));
+				/* treat as live */
+				isdead = false;
+				break;
+			case HEAPTUPLE_DELETE_IN_PROGRESS:
+				/*
+				 * Similar situation to INSERT_IN_PROGRESS case.
+				 */
+				if (!is_system_catalog &&
+					!TransactionIdIsCurrentTransactionId(xid))
+					elog(WARNING, "concurrent delete in progress within table \"%s\"",
+						RelationGetRelationName(OldHeap));
+				/* treat as recently dead */
+				tups_recently_dead += 1;
+				isdead = true;
+				break;
+			default:
+				elog(ERROR, "unexpected ZHeapTupleSatisfiesOldestXmin result");
+				isdead = false; /* keep compiler quiet */
+				break;
+		}
+
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+		if (isdead)
+		{
+			tups_vacuumed += 1;
+			if (copiedtuple)
+				pfree(copiedtuple);
+			continue;
+		}
+
+		num_tuples += 1;
+		if (tuplesort != NULL)
+		{
+			HeapTuple heapTuple;
+
+			/*
+			 * Conversion to heap tuple will lose visibility information, but
+			 * that is okay because during rewrite, we mark all tuples as
+			 * frozen in zheap.
+			 */
+			heapTuple = zheap_to_heap(copiedtuple, oldTupDesc);
+			tuplesort_putheaptuple(tuplesort, heapTuple);
+			/* be tidy */
+			pfree(heapTuple);
+		}
+		else
+			reform_and_rewrite_ztuple(copiedtuple, oldTupDesc, newTupDesc,
+									  values, isnull,
+									  NewHeap->rd_rel->relhasoids, rwstate);
+
+		if (copiedtuple)
+			pfree(copiedtuple);
+	}
+
+	if (indexScan != NULL)
+		index_endscan(indexScan);
+	if (heapScan != NULL)
+		heap_endscan(heapScan);
+
+	/*
+	 * In scan-and-sort mode, complete the sort, then read out all live tuples
+	 * from the tuplestore and write them to the new relation.
+	 */
+	if (tuplesort != NULL)
+	{
+		tuplesort_performsort(tuplesort);
+
+		for (;;)
+		{
+			HeapTuple	heapTuple;
+			ZHeapTuple	zheapTuple;
+
+			CHECK_FOR_INTERRUPTS();
+
+			heapTuple = tuplesort_getheaptuple(tuplesort, true);
+			if (heapTuple == NULL)
+				break;
+
+			zheapTuple = heap_to_zheap(heapTuple, oldTupDesc);
+
+			reform_and_rewrite_ztuple(zheapTuple, oldTupDesc, newTupDesc,
+									  values, isnull,
+									  NewHeap->rd_rel->relhasoids, rwstate);
+			/* be tidy */
+			pfree(zheapTuple);
+		}
+
+		tuplesort_end(tuplesort);
+	}
+
+	/* Write out any remaining tuples, and fsync if needed */
+	end_zheap_rewrite(rwstate);
+
+	/* Reset rd_toastoid just to be tidy --- it shouldn't be looked at again */
+	NewHeap->rd_toastoid = InvalidOid;
+
+	num_pages = RelationGetNumberOfBlocks(NewHeap);
+
+	/* Log what we did */
+	ereport(elevel,
+		(errmsg("\"%s\": found %.0f removable, %.0f nonremovable row versions in %u pages",
+			RelationGetRelationName(OldHeap),
+			tups_vacuumed, num_tuples,
+			RelationGetNumberOfBlocks(OldHeap)),
+			errdetail("%.0f dead row versions removed.\n"
+				"%s.",
+				tups_recently_dead,
+				pg_rusage_show(&ru0))));
+
+	/* Clean up */
+	pfree(values);
+	pfree(isnull);
+
+	if (OldIndex != NULL)
+		index_close(OldIndex, NoLock);
+	heap_close(OldHeap, NoLock);
+	heap_close(NewHeap, NoLock);
+
+	/* Update pg_class to reflect the correct values of pages and tuples. */
+	relRelation = heap_open(RelationRelationId, RowExclusiveLock);
+
+	reltup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(OIDNewHeap));
+	if (!HeapTupleIsValid(reltup))
+		elog(ERROR, "cache lookup failed for relation %u", OIDNewHeap);
+	relform = (Form_pg_class)GETSTRUCT(reltup);
+
+	relform->relpages = num_pages;
+	relform->reltuples = num_tuples;
+
+	/* Don't update the stats for pg_class.  See swap_relation_files. */
+	if (OIDOldHeap != RelationRelationId)
+		CatalogTupleUpdate(relRelation, &reltup->t_self, reltup);
+	else
+		CacheInvalidateRelcacheByTuple(reltup);
+
+	/* Clean up. */
+	heap_freetuple(reltup);
+	heap_close(relRelation, RowExclusiveLock);
+
+	/* Make the update visible */
+	CommandCounterIncrement();
+}
+
+/*
  * Swap the physical files of two given relations.
  *
  * We swap the physical identity (reltablespace, relfilenode) while keeping the
@@ -1309,9 +1735,22 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 	/* set rel1's frozen Xid and minimum MultiXid */
 	if (relform1->relkind != RELKIND_INDEX)
 	{
-		Assert(TransactionIdIsNormal(frozenXid));
+		Relation	rel;
+
+		/*
+		 * We don't have multixact or frozenXid concept for zheap. This is a
+		 * hack to keep Asserts, probably we need some pluggable API here to
+		 * set frozen and multixact cutoff xid's.
+		 */
+		rel = heap_open(r1, NoLock);
+		if (!RelationStorageIsZHeap(rel))
+		{
+			Assert(TransactionIdIsNormal(frozenXid));
+			Assert(MultiXactIdIsValid(cutoffMulti));
+		}
+		heap_close(rel, NoLock);
+
 		relform1->relfrozenxid = frozenXid;
-		Assert(MultiXactIdIsValid(cutoffMulti));
 		relform1->relminmxid = cutoffMulti;
 	}
 

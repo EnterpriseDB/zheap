@@ -637,21 +637,36 @@ Oid
 zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate)
 {
-	TransactionId xid = GetTopTransactionId();
-	uint32	epoch = GetEpochForXid(xid);
+	TransactionId xid;
+	uint32	epoch;
 	ZHeapTuple	zheaptup;
 	UnpackedUndoRecord	undorecord;
 	Buffer		buffer;
 	Buffer		vmbuffer = InvalidBuffer;
 	bool		all_visible_cleared = false;
-	int			trans_slot_id;
+	int			trans_slot_id = InvalidXactSlotId;
 	Page		page;
-	UndoRecPtr	urecptr, prev_urecptr;
+	UndoRecPtr	urecptr = InvalidUndoRecPtr,
+				prev_urecptr = InvalidUndoRecPtr;
 	xl_undolog_meta	undometa;
 	uint8		vm_status;
 	bool		lock_reacquired;
+	bool		skip_undo;
 
 	data_alignment_zheap = data_alignment;
+
+	/*
+	 * We can skip inserting undo records if the tuples are to be marked
+	 * as frozen.
+	 */
+	skip_undo = (options & HEAP_INSERT_FROZEN);
+
+	if (!skip_undo)
+	{
+		/* We don't need a transaction id if we are skipping undo */
+		xid = GetTopTransactionId();
+		epoch = GetEpochForXid(xid);
+	}
 
 	/*
 	 * Assign an OID, and toast the tuple if necessary.
@@ -677,45 +692,54 @@ reacquire_buffer:
 										&vmbuffer, NULL);
 	page = BufferGetPage(buffer);
 
-	/*
-	 * The transaction information of tuple needs to be set in transaction
-	 * slot, so needs to reserve the slot before proceeding with the actual
-	 * operation.  It will be costly to wait for getting the slot, but we do
-	 * that by releasing the buffer lock.
-	 *
-	 * We don't yet know the offset number of the inserting tuple so just pass
-	 * the max offset number + 1 so that if it need to get slot from the TPD
-	 * it can ensure that the TPD has sufficient map entries.
-	 */
-	trans_slot_id = PageReserveTransactionSlot(relation,
-											   buffer,
-											   PageGetMaxOffsetNumber(page) + 1,
-											   epoch,
-											   xid,
-											   &prev_urecptr,
-											   &lock_reacquired);
-	if (lock_reacquired)
+	if (!skip_undo)
 	{
-		UnlockReleaseBuffer(buffer);
-		goto reacquire_buffer;
+		/*
+		 * The transaction information of tuple needs to be set in transaction
+		 * slot, so needs to reserve the slot before proceeding with the actual
+		 * operation.  It will be costly to wait for getting the slot, but we do
+		 * that by releasing the buffer lock.
+		 *
+		 * We don't yet know the offset number of the inserting tuple so just pass
+		 * the max offset number + 1 so that if it need to get slot from the TPD
+		 * it can ensure that the TPD has sufficient map entries.
+		 */
+		trans_slot_id = PageReserveTransactionSlot(relation,
+												   buffer,
+												   PageGetMaxOffsetNumber(page) + 1,
+												   epoch,
+												   xid,
+												   &prev_urecptr,
+												   &lock_reacquired);
+		if (lock_reacquired)
+		{
+			UnlockReleaseBuffer(buffer);
+			goto reacquire_buffer;
+		}
+
+		if (trans_slot_id == InvalidXactSlotId)
+		{
+			UnlockReleaseBuffer(buffer);
+
+			pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
+			pg_usleep(10000L);	/* 10 ms */
+			pgstat_report_wait_end();
+
+			goto reacquire_buffer;
+		}
+
+		/* transaction slot must be reserved before adding tuple to page */
+		Assert(trans_slot_id != InvalidXactSlotId);
 	}
-
-	if (trans_slot_id == InvalidXactSlotId)
-	{
-		UnlockReleaseBuffer(buffer);
-
-		pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
-		pg_usleep(10000L);	/* 10 ms */
-		pgstat_report_wait_end();
-
-		goto reacquire_buffer;
-	}
-
-	/* transaction slot must be reserved before adding tuple to page */
-	Assert(trans_slot_id != InvalidXactSlotId);
 
 	if (options & HEAP_INSERT_SPECULATIVE)
 	{
+		/*
+		 * We can't skip writing undo speculative insertions as we have to
+		 * write the token in undo.
+		 */
+		Assert(!skip_undo);
+
 		/* Mark the tuple as speculatively inserted tuple. */
 		zheaptup->t_data->t_infomask |= ZHEAP_SPECULATIVE_INSERT;
 	}
@@ -726,63 +750,65 @@ reacquire_buffer:
 	 */
 	CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
 
-	/*
-	 * Prepare an undo record.  Unlike other operations, insert operation
-	 * doesn't have a prior version to store in undo, so ideally, we don't
-	 * need to store any additional information like
-	 * UREC_INFO_PAYLOAD_CONTAINS_SLOT for TPD entries.  However, for the sake
-	 * of consistency with inserts via non-inplace updates, we keep the
-	 * additional information in this operation.  Also, we need such an
-	 * information in future where we need to know more information for undo
-	 * tuples and it would be good for forensic purpose as well.
-	 */
-	undorecord.uur_type = UNDO_INSERT;
-	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;
-	undorecord.uur_relfilenode = relation->rd_node.relNode;
-	undorecord.uur_prevxid = FrozenTransactionId;
-	undorecord.uur_xid = xid;
-	undorecord.uur_cid = cid;
-	undorecord.uur_tsid = relation->rd_node.spcNode;
-	undorecord.uur_fork = MAIN_FORKNUM;
-	undorecord.uur_blkprev = prev_urecptr;
-	undorecord.uur_block = BufferGetBlockNumber(buffer);
-	undorecord.uur_tuple.len = 0;
-
-	/*
-	 * Store the speculative insertion token in undo, so that we can retrieve
-	 * it during visibility check of the speculatively inserted tuples.
-	 *
-	 * Note that we don't need to WAL log this value as this is a temporary
-	 * information required only on master node to detect conflicts for
-	 * Insert .. On Conflict.
-	 */
-	if (options & HEAP_INSERT_SPECULATIVE)
+	if (!skip_undo)
 	{
-		uint32 specToken;
+		/*
+		 * Prepare an undo record.  Unlike other operations, insert operation
+		 * doesn't have a prior version to store in undo, so ideally, we don't
+		 * need to store any additional information like
+		 * UREC_INFO_PAYLOAD_CONTAINS_SLOT for TPD entries.  However, for the sake
+		 * of consistency with inserts via non-inplace updates, we keep the
+		 * additional information in this operation.  Also, we need such an
+		 * information in future where we need to know more information for undo
+		 * tuples and it would be good for forensic purpose as well.
+		 */
+		undorecord.uur_type = UNDO_INSERT;
+		undorecord.uur_info = 0;
+		undorecord.uur_prevlen = 0;
+		undorecord.uur_relfilenode = relation->rd_node.relNode;
+		undorecord.uur_prevxid = FrozenTransactionId;
+		undorecord.uur_xid = xid;
+		undorecord.uur_cid = cid;
+		undorecord.uur_tsid = relation->rd_node.spcNode;
+		undorecord.uur_fork = MAIN_FORKNUM;
+		undorecord.uur_blkprev = prev_urecptr;
+		undorecord.uur_block = BufferGetBlockNumber(buffer);
+		undorecord.uur_tuple.len = 0;
 
-		undorecord.uur_payload.len = sizeof(uint32);
-		specToken = GetSpeculativeInsertionToken();
-		initStringInfo(&undorecord.uur_payload);
-		appendBinaryStringInfo(&undorecord.uur_payload,
-							   (char *) &specToken,
-							   sizeof(uint32));
+		/*
+		 * Store the speculative insertion token in undo, so that we can retrieve
+		 * it during visibility check of the speculatively inserted tuples.
+		 *
+		 * Note that we don't need to WAL log this value as this is a temporary
+		 * information required only on master node to detect conflicts for
+		 * Insert .. On Conflict.
+		 */
+		if (options & HEAP_INSERT_SPECULATIVE)
+		{
+			uint32 specToken;
+
+			undorecord.uur_payload.len = sizeof(uint32);
+			specToken = GetSpeculativeInsertionToken();
+			initStringInfo(&undorecord.uur_payload);
+			appendBinaryStringInfo(&undorecord.uur_payload,
+								   (char *)&specToken,
+								   sizeof(uint32));
+		}
+		else
+			undorecord.uur_payload.len = 0;
+
+		urecptr = PrepareUndoInsert(&undorecord,
+									UndoPersistenceForRelation(relation),
+									InvalidTransactionId,
+									&undometa);
 	}
-	else
-		undorecord.uur_payload.len = 0;
-
-	urecptr = PrepareUndoInsert(&undorecord,
-								UndoPersistenceForRelation(relation),
-								InvalidTransactionId,
-								&undometa);
 
 	/*
 	 * If there is a valid vmbuffer get its status.  The vmbuffer will not
 	 * be valid if operated page is newly extended, see
-	 * RelationGetBufferForZTupleand. Also, anyway by default vm status
+	 * RelationGetBufferForZTuple. Also, anyway by default vm status
 	 * bits are clear for those pages hence no need to clear it again!
 	 */
-
 	vm_status = visibilitymap_get_status(relation,
 								BufferGetBlockNumber(buffer),
 								&vmbuffer);
@@ -804,11 +830,14 @@ reacquire_buffer:
 						vmbuffer, VISIBILITYMAP_VALID_BITS);
 	}
 
-	Assert(undorecord.uur_block == ItemPointerGetBlockNumber(&(zheaptup->t_self)));
-	undorecord.uur_offset = ItemPointerGetOffsetNumber(&(zheaptup->t_self));
-	InsertPreparedUndo();
-	PageSetUNDO(undorecord, buffer, trans_slot_id, true, epoch, xid,
-				urecptr, NULL, 0);
+	if (!skip_undo)
+	{
+		Assert(undorecord.uur_block == ItemPointerGetBlockNumber(&(zheaptup->t_self)));
+		undorecord.uur_offset = ItemPointerGetOffsetNumber(&(zheaptup->t_self));
+		InsertPreparedUndo();
+		PageSetUNDO(undorecord, buffer, trans_slot_id, true, epoch, xid,
+					urecptr, NULL, 0);
+	}
 
 	MarkBufferDirty(buffer);
 
@@ -854,8 +883,8 @@ reacquire_buffer:
 		 * Store the information required to generate undo record during
 		 * replay.
 		 */
-		xlundohdr.relfilenode = undorecord.uur_relfilenode;
-		xlundohdr.tsid = undorecord.uur_tsid;
+		xlundohdr.relfilenode = relation->rd_node.relNode;
+		xlundohdr.tsid = relation->rd_node.spcNode;
 		xlundohdr.urec_ptr = urecptr;
 		xlundohdr.blkprev = prev_urecptr;
 
@@ -863,15 +892,12 @@ reacquire_buffer:
 		xlrec.offnum = ItemPointerGetOffsetNumber(&zheaptup->t_self);
 		xlrec.flags = 0;
 
-		/*
-		 * Fixme - Below code is to support visibility maps and speculative
-		 * insertion in future. We need to test this code once those features
-		 * are supported and remove this comment.
-		 */
 		if (all_visible_cleared)
 			xlrec.flags |= XLZ_INSERT_ALL_VISIBLE_CLEARED;
 		if (options & HEAP_INSERT_SPECULATIVE)
 			xlrec.flags |= XLZ_INSERT_IS_SPECULATIVE;
+		if (skip_undo)
+			xlrec.flags |= XLZ_INSERT_IS_FROZEN;
 		Assert(ItemPointerGetBlockNumber(&zheaptup->t_self) == BufferGetBlockNumber(buffer));
 
 		/*
@@ -889,8 +915,13 @@ reacquire_buffer:
 		}
 
 prepare_xlog:
-		/* LOG undolog meta if this is the first WAL after the checkpoint. */
-		LogUndoMetaData(&undometa);
+		if (!skip_undo)
+		{
+			/*
+			 * LOG undolog meta if this is the first WAL after the checkpoint.
+			 */
+			LogUndoMetaData(&undometa);
+		}
 
 		GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
 
@@ -899,6 +930,11 @@ prepare_xlog:
 		XLogRegisterData((char *) &xlrec, SizeOfZHeapInsert);
 		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 		{
+			/*
+			 * We can't have a valid transaction slot when we are skipping
+			 * undo.
+			 */
+			Assert(!skip_undo);
 			xlrec.flags |= XLZ_INSERT_CONTAINS_TPD_SLOT;
 			XLogRegisterData((char *) &trans_slot_id, sizeof(trans_slot_id));
 		}
@@ -936,14 +972,16 @@ prepare_xlog:
 
 	END_CRIT_SECTION();
 
-	/* be tidy */
-	if (undorecord.uur_payload.len > 0)
-		pfree(undorecord.uur_payload.data);
-
 	UnlockReleaseBuffer(buffer);
 	if (vmbuffer != InvalidBuffer)
 		ReleaseBuffer(vmbuffer);
-	UnlockReleaseUndoBuffers();
+	if (!skip_undo)
+	{
+		/* be tidy */
+		if (undorecord.uur_payload.len > 0)
+			pfree(undorecord.uur_payload.data);
+		UnlockReleaseUndoBuffers();
+	}
 	UnlockReleaseTPDBuffers();
 
 	/*
@@ -983,6 +1021,7 @@ prepare_xlog:
 
 	return ZHeapTupleGetOid(tup);
 }
+
 /*
  *	simple_zheap_delete - delete a zheap tuple
  *
@@ -1021,7 +1060,6 @@ simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot)
 			break;
 	}
 }
-
 
 /*
  * slot_getsyszattr
@@ -10029,22 +10067,40 @@ ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
  *	be accomodated on a page and alignment for each item.  It also
  *	additionally handles the itemids that are marked as unused, but still
  *	can't be reused.
+ *
+ *	Callers passed a valid input_page only incase there are constructing the
+ *	in-memory copy of tuples and then directly sync the page.
  */
 OffsetNumber
 ZPageAddItemExtended(Buffer buffer,
+					 Page	input_page,
 					 Item item,
 					 Size size,
 					 OffsetNumber offsetNumber,
 					 int flags)
 {
-	Page		page = BufferGetPage(buffer);
-	PageHeader	phdr = (PageHeader) page;
+	Page		page;
+	PageHeader	phdr;
 	Size		alignedSize;
 	int			lower;
 	int			upper;
 	ItemId		itemId;
 	OffsetNumber limit;
 	bool		needshuffle = false;
+
+	/* Either one of buffer or page could be valid. */
+	if (BufferIsValid(buffer))
+	{
+		Assert(!PageIsValid(input_page));
+		page = BufferGetPage(buffer);
+	}
+	else
+	{
+		Assert(PageIsValid(input_page));
+		page = input_page;
+	}
+
+	phdr = (PageHeader) page;
 
 	/*
 	 * Be wary about corrupted page pointers
@@ -10114,6 +10170,13 @@ ZPageAddItemExtended(Buffer buffer,
 						UndoRecPtr		urec_ptr;
 						int		trans_slot_id = ItemIdGetTransactionSlot(itemId);
 						uint32		epoch;
+
+						/*
+						 * We can't reach here for a valid input page as the
+						 * callers passed it for the pages that wouldn't have
+						 * been pruned.
+						 */
+						Assert(!PageIsValid(input_page));
 
 						/*
 						 * Here, we are relying on the transaction information in
@@ -10303,7 +10366,7 @@ RelationPutZHeapTuple(Relation relation,
 	OffsetNumber offnum;
 
 	/* Add the tuple to the page */
-	offnum = ZPageAddItem(buffer, (Item) tuple->t_data, tuple->t_len,
+	offnum = ZPageAddItem(buffer, NULL, (Item) tuple->t_data, tuple->t_len,
 						  InvalidOffsetNumber, false, true);
 
 	if (offnum == InvalidOffsetNumber)

@@ -48,6 +48,7 @@ zheap_xlog_insert(XLogReaderState *record)
 	int			*tpd_trans_slot_id = NULL;
 	TransactionId	xid = XLogRecGetXid(record);
 	uint32	xid_epoch = GetEpochForXid(xid);
+	bool	skip_undo;
 
 	xlrec = (xl_zheap_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
 	if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
@@ -72,57 +73,66 @@ zheap_xlog_insert(XLogReaderState *record)
 		FreeFakeRelcacheEntry(reln);
 	}
 
-	/* prepare an undo record */
-	undorecord.uur_type = UNDO_INSERT;
-	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;
-	undorecord.uur_relfilenode = xlundohdr->relfilenode;
-	undorecord.uur_prevxid = FrozenTransactionId;
-	undorecord.uur_xid = xid;
-	undorecord.uur_cid = FirstCommandId;
-	undorecord.uur_tsid = xlundohdr->tsid;
-	undorecord.uur_fork = MAIN_FORKNUM;
-	undorecord.uur_blkprev = xlundohdr->blkprev;
-	undorecord.uur_block = ItemPointerGetBlockNumber(&target_tid);
-	undorecord.uur_offset = ItemPointerGetOffsetNumber(&target_tid);
-	undorecord.uur_payload.len = 0;
-	undorecord.uur_tuple.len = 0;
-
 	/*
-	 * For speculative insertions, we store the dummy speculative token in the
-	 * undorecord so that, the size of undorecord in DO function matches with
-	 * the size of undorecord in REDO function. This ensures that, for INSERT
-	 * ... ON CONFLICT statements, the assert condition used later in this
-	 * function to ensure that the undo pointer in DO and REDO function remains
-	 * the same is true. However, it might not be useful in the REDO function as
-	 * it is just required in the master node to detect conflicts for insert ...
-	 * on conflict.
-	 *
-	 * Fixme - Once we have undo consistency checker that we can remove the
-	 * assertion as well dummy speculative token.
+	 * We can skip inserting undo records if the tuples are to be marked
+	 * as frozen.
 	 */
-	if (xlrec->flags & XLZ_INSERT_IS_SPECULATIVE)
+	skip_undo = (xlrec->flags & XLZ_INSERT_IS_FROZEN);
+
+	if (!skip_undo)
 	{
-		uint32 dummy_specToken = 1;
-
-		undorecord.uur_payload.len = sizeof(uint32);
-		initStringInfo(&undorecord.uur_payload);
-		appendBinaryStringInfo(&undorecord.uur_payload,
-							   (char *) &dummy_specToken,
-							   sizeof(uint32));
-	}
-	else
+		/* prepare an undo record */
+		undorecord.uur_type = UNDO_INSERT;
+		undorecord.uur_info = 0;
+		undorecord.uur_prevlen = 0;
+		undorecord.uur_relfilenode = xlundohdr->relfilenode;
+		undorecord.uur_prevxid = FrozenTransactionId;
+		undorecord.uur_xid = xid;
+		undorecord.uur_cid = FirstCommandId;
+		undorecord.uur_tsid = xlundohdr->tsid;
+		undorecord.uur_fork = MAIN_FORKNUM;
+		undorecord.uur_blkprev = xlundohdr->blkprev;
+		undorecord.uur_block = ItemPointerGetBlockNumber(&target_tid);
+		undorecord.uur_offset = ItemPointerGetOffsetNumber(&target_tid);
 		undorecord.uur_payload.len = 0;
+		undorecord.uur_tuple.len = 0;
 
-	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
-	InsertPreparedUndo();
+		/*
+		 * For speculative insertions, we store the dummy speculative token in the
+		 * undorecord so that, the size of undorecord in DO function matches with
+		 * the size of undorecord in REDO function. This ensures that, for INSERT
+		 * ... ON CONFLICT statements, the assert condition used later in this
+		 * function to ensure that the undo pointer in DO and REDO function remains
+		 * the same is true. However, it might not be useful in the REDO function as
+		 * it is just required in the master node to detect conflicts for insert ...
+		 * on conflict.
+		 *
+		 * Fixme - Once we have undo consistency checker that we can remove the
+		 * assertion as well dummy speculative token.
+		 */
+		if (xlrec->flags & XLZ_INSERT_IS_SPECULATIVE)
+		{
+			uint32 dummy_specToken = 1;
 
-	/*
-	 * undo should be inserted at same location as it was during the actual
-	 * insert (DO operation).
-	 */
+			undorecord.uur_payload.len = sizeof(uint32);
+			initStringInfo(&undorecord.uur_payload);
+			appendBinaryStringInfo(&undorecord.uur_payload,
+				(char *)&dummy_specToken,
+				sizeof(uint32));
+		}
+		else
+			undorecord.uur_payload.len = 0;
 
-	Assert (urecptr == xlundohdr->urec_ptr);
+		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
+		InsertPreparedUndo();
+
+		/*
+		 * undo should be inserted at same location as it was during the actual
+		 * insert (DO operation).
+		 */
+
+		Assert(urecptr == xlundohdr->urec_ptr);
+	}
 
 	/*
 	 * If we inserted the first and only tuple on the page, re-initialize the
@@ -168,17 +178,21 @@ zheap_xlog_insert(XLogReaderState *record)
 		zhtup->t_infomask = xlhdr.t_infomask;
 		zhtup->t_hoff = xlhdr.t_hoff;
 
-		if (ZPageAddItem(buffer, (Item) zhtup, newlen, xlrec->offnum,
+		if (ZPageAddItem(buffer, NULL, (Item) zhtup, newlen, xlrec->offnum,
 						 true, true) == InvalidOffsetNumber)
 			elog(PANIC, "failed to add tuple");
 
-		if (tpd_trans_slot_id)
-			trans_slot_id = *tpd_trans_slot_id;
-		else
-			trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup);
-		
-		PageSetUNDO(undorecord, buffer, trans_slot_id, false, xid_epoch,
-					xid, urecptr, NULL, 0);
+		if (!skip_undo)
+		{
+			if (tpd_trans_slot_id)
+				trans_slot_id = *tpd_trans_slot_id;
+			else
+				trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup);
+
+			PageSetUNDO(undorecord, buffer, trans_slot_id, false, xid_epoch,
+						xid, urecptr, NULL, 0);
+		}
+
 		PageSetLSN(page, lsn);
 
 		MarkBufferDirty(buffer);
@@ -187,6 +201,9 @@ zheap_xlog_insert(XLogReaderState *record)
 	/* replay the record for tpd buffer */
 	if (XLogRecHasBlockRef(record, 1))
 	{
+		/* We can't have a valid transaction slot when we are skipping undo. */
+		Assert(!skip_undo);
+
 		/*
 		 * We need to replay the record for TPD only when this record contains
 		 * slot from TPD.
@@ -941,7 +958,7 @@ zheap_xlog_update(XLogReaderState *record)
 		}
 		else
 		{
-			if (ZPageAddItem(newbuffer, (Item) newtup, newlen, xlrec->new_offnum,
+			if (ZPageAddItem(newbuffer, NULL, (Item) newtup, newlen, xlrec->new_offnum,
 						 true, true) == InvalidOffsetNumber)
 				elog(PANIC, "failed to add tuple");
 			PageSetUNDO((newbuffer == oldbuffer) ? undorecord : newundorecord,
@@ -1636,7 +1653,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			zhtup->t_infomask = xlhdr->t_infomask;
 			zhtup->t_hoff = xlhdr->t_hoff;
 
-			if (ZPageAddItem(buffer, (Item) zhtup, newlen, offnum,
+			if (ZPageAddItem(buffer, NULL, (Item) zhtup, newlen, offnum,
 							 true, true) == InvalidOffsetNumber)
 				elog(PANIC, "failed to add tuple");
 

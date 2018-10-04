@@ -1131,7 +1131,7 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 	vac_strategy = bstrategy;
 
 	/*
-	 * We can't ignore processes running lazy vacuum on zheap relations because,
+	 * We can't ignore processes running lazy vacuum on zheap relations because
 	 * like other backends operating on zheap, lazy vacuum also reserves a
 	 * transaction slot in the page for pruning purpose.
 	 */
