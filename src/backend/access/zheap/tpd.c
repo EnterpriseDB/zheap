@@ -1033,7 +1033,7 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 						   char *tpd_entry, Size size_tpd_entry,
 						   bool add_new_tpd_page, bool delete_old_entry)
 {
-	ZHeapMetaPage	metapage;
+	ZHeapMetaPage	metapage = NULL;
 	TPDPageOpaque	tpdopaque, last_tpdopaque;
 	TPDEntryHeader	old_tpd_entry;
 	Buffer	last_used_tpd_buf = InvalidBuffer;

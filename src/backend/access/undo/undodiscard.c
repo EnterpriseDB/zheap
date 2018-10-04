@@ -47,7 +47,8 @@ static UndoRecPtr FetchLatestUndoPtrForXid(UndoRecPtr urecptr,
 static TransactionId
 UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 {
-	UndoRecPtr	undo_recptr, next_urecptr, next_insert, from_urecptr;
+	UndoRecPtr	undo_recptr, next_insert, from_urecptr;
+	UndoRecPtr	next_urecptr = InvalidUndoRecPtr;
 	UnpackedUndoRecord	*uur = NULL;
 	bool	need_discard = false;
 	bool	log_complete = false;
