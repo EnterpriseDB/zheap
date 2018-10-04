@@ -495,8 +495,10 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 	 * a forced fsync. For zheap, we've to fsync the corresponding undo buffers
 	 * as well. It is difficult to keep track of dirty undo buffers and fsync
 	 * them at end of the operation in some function similar to heap_sync.
+	 * But, if we're freezing the tuple during insertion, we can use the
+	 * HEAP_INSERT_SKIP_WAL optimization since we don't write undo for the same.
 	 */
-	Assert(!(options & HEAP_INSERT_SKIP_WAL));
+	Assert(!(options & HEAP_INSERT_SKIP_WAL) || (options & HEAP_INSERT_FROZEN));
 
 	/*
 	 * Parallel operations are required to be strictly read-only in a parallel
