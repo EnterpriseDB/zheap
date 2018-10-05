@@ -1847,6 +1847,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	snapshot->xmin = snapshot->xmax = InvalidTransactionId;
+	snapshot->subxid = InvalidSubTransactionId;
 	snapshot->speculativeToken = 0;
 
 	/* Get transaction id */
@@ -1878,6 +1879,8 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		else if (TransactionIdIsInProgress(xid))
 		{
 			snapshot->xmax = xid;
+			if (UndoRecPtrIsValid(urec_ptr))
+				ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, &snapshot->subxid);
 			return zhtup;		/* in deletion by other */
 		}
 		else if (TransactionIdDidCommit(xid))
@@ -1915,7 +1918,11 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		else if (TransactionIdIsInProgress(xid))
 		{
 			if (!ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
+			{
 				snapshot->xmax = xid;
+				if (UndoRecPtrIsValid(urec_ptr))
+					ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, &snapshot->subxid);
+			}
 			return zhtup;		/* being updated */
 		}
 		else if (TransactionIdDidCommit(xid))
@@ -1951,6 +1958,8 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		}
 
 		snapshot->xmin = xid;
+		if (UndoRecPtrIsValid(urec_ptr))
+			ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, &snapshot->subxid);
 		return zhtup;		/* in insertion by other */
 	}
 	else if (TransactionIdDidCommit(xid))

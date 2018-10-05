@@ -745,6 +745,7 @@ HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot,
 	Assert(htup->t_tableOid != InvalidOid);
 
 	snapshot->xmin = snapshot->xmax = InvalidTransactionId;
+	snapshot->subxid = InvalidSubTransactionId;
 	snapshot->speculativeToken = 0;
 
 	if (!HeapTupleHeaderXminCommitted(tuple))

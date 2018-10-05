@@ -803,8 +803,12 @@ retry:
 			if (DirtySnapshot.speculativeToken)
 				SpeculativeInsertionWait(DirtySnapshot.xmin,
 										 DirtySnapshot.speculativeToken);
+			else if (DirtySnapshot.subxid != InvalidSubTransactionId)
+					 SubXactLockTableWait(xwait, DirtySnapshot.subxid, heap,
+										  &ctid_wait, reason_wait);
 			else
-				XactLockTableWait(xwait, heap, &ctid_wait, reason_wait);
+					XactLockTableWait(xwait, heap, &ctid_wait, reason_wait);
+
 			goto retry;
 		}
 

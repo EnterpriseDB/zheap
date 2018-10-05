@@ -2926,18 +2926,46 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 				elog(ERROR, "t_xmin is uncommitted in tuple to be updated");
 
 			/*
-			 * If tuple is being updated by other transaction then we have to
+			 * If tuple is being updated by other (sub)transaction then we have to
 			 * wait for its commit/abort, or die trying.
 			 */
-			if (TransactionIdIsValid(SnapshotDirty.xmax))
+			if (SnapshotDirty.subxid != InvalidSubTransactionId &&
+				TransactionIdIsValid(SnapshotDirty.xmax))
 			{
 				ReleaseBuffer(buffer);
 				switch (wait_policy)
 				{
 					case LockWaitBlock:
-						XactLockTableWait(SnapshotDirty.xmax,
-										  relation, &tuple->t_self,
-										  XLTW_FetchUpdated);
+						SubXactLockTableWait(SnapshotDirty.xmax,
+											 SnapshotDirty.subxid,
+											 relation, &tuple->t_self,
+											 XLTW_FetchUpdated);
+						break;
+					case LockWaitSkip:
+						if (!ConditionalSubXactLockTableWait(SnapshotDirty.xmax,
+															SnapshotDirty.subxid))
+								return NULL;		/* skip instead of waiting */
+						break;
+					case LockWaitError:
+						if (ConditionalSubXactLockTableWait(SnapshotDirty.xmax,
+															SnapshotDirty.subxid))
+							ereport(ERROR,
+									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+									 errmsg("could not obtain lock on row in relation \"%s\"",
+									 RelationGetRelationName(relation))));
+
+						break;
+				}
+				continue;		/* loop back to repeat zheap_fetch */
+			}
+			else if (TransactionIdIsValid(SnapshotDirty.xmax))
+			{
+				ReleaseBuffer(buffer);
+				switch (wait_policy)
+				{
+					case LockWaitBlock:
+							XactLockTableWait(SnapshotDirty.xmax, relation,
+											  &tuple->t_self, XLTW_FetchUpdated);
 						break;
 					case LockWaitSkip:
 						if (!ConditionalXactLockTableWait(SnapshotDirty.xmax))
