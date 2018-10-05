@@ -12,7 +12,7 @@ CREATE TABLE upsert_test (
 );
 INSERT INTO update_test VALUES (5, 10, 'foo');
 INSERT INTO update_test(b, a) VALUES (15, 10);
-SELECT * FROM update_test;
+SELECT * FROM update_test ORDER BY 1, 2, 3;
  a  | b  |  c  
 ----+----+-----
   5 | 10 | foo
@@ -20,7 +20,7 @@ SELECT * FROM update_test;
 (2 rows)
 
 UPDATE update_test SET a = DEFAULT, b = DEFAULT;
-SELECT * FROM update_test;
+SELECT * FROM update_test ORDER BY 1, 2, 3;
  a  | b |  c  
 ----+---+-----
  10 |   | foo
@@ -29,7 +29,7 @@ SELECT * FROM update_test;
 
 -- aliases for the UPDATE target table
 UPDATE update_test AS t SET b = 10 WHERE t.a = 10;
-SELECT * FROM update_test;
+SELECT * FROM update_test ORDER BY 1, 2, 3;
  a  | b  |  c  
 ----+----+-----
  10 | 10 | foo
@@ -37,7 +37,7 @@ SELECT * FROM update_test;
 (2 rows)
 
 UPDATE update_test t SET b = t.b + 10 WHERE t.a = 10;
-SELECT * FROM update_test;
+SELECT * FROM update_test ORDER BY 1, 2, 3;
  a  | b  |  c  
 ----+----+-----
  10 | 20 | foo
@@ -49,7 +49,7 @@ SELECT * FROM update_test;
 --
 UPDATE update_test SET a=v.i FROM (VALUES(100, 20)) AS v(i, j)
   WHERE update_test.b = v.j;
-SELECT * FROM update_test;
+SELECT * FROM update_test ORDER BY 1, 2, 3;
   a  | b  |  c  
 -----+----+-----
  100 | 20 | foo
@@ -67,7 +67,7 @@ HINT:  You will need to rewrite or cast the expression.
 -- Test multiple-set-clause syntax
 --
 INSERT INTO update_test SELECT a,b+1,c FROM update_test;
-SELECT * FROM update_test;
+SELECT * FROM update_test ORDER BY 1, 2, 3;
   a  | b  |  c  
 -----+----+-----
  100 | 20 | foo
@@ -77,23 +77,23 @@ SELECT * FROM update_test;
 (4 rows)
 
 UPDATE update_test SET (c,b,a) = ('bugle', b+11, DEFAULT) WHERE c = 'foo';
-SELECT * FROM update_test;
+SELECT * FROM update_test ORDER BY 1, 2, 3;
   a  | b  |   c   
 -----+----+-------
- 100 | 20 | 
- 100 | 21 | 
   10 | 31 | bugle
   10 | 32 | bugle
+ 100 | 20 | 
+ 100 | 21 | 
 (4 rows)
 
 UPDATE update_test SET (c,b) = ('car', a+b), a = a + 1 WHERE a = 10;
-SELECT * FROM update_test;
+SELECT * FROM update_test ORDER BY 1, 2, 3;
   a  | b  |  c  
 -----+----+-----
- 100 | 20 | 
- 100 | 21 | 
   11 | 41 | car
   11 | 42 | car
+ 100 | 20 | 
+ 100 | 21 | 
 (4 rows)
 
 -- fail, multi assignment to same column:
@@ -103,26 +103,26 @@ ERROR:  multiple assignments to same column "b"
 UPDATE update_test
   SET (b,a) = (select a,b from update_test where b = 41 and c = 'car')
   WHERE a = 100 AND b = 20;
-SELECT * FROM update_test;
+SELECT * FROM update_test ORDER BY 1, 2, 3;
   a  | b  |  c  
 -----+----+-----
- 100 | 21 | 
   11 | 41 | car
   11 | 42 | car
   41 | 11 | 
+ 100 | 21 | 
 (4 rows)
 
 -- correlated sub-select:
 UPDATE update_test o
   SET (b,a) = (select a+1,b from update_test i
                where i.a=o.a and i.b=o.b and i.c is not distinct from o.c);
-SELECT * FROM update_test;
+SELECT * FROM update_test ORDER BY 1, 2, 3;
  a  |  b  |  c  
 ----+-----+-----
+ 11 |  42 | 
  21 | 101 | 
  41 |  12 | car
  42 |  12 | car
- 11 |  42 | 
 (4 rows)
 
 -- fail, multiple rows supplied:
@@ -131,7 +131,7 @@ ERROR:  more than one row returned by a subquery used as an expression
 -- set to null if no rows supplied:
 UPDATE update_test SET (b,a) = (select a+1,b from update_test where a = 1000)
   WHERE a = 11;
-SELECT * FROM update_test;
+SELECT * FROM update_test ORDER BY 1, 2, 3;
  a  |  b  |  c  
 ----+-----+-----
  21 | 101 | 
@@ -158,13 +158,13 @@ LINE 1: UPDATE update_test AS t SET b = update_test.b + 10 WHERE t.a...
 HINT:  Perhaps you meant to reference the table alias "t".
 -- Make sure that we can update to a TOASTed value.
 UPDATE update_test SET c = repeat('x', 10000) WHERE c = 'car';
-SELECT a, b, char_length(c) FROM update_test;
+SELECT a, b, char_length(c) FROM update_test ORDER BY 1, 2, 3;
  a  |  b  | char_length 
 ----+-----+-------------
-    |     |            
  21 | 100 |            
  41 |  12 |       10000
  42 |  12 |       10000
+    |     |            
 (4 rows)
 
 -- Test ON CONFLICT DO UPDATE
@@ -298,15 +298,7 @@ UPDATE range_parted set e = d;
 -- No row found
 UPDATE part_c_1_100 set c = c + 20 WHERE c = 98;
 -- ok, row movement
-UPDATE part_b_10_b_20 set c = c + 20 returning c, b, a;
-  c  | b  | a 
------+----+---
- 116 | 12 | b
- 117 | 13 | b
- 125 | 15 | b
- 125 | 17 | b
-(4 rows)
-
+UPDATE part_b_10_b_20 set c = c + 20;
 :show_data;
     partname    | a | b  |  c  | d | e 
 ----------------+---+----+-----+---+---
@@ -319,19 +311,11 @@ UPDATE part_b_10_b_20 set c = c + 20 returning c, b, a;
 (6 rows)
 
 -- fail, row movement happens only within the partition subtree.
-UPDATE part_b_10_b_20 set b = b - 6 WHERE c > 116 returning *;
+UPDATE part_b_10_b_20 set b = b - 4 WHERE c > 116 returning *;
 ERROR:  new row for relation "part_d_1_15" violates partition constraint
-DETAIL:  Failing row contains (2, 117, 2, b, 7).
+DETAIL:  Failing row contains (2, 117, 2, b, 9).
 -- ok, row movement, with subset of rows moved into different partition.
-UPDATE range_parted set b = b - 6 WHERE c > 116 returning a, b + c;
- a | ?column? 
----+----------
- a |      204
- b |      124
- b |      134
- b |      136
-(4 rows)
-
+UPDATE range_parted set b = b - 6 WHERE c > 116;
 :show_data;
    partname    | a | b  |  c  | d | e 
 ---------------+---+----+-----+---+---
@@ -375,12 +359,11 @@ UPDATE upview set a = 'b', b = 15 WHERE b = 4;
 DROP VIEW upview;
 -- RETURNING having whole-row vars.
 :init_range_parted;
-UPDATE range_parted set c = 95 WHERE a = 'b' and b > 10 and c > 100 returning (range_parted), *;
+UPDATE range_parted set c = 95 WHERE a = 'b' and b > 15 and c > 100 returning (range_parted), a, b, c, d, e;
  range_parted  | a | b  | c  | d  | e 
 ---------------+---+----+----+----+---
- (b,15,95,16,) | b | 15 | 95 | 16 | 
  (b,17,95,19,) | b | 17 | 95 | 19 | 
-(2 rows)
+(1 row)
 
 :show_data;
     partname    | a | b  |  c  | d  | e 
@@ -389,8 +372,8 @@ UPDATE range_parted set c = 95 WHERE a = 'b' and b > 10 and c > 100 returning (r
  part_a_1_a_10  | a |  1 |   1 |  1 | 
  part_c_1_100   | b | 12 |  96 |  1 | 
  part_c_1_100   | b | 13 |  97 |  2 | 
- part_c_1_100   | b | 15 |  95 | 16 | 
  part_c_1_100   | b | 17 |  95 | 19 | 
+ part_d_15_20   | b | 15 | 105 | 16 | 
 (6 rows)
 
 -- Transition tables with update row movement
