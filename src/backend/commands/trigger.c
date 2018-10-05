@@ -2590,17 +2590,32 @@ ExecBRInsertTriggers(EState *estate, ResultRelInfo *relinfo,
 
 void
 ExecARInsertTriggers(EState *estate, ResultRelInfo *relinfo,
-					 HeapTuple trigtuple, List *recheckIndexes,
+					 void *trigtuple_abstract, List *recheckIndexes,
 					 TransitionCaptureState *transition_capture)
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
 
 	if ((trigdesc && trigdesc->trig_insert_after_row) ||
 		(transition_capture && transition_capture->tcs_insert_new_table))
+	{
+		HeapTuple	trigtuple;
+		Relation	rel = relinfo->ri_RelationDesc;
+		bool		is_zheap = RelationStorageIsZHeap(rel);
+
+		if (is_zheap && trigtuple_abstract != NULL)
+			trigtuple = zheap_to_heap((ZHeapTuple) trigtuple_abstract,
+									 rel->rd_att);
+		else
+			trigtuple = (HeapTuple) trigtuple_abstract;
+
 		AfterTriggerSaveEvent(estate, relinfo, TRIGGER_EVENT_INSERT,
 							  true, NULL, trigtuple,
 							  recheckIndexes, NULL,
 							  transition_capture);
+
+		if (is_zheap && trigtuple != NULL)
+			heap_freetuple(trigtuple);
+	}
 }
 
 TupleTableSlot *
@@ -3137,7 +3152,7 @@ void
 ExecARUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 					 ItemPointer tupleid,
 					 HeapTuple fdw_trigtuple,
-					 HeapTuple newtuple,
+					 void *newtuple_abstract,
 					 List *recheckIndexes,
 					 TransitionCaptureState *transition_capture)
 {
@@ -3149,6 +3164,15 @@ ExecARUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 		  transition_capture->tcs_update_new_table)))
 	{
 		HeapTuple	trigtuple;
+		HeapTuple	newtuple;
+		Relation	rel = relinfo->ri_RelationDesc;
+		bool		is_zheap = RelationStorageIsZHeap(rel);
+
+		if (is_zheap && newtuple_abstract != NULL)
+			newtuple = zheap_to_heap((ZHeapTuple) newtuple_abstract,
+									 rel->rd_att);
+		else
+			newtuple = (HeapTuple) newtuple_abstract;
 
 		/*
 		 * Note: if the UPDATE is converted into a DELETE+INSERT as part of
@@ -3158,7 +3182,7 @@ ExecARUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 		 */
 		if (fdw_trigtuple == NULL && ItemPointerIsValid(tupleid))
 		{
-			if (RelationStorageIsZHeap(relinfo->ri_RelationDesc))
+			if (is_zheap)
 				trigtuple = GetZTupleForTrigger(estate,
 												NULL,
 												relinfo,
@@ -3183,6 +3207,8 @@ ExecARUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 							  transition_capture);
 		if (trigtuple != fdw_trigtuple)
 			heap_freetuple(trigtuple);
+		if (is_zheap && newtuple != NULL)
+			heap_freetuple(newtuple);
 	}
 }
 

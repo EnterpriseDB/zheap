@@ -322,6 +322,7 @@ ExecInsert(ModifyTableState *mtstate,
 {
 	HeapTuple	tuple = NULL;
 	ZHeapTuple	ztuple = NULL;
+	void	   **abstract_tuple;
 	ResultRelInfo *resultRelInfo;
 	Relation	resultRelationDesc;
 	Oid			newId;
@@ -343,9 +344,15 @@ ExecInsert(ModifyTableState *mtstate,
 	 * writable copy
 	 */
 	if (RelationStorageIsZHeap(resultRelationDesc))
+	{
 		ztuple = ExecMaterializeZSlot(slot);
+		abstract_tuple = (void **) &ztuple;
+	}
 	else
+	{
 		tuple = ExecMaterializeSlot(slot);
+		abstract_tuple = (void **) &tuple;
+	}
 
 	/*
 	 * get information on the (current) result relation
@@ -721,7 +728,7 @@ ExecInsert(ModifyTableState *mtstate,
 	{
 		ExecARUpdateTriggers(estate, resultRelInfo, NULL,
 							 NULL,
-							 tuple,
+							 *abstract_tuple,
 							 NULL,
 							 mtstate->mt_transition_capture);
 
@@ -733,21 +740,8 @@ ExecInsert(ModifyTableState *mtstate,
 	}
 
 	/* AFTER ROW INSERT Triggers */
-	if (RelationStorageIsZHeap(resultRelationDesc))
-	{
-		if (resultRelInfo->ri_TrigDesc)
-		{
-			HeapTuple	tuple;
-
-			tuple = zheap_to_heap(ztuple, resultRelationDesc->rd_att);
-			ExecARInsertTriggers(estate, resultRelInfo, tuple, recheckIndexes,
-								 ar_insert_trig_tcs);
-			heap_freetuple(tuple);
-		}
-	}
-	else
-		ExecARInsertTriggers(estate, resultRelInfo, tuple, recheckIndexes,
-							 ar_insert_trig_tcs);
+	ExecARInsertTriggers(estate, resultRelInfo, *abstract_tuple, recheckIndexes,
+						 ar_insert_trig_tcs);
 	list_free(recheckIndexes);
 
 	/*
@@ -1554,27 +1548,13 @@ lreplace:;
 		(estate->es_processed)++;
 
 	/* AFTER ROW UPDATE Triggers */
-	if (RelationStorageIsZHeap(resultRelationDesc))
-	{
-		if (resultRelInfo->ri_TrigDesc)
-		{
-			HeapTuple	tuple;
-
-			tuple = zheap_to_heap(ztuple, resultRelationDesc->rd_att);
-			ExecARUpdateTriggers(estate, resultRelInfo, tupleid, oldtuple,
-								 tuple, recheckIndexes,
-								 mtstate->operation == CMD_INSERT ?
-								 mtstate->mt_oc_transition_capture :
-								 mtstate->mt_transition_capture);
-			heap_freetuple(tuple);
-		}
-	}
-	else
-		ExecARUpdateTriggers(estate, resultRelInfo, tupleid, oldtuple, tuple,
-							 recheckIndexes,
-							 mtstate->operation == CMD_INSERT ?
-							 mtstate->mt_oc_transition_capture :
-							 mtstate->mt_transition_capture);
+	ExecARUpdateTriggers(estate, resultRelInfo, tupleid, oldtuple,
+						 RelationStorageIsZHeap(resultRelationDesc) ?
+						 (void *) ztuple : (void *) tuple,
+						 recheckIndexes,
+						 mtstate->operation == CMD_INSERT ?
+						 mtstate->mt_oc_transition_capture :
+						 mtstate->mt_transition_capture);
 
 	list_free(recheckIndexes);
 

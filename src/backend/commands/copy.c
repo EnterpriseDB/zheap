@@ -317,7 +317,7 @@ static void CopyFromInsertBatch(CopyState cstate, EState *estate,
 					CommandId mycid, int hi_options,
 					ResultRelInfo *resultRelInfo, TupleTableSlot *myslot,
 					BulkInsertState bistate,
-					int nBufferedTuples, void *bufferedTuples,
+					int nBufferedTuples, void **bufferedTuples,
 					uint64 firstBufferedLineNo);
 static bool CopyReadLine(CopyState cstate);
 static bool CopyReadLineText(CopyState cstate);
@@ -3027,6 +3027,8 @@ CopyFrom(CopyState cstate)
 				else
 				{
 					List	   *recheckIndexes = NIL;
+					bool		is_zheap = false;
+					ItemPointer	tid;
 
 					/* OK, store the tuple */
 					if (resultRelInfo->ri_FdwRoutine != NULL)
@@ -3048,32 +3050,39 @@ CopyFrom(CopyState cstate)
 						 * them.
 						 */
 						tuple->t_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
-					}
-					else if (RelationStorageIsZHeap(resultRelInfo->ri_RelationDesc))
-					{
-						zheap_insert(resultRelInfo->ri_RelationDesc, ztuple, mycid,
-									hi_options, bistate);
-						tuple = zheap_to_heap(ztuple, resultRelInfo->ri_RelationDesc->rd_att);
+						tid = &(tuple->t_self);
 					}
 					else
-						heap_insert(resultRelInfo->ri_RelationDesc, tuple, mycid,
-									hi_options, bistate);
+					{
+						is_zheap = RelationStorageIsZHeap(resultRelInfo->ri_RelationDesc);
+						if (is_zheap)
+						{
+							zheap_insert(resultRelInfo->ri_RelationDesc, ztuple,
+										 mycid, hi_options, bistate);
+							tid = &(ztuple->t_self);
+						}
+						else
+						{
+							heap_insert(resultRelInfo->ri_RelationDesc, tuple,
+										mycid, hi_options, bistate);
+							tid = &(tuple->t_self);
+						}
+					}
 
 					/* And create index entries for it */
 					if (resultRelInfo->ri_NumIndices > 0)
 						recheckIndexes = ExecInsertIndexTuples(slot,
-															   &(tuple->t_self),
+															   tid,
 															   estate,
 															   false,
 															   NULL,
 															   NIL);
 
 					/* AFTER ROW INSERT Triggers */
-					ExecARInsertTriggers(estate, resultRelInfo, tuple,
+					ExecARInsertTriggers(estate, resultRelInfo,
+										 (is_zheap ? (void *) ztuple : (void *) tuple),
 										 recheckIndexes, cstate->transition_capture);
 
-					if (RelationStorageIsZHeap(resultRelInfo->ri_RelationDesc))
-						heap_freetuple(tuple);
 					list_free(recheckIndexes);
 				}
 			}
@@ -3169,7 +3178,7 @@ static void
 CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 					int hi_options, ResultRelInfo *resultRelInfo,
 					TupleTableSlot *myslot, BulkInsertState bistate,
-					int nBufferedTuples, void *bufferedTuples,
+					int nBufferedTuples, void **bufferedTuples,
 					uint64 firstBufferedLineNo)
 {
 	MemoryContext oldcontext;
@@ -3216,14 +3225,12 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 			List	   *recheckIndexes;
 
 			cstate->cur_lineno = firstBufferedLineNo + i;
-
 			if (RelationStorageIsZHeap(cstate->rel))
 			{
 				ExecStoreZTuple(((ZHeapTuple *) bufferedTuples)[i], myslot, InvalidBuffer, false);
 				recheckIndexes =
 					ExecInsertIndexTuples(myslot, &(((ZHeapTuple *) bufferedTuples)[i]->t_self),
 										  estate, false, NULL, NIL);
-				/*FIXME: Implement ExecARInsertTriggers for zheap tuples */
 			}
 			else
 			{
@@ -3231,11 +3238,10 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 				recheckIndexes =
 					ExecInsertIndexTuples(myslot, &(((HeapTuple *) bufferedTuples)[i]->t_self),
 										  estate, false, NULL, NIL);
-				ExecARInsertTriggers(estate, resultRelInfo,
-									 ((HeapTuple *) bufferedTuples)[i],
-									 recheckIndexes,
-									 cstate->transition_capture);
 			}
+			ExecARInsertTriggers(estate, resultRelInfo,
+								 bufferedTuples[i],
+								 recheckIndexes, cstate->transition_capture);
 			list_free(recheckIndexes);
 		}
 	}
@@ -3252,7 +3258,7 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 		{
 			cstate->cur_lineno = firstBufferedLineNo + i;
 			ExecARInsertTriggers(estate, resultRelInfo,
-								 ((HeapTuple *) bufferedTuples)[i],
+								 bufferedTuples[i],
 								 NIL, cstate->transition_capture);
 		}
 	}

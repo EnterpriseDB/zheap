@@ -191,7 +191,7 @@ extern TupleTableSlot *ExecBRInsertTriggers(EState *estate,
 					 TupleTableSlot *slot);
 extern void ExecARInsertTriggers(EState *estate,
 					 ResultRelInfo *relinfo,
-					 HeapTuple trigtuple,
+					 void *trigtuple_abstract,
 					 List *recheckIndexes,
 					 TransitionCaptureState *transition_capture);
 extern TupleTableSlot *ExecIRInsertTriggers(EState *estate,
@@ -231,7 +231,7 @@ extern void ExecARUpdateTriggers(EState *estate,
 					 ResultRelInfo *relinfo,
 					 ItemPointer tupleid,
 					 HeapTuple fdw_trigtuple,
-					 HeapTuple newtuple,
+					 void *newtuple_abstract,
 					 List *recheckIndexes,
 					 TransitionCaptureState *transition_capture);
 extern TupleTableSlot *ExecIRUpdateTriggers(EState *estate,
