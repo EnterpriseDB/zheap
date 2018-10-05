@@ -192,7 +192,8 @@ ltrmark:;
 					ereport(ERROR,
 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 							 errmsg("could not serialize access due to concurrent update")));
-				if (!ItemPointerEquals(&hufd.ctid, &ztuple.t_self))
+				if (!ItemPointerEquals(&hufd.ctid, &ztuple.t_self) ||
+					hufd.in_place_updated_or_locked)
 				{
 					/* it was updated, so look at the updated version */
 					TupleTableSlot *epqslot;
