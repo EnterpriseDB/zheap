@@ -233,6 +233,10 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 	 */
 	if (force_prune && !ZPageIsPrunable(page))
 	{
+		; /* no need to scan */
+	}
+	else
+	{
 		/* Scan the page */
 		maxoff = PageGetMaxOffsetNumber(page);
 		for (offnum = FirstOffsetNumber;
@@ -290,6 +294,8 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 
 	if (execute_pruning)
 	{
+		bool	has_pruned = false;
+
 		/*
 		 * Apply the planned item changes, then repair page fragmentation, and
 		 * update the page's hint bit about whether it has free line pointers.
@@ -304,7 +310,7 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 		 * whether it has free pointers.
 		 */
 		ZPageRepairFragmentation(buffer, tmppage, target_offnum,
-								 space_required, pruned);
+								 space_required, &has_pruned);
 
 		/*
 		 * Update the page's pd_prune_xid field to either zero, or the lowest
@@ -333,10 +339,13 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 									 prstate.ndeleted, prstate.nowdead,
 									 prstate.ndead, prstate.nowunused,
 									 prstate.nunused,
-									 prstate.latestRemovedXid, *pruned);
+									 prstate.latestRemovedXid, has_pruned);
 
 			PageSetLSN(BufferGetPage(buffer), recptr);
 		}
+
+		if (pruned)
+			*pruned = has_pruned;
 	}
 	else
 	{
