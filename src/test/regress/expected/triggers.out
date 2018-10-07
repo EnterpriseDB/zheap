@@ -193,26 +193,26 @@ select * from tttest where price_off = 999999;
 
 -- change price for price_id == 3
 update tttest set price_val = 30 where price_id = 3;
-select * from tttest;
+select * from tttest order by price_id, price_val;
  price_id | price_val | price_on | price_off 
 ----------+-----------+----------+-----------
         1 |         1 |       10 |    999999
         2 |         2 |       20 |        40
-        3 |        30 |       50 |    999999
         3 |         3 |       30 |        50
+        3 |        30 |       50 |    999999
 (4 rows)
 
 -- now we want to change pric_id in ALL tuples
 -- this gets us not what we need
 update tttest set price_id = 5 where price_id = 3;
-select * from tttest;
+select * from tttest order by price_id, price_val;
  price_id | price_val | price_on | price_off 
 ----------+-----------+----------+-----------
         1 |         1 |       10 |    999999
         2 |         2 |       20 |        40
         3 |         3 |       30 |        50
-        5 |        30 |       60 |    999999
         3 |        30 |       50 |        60
+        5 |        30 |       60 |    999999
 (5 rows)
 
 -- restore data as before last update:
@@ -224,7 +224,7 @@ select set_ttdummy(0);
 
 delete from tttest where price_id = 5;
 update tttest set price_off = 999999 where price_val = 30;
-select * from tttest;
+select * from tttest order by price_id, price_val;
  price_id | price_val | price_on | price_off 
 ----------+-----------+----------+-----------
         1 |         1 |       10 |    999999
@@ -235,7 +235,7 @@ select * from tttest;
 
 -- and try change price_id now!
 update tttest set price_id = 5 where price_id = 3;
-select * from tttest;
+select * from tttest order by price_id, price_val;
  price_id | price_val | price_on | price_off 
 ----------+-----------+----------+-----------
         1 |         1 |       10 |    999999
@@ -263,13 +263,13 @@ select set_ttdummy(0);
 (1 row)
 
 update tttest set price_on = -1 where price_id = 1;
-select * from tttest;
+select * from tttest order by price_id, price_val;
  price_id | price_val | price_on | price_off 
 ----------+-----------+----------+-----------
+        1 |         1 |       -1 |    999999
         2 |         2 |       20 |        40
         5 |         3 |       30 |        50
         5 |        30 |       50 |    999999
-        1 |         1 |       -1 |    999999
 (4 rows)
 
 -- isn't it what we need ?
@@ -1426,13 +1426,13 @@ UPDATE city_view v SET population = 599657
 
 UPDATE 1
 \set QUIET true
-SELECT * FROM city_view;
+SELECT * FROM city_view ORDER BY city_id;
  city_id |   city_name   | population | country_name |   continent   
 ---------+---------------+------------+--------------+---------------
        1 | Tokyo         |   13010279 | Japan        | Asia
-  123456 | New York      |    8391881 | USA          | North America
        2 | London        |    7556900 | UK           | Europe
        3 | Washington DC |     599657 | USA          | North America
+  123456 | New York      |    8391881 | USA          | North America
 (4 rows)
 
 DROP TABLE city_table CASCADE;
@@ -1697,14 +1697,14 @@ insert into self_ref_trigger values (3, 1, 'root child B');
 insert into self_ref_trigger values (4, 2, 'grandchild 1');
 insert into self_ref_trigger values (5, 3, 'grandchild 2');
 update self_ref_trigger set data = 'root!' where id = 1;
-select * from self_ref_trigger;
+select * from self_ref_trigger order by id;
  id | parent |     data     | nchildren 
 ----+--------+--------------+-----------
-  2 |      1 | root child A |         1
-  4 |      2 | grandchild 1 |         0
-  3 |      1 | root child B |         1
-  5 |      3 | grandchild 2 |         0
   1 |        | root!        |         2
+  2 |      1 | root child A |         1
+  3 |      1 | root child B |         1
+  4 |      2 | grandchild 1 |         0
+  5 |      3 | grandchild 2 |         0
 (5 rows)
 
 delete from self_ref_trigger;
@@ -2742,7 +2742,7 @@ NOTICE:  trigger = trig_table_insert_trig, new table = (1,"one a"), (1,"one b"),
 update refd_table set a = 11 where b = 'one';
 NOTICE:  trigger_func(trig_table) called: action = UPDATE, when = BEFORE, level = STATEMENT
 NOTICE:  trigger = trig_table_update_trig, old table = (1,"one a"), (1,"one b"), new table = (11,"one a"), (11,"one b")
-select * from trig_table;
+select * from trig_table order by a, b;
  a  |    b    
 ----+---------
   2 | two a

@@ -78,20 +78,20 @@ UPDATE arrtest
   SET c[2:2] = '{"new_word"}'
   WHERE array_dims(c) is not null;
 
-SELECT a,b,c FROM arrtest;
+SELECT a,b,c FROM arrtest ORDER BY a;
 
 SELECT a[1:3],
           b[1:1][1:2][1:2],
           c[1:2],
           d[1:1][2:2]
-   FROM arrtest;
+   FROM arrtest ORDER BY a;
 
 SELECT b[1:1][2][2],
        d[1:1][2]
-   FROM arrtest;
+   FROM arrtest ORDER BY b, d;
 
 INSERT INTO arrtest(a) VALUES('{1,null,3}');
-SELECT a FROM arrtest;
+SELECT a FROM arrtest ORDER BY a;
 UPDATE arrtest SET a[4] = NULL WHERE a[2] IS NULL;
 SELECT a FROM arrtest WHERE a[2] IS NULL;
 DELETE FROM arrtest WHERE a[2] IS NULL AND b IS NULL;
@@ -139,11 +139,11 @@ SELECT a[:], b[:] FROM arrtest_s;
 -- updates
 UPDATE arrtest_s SET a[:3] = '{11, 12, 13}', b[:2][:2] = '{{11,12}, {14,15}}'
   WHERE array_lower(a,1) = 1;
-SELECT * FROM arrtest_s;
+SELECT * FROM arrtest_s ORDER BY 1;
 UPDATE arrtest_s SET a[3:] = '{23, 24, 25}', b[2:][2:] = '{{25,26}, {28,29}}';
-SELECT * FROM arrtest_s;
+SELECT * FROM arrtest_s ORDER BY 1;
 UPDATE arrtest_s SET a[:] = '{11, 12, 13, 14, 15}';
-SELECT * FROM arrtest_s;
+SELECT * FROM arrtest_s ORDER BY 1;
 UPDATE arrtest_s SET a[:] = '{23, 24, 25}';  -- fail, too small
 INSERT INTO arrtest_s VALUES(NULL, NULL);
 UPDATE arrtest_s SET a[:] = '{11, 12, 13, 14, 15}';  -- fail, no good with null

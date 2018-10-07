@@ -532,7 +532,7 @@ insert into cities values ('Las Vegas', 2.583E+5, 2174) on conflict do nothing;
 insert into capitals values ('Sacramento', 4664.E+5, 30, 'CA') on conflict (name) do update set population = excluded.population;
 -- Wrong "Sacramento", so do nothing:
 insert into capitals values ('Sacramento', 50, 2267, 'NE') on conflict (name) do nothing;
-select * from capitals;
+select * from capitals order by name;
     name    | population | altitude | state 
 ------------+------------+----------+-------
  Madison    |     191300 |      845 | WI
@@ -540,50 +540,50 @@ select * from capitals;
 (2 rows)
 
 insert into cities values ('Las Vegas', 5.83E+5, 2001) on conflict (name) do update set population = excluded.population, altitude = excluded.altitude;
-select tableoid::regclass, * from cities;
+select tableoid::regclass, * from cities order by name;
  tableoid |     name      | population | altitude 
 ----------+---------------+------------+----------
- cities   | San Francisco |     724000 |       63
- cities   | Mariposa      |       1200 |     1953
  cities   | Las Vegas     |     583000 |     2001
  capitals | Madison       |     191300 |      845
+ cities   | Mariposa      |       1200 |     1953
  capitals | Sacramento    |  466400000 |       30
+ cities   | San Francisco |     724000 |       63
 (5 rows)
 
 insert into capitals values ('Las Vegas', 5.83E+5, 2222, 'NV') on conflict (name) do update set population = excluded.population;
 -- Capitals will contain new capital, Las Vegas:
-select * from capitals;
+select * from capitals order by name;
     name    | population | altitude | state 
 ------------+------------+----------+-------
+ Las Vegas  |     583000 |     2222 | NV
  Madison    |     191300 |      845 | WI
  Sacramento |  466400000 |       30 | CA
- Las Vegas  |     583000 |     2222 | NV
 (3 rows)
 
 -- Cities contains two instances of "Las Vegas", since unique constraints don't
 -- work across inheritance:
-select tableoid::regclass, * from cities;
+select tableoid::regclass, * from cities order by name;
  tableoid |     name      | population | altitude 
 ----------+---------------+------------+----------
- cities   | San Francisco |     724000 |       63
- cities   | Mariposa      |       1200 |     1953
  cities   | Las Vegas     |     583000 |     2001
- capitals | Madison       |     191300 |      845
- capitals | Sacramento    |  466400000 |       30
  capitals | Las Vegas     |     583000 |     2222
+ capitals | Madison       |     191300 |      845
+ cities   | Mariposa      |       1200 |     1953
+ capitals | Sacramento    |  466400000 |       30
+ cities   | San Francisco |     724000 |       63
 (6 rows)
 
 -- This only affects "cities" version of "Las Vegas":
 insert into cities values ('Las Vegas', 5.86E+5, 2223) on conflict (name) do update set population = excluded.population, altitude = excluded.altitude;
-select tableoid::regclass, * from cities;
+select tableoid::regclass, * from cities order by name;
  tableoid |     name      | population | altitude 
 ----------+---------------+------------+----------
- cities   | San Francisco |     724000 |       63
- cities   | Mariposa      |       1200 |     1953
  cities   | Las Vegas     |     586000 |     2223
- capitals | Madison       |     191300 |      845
- capitals | Sacramento    |  466400000 |       30
  capitals | Las Vegas     |     583000 |     2222
+ capitals | Madison       |     191300 |      845
+ cities   | Mariposa      |       1200 |     1953
+ capitals | Sacramento    |  466400000 |       30
+ cities   | San Francisco |     724000 |       63
 (6 rows)
 
 -- clean up

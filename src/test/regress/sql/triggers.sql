@@ -154,22 +154,22 @@ select * from tttest where price_off = 999999;
 
 -- change price for price_id == 3
 update tttest set price_val = 30 where price_id = 3;
-select * from tttest;
+select * from tttest order by price_id, price_val;
 
 -- now we want to change pric_id in ALL tuples
 -- this gets us not what we need
 update tttest set price_id = 5 where price_id = 3;
-select * from tttest;
+select * from tttest order by price_id, price_val;
 
 -- restore data as before last update:
 select set_ttdummy(0);
 delete from tttest where price_id = 5;
 update tttest set price_off = 999999 where price_val = 30;
-select * from tttest;
+select * from tttest order by price_id, price_val;
 
 -- and try change price_id now!
 update tttest set price_id = 5 where price_id = 3;
-select * from tttest;
+select * from tttest order by price_id, price_val;
 -- isn't it what we need ?
 
 select set_ttdummy(1);
@@ -181,7 +181,7 @@ update tttest set price_on = -1 where price_id = 1;
 -- try in this way
 select set_ttdummy(0);
 update tttest set price_on = -1 where price_id = 1;
-select * from tttest;
+select * from tttest order by price_id, price_val;
 -- isn't it what we need ?
 
 -- get price for price_id == 5 as it was @ "date" 35
@@ -968,7 +968,7 @@ UPDATE city_view v SET population = 599657
 
 \set QUIET true
 
-SELECT * FROM city_view;
+SELECT * FROM city_view ORDER BY city_id;
 
 DROP TABLE city_table CASCADE;
 DROP TABLE country_table;
@@ -1182,7 +1182,7 @@ insert into self_ref_trigger values (5, 3, 'grandchild 2');
 
 update self_ref_trigger set data = 'root!' where id = 1;
 
-select * from self_ref_trigger;
+select * from self_ref_trigger order by id;
 
 delete from self_ref_trigger;
 
@@ -2097,7 +2097,7 @@ insert into trig_table values
 
 update refd_table set a = 11 where b = 'one';
 
-select * from trig_table;
+select * from trig_table order by a, b;
 
 delete from refd_table where length(b) = 3;
 
