@@ -155,6 +155,7 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		size = add_size(size, AsyncShmemSize());
 		size = add_size(size, BackendRandomShmemSize());
 		size = add_size(size, RollbackHTSize());
+		size = add_size(size, UndoLauncherShmemSize());
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif

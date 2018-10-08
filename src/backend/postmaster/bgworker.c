@@ -130,13 +130,16 @@ static const struct
 		"ApplyLauncherMain", ApplyLauncherMain
 	},
 	{
+		"ApplyWorkerMain", ApplyWorkerMain
+	},
+	{
 		"UndoLauncherMain", UndoLauncherMain
 	},
 	{
 		"UndoWorkerMain", UndoWorkerMain
 	},
 	{
-	"DiscardWorkerMain", DiscardWorkerMain
+		"DiscardWorkerMain", DiscardWorkerMain
 	}
 };
 
