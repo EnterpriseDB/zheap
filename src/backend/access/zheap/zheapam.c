@@ -6250,7 +6250,7 @@ znocachegetattr(ZHeapTuple tuple,
 	return fetchatt(TupleDescAttr(tupleDesc, attnum), tp + off);
 }
 
-static TransactionId
+TransactionId
 zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 {
 	UndoRecPtr urec_ptr;
@@ -9687,7 +9687,9 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 
 	if (resulttup)
 		PredicateLockTid(relation, &(resulttup->t_self), snapshot,
-						 zheap_fetchinsertxid(resulttup, buffer));
+						 IsSerializableXact() ?
+						 zheap_fetchinsertxid(resulttup, buffer) :
+						 InvalidTransactionId);
 
 	/*
 	 * If any prior version is visible, we pass latest visible as
@@ -9881,7 +9883,9 @@ zheap_fetch(Relation relation,
 
 	if (valid)
 		PredicateLockTid(relation, &((resulttup)->t_self), snapshot,
-						 zheap_fetchinsertxid(resulttup, buffer));
+						 IsSerializableXact() ?
+						 zheap_fetchinsertxid(resulttup, buffer) :
+						 InvalidTransactionId);
 
 	/*
 	 * If any prior version is visible, we pass latest visible as

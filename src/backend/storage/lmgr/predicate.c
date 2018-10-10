@@ -1047,6 +1047,12 @@ CheckPointPredicate(void)
 
 /*------------------------------------------------------------------------*/
 
+bool
+IsSerializableXact()
+{
+	return (MySerializableXact != InvalidSerializableXact);
+}
+
 /*
  * InitPredicateLocks -- Initialize the predicate locking data structures.
  *

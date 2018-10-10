@@ -185,6 +185,7 @@ extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 									int *completed_slots,
 									OffsetNumber *offset_completed_slots,
 									int	*numOffsets);
+extern TransactionId zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer);
 
 /* Zheap and undo record interaction related API's */
 extern ZHeapTuple

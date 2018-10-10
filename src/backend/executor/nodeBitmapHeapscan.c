@@ -844,6 +844,14 @@ bitgetzpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 			resulttup = ZHeapTupleSatisfiesVisibility(loctup, snapshot, buffer, NULL);
 			valid = resulttup ? true : false;
 
+			if (valid)
+			{
+				PredicateLockTid(scan->rs_rd, &(resulttup->t_self), snapshot,
+								 IsSerializableXact() ?
+								 zheap_fetchinsertxid(resulttup, buffer) :
+								 InvalidTransactionId);
+			}
+
 			/*
 			 * If any prior version is visible, we pass latest visible as
 			 * true. The state of latest version of tuple is determined by
