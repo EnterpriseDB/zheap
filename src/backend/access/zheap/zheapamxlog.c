@@ -38,7 +38,7 @@ zheap_xlog_insert(XLogReaderState *record)
 	}			tbuf;
 	ZHeapTupleHeader zhtup;
 	UnpackedUndoRecord	undorecord;
-	UndoRecPtr	urecptr;
+	UndoRecPtr	urecptr = InvalidUndoRecPtr;
 	xl_zheap_header xlhdr;
 	uint32		newlen;
 	RelFileNode target_node;
@@ -1602,6 +1602,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		int			j = 0;
 		bool		first_time = true;
 
+		prev_trans_slot_id = -1;
 		page = BufferGetPage(buffer);
 
 		/* Tuples are stored as block data */

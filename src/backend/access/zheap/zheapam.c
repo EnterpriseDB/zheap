@@ -637,8 +637,8 @@ Oid
 zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate)
 {
-	TransactionId xid;
-	uint32	epoch;
+	TransactionId xid = InvalidTransactionId;
+	uint32	epoch = 0;
 	ZHeapTuple	zheaptup;
 	UnpackedUndoRecord	undorecord;
 	Buffer		buffer;
@@ -2014,7 +2014,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	bool		hasSubXactLock = false;
 	xl_undolog_meta	undometa;
 	uint8		vm_status;
-	uint8		vm_status_new;
+	uint8		vm_status_new = 0;
 
 	Assert(ItemPointerIsValid(otid));
 
