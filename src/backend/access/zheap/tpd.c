@@ -1503,7 +1503,12 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	/* TPD entry has been pruned */
 	if (!ItemIdIsUsed(itemId))
 	{
-		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+		BufferDesc *bufHdr = GetBufferDescriptor(heapbuf - 1);
+
+		if (BufferIsLocal(heapbuf) ||
+			LWLockHeldByMeInMode(BufferDescriptorGetContentLock(bufHdr),
+								 LW_EXCLUSIVE))
+			LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
 		goto failed;
 	}
 
@@ -1518,7 +1523,12 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	 */
 	if (tpd_e_hdr.blkno != BufferGetBlockNumber(heapbuf))
 	{
-		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+		BufferDesc *bufHdr = GetBufferDescriptor(heapbuf - 1);
+
+		if (BufferIsLocal(heapbuf) ||
+			LWLockHeldByMeInMode(BufferDescriptorGetContentLock(bufHdr),
+								 LW_EXCLUSIVE))
+			LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
 		goto failed;
 	}
 
