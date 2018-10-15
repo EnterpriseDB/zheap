@@ -446,6 +446,17 @@ fetch_prior_undo_record:
 	Assert(!TransactionIdIsCurrentTransactionId(*xid));
 	Assert(!TransactionIdIsInProgress(*xid));
 	Assert(TransactionIdDidAbort(*xid));
+	/*
+	 * The tuple must be all visible if the transaction slot is cleared or
+	 * latest xid that has changed the tuple is too old that it is all-visible
+	 * or it precedes smallest xid that has undo.
+	 */
+	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
+		TransactionIdEquals(*xid, FrozenTransactionId) ||
+		TransactionIdPrecedes(*xid, oldestXidHavingUndo))
+	{
+		return undo_tup;
+	}
 
 	/*
 	 * We can't have two aborted transaction with pending rollback state for
@@ -618,6 +629,16 @@ fetch_prior_undo_record:
 		 */
 		cid = ZHeapTupleGetCid(undo_tup, buffer, prev_urec_ptr, trans_slot_id);
 	}
+
+	/*
+	 * The tuple must be all visible if the transaction slot is cleared or
+	 * latest xid that has changed the tuple is too old that it is all-visible
+	 * or it precedes smallest xid that has undo.
+	 */
+	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
+		TransactionIdEquals(xid, FrozenTransactionId) ||
+		TransactionIdPrecedes(xid, oldestXidHavingUndo))
+		return undo_tup;
 
 	if (undo_oper == ZHEAP_INPLACE_UPDATED ||
 		undo_oper == ZHEAP_XID_LOCK_ONLY)
@@ -914,6 +935,19 @@ fetch_prior_undo_record:
 		 * make code look ugly, so keeping it here.
 		 */
 		cid = ZHeapTupleGetCid(undo_tup, buffer, prev_urec_ptr, trans_slot_id);
+	}
+
+	/*
+	 * The tuple must be all visible if the transaction slot is cleared or
+	 * latest xid that has changed the tuple is too old that it is all-visible
+	 * or it precedes smallest xid that has undo.
+	 */
+	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
+		TransactionIdEquals(xid, FrozenTransactionId) ||
+		TransactionIdPrecedes(xid, oldestXidHavingUndo))
+	{
+		result = true;
+		goto result_available;
 	}
 
 	if (undo_oper == ZHEAP_INPLACE_UPDATED ||
