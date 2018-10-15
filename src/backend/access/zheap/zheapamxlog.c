@@ -114,7 +114,6 @@ zheap_xlog_insert(XLogReaderState *record)
 		{
 			uint32 dummy_specToken = 1;
 
-			undorecord.uur_payload.len = sizeof(uint32);
 			initStringInfo(&undorecord.uur_payload);
 			appendBinaryStringInfo(&undorecord.uur_payload,
 				(char *)&dummy_specToken,
@@ -394,7 +393,6 @@ zheap_xlog_delete(XLogReaderState *record)
 			hasPayload = true;
 		}
 
-		undorecord.uur_payload.len = sizeof(SubTransactionId);
 		appendBinaryStringInfo(&undorecord.uur_payload,
 								(char *) &dummy_subXactToken,
 								sizeof(SubTransactionId));
@@ -695,7 +693,6 @@ zheap_xlog_update(XLogReaderState *record)
 				hasPayload = true;
 			}
 
-			undorecord.uur_payload.len = sizeof(SubTransactionId);
 			appendBinaryStringInfo(&undorecord.uur_payload,
 								   (char *) &dummy_subXactToken,
 								   sizeof(SubTransactionId));
@@ -737,7 +734,6 @@ zheap_xlog_update(XLogReaderState *record)
 		{
 			SubTransactionId dummy_subXactToken = 1;
 
-			undorecord.uur_payload.len = sizeof(SubTransactionId);
 			appendBinaryStringInfo(&undorecord.uur_payload,
 								   (char *) &dummy_subXactToken,
 								   sizeof(SubTransactionId));
@@ -1379,7 +1375,6 @@ zheap_xlog_lock(XLogReaderState *record)
 	{
 		SubTransactionId dummy_subXactToken = 1;
 
-		undorecord.uur_payload.len = sizeof(SubTransactionId);
 		appendBinaryStringInfo(&undorecord.uur_payload,
 							   (char *) &dummy_subXactToken,
 							   sizeof(SubTransactionId));
