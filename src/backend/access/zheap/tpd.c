@@ -1659,9 +1659,11 @@ extend_entry_if_required:
 
 	/*
 	 * Allocate a bigger TPD entry if either we need a bigger offset-map
-	 * or there is no unreserved slot available.
+	 * or there is no unreserved slot available provided TPD entry is not
+	 * pruned in which case we can use last slot on the heap page.
 	 */
-	if (alloc_bigger_map || result_slot_no == InvalidXactSlotId)
+	if (!tpd_e_pruned &&
+		(alloc_bigger_map || result_slot_no == InvalidXactSlotId))
 	{
 		ExtendTPDEntry(relation, buf, trans_slots, offnum, buf_idx,
 					   num_map_entries, num_slots, &result_slot_no, urec_ptr,
