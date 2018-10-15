@@ -1060,7 +1060,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 		{
 			/* Fetch the TPD offset map and write into the WAL record. */
 			TPDPageGetOffsetMap(buffer, tpd_offset_map, tpd_map_size);
-			XLogRegisterData((char *) &tpd_offset_map, tpd_map_size);
+			XLogRegisterData((char *) tpd_offset_map, tpd_map_size);
 		}
 
 		if (flags & XLU_PAGE_CONTAINS_TPD_SLOT ||

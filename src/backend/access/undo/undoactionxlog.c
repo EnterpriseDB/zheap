@@ -90,11 +90,7 @@ undo_xlog_page(XLogReaderState *record)
 	/* replay the record for tpd buffer */
 	if (XLogRecHasBlockRef(record, 1))
 	{
-		TransactionId	xid = XLogRecGetXid(record);
 		uint32	xid_epoch = 0;
-
-		if (TransactionIdIsValid(xid))
-			xid_epoch = GetEpochForXid(xid);
 
 		/*
 		 * We need to replay the record for TPD only when this record contains
@@ -106,8 +102,13 @@ undo_xlog_page(XLogReaderState *record)
 		if (action == BLK_NEEDS_REDO)
 		{
 			if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
+			{
+				if (TransactionIdIsValid(xlrec->xid))
+					xid_epoch = GetEpochForXid(xlrec->xid);
 				TPDPageSetTransactionSlotInfo(buf, xlrec->trans_slot_id,
-											  xid_epoch, xid, xlrec->urec_ptr);
+											  xid_epoch,
+											  xlrec->xid, xlrec->urec_ptr);
+			}
 
 			if (offsetmap)
 				TPDPageSetOffsetMap(buf, offsetmap);
@@ -154,14 +155,17 @@ undo_xlog_reset_xid(XLogReaderState *record)
 	XLogRedoAction action;
 
 	action = XLogReadBufferForRedo(record, 0, &buf);
-	if (action == BLK_NEEDS_REDO)
+
+	/*
+	 * Reseting the TPD slot is handled separately so only handle the page
+	 * slot here.
+	 */
+	if (action == BLK_NEEDS_REDO &&
+		xlrec->trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS)
 	{
 		Page	page;
 		ZHeapPageOpaque	opaque;
 		int		slot_no = xlrec->trans_slot_id;
-
-		/* The transaction slot must belong to page. */
-		Assert(xlrec->trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS);
 
 		page = BufferGetPage(buf);
 		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
