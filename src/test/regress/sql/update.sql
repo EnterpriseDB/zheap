@@ -178,13 +178,17 @@ UPDATE range_parted set e = d;
 -- No row found
 UPDATE part_c_1_100 set c = c + 20 WHERE c = 98;
 -- ok, row movement
-UPDATE part_b_10_b_20 set c = c + 20;
+WITH updated as
+   (UPDATE part_b_10_b_20 set c = c + 20 returning c, b, a)
+   SELECT * FROM updated ORDER BY 1, 2, 3;
 :show_data;
 
 -- fail, row movement happens only within the partition subtree.
-UPDATE part_b_10_b_20 set b = b - 4 WHERE c > 116 returning *;
+UPDATE part_b_10_b_20 set b = b - 6 WHERE c > 116 returning *;
 -- ok, row movement, with subset of rows moved into different partition.
-UPDATE range_parted set b = b - 6 WHERE c > 116;
+WITH updated as
+   (UPDATE range_parted set b = b - 6 WHERE c > 116 returning a, b + c)
+   SELECT * FROM updated ORDER BY 1, 2;
 
 :show_data;
 
@@ -210,7 +214,9 @@ DROP VIEW upview;
 
 -- RETURNING having whole-row vars.
 :init_range_parted;
-UPDATE range_parted set c = 95 WHERE a = 'b' and b > 15 and c > 100 returning (range_parted), a, b, c, d, e;
+WITH updated as
+   (UPDATE range_parted set c = 95 WHERE a = 'b' and b > 10 and c > 100 returning (range_parted), *)
+   SELECT * FROM updated ORDER BY 1, 2, 3, 4;
 :show_data;
 
 

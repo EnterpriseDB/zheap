@@ -298,7 +298,17 @@ UPDATE range_parted set e = d;
 -- No row found
 UPDATE part_c_1_100 set c = c + 20 WHERE c = 98;
 -- ok, row movement
-UPDATE part_b_10_b_20 set c = c + 20;
+WITH updated as
+   (UPDATE part_b_10_b_20 set c = c + 20 returning c, b, a)
+   SELECT * FROM updated ORDER BY 1, 2, 3;
+  c  | b  | a 
+-----+----+---
+ 116 | 12 | b
+ 117 | 13 | b
+ 125 | 15 | b
+ 125 | 17 | b
+(4 rows)
+
 :show_data;
     partname    | a | b  |  c  | d | e 
 ----------------+---+----+-----+---+---
@@ -311,11 +321,21 @@ UPDATE part_b_10_b_20 set c = c + 20;
 (6 rows)
 
 -- fail, row movement happens only within the partition subtree.
-UPDATE part_b_10_b_20 set b = b - 4 WHERE c > 116 returning *;
+UPDATE part_b_10_b_20 set b = b - 6 WHERE c > 116 returning *;
 ERROR:  new row for relation "part_d_1_15" violates partition constraint
-DETAIL:  Failing row contains (2, 117, 2, b, 9).
+DETAIL:  Failing row contains (2, 117, 2, b, 7).
 -- ok, row movement, with subset of rows moved into different partition.
-UPDATE range_parted set b = b - 6 WHERE c > 116;
+WITH updated as
+   (UPDATE range_parted set b = b - 6 WHERE c > 116 returning a, b + c)
+   SELECT * FROM updated ORDER BY 1, 2;
+ a | ?column? 
+---+----------
+ a |      204
+ b |      124
+ b |      134
+ b |      136
+(4 rows)
+
 :show_data;
    partname    | a | b  |  c  | d | e 
 ---------------+---+----+-----+---+---
@@ -359,11 +379,14 @@ UPDATE upview set a = 'b', b = 15 WHERE b = 4;
 DROP VIEW upview;
 -- RETURNING having whole-row vars.
 :init_range_parted;
-UPDATE range_parted set c = 95 WHERE a = 'b' and b > 15 and c > 100 returning (range_parted), a, b, c, d, e;
+WITH updated as
+   (UPDATE range_parted set c = 95 WHERE a = 'b' and b > 10 and c > 100 returning (range_parted), *)
+   SELECT * FROM updated ORDER BY 1, 2, 3, 4;
  range_parted  | a | b  | c  | d  | e 
 ---------------+---+----+----+----+---
+ (b,15,95,16,) | b | 15 | 95 | 16 | 
  (b,17,95,19,) | b | 17 | 95 | 19 | 
-(1 row)
+(2 rows)
 
 :show_data;
     partname    | a | b  |  c  | d  | e 
@@ -372,8 +395,8 @@ UPDATE range_parted set c = 95 WHERE a = 'b' and b > 15 and c > 100 returning (r
  part_a_1_a_10  | a |  1 |   1 |  1 | 
  part_c_1_100   | b | 12 |  96 |  1 | 
  part_c_1_100   | b | 13 |  97 |  2 | 
+ part_c_1_100   | b | 15 |  95 | 16 | 
  part_c_1_100   | b | 17 |  95 | 19 | 
- part_d_15_20   | b | 15 | 105 | 16 | 
 (6 rows)
 
 -- Transition tables with update row movement
