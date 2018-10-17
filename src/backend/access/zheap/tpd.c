@@ -390,6 +390,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	OffsetNumber	max_page_offnum;
 	Size		tpdpageFreeSpace;
 	Size		new_size_tpd_entry,
+				old_size_tpd_entry,
 				new_size_tpd_e_map,
 				new_size_tpd_e_slots,
 				old_size_tpd_e_map,
@@ -402,11 +403,12 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	int			max_reqd_slots = 0;
 	int			num_free_slots = 0;
 	int			slot_no;
+	int			entries_removed;
 	uint16		tpd_e_offset;
 	char		*tpd_entry;
 	bool		already_exists;
 	bool		allocate_new_tpd_page = false;
-	bool		update_tpd_inplace = true;
+	bool		update_tpd_inplace;
 
 	heappage = BufferGetPage(heapbuf);
 	max_page_offnum = PageGetMaxOffsetNumber(heappage);
@@ -501,33 +503,28 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 		Assert(already_exists);
 	}
 
+	/* The last slot in page has the address of the required TPD entry. */
 	old_tpd_page = BufferGetPage(old_tpd_buf);
+	zopaque = (ZHeapPageOpaque)PageGetSpecialPointer(BufferGetPage(heapbuf));
+	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
+	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
+	itemId = PageGetItemId(old_tpd_page, tpdItemOff);
+	old_size_tpd_entry = ItemIdGetLength(itemId);
+
+	/* We have a lock on tpd page, so nobody can prune our tpd entry. */
+	Assert(ItemIdIsUsed(itemId));
+
 	tpdpageFreeSpace = PageGetTPDFreeSpace(old_tpd_page);
-	if (tpdpageFreeSpace >= new_size_tpd_entry)
-	{
-		/*
-		 * TODO: Allow to perform in-place update of TPD entry if there is a
-		 * space adjacent to current TPD entry.
-		 *
-		 * Call TPDPagePrune to ensure that it will create a space adjacent to
-		 * current offset for the new (bigger) TPD entry.
-		 */
-		update_tpd_inplace = true;
-	}
-	else if (tpdpageFreeSpace < new_size_tpd_entry)
-	{
-		int		entries_removed;
 
-		/*
-		 * Prune the TPD page to make space for new TPD entries.  After
-		 * pruning, check again to see if the TPD entry can be accomodated
-		 * on the page.
-		 *
-		 * Todo: After extending TPDPagePrune, we need to pass the TPD entry
-		 * offset, so that space adjacent to it can be created, if possible.
-		 */
-		entries_removed = TPDPagePrune(relation, old_tpd_buf);
-
+	/*
+	 * Call TPDPagePrune to ensure that it will create a space adjacent to
+	 * current offset for the new (bigger) TPD entry, if possible.
+	 */
+	entries_removed = TPDPagePrune(relation, old_tpd_buf, tpdItemOff,
+								   (new_size_tpd_entry - old_size_tpd_entry),
+								   &update_tpd_inplace);
+	if (!update_tpd_inplace)
+	{
 		if (entries_removed > 0)
 			tpdpageFreeSpace = PageGetTPDFreeSpace(old_tpd_page);
 
@@ -544,7 +541,13 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 			allocate_new_tpd_page = true;
 		}
 		else
-			update_tpd_inplace = true;
+		{
+			/*
+			 * We must not reach here because if the new tpd entry can fit on the same
+			 * page, then update_tpd_inplace would have been set by TPDPagePrune.
+			 */
+			Assert(false);
+		}
 	}
 
 	/* form tpd entry header */
@@ -561,12 +564,6 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 		tpd_e_header.tpe_flags = TPE_ONE_BYTE;
 	else
 		tpd_e_header.tpe_flags = TPE_FOUR_BYTE;
-
-	/* The last slot in page has the address of the required TPD entry. */
-	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(heapbuf));
-	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
-	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
-	itemId = PageGetItemId(old_tpd_page, tpdItemOff);
 
 	/* 
 	 * If the item got pruned then clear the TPD slot from the page and
@@ -668,11 +665,6 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 		Assert(false);
 	}
 	
-	/*
-	 * FXIME: Currently the inplace updates don't work, so force non-inplace
-	 * update.
-	 */
-	update_tpd_inplace = false;
 
 	if (update_tpd_inplace)
 	{
@@ -981,10 +973,14 @@ TPDEntryUpdate(Relation relation, Buffer tpd_buf, uint16 tpd_e_offset,
 			   Size size_tpd_entry)
 {
 	Page	tpd_page = BufferGetPage(tpd_buf);
+	ItemId	itemId = PageGetItemId(tpd_page, tpd_item_off);
+
+	START_CRIT_SECTION();
 
 	memcpy((char *) (tpd_page + tpd_e_offset),
 		   tpd_entry,
 		   size_tpd_entry);
+	ItemIdChangeLen(itemId, size_tpd_entry);
 
 	MarkBufferDirty(tpd_buf);
 
@@ -1001,6 +997,8 @@ TPDEntryUpdate(Relation relation, Buffer tpd_buf, uint16 tpd_e_offset,
 
 		PageSetLSN(tpd_page, recptr);
 	}
+
+	END_CRIT_SECTION();
 }
 
 /*
@@ -1365,7 +1363,8 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 			 * pruning, check again to see if the TPD entry can be accomodated
 			 * on the page.
 			 */
-			entries_removed = TPDPagePrune(relation, tpd_buf);
+			entries_removed = TPDPagePrune(relation, tpd_buf, InvalidOffsetNumber,
+										   0, NULL);
 
 			if (entries_removed > 0)
 				tpdpageFreeSpace = PageGetTPDFreeSpace(BufferGetPage(tpd_buf));

@@ -25,10 +25,11 @@ typedef struct TPDPruneState
 	OffsetNumber nowunused[MaxTPDTuplesPerPage];
 } TPDPruneState;
 
-static void TPDEntryPrune(Buffer buf, OffsetNumber offnum, TPDPruneState *prstate);
-static void TPDPageRepairFragmentation(Page page);
+static void TPDEntryPrune(Buffer buf, OffsetNumber offnum, TPDPruneState *prstate,
+				Size *space_freed);
 static XLogRecPtr LogTPDClean(Relation rel, Buffer tpdbuf,
-					OffsetNumber *nowunused, int nunused);
+					OffsetNumber *nowunused, int nunused,
+					OffsetNumber target_offnum, Size space_required);
 
 /*
  * TPDPagePrune - Prune the TPD page.
@@ -42,15 +43,23 @@ static XLogRecPtr LogTPDClean(Relation rel, Buffer tpdbuf,
  * Returns the number of entries pruned.
  */
 int
-TPDPagePrune(Relation rel, Buffer tpdbuf)
+TPDPagePrune(Relation rel, Buffer tpdbuf, OffsetNumber target_offnum,
+			 Size space_required, bool *update_tpd_inplace)
 {
-	Page	tpdpage;
+	Page	tpdpage, tmppage = NULL;
 	TPDPruneState	prstate;
 	OffsetNumber	offnum, maxoff;
 	ItemId	itemId;
+	Size	space_freed;
 
 	prstate.nunused = 0;
 	tpdpage = BufferGetPage(tpdbuf);
+
+	if (update_tpd_inplace)
+		*update_tpd_inplace = false;
+
+	/* initialize the space_free with already existing free space in page */
+	space_freed = PageGetExactFreeSpace(tpdpage);
 
 	/* Scan the page */
 	maxoff = PageGetMaxOffsetNumber(tpdpage);
@@ -64,20 +73,52 @@ TPDPagePrune(Relation rel, Buffer tpdbuf)
 		if (!ItemIdIsUsed(itemId))
 			continue;
 
-		TPDEntryPrune(tpdbuf, offnum, &prstate);	
+		TPDEntryPrune(tpdbuf, offnum, &prstate, &space_freed);
 	}
+
+	/*
+	 * There is not much advantage in continuing, if we can't free the space
+	 * required by the caller or we are not asked to forcefully prune the
+	 * page.
+	 *
+	 * XXX - In theory, we can still continue and perform pruning in the hope
+	 * that some future update in this page will be able to use that space.
+	 * However, it will lead to additional writes without any guaranteed
+	 * benefit, so we skip the pruning for now.
+	 */
+	if (space_freed < space_required)
+		return 0;
+
+	/*
+	 * We prepare the temporary copy of the page so that during page
+	 * repair fragmentation we can use it to copy the actual tuples.
+	 */
+	if (prstate.nunused > 0 || OffsetNumberIsValid(target_offnum))
+		tmppage = PageGetTempPageCopy(tpdpage);
 
 	/* Any error while applying the changes is critical */
 	START_CRIT_SECTION();
 
-	/* Have we found any prunable items? */
-	if (prstate.nunused > 0)
+	/*
+	 * Have we found any prunable items or caller has asked us to make space
+	 * next to target_offnum?
+	 */
+	if (prstate.nunused > 0 || OffsetNumberIsValid(target_offnum))
 	{
 		/*
 		 * Apply the planned item changes, then repair page fragmentation, and
 		 * update the page's hint bit about whether it has free line pointers.
 		 */
 		TPDPagePruneExecute(tpdbuf, prstate.nowunused, prstate.nunused);
+
+		/*
+		 * Finally, repair any fragmentation, and update the page's hint bit about
+		 * whether it has free pointers.  It is quite possible that there are no
+		 * prunable items on the page in which case it will rearrange the page to
+		 * make the space at the required offset.
+		 */
+		TPDPageRepairFragmentation(tpdpage, tmppage, target_offnum,
+								   space_required);
 
 		MarkBufferDirty(tpdbuf);
 
@@ -96,13 +137,21 @@ TPDPagePrune(Relation rel, Buffer tpdbuf)
 			XLogRecPtr	recptr;
 
 			recptr = LogTPDClean(rel, tpdbuf, prstate.nowunused,
-								 prstate.nunused);
+								 prstate.nunused, target_offnum,
+								 space_required);
 
 			PageSetLSN(tpdpage, recptr);
 		}
+
+		if (update_tpd_inplace)
+			*update_tpd_inplace = true;
 	}
 
 	END_CRIT_SECTION();
+
+	/* be tidy. */
+	if (tmppage)
+		pfree(tmppage);
 
 	return prstate.nunused;
 }
@@ -116,13 +165,15 @@ TPDPagePrune(Relation rel, Buffer tpdbuf)
  * doesn't have a valid transaction.
  */
 static void
-TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate)
+TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
+			  Size *space_freed)
 {
 	Page	tpdpage;
 	TPDEntryHeaderData	tpd_e_hdr;
 	TransInfo	*trans_slots;
 	ItemId	itemId;
 	Size	size_tpd_e_slots, size_tpd_e_map;
+	Size	size_tpd_entry;
 	int		num_trans_slots, slot_no;
 	int		loc_trans_slots;
 	uint16	tpd_e_offset;
@@ -131,6 +182,7 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate)
 	tpdpage = BufferGetPage(tpdbuf);
 	itemId = PageGetItemId(tpdpage, offnum);
 	tpd_e_offset = ItemIdGetOffset(itemId);
+	size_tpd_entry = ItemIdGetLength(itemId);
 
 	memcpy((char *) &tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
 
@@ -185,6 +237,8 @@ prune_tpd_entry:
 		Assert (prstate->nunused < MaxTPDTuplesPerPage);
 		prstate->nowunused[prstate->nunused] = offnum;
 		prstate->nunused++;
+
+		*space_freed += size_tpd_entry;
 	}
 }
 
@@ -212,12 +266,6 @@ TPDPagePruneExecute(Buffer tpdbuf, OffsetNumber *nowunused, int nunused)
 
 		ItemIdSetUnused(lp);
 	}
-
-	/*
-	 * Finally, repair any fragmentation, and update the page's hint bit about
-	 * whether it has free pointers.
-	 */
-	TPDPageRepairFragmentation(tpdpage);
 }
 
 /*
@@ -228,8 +276,9 @@ TPDPagePruneExecute(Buffer tpdbuf, OffsetNumber *nowunused, int nunused)
  * the same space could be occupied by actual TPD entry in which case somebody
  * trying to access that line pointer will get unpredictable behavior.
  */
-static void
-TPDPageRepairFragmentation(Page page)
+void
+TPDPageRepairFragmentation(Page page, Page tmppage, OffsetNumber target_offnum,
+						   Size space_required)
 {
 	Offset		pd_lower = ((PageHeader) page)->pd_lower;
 	Offset		pd_upper = ((PageHeader) page)->pd_upper;
@@ -280,7 +329,11 @@ TPDPageRepairFragmentation(Page page)
 							(errcode(ERRCODE_DATA_CORRUPTED),
 							 errmsg("corrupted item pointer: %u",
 									itemidptr->itemoff)));
-				itemidptr->alignedlen = ItemIdGetLength(lp);
+				if (i == target_offnum)
+					itemidptr->alignedlen = ItemIdGetLength(lp) +
+														space_required;
+				else
+					itemidptr->alignedlen = ItemIdGetLength(lp);
 				totallen += itemidptr->alignedlen;
 				itemidptr++;
 			}
@@ -308,7 +361,7 @@ TPDPageRepairFragmentation(Page page)
 					 errmsg("corrupted item lengths: total %u, available space %u",
 							(unsigned int) totallen, pd_special - pd_lower)));
 
-		compactify_tuples(itemidbase, nstorage, page);
+		compactify_ztuples(itemidbase, nstorage, page, tmppage);
 	}
 
 	/* Set hint bit for TPDPageAddEntry */
@@ -323,14 +376,29 @@ TPDPageRepairFragmentation(Page page)
  */
 XLogRecPtr
 LogTPDClean(Relation rel, Buffer tpdbuf,
-			OffsetNumber *nowunused, int nunused)
+			OffsetNumber *nowunused, int nunused,
+			OffsetNumber target_offnum, Size space_required)
 {
 	XLogRecPtr      recptr;
+	xl_tpd_clean	xl_rec;
 
 	/* Caller should not call me on a non-WAL-logged relation */
 	Assert(RelationNeedsWAL(rel));
 
+	xl_rec.flags = 0;
 	XLogBeginInsert();
+
+	if (target_offnum != InvalidOffsetNumber)
+		xl_rec.flags |= XL_TPD_CONTAINS_OFFSET;
+	XLogRegisterData((char *) &xl_rec, SizeOfTPDClean);
+
+	/* Register the offset information. */
+	if (target_offnum != InvalidOffsetNumber)
+	{
+		XLogRegisterData((char *) &target_offnum, sizeof(OffsetNumber));
+		XLogRegisterData((char *) &space_required, sizeof(space_required));
+	}
+
 	XLogRegisterBuffer(0, tpdbuf, REGBUF_STANDARD);
 
 	/*
@@ -343,7 +411,7 @@ LogTPDClean(Relation rel, Buffer tpdbuf,
 	 */
 	if (nunused > 0)
 		XLogRegisterBufData(0, (char *) nowunused,
-					nunused * sizeof(OffsetNumber));
+							nunused * sizeof(OffsetNumber));
 
 	recptr = XLogInsert(RM_TPD_ID, XLOG_TPD_CLEAN);
 

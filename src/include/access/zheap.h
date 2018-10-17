@@ -144,6 +144,8 @@ extern XLogRecPtr log_zheap_clean(Relation reln, Buffer buffer,
 								  TransactionId latestRemovedXid, bool pruned);
 extern void ZPageRepairFragmentation(Buffer buffer, Page tmppage, OffsetNumber target_offnum,
 							Size space_required, bool *pruned);
+extern void compactify_ztuples(itemIdSort itemidbase, int nitems, Page page,
+							Page tmppage);
 
 /* Zheap scan related API's */
 extern bool zheapgetpage(HeapScanDesc scan, BlockNumber page);

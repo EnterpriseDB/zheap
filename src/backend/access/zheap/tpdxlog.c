@@ -216,10 +216,10 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 }
 
 /*
- * replay of pruning tpd page
+ * replay inplace update of TPD entry
  */
 static void
-tpd_xlog_clean(XLogReaderState *record)
+tpd_xlog_inplace_update_entry(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	Buffer	tpdbuf;
@@ -234,18 +234,89 @@ tpd_xlog_clean(XLogReaderState *record)
 	if (action == BLK_NEEDS_REDO)
 	{
 		Page		tpdpage = (Page) BufferGetPage(tpdbuf);
+		ItemId		item_id;
+		OffsetNumber	*off_num;
+		char		*data;
+		char		*new_tpd_entry;
+		Size		datalen,
+					size_new_tpd_entry;
+		uint16		tpd_e_offset;
+
+		data = XLogRecGetBlockData(record, 0, &datalen);
+		off_num = (OffsetNumber *) data;
+		new_tpd_entry = (char *) ((char *) data + sizeof(OffsetNumber));
+		size_new_tpd_entry = datalen - sizeof(OffsetNumber);
+
+		item_id = PageGetItemId(tpdpage, *off_num);
+		tpd_e_offset = ItemIdGetOffset(item_id);
+		memcpy((char *) (tpdpage + tpd_e_offset),
+			   new_tpd_entry,
+			   size_new_tpd_entry);
+		ItemIdChangeLen(item_id, size_new_tpd_entry);
+
+		MarkBufferDirty(tpdbuf);
+		PageSetLSN(tpdpage, lsn);
+	}
+	if (BufferIsValid(tpdbuf))
+		UnlockReleaseBuffer(tpdbuf);
+}
+
+/*
+ * replay of pruning tpd page
+ */
+static void
+tpd_xlog_clean(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_tpd_clean *xlrec = (xl_tpd_clean *) XLogRecGetData(record);
+	Buffer	tpdbuf;
+	XLogRedoAction action;
+
+	/*
+	 * If we have a full-page image, restore it (using a cleanup lock) and
+	 * we're done.
+	 */
+	action = XLogReadBufferForRedoExtended(record, 0, RBM_NORMAL, true,
+										   &tpdbuf);
+	if (action == BLK_NEEDS_REDO)
+	{
+		Page		tpdpage = (Page) BufferGetPage(tpdbuf);
+		Page		tmppage;
 		OffsetNumber *end;
 		OffsetNumber *nowunused;
-		int			nunused;
+		OffsetNumber	*target_offnum;
+		OffsetNumber tmp_target_off;
+		Size			*space_required;
+		Size		tmp_spc_rqd;
 		Size		datalen;
+		int			nunused;
+
+		if (xlrec->flags & XLZ_CLEAN_CONTAINS_OFFSET)
+		{
+			target_offnum = (OffsetNumber *) ((char *) xlrec + SizeOfTPDClean);
+			space_required = (Size *) ((char *) target_offnum + sizeof(OffsetNumber));
+		}
+		else
+		{
+			target_offnum = &tmp_target_off;
+			*target_offnum = InvalidOffsetNumber;
+			space_required = &tmp_spc_rqd;
+			*space_required = 0;
+		}
 
 		nowunused = (OffsetNumber *) XLogRecGetBlockData(record, 0, &datalen);
 		end = (OffsetNumber *) ((char *) nowunused + datalen);
 		nunused = (end - nowunused);
-		Assert(nunused >= 0);
 
-		/* Update all item pointers per the record, and repair fragmentation */
-		TPDPagePruneExecute(tpdbuf, nowunused, nunused);
+		if (nunused >= 0);
+		{
+			/* Update all item pointers per the record, and repair fragmentation */
+			TPDPagePruneExecute(tpdbuf, nowunused, nunused);
+		}
+
+		tmppage = PageGetTempPageCopy(tpdpage);
+		TPDPageRepairFragmentation(tpdpage, tmppage, *target_offnum,
+								   *space_required);
 
 		/*
 		 * Note: we don't worry about updating the page's prunability hints.
@@ -254,6 +325,8 @@ tpd_xlog_clean(XLogReaderState *record)
 
 		MarkBufferDirty(tpdbuf);
 		PageSetLSN(tpdpage, lsn);
+
+		pfree(tmppage);
 	}
 	if (BufferIsValid(tpdbuf))
 		UnlockReleaseBuffer(tpdbuf);
@@ -289,6 +362,9 @@ tpd_redo(XLogReaderState *record)
 	{
 		case XLOG_ALLOCATE_TPD_ENTRY:
 			tpd_xlog_allocate_entry(record);
+			break;
+		case XLOG_INPLACE_UPDATE_TPD_ENTRY:
+			tpd_xlog_inplace_update_entry(record);
 			break;
 		case XLOG_TPD_CLEAN:
 			tpd_xlog_clean(record);

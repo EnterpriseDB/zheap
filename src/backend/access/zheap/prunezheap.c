@@ -63,8 +63,6 @@ static void zheap_prune_record_prunable(ZPruneState * prstate,
 static void zheap_prune_record_dead(ZPruneState * prstate, OffsetNumber offnum);
 static void zheap_prune_record_deleted(ZPruneState * prstate,
 						   OffsetNumber offnum);
-static void compactify_ztuples(itemIdSort itemidbase, int nitems, Page page,
-							   Page tmppage);
 
 /*
  * Optionally prune and repair fragmentation in the specified page.
@@ -696,7 +694,7 @@ log_zheap_clean(Relation reln, Buffer buffer, OffsetNumber target_offnum,
  * Note that we use the temporary copy of the page to copy the tuples as
  * writing in itemid order will overwrite some tuples.
  */
-static void
+void
 compactify_ztuples(itemIdSort itemidbase, int nitems, Page page, Page tmppage)
 {
 	PageHeader	phdr = (PageHeader) page;

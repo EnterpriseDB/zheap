@@ -52,6 +52,16 @@ typedef struct xl_tpd_allocate_entry
 
 #define SizeOfTPDAllocateEntry	(offsetof(xl_tpd_allocate_entry, flags) + sizeof(uint8))
 
+/* This is what we need to know about tpd entry cleanup */
+#define XL_TPD_CONTAINS_OFFSET			(1<<0)
+
+typedef struct xl_tpd_clean
+{
+	uint8			flags;
+} xl_tpd_clean;
+
+#define SizeOfTPDClean	(offsetof(xl_tpd_clean, flags) + sizeof(uint8))
+
 extern void tpd_redo(XLogReaderState *record);
 extern void tpd_desc(StringInfo buf, XLogReaderState *record);
 extern const char *tpd_identify(uint8 info);

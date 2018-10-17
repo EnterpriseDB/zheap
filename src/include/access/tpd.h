@@ -35,7 +35,7 @@ typedef TPDPageOpaqueData *TPDPageOpaque;
 #define SizeofTPDPageOpaque (offsetof(TPDPageOpaqueData, tpd_latest_xid) + sizeof(TransactionId))
 
 /* TPD entry information */
-#define INITIAL_TRANS_SLOTS_IN_TPD_ENTRY	8
+#define INITIAL_TRANS_SLOTS_IN_TPD_ENTRY	2
 /*
  * Number of item to trasaction slot mapping entries in addition to max
  * itemid's in heap page.  This is required to support newer inserts on the
@@ -119,8 +119,11 @@ extern void TPDPageSetLSN(Page heappage, XLogRecPtr recptr);
 extern void UnlockReleaseTPDBuffers(void);
 
 /* interfaces exposed via prunetpd.c */
-extern int TPDPagePrune(Relation rel, Buffer tpdbuf);
+extern int TPDPagePrune(Relation rel, Buffer tpdbuf, OffsetNumber target_offnum,
+				Size space_required, bool *update_tpd_inplace);
 extern void TPDPagePruneExecute(Buffer tpdbuf, OffsetNumber *nowunused,
 								int nunused);
+extern void TPDPageRepairFragmentation(Page page, Page tmppage,
+					OffsetNumber target_offnum, Size space_required);
 
 #endif   /* TPD_H */
