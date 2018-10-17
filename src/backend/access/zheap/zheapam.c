@@ -1125,7 +1125,7 @@ zheap_delete(Relation relation, ItemPointer tid,
 				trans_slot_id,
 				new_trans_slot_id,
 				single_locker_trans_slot;
-	uint16		new_infomask;
+	uint16		new_infomask, temp_infomask;
 	bool		have_tuple_lock = false;
 	bool		in_place_updated_or_locked = false;
 	bool		all_visible_cleared = false;
@@ -1245,7 +1245,7 @@ check_tup_satisfies_update:
 		{
 			LockTupleMode	old_lock_mode;
 			TransactionId	update_xact;
-			bool			upd_xact_aborted;
+			bool			upd_xact_aborted = false;
 
 			/*
 			 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if current
@@ -1324,13 +1324,21 @@ check_tup_satisfies_update:
 				 * buffer lock and acquiring a lock on a tuple.
 				 */
 				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-				heap_acquire_tuplock(relation, &(zheaptup.t_self), LockTupleExclusive,
-									 LockWaitBlock, &have_tuple_lock);
 				mlmembers = ZGetMultiLockMembers(relation, &zheaptup, buffer,
 												 true);
-				ZMultiLockMembersWait(relation, mlmembers, &zheaptup, buffer,
-									  update_xact, LockTupleExclusive, false,
-									  XLTW_Delete, NULL, &upd_xact_aborted);
+
+				/*
+				 * If there is no multi-lock members apart from the current transaction
+				 * then no need for tuplock, just go ahead.
+				 */
+				if (mlmembers != NIL)
+				{
+					heap_acquire_tuplock(relation, &(zheaptup.t_self), LockTupleExclusive,
+										 LockWaitBlock, &have_tuple_lock);
+					ZMultiLockMembersWait(relation, mlmembers, &zheaptup, buffer,
+										  update_xact, LockTupleExclusive, false,
+										  XLTW_Delete, NULL, &upd_xact_aborted);
+				}
 				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
 				/*
@@ -1657,17 +1665,11 @@ zheap_tuple_updated:
 		tup_xid = InvalidTransactionId;
 	}
 
-	/*
-	 * If all the members were lockers and are all gone, we can do away
-	 * with the MULTI_LOCKERS bit.
-	 */
-	if (ZHeapTupleHasMultiLockers(zheaptup.t_data->t_infomask) &&
-		!any_multi_locker_member_alive)
-		zheaptup.t_data->t_infomask &= ~ZHEAP_MULTI_LOCKERS;
+	temp_infomask = zheaptup.t_data->t_infomask;
 
 	/* Compute the new xid and infomask to store into the tuple. */
 	compute_new_xid_infomask(&zheaptup, buffer, tup_xid, tup_trans_slot_id,
-							 zheaptup.t_data->t_infomask, xid, trans_slot_id,
+							 temp_infomask, xid, trans_slot_id,
 							 single_locker_xid, LockTupleExclusive, true,
 							 &new_infomask, &new_trans_slot_id);
 	/*
@@ -1779,6 +1781,15 @@ zheap_tuple_updated:
 								BufferGetBlockNumber(buffer), &vmbuffer);
 
 	START_CRIT_SECTION();
+
+	/*
+	 * If all the members were lockers and are all gone, we can do away
+	 * with the MULTI_LOCKERS bit.
+	 */
+
+	if (ZHeapTupleHasMultiLockers(zheaptup.t_data->t_infomask) &&
+		!any_multi_locker_member_alive)
+		zheaptup.t_data->t_infomask &= ~ZHEAP_MULTI_LOCKERS;
 
 	if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) ||
 		(vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
@@ -1995,7 +2006,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 				result_trans_slot_id,
 				single_locker_trans_slot;
 	uint16		old_infomask;
-	uint16		new_infomask;
+	uint16		new_infomask, temp_infomask;
 	uint16		infomask_old_tuple = 0;
 	uint16		infomask_new_tuple = 0;
 	OffsetNumber	old_offnum, max_offset;
@@ -2247,7 +2258,7 @@ check_tup_satisfies_update:
 			LockTupleMode	old_lock_mode;
 			int			remain;
 			bool		isAborted;
-			bool		upd_xact_aborted;
+			bool		upd_xact_aborted = false;
 
 			/*
 			 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if current
@@ -2349,14 +2360,22 @@ check_tup_satisfies_update:
 				 * buffer lock and acquiring a lock on a tuple.
 				 */
 				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-				heap_acquire_tuplock(relation, &(oldtup.t_self), *lockmode,
-									 LockWaitBlock, &have_tuple_lock);
 				mlmembers = ZGetMultiLockMembers(relation, &oldtup, buffer,
 												 true);
-				ZMultiLockMembersWait(relation, mlmembers, &oldtup, buffer,
-									  update_xact, *lockmode, false,
-									  XLTW_Update, &remain,
-									  &upd_xact_aborted);
+
+				/*
+				 * If there is no multi-lock members apart from the current transaction
+				 * then no need for tuplock, just go ahead.
+				 */
+				if (mlmembers != NIL)
+				{
+					heap_acquire_tuplock(relation, &(oldtup.t_self), *lockmode,
+										 LockWaitBlock, &have_tuple_lock);
+					ZMultiLockMembersWait(relation, mlmembers, &oldtup, buffer,
+										  update_xact, *lockmode, false,
+										  XLTW_Update, &remain,
+										  &upd_xact_aborted);
+				}
 				checked_lockers = true;
 				locker_remains = remain != 0;
 				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
@@ -2882,17 +2901,11 @@ zheap_tuple_updated:
 									InvalidTransactionId,
 									&undometa);
 
-		/*
-		 * If all the members were lockers and are all gone, we can do away
-		 * with the MULTI_LOCKERS bit.
-		 */
-		if (ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask) &&
-			!any_multi_locker_member_alive)
-			oldtup.t_data->t_infomask &= ~ZHEAP_MULTI_LOCKERS;
+		temp_infomask = oldtup.t_data->t_infomask;
 
 		/* Compute the new xid and infomask to store into the tuple. */
 		compute_new_xid_infomask(&oldtup, buffer, save_tup_xid,
-								 tup_trans_slot_id, oldtup.t_data->t_infomask,
+								 tup_trans_slot_id, temp_infomask,
 								 xid, trans_slot_id, single_locker_xid,
 								 *lockmode, false, &lock_old_infomask,
 								 &result_trans_slot_id);
@@ -2903,6 +2916,15 @@ zheap_tuple_updated:
 			undorecord.uur_type = UNDO_XID_LOCK_ONLY;
 
 		START_CRIT_SECTION();
+
+		/*
+		 * If all the members were lockers and are all gone, we can do away
+		 * with the MULTI_LOCKERS bit.
+		 */
+
+		if (ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask) &&
+			!any_multi_locker_member_alive)
+			oldtup.t_data->t_infomask &= ~ZHEAP_MULTI_LOCKERS;
 
 		InsertPreparedUndo();
 
@@ -3377,20 +3399,11 @@ reacquire_buffer:
 	 * We can't rely on any_multi_locker_member_alive to clear the multi locker
 	 * bit, if the the lock on the buffer is released inbetween.
 	 */
-	if (buffer == newbuf)
-	{
-		/*
-		 * If all the members were lockers and are all gone, we can do away
-		 * with the MULTI_LOCKERS bit.
-		 */
-		if (ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask) &&
-			!any_multi_locker_member_alive)
-			oldtup.t_data->t_infomask &= ~ZHEAP_MULTI_LOCKERS;
-	}
+	temp_infomask = oldtup.t_data->t_infomask;
 
 	/* Compute the new xid and infomask to store into the tuple. */
 	compute_new_xid_infomask(&oldtup, buffer, save_tup_xid, tup_trans_slot_id,
-							 oldtup.t_data->t_infomask, xid, trans_slot_id,
+							 temp_infomask, xid, trans_slot_id,
 							 single_locker_xid, *lockmode, true,
 							 &old_infomask, &result_trans_slot_id);
 
@@ -3444,6 +3457,17 @@ reacquire_buffer:
 	}
 
 	START_CRIT_SECTION();
+
+	if (buffer == newbuf)
+	{
+		/*
+		 * If all the members were lockers and are all gone, we can do away
+		 * with the MULTI_LOCKERS bit.
+		 */
+		if (ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask) &&
+			!any_multi_locker_member_alive)
+			oldtup.t_data->t_infomask &= ~ZHEAP_MULTI_LOCKERS;
+	}
 
 	if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) ||
 		(vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
@@ -5405,7 +5429,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	UndoRecPtr	urecptr;
 	UnpackedUndoRecord	undorecord;
 	int			new_trans_slot_id;
-	uint16		  old_infomask;
+	uint16		  old_infomask, temp_infomask;
 	uint16		  new_infomask = 0;
 	Page		  page;
 	xl_undolog_meta undometa;
@@ -5416,10 +5440,11 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	/* Compute the new xid and infomask to store into the tuple. */
 	old_infomask = zhtup->t_data->t_infomask;
 
+	temp_infomask = old_infomask;
 	if (ZHeapTupleHasMultiLockers(old_infomask) && clear_multi_locker)
 		old_infomask &= ~ZHEAP_MULTI_LOCKERS;
 	compute_new_xid_infomask(zhtup, buf, tup_xid, tup_trans_slot_id,
-							 old_infomask, xid, trans_slot_id,
+							 temp_infomask, xid, trans_slot_id,
 							 single_locker_xid, mode, false,
 							 &new_infomask, &new_trans_slot_id);
 
