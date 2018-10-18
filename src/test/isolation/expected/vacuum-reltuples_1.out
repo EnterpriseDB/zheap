@@ -13,7 +13,7 @@ step stats:
 
 relpages       reltuples      
 
-1              21             
+2              21             
 
 starting permutation: modify open fetch1 vac close stats
 step modify: 
@@ -41,7 +41,7 @@ step stats:
 
 relpages       reltuples      
 
-1              21             
+2              21             
 
 starting permutation: modify vac stats
 step modify: 
@@ -56,4 +56,4 @@ step stats:
 
 relpages       reltuples      
 
-1              21             
+2              21             
