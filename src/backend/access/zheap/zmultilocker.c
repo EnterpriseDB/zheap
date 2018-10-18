@@ -11,7 +11,7 @@
  *	  src/backend/access/zheap/zmultilocker.c
  *
  * NOTES
- *	  This file contains functions for the multi locker facility of zheap.
+ *	  This file contains functions for the multi locker facilit1y of zheap.
  *
  *-------------------------------------------------------------------------
  */

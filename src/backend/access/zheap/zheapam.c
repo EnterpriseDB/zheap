@@ -110,7 +110,8 @@ static void log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 					xl_undolog_meta *undometa);
 static HTSU_Result
 zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
-						 TransactionId xid, LockTupleMode mode, CommandId cid);
+						 TransactionId xid, LockTupleMode mode, CommandId cid,
+						 bool *rollback_and_relocked);
 static void zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 					  TransactionId tup_xid, TransactionId xid,
 					  LockTupleMode mode, uint32 epoch, int tup_trans_slot_id,
@@ -4033,6 +4034,7 @@ zheap_lock_tuple(Relation relation, ZHeapTuple tuple,
 	bool		in_place_updated_or_locked = false;
 	bool		any_multi_locker_member_alive = false;
 	bool		lock_reacquired;
+	bool		rollback_and_relocked;
 
 	xid = GetTopTransactionId();
 	epoch = GetEpochForXid(xid);
@@ -4230,8 +4232,20 @@ check_tup_satisfies_update:
 						HTSU_Result res;
 
 						res = zheap_lock_updated_tuple(relation, &zhtup, &ctid,
-													   xid, mode, cid);
-						if (res != HeapTupleMayBeUpdated)
+													   xid, mode, cid,
+													   &rollback_and_relocked);
+
+						/*
+						 * If the update was by some aborted transaction and its
+						 * pending undo actions are applied now, then check the
+						 * latest copy of the tuple.
+						 */
+						if (rollback_and_relocked)
+						{
+							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+							goto check_tup_satisfies_update;
+						}
+						else if (res != HeapTupleMayBeUpdated)
 						{
 							result = res;
 							/* recovery code expects to have buffer lock held */
@@ -4594,8 +4608,20 @@ check_tup_satisfies_update:
 				if (!ItemPointerEquals(&zhtup.t_self, &ctid))
 				{
 					res = zheap_lock_updated_tuple(relation, &zhtup, &ctid,
-												   xid, mode, cid);
-					if (res != HeapTupleMayBeUpdated)
+												   xid, mode, cid,
+												   &rollback_and_relocked);
+
+					/*
+					 * If the update was by some aborted transaction and its
+					 * pending undo actions are applied now, then check the
+					 * latest copy of the tuple.
+					 */
+					if (rollback_and_relocked)
+					{
+						LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+						goto check_tup_satisfies_update;
+					}
+					else if (res != HeapTupleMayBeUpdated)
 					{
 						result = res;
 						/* recovery code expects to have buffer lock held */
@@ -4947,14 +4973,16 @@ out_unlocked:
  * does the current transaction need to wait, fail, or can it continue if
  * it wanted to acquire a lock of the given mode (required_mode)?  "needwait"
  * is set to true if waiting is necessary; if it can continue, then
- * HeapTupleMayBeUpdated is returned.
+ * HeapTupleMayBeUpdated is returned.  To notify the caller if some pending
+ * rollback is applied, rollback_and_relocked is set to true.
  */
 static HTSU_Result
 test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 						   UndoRecPtr urec_ptr, LockTupleMode old_mode,
 						   TransactionId xid, int trans_slot_id,
 						   LockTupleMode required_mode, bool has_update,
-						   SubTransactionId *subxid, bool *needwait)
+						   SubTransactionId *subxid, bool *needwait,
+						   bool *rollback_and_relocked)
 {
 	*needwait = false;
 
@@ -5009,10 +5037,10 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		 * error to the caller.  It will allow caller to reverify the tuple in
 		 * case it's values got changed.
 		 */
-		if (has_update)
-			return HeapTupleUpdated;
-		else
-			return HeapTupleMayBeUpdated;
+
+		*rollback_and_relocked = true;
+
+		return HeapTupleMayBeUpdated;
 	}
 	else if (TransactionIdDidCommit(xid))
 	{
@@ -5055,15 +5083,19 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
  * During chain traversal, we might find some intermediate version which
  * is pruned (due to non-inplace-update got committed and the version only
  * has line pointer), so we need to continue fetching the newer versions
- * to lock them.
+ * to lock them.  The bool rolled_and_relocked is used to notify the caller
+ * that the update has been performed by an aborted transaction and it's
+ * pending undo actions are applied here.
  *
  * Note that it is important to lock all the versions that are from
  * non-committed transaction, but if the transaction that has created the
  * new version is committed, we only care to lock its latest version.
+ *
  */
 static HTSU_Result
 zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
-						 TransactionId xid, LockTupleMode mode, CommandId cid)
+						 TransactionId xid, LockTupleMode mode, CommandId cid,
+						 bool *rollback_and_relocked)
 {
 	HTSU_Result result;
 	ZHeapTuple	mytup;
@@ -5201,7 +5233,21 @@ lock_tuple:
 														mlmember->trans_slot_id,
 														mode, has_update,
 														NULL,
-														&needwait);
+														&needwait,
+														rollback_and_relocked);
+
+					/*
+					 * If the update was by some aborted transaction with
+					 * pending rollback, then it's undo actions are applied.
+					 * Now, notify the caller to check for the latest
+					 * copy of the tuple.
+					 */
+					if (*rollback_and_relocked)
+					{
+						list_free_deep(mlmembers);
+						goto out_locked;
+					}
+
 					if (result == HeapTupleSelfUpdated)
 					{
 						list_free_deep(mlmembers);
@@ -5275,7 +5321,17 @@ lock_tuple:
 													old_lock_mode, tup_xid,
 													tup_trans_slot, mode,
 													has_update, &subxid,
-													&needwait);
+													&needwait,
+													rollback_and_relocked);
+
+				/*
+				 * If the update was by some aborted transaction with
+				 * pending rollback, then it's undo actions are applied.
+				 * Now, notify the caller to check for the latest
+				 * copy of the tuple.
+				 */
+				if (*rollback_and_relocked)
+					goto out_locked;
 
 				/*
 				 * If the tuple was already locked by ourselves in a previous
