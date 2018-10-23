@@ -5114,6 +5114,9 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 
 	ItemPointerCopy(ctid, &tupid);
 
+	if (rollback_and_relocked)
+		*rollback_and_relocked = false;
+
 	for (;;)
 	{
 		ZHeapTupleData	zhtup;
