@@ -2272,7 +2272,7 @@ check_tup_satisfies_update:
 		{
 			TransactionId update_xact;
 			LockTupleMode	old_lock_mode;
-			int			remain;
+			int		remain = 0;
 			bool		isAborted;
 			bool		upd_xact_aborted = false;
 
