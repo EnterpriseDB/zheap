@@ -308,7 +308,7 @@ tpd_xlog_clean(XLogReaderState *record)
 		end = (OffsetNumber *) ((char *) nowunused + datalen);
 		nunused = (end - nowunused);
 
-		if (nunused >= 0);
+		if (nunused >= 0)
 		{
 			/* Update all item pointers per the record, and repair fragmentation */
 			TPDPagePruneExecute(tpdbuf, nowunused, nunused);
