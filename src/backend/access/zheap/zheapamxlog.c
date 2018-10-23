@@ -178,7 +178,7 @@ zheap_xlog_insert(XLogReaderState *record)
 		zhtup->t_hoff = xlhdr.t_hoff;
 
 		if (ZPageAddItem(buffer, NULL, (Item) zhtup, newlen, xlrec->offnum,
-						 true, true) == InvalidOffsetNumber)
+						 true, true, true) == InvalidOffsetNumber)
 			elog(PANIC, "failed to add tuple");
 
 		if (!skip_undo)
@@ -955,7 +955,7 @@ zheap_xlog_update(XLogReaderState *record)
 		else
 		{
 			if (ZPageAddItem(newbuffer, NULL, (Item) newtup, newlen, xlrec->new_offnum,
-						 true, true) == InvalidOffsetNumber)
+						 true, true, true) == InvalidOffsetNumber)
 				elog(PANIC, "failed to add tuple");
 			PageSetUNDO((newbuffer == oldbuffer) ? undorecord : newundorecord,
 						newbuffer, trans_slot_id, false, xid_epoch, xid,
@@ -1650,7 +1650,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			zhtup->t_hoff = xlhdr->t_hoff;
 
 			if (ZPageAddItem(buffer, NULL, (Item) zhtup, newlen, offnum,
-							 true, true) == InvalidOffsetNumber)
+							 true, true, true) == InvalidOffsetNumber)
 				elog(PANIC, "failed to add tuple");
 
 			/* track used offsets */
@@ -1833,7 +1833,7 @@ zheap_xlog_clean(XLogReaderState *record)
 			 */
 			tmppage = PageGetTempPageCopy(BufferGetPage(buffer));
 			ZPageRepairFragmentation(buffer, tmppage, *target_offnum,
-									 *space_required, &pruned);
+									 *space_required, true, &pruned);
 
 			/*
 			 * Pruning must be successful at redo time, otherwise the page
@@ -2020,7 +2020,7 @@ zheap_xlog_unused(XLogReaderState *record)
 			 */
 			tmppage = PageGetTempPageCopy(BufferGetPage(buffer));
 			ZPageRepairFragmentation(buffer, tmppage, InvalidOffsetNumber,
-									 0, &pruned);
+									 0, true, &pruned);
 
 			/*
 			 * Pruning must be successful at redo time, otherwise the page

@@ -359,7 +359,8 @@ raw_zheap_insert(RewriteState state, ZHeapTuple tup)
 
 	/* And now we can insert the tuple into the page */
 	newoff = ZPageAddItem(InvalidBuffer, page, (Item) heaptup->t_data,
-						  heaptup->t_len, InvalidOffsetNumber, false, true);
+						  heaptup->t_len, InvalidOffsetNumber, false, true,
+						  true);
 	if (newoff == InvalidOffsetNumber)
 		elog(ERROR, "failed to add tuple");
 

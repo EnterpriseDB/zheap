@@ -25,6 +25,7 @@
  */
 #include "postgres.h"
 
+#include "access/tpd.h"
 #include "access/zheap.h"
 #include "access/zheapam_xlog.h"
 #include "access/zheaputils.h"
@@ -278,6 +279,8 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 	if (prstate.ndeleted > 0 || prstate.ndead > 0 ||
 		prstate.nunused > 0 || force_prune)
 	{
+		PageHeader	phdr;
+
 		execute_pruning = true;
 
 		/*
@@ -285,6 +288,14 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 		 * repair fragmentation we can use it to copy the actual tuples.
 		 */
 		tmppage = PageGetTempPageCopy(page);
+
+		/*
+		 * Lock the TPD page before starting critical section.  We might need
+		 * to access it during page repair fragmentation.
+		 */
+		phdr = (PageHeader) page;
+		if (ZHeapPageHasTPDSlot(phdr))
+			TPDPageLock(relation, buffer);
 	}
 
 	/* Any error while applying the changes is critical */
@@ -308,7 +319,7 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 		 * whether it has free pointers.
 		 */
 		ZPageRepairFragmentation(buffer, tmppage, target_offnum,
-								 space_required, &has_pruned);
+								 space_required, false, &has_pruned);
 
 		/*
 		 * Update the page's pd_prune_xid field to either zero, or the lowest
@@ -380,6 +391,7 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 	/* be tidy. */
 	if (tmppage)
 		pfree(tmppage);
+	UnlockReleaseTPDBuffers();
 
 	/*
 	 * XXX Should we update FSM information for this?  Not doing so will
@@ -736,7 +748,7 @@ compactify_ztuples(itemIdSort itemidbase, int nitems, Page page, Page tmppage)
 void
 ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 						 OffsetNumber target_offnum, Size space_required,
-						 bool *pruned)
+						 bool NoTPDBufLock, bool *pruned)
 {
 	Page		page = BufferGetPage(buffer);
 	Offset		pd_lower = ((PageHeader)page)->pd_lower;
@@ -749,8 +761,8 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 	uint32			epoch;
 	UndoRecPtr		urec_ptr;
 	int			nline,
-		nstorage,
-		nunused;
+				nstorage,
+				nunused;
 	int			i;
 	Size		totallen;
 
@@ -809,7 +821,7 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 				 */
 				trans_slot = GetTransactionSlotInfo(buffer, i, trans_slot,
 													&epoch, &xid, &urec_ptr,
-													true, false);
+													NoTPDBufLock, false);
 				/*
 				 * It is quite possible that the item is showing some
 				 * valid transaction slot, but actual slot has been frozen.
@@ -881,7 +893,7 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 				{
 					trans_slot = GetTransactionSlotInfo(buffer, i, trans_slot,
 														&epoch, &xid,
-														&urec_ptr, true,
+														&urec_ptr, NoTPDBufLock,
 														false);
 					/*
 					 * It is quite possible that the item is showing some

@@ -814,6 +814,21 @@ reacquire_buffer:
 								BufferGetBlockNumber(buffer),
 								&vmbuffer);
 
+	/*
+	 * Lock the TPD page before starting critical section.  We might need
+	 * to access it in ZPageAddItemExtended.  Note that if the transaction
+	 * slot belongs to TPD entry, then the TPD page must be locked during
+	 * slot reservation.
+	 *
+	 * XXX We can optimize this by avoid taking TPD page lock unless the page
+	 * has some unused item which requires us to fetch the transaction
+	 * information from TPD.
+	 */
+	if (trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS &&
+		ZHeapPageHasTPDSlot((PageHeader) page) &&
+		PageHasFreeLinePointers((PageHeader) page))
+		TPDPageLock(relation, buffer);
+
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
 
@@ -3394,6 +3409,21 @@ reacquire_buffer:
 										UndoPersistenceForRelation(relation),
 										InvalidTransactionId,
 										NULL);
+
+		/*
+		 * Lock the TPD page before starting critical section.  We might need
+		 * to access it in ZPageAddItemExtended.  Note that if the transaction
+		 * slot belongs to TPD entry, then the TPD page must be locked during
+		 * slot reservation.
+		 *
+		 * XXX We can optimize this by avoid taking TPD page lock unless the page
+		 * has some unused item which requires us to fetch the transaction
+		 * information from TPD.
+		 */
+		if (new_trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS &&
+			ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(newbuf)) &&
+			PageHasFreeLinePointers((PageHeader)BufferGetPage(newbuf)))
+			TPDPageLock(relation, buffer);
 	}
 
 	/*
@@ -10165,7 +10195,8 @@ ZPageAddItemExtended(Buffer buffer,
 					 Item item,
 					 Size size,
 					 OffsetNumber offsetNumber,
-					 int flags)
+					 int flags,
+					 bool NoTPDBufLock)
 {
 	Page		page;
 	PageHeader	phdr;
@@ -10276,7 +10307,7 @@ ZPageAddItemExtended(Buffer buffer,
 							break;
 						trans_slot_id = GetTransactionSlotInfo(buffer, offsetNumber,
 															   trans_slot_id, &epoch, &xid,
-															   &urec_ptr, true, false);
+															   &urec_ptr, NoTPDBufLock, false);
 						/*
 						 * It is quite possible that the item is showing some
 						 * valid transaction slot, but actual slot has been frozen.
@@ -10453,9 +10484,9 @@ RelationPutZHeapTuple(Relation relation,
 {
 	OffsetNumber offnum;
 
-	/* Add the tuple to the page */
+	/* Add the tuple to the page.  Caller must ensure to have a TPD page lock. */
 	offnum = ZPageAddItem(buffer, NULL, (Item) tuple->t_data, tuple->t_len,
-						  InvalidOffsetNumber, false, true);
+						  InvalidOffsetNumber, false, true, false);
 
 	if (offnum == InvalidOffsetNumber)
 		elog(PANIC, "failed to add tuple to page");
@@ -10963,6 +10994,21 @@ reacquire_buffer:
 		 */
 		vm_status = visibilitymap_get_status(relation,
 										BufferGetBlockNumber(buffer), &vmbuffer);
+
+		/*
+		 * Lock the TPD page before starting critical section.  We might need
+		 * to access it in ZPageAddItemExtended.  Note that if the transaction
+		 * slot belongs to TPD entry, then the TPD page must be locked during
+		 * slot reservation.
+		 *
+		 * XXX We can optimize this by avoid taking TPD page lock unless the page
+		 * has some unused item which requires us to fetch the transaction
+		 * information from TPD.
+		 */
+		if (trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS &&
+			ZHeapPageHasTPDSlot((PageHeader) page) &&
+			PageHasFreeLinePointers((PageHeader) page))
+			TPDPageLock(relation, buffer);
 
 		/* NO EREPORT(ERROR) from here till changes are logged */
 		START_CRIT_SECTION();

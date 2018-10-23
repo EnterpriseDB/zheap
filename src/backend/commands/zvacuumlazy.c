@@ -115,6 +115,13 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 	 */
 	tmppage = PageGetTempPageCopy(page);
 
+	/*
+	 * Lock the TPD page before starting critical section.  We might need
+	 * to access it during page repair fragmentation.
+	 */
+	if (ZHeapPageHasTPDSlot((PageHeader) page))
+		TPDPageLock(onerel, buffer);
+
 	START_CRIT_SECTION();
 
 	for (; tupindex < vacrelstats->num_dead_tuples; tupindex++)
@@ -132,7 +139,8 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 		unused[uncnt++] = toff;
 	}
 
-	ZPageRepairFragmentation(buffer, tmppage, InvalidOffsetNumber, 0, &pruned);
+	ZPageRepairFragmentation(buffer, tmppage, InvalidOffsetNumber, 0, false,
+							 &pruned);
 
 	/*
 	 * Mark buffer dirty before we write WAL.
@@ -155,6 +163,7 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 
 	/* be tidy */
 	pfree(tmppage);
+	UnlockReleaseTPDBuffers();
 
 	/*
 	 * Now that we have removed the dead tuples from the page, once again
@@ -290,6 +299,16 @@ reacquire_slot:
 	 */
 	tmppage = PageGetTempPageCopy(page);
 
+	/*
+	 * Lock the TPD page before starting critical section.  We might need
+	 * to access it during page repair fragmentation.  Note that if the
+	 * transaction slot belongs to TPD entry, then the TPD page must be
+	 * locked during slot reservation.
+	 */
+	if (trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS &&
+		ZHeapPageHasTPDSlot((PageHeader) page))
+		TPDPageLock(onerel, buffer);
+
 	START_CRIT_SECTION();
 
 	memcpy(undorecord.uur_payload.data, unused, uncnt * sizeof(OffsetNumber));
@@ -331,7 +350,8 @@ reacquire_slot:
 		ItemIdSetUnusedExtended(itemid, trans_slot_id);
 	}
 
-	ZPageRepairFragmentation(buffer, tmppage, InvalidOffsetNumber, 0, &pruned);
+	ZPageRepairFragmentation(buffer, tmppage, InvalidOffsetNumber, 0, false,
+							 &pruned);
 
 	/*
 	 * Mark buffer dirty before we write WAL.

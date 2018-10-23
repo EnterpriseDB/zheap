@@ -364,14 +364,15 @@ extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
 #define MaxZHeapTupleSize  (BLCKSZ - MAXALIGN(SizeOfPageHeaderData + SizeOfZHeapPageOpaqueData + sizeof(ItemIdData)))
 #define MinZHeapTupleSize  MAXALIGN(SizeofZHeapTupleHeader)
 
-#define ZPageAddItem(buffer, input_page, item, size, offsetNumber, overwrite, is_heap) \
+#define ZPageAddItem(buffer, input_page, item, size, offsetNumber, overwrite, is_heap, NoTPDBufLock) \
 	ZPageAddItemExtended(buffer, input_page, item, size, offsetNumber, \
 						 ((overwrite) ? PAI_OVERWRITE : 0) | \
-						 ((is_heap) ? PAI_IS_HEAP : 0))
+						 ((is_heap) ? PAI_IS_HEAP : 0), \
+						 NoTPDBufLock)
 
 extern Size PageGetZHeapFreeSpace(Page page);
 extern OffsetNumber ZPageAddItemExtended(Buffer buffer, Page input_page,
 					 Item item, Size size, OffsetNumber offsetNumber,
-					 int flags);
+					 int flags, bool NoTPDBufLock);
 
 #endif   /* ZHTUP_H */
