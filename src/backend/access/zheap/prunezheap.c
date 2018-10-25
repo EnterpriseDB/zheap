@@ -788,7 +788,11 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 	/*
 	 * If there are any tuples which are inplace updated by any open
 	 * transactions we shall not compactify the page contents, otherwise,
-	 * rollback of those transactions will not be possible.
+	 * rollback of those transactions will not be possible.  There could be
+	 * a case, where within a transaction tuple is first inplace updated
+	 * and then, either updated or deleted. So for now avoid compaction if
+	 * there are any tuples which are marked inplace updated, updated or
+	 * deleted by an open transaction.
 	 */
 	for (i = FirstOffsetNumber; i <= nline; i++)
 	{
@@ -799,7 +803,8 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 
 			tup = (ZHeapTupleHeader) PageGetItem(page, lp);
 
-			if (!(tup->t_infomask & ZHEAP_INPLACE_UPDATED))
+			if (!(tup->t_infomask & (ZHEAP_INPLACE_UPDATED |
+									 ZHEAP_UPDATED | ZHEAP_DELETED)))
 				continue;
 
 			if (!ZHeapTupleHasInvalidXact(tup->t_infomask))
