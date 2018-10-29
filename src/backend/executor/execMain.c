@@ -3493,7 +3493,7 @@ EvalPlanQualStart(EPQState *epqstate, EState *parentestate, Plan *planTree)
 			{
 				Oid			reloid;
 				Relation	rel;
-				reloid = getrelid(i, estate->es_range_table);
+				reloid = rt_fetch(i, estate->es_range_table)->relid;
 				if (!OidIsValid(reloid))
 					continue;
 				rel = heap_open(reloid, NoLock);
