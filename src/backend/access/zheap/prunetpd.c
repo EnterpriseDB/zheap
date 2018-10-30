@@ -213,14 +213,21 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
 		uint64	epoch_xid;
 		TransactionId	xid;
 		uint64	epoch;
+		UndoRecPtr	urec_ptr = trans_slots[slot_no].urec_ptr;
 
 		epoch = trans_slots[slot_no].xid_epoch;
 		xid = trans_slots[slot_no].xid;
 		epoch_xid = MakeEpochXid(epoch, xid);
-
-		/* Check whether transaction slot can be considered frozen? */
-		if (xid == InvalidTransactionId ||
-			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		/*
+		 * Check whether transaction slot can be considered frozen?
+		 * If both transaction id and undo record pointer are invalid or
+		 * xid is invalid and its undo has been discarded or xid is older than
+		 * the oldest xid with undo.
+		 */
+		if ((!TransactionIdIsValid(xid) &&
+			(!UndoRecPtrIsValid(urec_ptr) || UndoLogIsDiscarded(urec_ptr))) ||
+			(TransactionIdIsValid(xid) &&
+	 		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)))
 			continue;
 		else
 		{

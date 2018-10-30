@@ -686,8 +686,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 		UnlockReleaseBuffer(buffer);
 		heap_close(rel, NoLock);
 
-		if ((options & UNDO_ACTION_UPDATE_TPD) != 0)
-			UnlockReleaseTPDBuffers();
+		UnlockReleaseTPDBuffers();
 
 		return false;
 	}
