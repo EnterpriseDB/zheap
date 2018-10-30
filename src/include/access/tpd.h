@@ -117,6 +117,7 @@ extern XLogRedoAction XLogReadTPDBuffer(XLogReaderState *record,
 extern uint8 RegisterTPDBuffer(Page heappage, uint8 block_id);
 extern void TPDPageSetLSN(Page heappage, XLogRecPtr recptr);
 extern void UnlockReleaseTPDBuffers(void);
+extern void ResetRegisteredTPDBuffers(void);
 
 /* interfaces exposed via prunetpd.c */
 extern int TPDPagePrune(Relation rel, Buffer tpdbuf, OffsetNumber target_offnum,

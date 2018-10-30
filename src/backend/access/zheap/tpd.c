@@ -99,6 +99,11 @@ static void ReleaseLastTPDBuffer(Buffer buf);
 static Size PageGetTPDFreeSpace(Page page);
 static void LogAndClearTPDLocation(Relation relation, Buffer heapbuf,
 								   bool *tpd_e_pruned);
+void
+ResetRegisteredTPDBuffers()
+{
+	registered_tpd_buf_idx = 0;
+}
 
 /*
  * GetTPDBuffer - Get the tpd buffer corresponding to give block number.

@@ -976,7 +976,10 @@ prepare_xlog:
 		recptr = XLogInsertExtended(RM_ZHEAP_ID, info, RedoRecPtr,
 									doPageWrites);
 		if (recptr == InvalidXLogRecPtr)
+		{
+			ResetRegisteredTPDBuffers();
 			goto prepare_xlog;
+		}
 
 		PageSetLSN(page, recptr);
 		if (xlrec.flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
@@ -1925,7 +1928,10 @@ prepare_xlog:
 		recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_DELETE,
 									RedoRecPtr, doPageWrites);
 		if (recptr == InvalidXLogRecPtr)
+		{
+			ResetRegisteredTPDBuffers();
 			goto prepare_xlog;
+		}
 		PageSetLSN(page, recptr);
 		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			TPDPageSetLSN(page, recptr);
@@ -3041,7 +3047,10 @@ prepare_xlog:
 			recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK, RedoRecPtr,
 										doPageWrites);
 			if (recptr == InvalidXLogRecPtr)
+			{
+				ResetRegisteredTPDBuffers();
 				goto prepare_xlog;
+			}
 
 			PageSetLSN(page, recptr);
 			if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
@@ -4017,7 +4026,10 @@ prepare_xlog:
 
 	recptr = XLogInsertExtended(RM_ZHEAP_ID, info, RedoRecPtr, doPageWrites);
 	if (recptr == InvalidXLogRecPtr)
+	{
+		ResetRegisteredTPDBuffers();
 		goto prepare_xlog;
+	}
 
 	if (newbuf != oldbuf)
 	{
@@ -5730,7 +5742,10 @@ prepare_xlog:
 		recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK, RedoRecPtr,
 									doPageWrites);
 		if (recptr == InvalidXLogRecPtr)
+		{
+			ResetRegisteredTPDBuffers();
 			goto prepare_xlog;
+		}
 
 		PageSetLSN(page, recptr);
 		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
@@ -11287,7 +11302,10 @@ prepare_xlog:
 			recptr = XLogInsertExtended(RM_ZHEAP_ID, info, RedoRecPtr,
 										doPageWrites);
 			if (recptr == InvalidXLogRecPtr)
+			{
+				ResetRegisteredTPDBuffers();
 				goto prepare_xlog;
+			}
 
 			PageSetLSN(page, recptr);
 			if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
