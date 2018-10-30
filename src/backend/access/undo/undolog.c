@@ -155,6 +155,9 @@ struct
 	 * checkpoints to free up chunks of the map.
 	 */
 	uint16			xid_map_oldest_chunk;
+
+	/* Current dbid.  Used during recovery. */
+	Oid				dbid;
 } MyUndoLogState;
 
 /* GUC variables */
@@ -786,6 +789,7 @@ UndoLogAllocate(size_t size, UndoPersistence persistence)
 		{
 			xlrec.xid = GetTopTransactionId();
 			xlrec.logno = log->logno;
+			xlrec.dbid = MyDatabaseId;
 
 			XLogBeginInsert();
 			XLogRegisterData((char *) &xlrec, sizeof(xlrec));
@@ -2466,12 +2470,16 @@ undolog_xlog_attach(XLogReaderState *record)
 
 	undolog_xid_map_add(xlrec->xid, xlrec->logno);
 
+	/* Restore current dbid */
+	MyUndoLogState.dbid = xlrec->dbid;
+
 	/*
 	 * Whatever follows is the first record for this transaction.  Zheap will
 	 * use this to add UREC_INFO_TRANSACTION.
 	 */
 	log = get_undo_log_by_number(xlrec->logno);
 	log->meta.is_first_rec = true;
+	log->xid = xlrec->xid;
 }
 
 /*
@@ -2697,4 +2705,14 @@ AmAttachedToUndoLog(UndoLogControl *log)
 			return true;
 	}
 	return false;
+}
+
+/*
+ * Fetch database id from the undo log state
+ */
+Oid
+UndoLogStateGetDatabaseId()
+{
+	Assert(InRecovery);
+	return MyUndoLogState.dbid;
 }

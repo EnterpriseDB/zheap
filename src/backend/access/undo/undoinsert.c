@@ -501,7 +501,12 @@ resize:
 			urec->uur_next = SpecialUndoRecPtr;
 			urec->uur_xidepoch = GetEpochForXid(txid);
 			urec->uur_progress = 0;
-			urec->uur_dbid = MyDatabaseId;
+
+			/* During recovery, Fetch database id from the undo log state. */
+			if (InRecovery)
+				urec->uur_dbid = UndoLogStateGetDatabaseId();
+			else
+				urec->uur_dbid = MyDatabaseId;
 		}
 		else
 			urec->uur_next = InvalidUndoRecPtr;

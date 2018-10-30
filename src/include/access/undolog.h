@@ -334,5 +334,6 @@ void UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);
 extern void undolog_redo(XLogReaderState *record);
 /* Discard the undo logs for temp tables */
 extern void TempUndoDiscard(UndoLogNumber);
+extern Oid UndoLogStateGetDatabaseId(void);
 
 #endif

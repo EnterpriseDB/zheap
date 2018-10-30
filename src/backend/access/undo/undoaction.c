@@ -398,8 +398,6 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 	bool	actions_applied = false;
 	int		options = 0;
 
-	Assert(TransactionIdDidAbort(xid));
-
 	/*
 	 * Process and collect the undo for the block until we reach the first
 	 * record of the transaction.
