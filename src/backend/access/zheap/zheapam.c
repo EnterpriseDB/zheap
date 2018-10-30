@@ -468,13 +468,10 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 
 	/*
 	 * If tuple doesn't have all the atts indicated by tupleDesc, read the
-	 * rest as null
+	 * rest as nulls or missing values as appropriate.
 	 */
 	for (; attnum < tdesc_natts; attnum++)
-	{
-		values[attnum] = (Datum) 0;
-		isnull[attnum] = true;
-	}
+		values[attnum] = getmissingattr(tupleDesc, attnum + 1, &isnull[attnum]);	
 }
 
 /*

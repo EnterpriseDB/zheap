@@ -335,6 +335,12 @@ ExecStoreHeapTuple(HeapTuple tuple,
 		heap_freetuple(slot->tts_tuple);
 		slot->tts_flags &= ~TTS_FLAG_SHOULDFREE;
 	}
+	if (TTS_SHOULDZFREE(slot))
+	{
+		zheap_freetuple(slot->tts_ztuple);
+		slot->tts_ztuple = NULL;
+		slot->tts_flags &= ~TTS_FLAG_SHOULDZFREE;
+	}	
 	if (TTS_SHOULDFREEMIN(slot))
 	{
 		heap_free_minimal_tuple(slot->tts_mintuple);
@@ -398,6 +404,12 @@ ExecStoreBufferHeapTuple(HeapTuple tuple,
 		heap_freetuple(slot->tts_tuple);
 		slot->tts_flags &= ~TTS_FLAG_SHOULDFREE;
 	}
+	if (TTS_SHOULDZFREE(slot))
+	{
+		zheap_freetuple(slot->tts_ztuple);
+		slot->tts_ztuple = NULL;
+		slot->tts_flags &= ~TTS_FLAG_SHOULDZFREE;
+	}	
 	if (TTS_SHOULDFREEMIN(slot))
 	{
 		heap_free_minimal_tuple(slot->tts_mintuple);

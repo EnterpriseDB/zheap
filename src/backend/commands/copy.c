@@ -2931,7 +2931,10 @@ CopyFrom(CopyState cstate)
 				 * freed after each batch insert.
 				 */
 				oldcontext = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-				tuple = ExecCopySlotTuple(slot);
+				if (RelationStorageIsZHeap(cstate->rel))
+					ztuple = ExecCopySlotZTuple(slot);
+				else
+					tuple = ExecCopySlotTuple(slot);
 				MemoryContextSwitchTo(oldcontext);
 			}
 
