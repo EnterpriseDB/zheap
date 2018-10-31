@@ -295,12 +295,7 @@ raw_zheap_insert(RewriteState state, ZHeapTuple tup)
 	else
 		heaptup = tup;
 
-	if (data_alignment_zheap == 0)
-		len = heaptup->t_len;	/* no alignment */
-	else if (data_alignment_zheap == 4)
-		len = INTALIGN(heaptup->t_len);	/* four byte alignment */
-	else
-		len = MAXALIGN(heaptup->t_len);		/* be conservative */
+	len = SHORTALIGN(heaptup->t_len);
 
 	/*
 	 * If we're gonna fail for oversize tuple, do it right away

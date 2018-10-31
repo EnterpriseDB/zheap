@@ -55,7 +55,7 @@
  * the per-page bitmaps variable size.  We just legislate that the size
  * is this:
  */
-#define MAX_TUPLES_PER_PAGE  Max(MaxHeapTuplesPerPage, MaxZHeapTuplesPerPageAlign0)
+#define MAX_TUPLES_PER_PAGE  Max(MaxHeapTuplesPerPage, MaxZHeapTuplesPerPage)
 
 /*
  * When we have to switch over to lossy storage, we use a data structure

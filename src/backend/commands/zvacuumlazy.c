@@ -66,7 +66,7 @@ static BufferAccessStrategy vac_strategy;
  * provide an upper limit to memory allocated when vacuuming small
  * tables.
  */
-#define LAZY_ALLOC_TUPLES		MaxZHeapTuplesPerPageAlign0
+#define LAZY_ALLOC_TUPLES		MaxZHeapTuplesPerPage
 
 /* non-export function prototypes */
 static int
@@ -1354,11 +1354,11 @@ lazy_space_zalloc(LVRelStats *vacrelstats, BlockNumber relblocks)
 			maxtuples = relblocks * LAZY_ALLOC_TUPLES;
 
 		/* stay sane if small maintenance_work_mem */
-		maxtuples = Max(maxtuples, MaxZHeapTuplesPerPageAlign0);
+		maxtuples = Max(maxtuples, MaxZHeapTuplesPerPage);
 	}
 	else
 	{
-		maxtuples = MaxZHeapTuplesPerPageAlign0;
+		maxtuples = MaxZHeapTuplesPerPage;
 	}
 
 	vacrelstats->num_dead_tuples = 0;

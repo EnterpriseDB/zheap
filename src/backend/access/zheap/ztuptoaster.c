@@ -258,7 +258,7 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 		hoff += BITMAPLEN(numAttrs);
 	if (newtup->t_data->t_infomask & ZHEAP_HASOID)
 		hoff += sizeof(Oid);
-	hoff = MAXALIGN(hoff);
+
 	/* now convert to a limit on the tuple data size */
 	maxDataLen = RelationGetToastTupleTarget(rel, TOAST_TUPLE_TARGET) - hoff;
 
@@ -266,8 +266,8 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 	 * Look for attributes with attstorage 'x' to compress.  Also find large
 	 * attributes with attstorage 'x' or 'e', and store them external.
 	 */
-	while (heap_compute_data_size(tupleDesc,
-								  toast_values, toast_isnull) > maxDataLen)
+	while (zheap_compute_data_size(tupleDesc,
+								   toast_values, toast_isnull, hoff) > maxDataLen)
 	{
 		int			biggest_attno = -1;
 		int32		biggest_size = MAXALIGN(TOAST_POINTER_SIZE);
@@ -358,9 +358,9 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 	 * Second we look for attributes of attstorage 'x' or 'e' that are still
 	 * inline.  But skip this if there's no toast table to push them to.
 	 */
-	while (heap_compute_data_size(tupleDesc,
-								  toast_values, toast_isnull) > maxDataLen &&
-		   rel->rd_rel->reltoastrelid != InvalidOid)
+	while (zheap_compute_data_size(tupleDesc,
+								   toast_values, toast_isnull, hoff) > maxDataLen &&
+								   rel->rd_rel->reltoastrelid != InvalidOid)
 	{
 		int			biggest_attno = -1;
 		int32		biggest_size = MAXALIGN(TOAST_POINTER_SIZE);
@@ -411,8 +411,8 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 	 * Round 3 - this time we take attributes with storage 'm' into
 	 * compression
 	 */
-	while (heap_compute_data_size(tupleDesc,
-								  toast_values, toast_isnull) > maxDataLen)
+	while (zheap_compute_data_size(tupleDesc,
+								   toast_values, toast_isnull, hoff) > maxDataLen)
 	{
 		int			biggest_attno = -1;
 		int32		biggest_size = MAXALIGN(TOAST_POINTER_SIZE);
@@ -474,8 +474,8 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 	 */
 	maxDataLen = TOAST_TUPLE_TARGET_MAIN - hoff;
 
-	while (heap_compute_data_size(tupleDesc,
-								  toast_values, toast_isnull) > maxDataLen &&
+	while (zheap_compute_data_size(tupleDesc,
+								   toast_values, toast_isnull, hoff) > maxDataLen &&
 		   rel->rd_rel->reltoastrelid != InvalidOid)
 	{
 		int			biggest_attno = -1;
@@ -548,9 +548,8 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 			new_header_len += BITMAPLEN(numAttrs);
 		if (olddata->t_infomask & ZHEAP_HASOID)
 			new_header_len += sizeof(Oid);
-		new_header_len = MAXALIGN(new_header_len);
-		new_data_len = heap_compute_data_size(tupleDesc,
-											  toast_values, toast_isnull);
+		new_data_len = zheap_compute_data_size(tupleDesc,
+											   toast_values, toast_isnull, hoff);
 		new_tuple_len = new_header_len + new_data_len;
 
 		/*

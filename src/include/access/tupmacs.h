@@ -128,27 +128,6 @@
 )
 
 /*
- * att_align_nominal aligns the given offset as per requirement of
- * data_alignment.  The data_alignment value 0 indicates no alignment,
- * value 4 indicates maximum alignment is 4 byte boundary and any other
- * value indicates align as per attalign.
- */
-#define att_align_nominal(cur_offset, attalign) \
-( \
-	(data_alignment_zheap == 0) ? \
-		(uintptr_t) (cur_offset) \
-	: \
-	( \
-		(data_alignment_zheap == 4) ? \
-			att_align_int(cur_offset, attalign) \
-		: \
-		( \
-			att_align_nominal_internal(cur_offset, attalign) \
-		) \
-	) \
-)
-
-/*
  * att_align_nominal aligns the given offset as needed for a datum of alignment
  * requirement attalign, ignoring any consideration of packed varlena datums.
  * There are three main use cases for using this macro directly:
@@ -163,7 +142,7 @@
  * The attalign cases are tested in what is hopefully something like their
  * frequency of occurrence.
  */
-#define att_align_nominal_internal(cur_offset, attalign) \
+#define att_align_nominal(cur_offset, attalign) \
 ( \
 	((attalign) == 'i') ? INTALIGN(cur_offset) : \
 	 (((attalign) == 'c') ? (uintptr_t) (cur_offset) : \
@@ -171,22 +150,6 @@
 	   ( \
 			AssertMacro((attalign) == 's'), \
 			SHORTALIGN(cur_offset) \
-	   ))) \
-)
-
-/*
- * att_align_int aligns the given offset as per attalign for char and
- * short alignment and at four byte boundary for other values of attalign.
- * This is done this way to mainly achieve the requirement of aligning
- * everything at maximum of four byte boundary.
- */
-#define att_align_int(cur_offset, attalign) \
-( \
-	 (((attalign) == 'c') ? (uintptr_t) (cur_offset) : \
-	  (((attalign) == 's') ? SHORTALIGN(cur_offset) : \
-	   ( \
-			AssertMacro((attalign) == 'i' || (attalign) == 'd'), \
-			INTALIGN(cur_offset) \
 	   ))) \
 )
 

@@ -64,10 +64,6 @@
 #include "utils/expandeddatum.h"
 
 
-/* Does att's datatype allow packing into the 1-byte-header varlena format? */
-#define ATT_IS_PACKABLE(att) \
-	((att)->attlen == -1 && (att)->attstorage != 'p')
-
 /* ----------------------------------------------------------------
  *						misc support routines
  * ----------------------------------------------------------------
@@ -1373,6 +1369,34 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 	uint32		off;			/* offset in tuple data */
 	bits8	   *bp;	/* ptr to null bitmap in tuple */
 	bool		slow;			/* can we use/set attcacheoff? */
+	int			start_off;
+
+	/* slot can either contain heap tuple or zheap tuple */
+	if (slot->tts_ztuple)
+	{
+		/*
+		 * We can't start with zero offset for first attribute as that has a
+		 * hidden assumption that tuple header is MAXALIGNED which is not true
+		 * for zheap.  For example, if the first attribute requires alignment
+		 * (say it is four-byte varlena), then the code would assume the offset
+		 * is aligned incase we start with zero offset for first attribute.
+		 */
+		ztuple = slot->tts_ztuple;
+		ztup = ztuple->t_data;
+		hasnulls = ZHeapTupleHasNulls(ztuple);
+		bp = ztup->t_bits;
+		tp = (char *) ztup;
+		start_off = ztup->t_hoff;
+	}
+	else
+	{
+		tuple = slot->tts_tuple;
+		tup = tuple->t_data;
+		hasnulls = HeapTupleHasNulls(tuple);
+		bp = tup->t_bits;
+		tp = (char *) tup + tup->t_hoff;
+		start_off = 0;
+	}
 
 	/*
 	 * Check whether the first call for this tuple, and initialize or restore
@@ -1382,7 +1406,7 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 	if (attnum == 0)
 	{
 		/* Start from the first attribute */
-		off = 0;
+		off = start_off;
 		slow = false;
 	}
 	else
@@ -1392,23 +1416,9 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 		slow = TTS_SLOW(slot);
 	}
 
-	/* slot can either contain heap tuple or zheap tuple */
+	/* For zheap, cached offsets are not used. */
 	if (slot->tts_ztuple)
-	{
-		ztuple = slot->tts_ztuple;
-		ztup = ztuple->t_data;
-		hasnulls = ZHeapTupleHasNulls(ztuple);
-		bp = ztup->t_bits;
-		tp = (char *) ztup + ztup->t_hoff;
-	}
-	else
-	{
-		tuple = slot->tts_tuple;
-		tup = tuple->t_data;
-		hasnulls = HeapTupleHasNulls(tuple);
-		bp = tup->t_bits;
-		tp = (char *) tup + tup->t_hoff;
-	}
+		slow = true;
 
 	for (; attnum < natts; attnum++)
 	{
@@ -1444,6 +1454,17 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 				slow = true;
 			}
 		}
+		else if (slot->tts_ztuple && thisatt->attbyval)
+		{
+			/*
+			 * We don't align for byval attributes in zheap.
+			 *
+			 * Fixme - Having a check like this is a big time hack, but
+			 * we expect it to change this code as per pluggable storage
+			 * API.
+			 */
+			off = off;
+		}
 		else
 		{
 			/* not varlena, so safe to use att_align_nominal */
@@ -1453,7 +1474,20 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 				thisatt->attcacheoff = off;
 		}
 
-		values[attnum] = fetchatt(thisatt, tp + off);
+		/*
+		 * Support fetching attributes for zheap.  The main difference as
+		 * compare to heap tuples is that we don't align passbyval attributes.
+		 * To compensate that we use memcpy to fetch passbyval attributes.
+		 */
+		if (slot->tts_ztuple)
+		{
+			if (thisatt->attbyval)
+				memcpy(&values[attnum], tp + off, thisatt->attlen);
+			else
+				values[attnum] = PointerGetDatum((char *) (tp + off));
+		}
+		else
+			values[attnum] = fetchatt(thisatt, tp + off);
 
 		off = att_addlength_pointer(off, thisatt->attlen, tp + off);
 

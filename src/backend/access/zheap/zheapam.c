@@ -72,12 +72,7 @@
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
-/*
- * User supplied value for data alignment is captured in data_alignment and
- * then we internally use it only for zheap.
- */
-int		data_alignment = 1;
-int		data_alignment_zheap = 1;
+
 extern bool synchronize_seqscans;
 
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
@@ -127,6 +122,72 @@ static void compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf,
 static ZHeapFreeOffsetRanges *
 ZHeapGetUsableOffsetRanges(Buffer buffer, ZHeapTuple *tuples, int ntuples,
 						   Size saveFreeSpace);
+
+/*
+ * zheap_compute_data_size
+ *		Determine size of the data area of a tuple to be constructed.
+ *
+ * We can't start with zero offset for first attribute as that has a
+ * hidden assumption that tuple header is MAXALIGNED which is not true
+ * for zheap.  For example, if the first attribute requires alignment
+ * (say it is four-byte varlena), then the code would assume the offset
+ * is aligned incase we start with zero offset for first attribute.  So,
+ * always start with the actual byte from where the first attribute starts.
+ */
+Size
+zheap_compute_data_size(TupleDesc tupleDesc, Datum *values, bool *isnull,
+						int t_hoff)
+{
+	Size		data_length = t_hoff;
+	int			i;
+	int			numberOfAttributes = tupleDesc->natts;
+
+	for (i = 0; i < numberOfAttributes; i++)
+	{
+		Datum		val;
+		Form_pg_attribute atti;
+
+		if (isnull[i])
+			continue;
+
+		val = values[i];
+		atti = TupleDescAttr(tupleDesc, i);
+
+		if (atti->attbyval)
+		{
+			/* byval attributes are stored unaligned in zheap. */
+			data_length += atti->attlen;
+		}
+		else if (ATT_IS_PACKABLE(atti) &&
+				 VARATT_CAN_MAKE_SHORT(DatumGetPointer(val)))
+		{
+			/*
+			 * we're anticipating converting to a short varlena header, so
+			 * adjust length and don't count any alignment
+			 */
+			data_length += VARATT_CONVERTED_SHORT_SIZE(DatumGetPointer(val));
+		}
+		else if (atti->attlen == -1 &&
+				 VARATT_IS_EXTERNAL_EXPANDED(DatumGetPointer(val)))
+		{
+			/*
+			 * we want to flatten the expanded value so that the constructed
+			 * tuple doesn't depend on it
+			 */
+			data_length = att_align_nominal(data_length, atti->attalign);
+			data_length += EOH_get_flat_size(DatumGetEOHP(val));
+		}
+		else
+		{
+			data_length = att_align_datum(data_length, atti->attalign,
+				atti->attlen, val);
+			data_length = att_addlength_datum(data_length, atti->attlen,
+				val);
+		}
+	}
+
+	return data_length - t_hoff;
+}
 
 /*
  * zheap_fill_tuple
@@ -202,8 +263,9 @@ zheap_fill_tuple(TupleDesc tupleDesc,
 		if (att->attbyval)
 		{
 			/* pass-by-value */
-			data = (char *) att_align_nominal(data, att->attalign);
-			store_att_byval(data, values[i], att->attlen);
+			//data = (char *) att_align_nominal(data, att->attalign);
+			//store_att_byval(data, values[i], att->attlen);
+			memcpy(data, (char *) &values[i], att->attlen);
 			data_length = att->attlen;
 		}
 		else if (att->attlen == -1)
@@ -291,8 +353,8 @@ zheap_fill_tuple(TupleDesc tupleDesc,
  */
 ZHeapTuple
 zheap_form_tuple(TupleDesc tupleDescriptor,
-				Datum *values,
-				bool *isnull)
+				 Datum *values,
+				 bool *isnull)
 {
 	ZHeapTuple	tuple;			/* return tuple */
 	ZHeapTupleHeader td;			/* tuple data */
@@ -308,9 +370,6 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 				(errcode(ERRCODE_TOO_MANY_COLUMNS),
 				 errmsg("number of columns (%d) exceeds limit (%d)",
 						numberOfAttributes, MaxTupleAttributeNumber)));
-
-	/* we want to use user supplied data alignment only for zheap inserts */
-	data_alignment_zheap = data_alignment;
 
 	/*
 	 * Check for nulls
@@ -335,16 +394,13 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 	if (tupleDescriptor->tdhasoid)
 		len += sizeof(Oid);
 
-	if (data_alignment_zheap == 0)
-		;	/* no alignment required */
-	else if (data_alignment_zheap == 4)
-		len = INTALIGN(len);
-	else
-		len = MAXALIGN(len); /* align user data safely */
-
+	/*
+	 * We don't MAXALIGN the tuple headers as we always make the copy of tuple
+	 * to support in-place updates.
+	 */
 	hoff = len;
 
-	data_len = heap_compute_data_size(tupleDescriptor, values, isnull);
+	data_len = zheap_compute_data_size(tupleDescriptor, values, isnull, hoff);
 
 	len += data_len;
 
@@ -380,17 +436,19 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 					 &td->t_infomask,
 					 (hasnull ? td->t_bits : NULL));
 
-	data_alignment_zheap = 1;
-
 	return tuple;
 }
 
 /*
  * zheap_deform_tuple - similar to heap_deform_tuple, but for zheap tuples.
+ *
+ * Note that for zheap, cached offsets are not used and we always start
+ * deforming with the actual byte from where the first attribute starts.  See
+ * atop zheap_compute_data_size.
  */
 void
 zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
-				  Datum *values, bool *isnull)
+				   Datum *values, bool *isnull)
 {
 	ZHeapTupleHeader tup = tuple->t_data;
 	bool		hasnulls = ZHeapTupleHasNulls(tuple);
@@ -400,7 +458,6 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 	char	   *tp;				/* ptr to tuple data */
 	long		off;			/* offset in tuple data */
 	bits8	   *bp = tup->t_bits;		/* ptr to null bitmap in tuple */
-	bool		slow = false;	/* can we use/set attcacheoff? */
 
 	natts = ZHeapTupleHeaderGetNatts(tup);
 
@@ -411,9 +468,9 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 	 */
 	natts = Min(natts, tdesc_natts);
 
-	tp = (char *) tup + tup->t_hoff;
+	tp = (char *) tup;
 
-	off = 0;
+	off = tup->t_hoff;
 
 	for (attnum = 0; attnum < natts; attnum++)
 	{
@@ -423,47 +480,38 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 		{
 			values[attnum] = (Datum) 0;
 			isnull[attnum] = true;
-			slow = true;		/* can't use attcacheoff anymore */
 			continue;
 		}
 
 		isnull[attnum] = false;
 
-		if (!slow && thisatt->attcacheoff >= 0)
-			off = thisatt->attcacheoff;
-		else if (thisatt->attlen == -1)
+		if (thisatt->attlen == -1)
 		{
-			/*
-			 * We can only cache the offset for a varlena attribute if the
-			 * offset is already suitably aligned, so that there would be no
-			 * pad bytes in any case: then the offset will be valid for either
-			 * an aligned or unaligned value.
-			 */
-			if (!slow &&
-				off == att_align_nominal(off, thisatt->attalign))
-				thisatt->attcacheoff = off;
-			else
-			{
 				off = att_align_pointer(off, thisatt->attalign, -1,
 										tp + off);
-				slow = true;
-			}
+		}
+		else if (thisatt->attbyval)
+		{
+			/* We don't align for byval attributes in zheap. */
+			off = off;
 		}
 		else
 		{
 			/* not varlena, so safe to use att_align_nominal */
 			off = att_align_nominal(off, thisatt->attalign);
-
-			if (!slow)
-				thisatt->attcacheoff = off;
 		}
 
-		values[attnum] = fetchatt(thisatt, tp + off);
+		/*
+		 * Support fetching attributes for zheap.  The main difference as
+		 * compare to heap tuples is that we don't align passbyval attributes.
+		 * To compensate that we use memcpy to fetch passbyval attributes.
+		 */
+		if (thisatt->attbyval)
+			memcpy(&values[attnum], tp + off, thisatt->attlen);
+		else
+			values[attnum] = PointerGetDatum((char *) (tp + off));
 
 		off = att_addlength_pointer(off, thisatt->attlen, tp + off);
-
-		if (thisatt->attlen <= 0)
-			slow = true;		/* can't use attcacheoff anymore */
 	}
 
 	/*
@@ -650,8 +698,6 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	uint8		vm_status;
 	bool		lock_reacquired;
 	bool		skip_undo;
-
-	data_alignment_zheap = data_alignment;
 
 	/*
 	 * We can skip inserting undo records if the tuples are to be marked
@@ -1032,8 +1078,6 @@ prepare_xlog:
 
 		zheap_freetuple(zheaptup);
 	}
-
-	data_alignment_zheap = 1;
 
 	return ZHeapTupleGetOid(tup);
 }
@@ -2067,8 +2111,6 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
 				 errmsg("cannot update tuples during a parallel operation")));
 
-	data_alignment_zheap = data_alignment;
-
 	/*
 	 * Fetch the list of attributes to be checked for various operations.
 	 *
@@ -2184,21 +2226,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 					 ZHeapTupleHasExternal(&oldtup) ||
 					 ZHeapTupleHasExternal(newtup));
 
-	if (data_alignment_zheap == 0)
-	{
-		oldtupsize = oldtup.t_len;	/* no alignment */
-		newtupsize = newtup->t_len;
-	}
-	else if (data_alignment_zheap == 4)
-	{
-		oldtupsize = INTALIGN(oldtup.t_len);	/* four byte alignment */
-		newtupsize = INTALIGN(newtup->t_len);	/* four byte alignment */
-	}
-	else
-	{
-		oldtupsize = MAXALIGN(oldtup.t_len);
-		newtupsize = MAXALIGN(newtup->t_len);
-	}
+	oldtupsize = SHORTALIGN(oldtup.t_len);
+	newtupsize = SHORTALIGN(newtup->t_len);
 
 	/*
 	 * inplace updates can be done only if the length of new tuple is lesser
@@ -3075,12 +3104,7 @@ prepare_xlog:
 		if (need_toast)
 		{
 			zheaptup = ztoast_insert_or_update(relation, newtup, &oldtup, 0);
-			if (data_alignment_zheap == 0)
-				newtupsize = zheaptup->t_len;	/* no alignment */
-			else if (data_alignment_zheap == 4)
-				newtupsize = INTALIGN(zheaptup->t_len);	/* four byte alignment */
-			else
-				newtupsize = MAXALIGN(zheaptup->t_len);
+			newtupsize = SHORTALIGN(zheaptup->t_len);	/* short aligned */
 		}
 		else
 			zheaptup = newtup;
@@ -3721,8 +3745,6 @@ reacquire_buffer:
 		pgstat_count_heap_update(relation, false);
 	else
 		pgstat_count_zheap_update(relation);
-
-	data_alignment_zheap = 1;
 
 	/*
 	 * If heaptup is a private copy, release it.  Don't forget to copy t_self
@@ -6199,6 +6221,10 @@ zheap_freetuple(ZHeapTuple zhtup)
 /*
  * znocachegetattr - This is same as nocachegetattr except that it takes
  * ZHeapTuple as input.
+ *
+ * Note that for zheap, cached offsets are not used and we always start
+ * deforming with the actual byte from where the first attribute starts.  See
+ * atop zheap_compute_data_size.
  */
 Datum
 znocachegetattr(ZHeapTuple tuple,
@@ -6206,193 +6232,61 @@ znocachegetattr(ZHeapTuple tuple,
 				TupleDesc tupleDesc)
 {
 	ZHeapTupleHeader tup = tuple->t_data;
+	Form_pg_attribute thisatt;
+	Datum		ret_datum;
 	char	   *tp;				/* ptr to data part of tuple */
 	bits8	   *bp = tup->t_bits;	/* ptr to null bitmap in tuple */
-	bool		slow = false;	/* do we have to walk attrs? */
 	int			off;			/* current offset within data */
-
-	/* ----------------
-	 *	 Three cases:
-	 *
-	 *	 1: No nulls and no variable-width attributes.
-	 *	 2: Has a null or a var-width AFTER att.
-	 *	 3: Has nulls or var-widths BEFORE att.
-	 * ----------------
-	 */
+	int			i;
 
 	attnum--;
+	tp = (char *) tup;
 
-	if (!ZHeapTupleNoNulls(tuple))
+	/*
+	 * For each non-null attribute, we have to first account for alignment
+	 * padding before the attr, then advance over the attr based on its
+	 * length.  Nulls have no storage and no alignment padding either.
+	 */
+	off = tup->t_hoff;
+
+	for (i = 0;; i++)		/* loop exit is at "break" */
 	{
-		/*
-		 * there's a null somewhere in the tuple
-		 *
-		 * check to see if any preceding bits are null...
-		 */
-		int			byte = attnum >> 3;
-		int			finalbit = attnum & 0x07;
+		Form_pg_attribute att = TupleDescAttr(tupleDesc, i);
 
-		/* check for nulls "before" final bit of last byte */
-		if ((~bp[byte]) & ((1 << finalbit) - 1))
-			slow = true;
+		if (ZHeapTupleHasNulls(tuple) && att_isnull(i, bp))
+		{
+			continue;		/* this cannot be the target att */
+		}
+
+		if (att->attlen == -1)
+		{
+				off = att_align_pointer(off, att->attalign, -1,
+										tp + off);
+		}
+		else if (att->attbyval)
+		{
+			/* We don't align for byval attributes in zheap. */
+			off = off;
+		}
 		else
 		{
-			/* check for nulls in any "earlier" bytes */
-			int			i;
-
-			for (i = 0; i < byte; i++)
-			{
-				if (bp[i] != 0xFF)
-				{
-					slow = true;
-					break;
-				}
-			}
-		}
-	}
-
-	tp = (char *) tup + tup->t_hoff;
-
-	if (!slow)
-	{
-		Form_pg_attribute att;
-
-		/*
-		 * If we get here, there are no nulls up to and including the target
-		 * attribute.  If we have a cached offset, we can use it.
-		 */
-		att = TupleDescAttr(tupleDesc, attnum);
-		if (att->attcacheoff >= 0)
-			return fetchatt(att, tp + att->attcacheoff);
-
-		/*
-		 * Otherwise, check for non-fixed-length attrs up to and including
-		 * target.  If there aren't any, it's safe to cheaply initialize the
-		 * cached offsets for these attrs.
-		 */
-		if (ZHeapTupleHasVarWidth(tuple))
-		{
-			int			j;
-
-			for (j = 0; j <= attnum; j++)
-			{
-				if (TupleDescAttr(tupleDesc, j)->attlen <= 0)
-				{
-					slow = true;
-					break;
-				}
-			}
-		}
-	}
-
-	if (!slow)
-	{
-		int			natts = tupleDesc->natts;
-		int			j = 1;
-
-		/*
-		 * If we get here, we have a tuple with no nulls or var-widths up to
-		 * and including the target attribute, so we can use the cached offset
-		 * ... only we don't have it yet, or we'd not have got here.  Since
-		 * it's cheap to compute offsets for fixed-width columns, we take the
-		 * opportunity to initialize the cached offsets for *all* the leading
-		 * fixed-width columns, in hope of avoiding future visits to this
-		 * routine.
-		 */
-		TupleDescAttr(tupleDesc, 0)->attcacheoff = 0;
-
-		/* we might have set some offsets in the slow path previously */
-		while (j < natts && TupleDescAttr(tupleDesc, j)->attcacheoff > 0)
-			j++;
-
-		off = TupleDescAttr(tupleDesc, j - 1)->attcacheoff +
-			TupleDescAttr(tupleDesc, j - 1)->attlen;
-
-		for (; j < natts; j++)
-		{
-			Form_pg_attribute att = TupleDescAttr(tupleDesc, j);
-
-			if (att->attlen <= 0)
-				break;
-
+			/* not varlena, so safe to use att_align_nominal */
 			off = att_align_nominal(off, att->attalign);
-
-			att->attcacheoff = off;
-
-			off += att->attlen;
 		}
 
-		Assert(j > attnum);
+		if (i == attnum)
+			break;
 
-		off = TupleDescAttr(tupleDesc, attnum)->attcacheoff;
+		off = att_addlength_pointer(off, att->attlen, tp + off);
 	}
+
+	thisatt = TupleDescAttr(tupleDesc, attnum);
+	if (thisatt->attbyval)
+		memcpy(&ret_datum, tp + off, thisatt->attlen);
 	else
-	{
-		bool		usecache = true;
-		int			i;
+		ret_datum = PointerGetDatum((char *) (tp + off));
 
-		/*
-		 * Now we know that we have to walk the tuple CAREFULLY.  But we still
-		 * might be able to cache some offsets for next time.
-		 *
-		 * Note - This loop is a little tricky.  For each non-null attribute,
-		 * we have to first account for alignment padding before the attr,
-		 * then advance over the attr based on its length.  Nulls have no
-		 * storage and no alignment padding either.  We can use/set
-		 * attcacheoff until we reach either a null or a var-width attribute.
-		 */
-		off = 0;
-		for (i = 0;; i++)		/* loop exit is at "break" */
-		{
-			Form_pg_attribute att = TupleDescAttr(tupleDesc, i);
-
-			if (ZHeapTupleHasNulls(tuple) && att_isnull(i, bp))
-			{
-				usecache = false;
-				continue;		/* this cannot be the target att */
-			}
-
-			/* If we know the next offset, we can skip the rest */
-			if (usecache && att->attcacheoff >= 0)
-				off = att->attcacheoff;
-			else if (att->attlen == -1)
-			{
-				/*
-				 * We can only cache the offset for a varlena attribute if the
-				 * offset is already suitably aligned, so that there would be
-				 * no pad bytes in any case: then the offset will be valid for
-				 * either an aligned or unaligned value.
-				 */
-				if (usecache &&
-					off == att_align_nominal(off, att->attalign))
-					att->attcacheoff = off;
-				else
-				{
-					off = att_align_pointer(off, att->attalign, -1,
-											tp + off);
-					usecache = false;
-				}
-			}
-			else
-			{
-				/* not varlena, so safe to use att_align_nominal */
-				off = att_align_nominal(off, att->attalign);
-
-				if (usecache)
-					att->attcacheoff = off;
-			}
-
-			if (i == attnum)
-				break;
-
-			off = att_addlength_pointer(off, att->attlen, tp + off);
-
-			if (usecache && att->attlen <= 0)
-				usecache = false;
-		}
-	}
-
-	return fetchatt(TupleDescAttr(tupleDesc, attnum), tp + off);
+	return ret_datum;
 }
 
 TransactionId
@@ -10213,7 +10107,11 @@ ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
  * ZPageAddItemExtended - Add an item to a zheap page.
  *
  *	This is similar to PageAddItemExtended except for max tuples that can
- *	be accomodated on a page and alignment for each item.  It also
+ *	be accomodated on a page and alignment for each item (Ideally, we don't
+ *	need to align space between tuples as we always make the copy of tuple to
+ *	support in-place updates.  However, there are places in zheap code where we
+ *	access tuple header directly from page (ex. zheap_delete, zheap_update,
+ *	etc.) for which we them to be aligned at two-byte boundary). It
  *	additionally handles the itemids that are marked as unused, but still
  *	can't be reused.
  *
@@ -10230,8 +10128,8 @@ ZPageAddItemExtended(Buffer buffer,
 					 bool NoTPDBufLock)
 {
 	Page		page;
-	PageHeader	phdr;
 	Size		alignedSize;
+	PageHeader	phdr;
 	int			lower;
 	int			upper;
 	ItemId		itemId;
@@ -10388,19 +10286,14 @@ ZPageAddItemExtended(Buffer buffer,
 	 * Compute new lower and upper pointers for page, see if it'll fit.
 	 *
 	 * Note: do arithmetic as signed ints, to avoid mistakes if, say,
-	 * alignedSize > pd_upper.
+	 * size > pd_upper.
 	 */
 	if (offsetNumber == limit || needshuffle)
 		lower = phdr->pd_lower + sizeof(ItemIdData);
 	else
 		lower = phdr->pd_lower;
 
-	if (data_alignment_zheap == 0)
-		alignedSize = size;	/* no alignment */
-	else if (data_alignment_zheap == 4)
-		alignedSize = INTALIGN(size);	/* four byte alignment */
-	else
-		alignedSize = MAXALIGN(size);
+	alignedSize = SHORTALIGN(size);
 
 	upper = (int) phdr->pd_upper - (int) alignedSize;
 
@@ -10762,7 +10655,7 @@ ZHeapGetUsableOffsetRanges(Buffer buffer,
 			if (!ItemIdIsUsed(itemId) && !ItemIdHasStorage(itemId))
 			{
 				ZHeapTuple zheaptup = tuples[nthispage];
-				Size needed_space = used_space + MAXALIGN(zheaptup->t_len) + saveFreeSpace;
+				Size needed_space = used_space + zheaptup->t_len + saveFreeSpace;
 
 				/* Check if we can fit this tuple in the page */
 				if (avail_space < needed_space)
@@ -10771,7 +10664,7 @@ ZHeapGetUsableOffsetRanges(Buffer buffer,
 					break;
 				}
 
-				used_space += MAXALIGN(zheaptup->t_len);
+				used_space += zheaptup->t_len;
 				nthispage++;
 
 				if (!in_range)
@@ -10800,7 +10693,7 @@ ZHeapGetUsableOffsetRanges(Buffer buffer,
 	{
 		ZHeapTuple zheaptup = tuples[nthispage];
 		Size needed_space = used_space + sizeof(ItemIdData) +
-			MAXALIGN(zheaptup->t_len) + saveFreeSpace;
+						zheaptup->t_len + saveFreeSpace;
 
 		/* Check if we can fit this tuple + a new offset in the page */
 		if (avail_space >= needed_space)
@@ -11066,7 +10959,7 @@ reacquire_buffer:
 				zheaptup = zheaptuples[ndone + nthispage];
 
 				/* Make sure that the tuple fits in the page. */
-				if (PageGetZHeapFreeSpace(page) < MAXALIGN(zheaptup->t_len) + saveFreeSpace)
+				if (PageGetZHeapFreeSpace(page) < zheaptup->t_len + saveFreeSpace)
 					break;
 
 				if (!(options & HEAP_INSERT_FROZEN))
@@ -11405,21 +11298,15 @@ zheap_mask(char *pagedata, BlockNumber blkno)
 	for (off = 1; off <= PageGetMaxOffsetNumber(page); off++)
 	{
 		ItemId		iid = PageGetItemId(page, off);
-		char	   *page_item;
 
-		page_item = (char *) (page + ItemIdGetOffset(iid));
-
-		/*
-		 * Ignore any padding bytes after the tuple, when the length of the
-		 * item is not MAXALIGNed.
-		 */
+		 /* We don't pad after the tuple. */
 		if (ItemIdHasStorage(iid))
 		{
 			int			len = ItemIdGetLength(iid);
-			int			padlen = MAXALIGN(len) - len;
+			int			padlen PG_USED_FOR_ASSERTS_ONLY;
 
-			if (padlen > 0)
-				memset(page_item + len, MASK_MARKER, padlen);
+			padlen = MAXALIGN(len) - len;
+			Assert(padlen <= 0);
 		}
 	}
 }

@@ -23,8 +23,6 @@
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
 
-extern int	data_alignment;
-extern PGDLLIMPORT int	data_alignment_zheap;
 typedef struct BulkInsertStateData *BulkInsertState;
 
 /* struct definitions appear in relscan.h */

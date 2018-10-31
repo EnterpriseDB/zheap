@@ -80,11 +80,7 @@ typedef struct HeapScanDescData
 	int			rs_cindex;		/* current tuple's index in vistuples */
 	int			rs_ntuples;		/* number of visible tuples on page */
 	OffsetNumber rs_vistuples[MaxHeapTuplesPerPage];	/* their offsets */
-	/*
-	 * Fixme - array for zheap tuples must use MaxZHeapTuplesPerPage,
-	 * once we have constant value for the same.
-	 */
-	ZHeapTuple      rs_visztuples[MaxZHeapTuplesPerPageAlign0];
+	ZHeapTuple      rs_visztuples[MaxZHeapTuplesPerPage];
 }			HeapScanDescData;
 
 /*

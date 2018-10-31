@@ -2932,16 +2932,6 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"data_alignment", PGC_USERSET, RESOURCES_ASYNCHRONOUS,
-			gettext_noop("Sets the alignment required for heap tuples."),
-			NULL
-		},
-		&data_alignment,
-		1, 0, 8,
-		NULL, NULL, NULL
-	},
-
-	{
 		{"autovacuum_work_mem", PGC_SIGHUP, RESOURCES_MEM,
 			gettext_noop("Sets the maximum memory to be used by each autovacuum worker process."),
 			NULL,

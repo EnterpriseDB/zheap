@@ -268,21 +268,22 @@ much more at tuple level, so we come out ahead overall.
 
 Alignment padding
 ------------------
-The work isn’t all done yet, but we plan to omit all  alignment padding for
-pass-by-value types. Even in the current heap, we never point directly to such
-values, so the alignment padding doesn’t help much; it lets us fetch the value
-using a single instruction, but that is all. Pass-by-reference types will work
-as they do in the heap.  Many pass-by-reference data types will be varlena
-data types (typlen = -1) with short varlena headers so no alignment padding
-will be introduced in that case anyway, but if we have varlenas with 4-byte
-headers or if we have fixed-length pass-by-reference types (e.g. interval, box)
-then we'll still end up with padding.  We can't directly access unaligned
-values; instead, we need to use memcpy.  We believe that the space savings
-will more than pay for the additional CPU costs.
+We omit all alignment padding for pass-by-value types. Even in the current heap,
+we never point directly to such values, so the alignment padding doesn’t help
+much; it lets us fetch the value using a single instruction, but that is all.
+Pass-by-reference types will work as they do in the heap.  Many pass-by-reference
+data types will be varlena data types (typlen = -1) with short varlena headers so
+no alignment padding will be introduced in that case anyway, but if we have varlenas
+with 4-byte headers or if we have fixed-length pass-by-reference types (e.g. interval,
+box) then we'll still end up with padding.  We can't directly access unaligned values;
+instead, we need to use memcpy.  We believe that the space savings will more than pay
+for the additional CPU costs.
 
-We won't need any alignment padding between tuples as we always make a copy of
-the tuple to support in-place updates.  Likewise, we don’t need alignment
-padding between the tuple header and the tuple data.
+We don’t need alignment padding between the tuple header and the tuple data as
+we always make a copy of the tuple to support in-place updates. Likewise, we ideally
+don't need any alignment padding between tuples. However, there are places in zheap
+code where we access tuple header directly from page (ex. zheap_delete, zheap_update,
+etc.) for which we them to be aligned at two-byte boundary).
 
 Undo chain
 -----------

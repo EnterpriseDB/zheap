@@ -49,11 +49,11 @@ typedef struct
 	 * Fixme - arrays must use MaxZHeapTuplesPerPage, once we have constant
 	 * value for the same.
 	 */
-	OffsetNumber nowdeleted[MaxZHeapTuplesPerPageAlign0];
-	OffsetNumber nowdead[MaxZHeapTuplesPerPageAlign0];
-	OffsetNumber nowunused[MaxZHeapTuplesPerPageAlign0];
+	OffsetNumber nowdeleted[MaxZHeapTuplesPerPage];
+	OffsetNumber nowdead[MaxZHeapTuplesPerPage];
+	OffsetNumber nowunused[MaxZHeapTuplesPerPage];
 	/* marked[i] is TRUE if item i is entered in one of the above arrays */
-	bool		marked[MaxZHeapTuplesPerPageAlign0 + 1];
+	bool		marked[MaxZHeapTuplesPerPage + 1];
 }			ZPruneState;
 
 static int zheap_prune_item(Relation relation, Buffer buffer,
@@ -576,12 +576,8 @@ zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 		 */
 		ndeleted++;
 
-		if (data_alignment_zheap == 0)
-			*space_freed += tup.t_len;	/* no alignment */
-		else if (data_alignment_zheap == 4)
-			*space_freed += INTALIGN(tup.t_len);	/* four byte alignment */
-		else
-			*space_freed += MAXALIGN(tup.t_len);
+		/* short aligned */
+		*space_freed += SHORTALIGN(tup.t_len);
 	}
 
 	/* Record dead item */
@@ -613,7 +609,7 @@ zheap_prune_record_prunable(ZPruneState * prstate, TransactionId xid)
 static void
 zheap_prune_record_dead(ZPruneState * prstate, OffsetNumber offnum)
 {
-	Assert(prstate->ndead < MaxZHeapTuplesPerPageAlign0);
+	Assert(prstate->ndead < MaxZHeapTuplesPerPage);
 	prstate->nowdead[prstate->ndead] = offnum;
 	prstate->ndead++;
 	Assert(!prstate->marked[offnum]);
@@ -624,7 +620,7 @@ zheap_prune_record_dead(ZPruneState * prstate, OffsetNumber offnum)
 static void
 zheap_prune_record_deleted(ZPruneState * prstate, OffsetNumber offnum)
 {
-	Assert(prstate->ndead < MaxZHeapTuplesPerPageAlign0);
+	Assert(prstate->ndead < MaxZHeapTuplesPerPage);
 	prstate->nowdeleted[prstate->ndeleted] = offnum;
 	prstate->ndeleted++;
 	Assert(!prstate->marked[offnum]);
@@ -754,7 +750,7 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 	Offset		pd_lower = ((PageHeader)page)->pd_lower;
 	Offset		pd_upper = ((PageHeader)page)->pd_upper;
 	Offset		pd_special = ((PageHeader)page)->pd_special;
-	itemIdSortData itemidbase[MaxZHeapTuplesPerPageAlign0];
+	itemIdSortData itemidbase[MaxZHeapTuplesPerPage];
 	itemIdSort	itemidptr;
 	ItemId		lp;
 	TransactionId	xid;
@@ -867,10 +863,9 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 				 * that we can save the space for new tuple.
 				 */
 				if (i == target_offnum)
-					itemidptr->alignedlen = MAXALIGN(ItemIdGetLength(lp)) +
-											space_required;
+					itemidptr->alignedlen = SHORTALIGN(ItemIdGetLength(lp) + space_required);
 				else
-					itemidptr->alignedlen = MAXALIGN(ItemIdGetLength(lp));
+					itemidptr->alignedlen = SHORTALIGN(ItemIdGetLength(lp));
 				totallen += itemidptr->alignedlen;
 				itemidptr++;
 			}

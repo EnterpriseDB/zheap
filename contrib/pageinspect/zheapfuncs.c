@@ -236,7 +236,6 @@ zheap_page_items(PG_FUNCTION_ARGS)
 		 */
 		if (ItemIdHasStorage(id) &&
 			lp_len >= MinZHeapTupleSize &&
-			lp_offset == MAXALIGN(lp_offset) &&
 			lp_offset + lp_len <= raw_page_size)
 		{
 			ZHeapTupleHeader ztuphdr;
@@ -259,8 +258,7 @@ zheap_page_items(PG_FUNCTION_ARGS)
 			 * it to access t_bits and oid.
 			 */
 			if (ztuphdr->t_hoff >= SizeofZHeapTupleHeader &&
-				ztuphdr->t_hoff <= lp_len &&
-				ztuphdr->t_hoff == MAXALIGN(ztuphdr->t_hoff))
+				ztuphdr->t_hoff <= lp_len)
 			{
 				if (ztuphdr->t_infomask & ZHEAP_HASNULL)
 				{

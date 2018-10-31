@@ -35,7 +35,8 @@
  *	specific handling.  If the last page where tuple needs to be inserted is a
  *	TPD page, we skip it and directly extend the relation.  We could instead
  *	check the previous page, but scanning relation backwards could be costly,
- *	so we avoid it for now.
+ *	so we avoid it for now.  As we don't align tuples in zheap, use actual
+ *	length to find the required buffer.
  */
 Buffer
 RelationGetBufferForZTuple(Relation relation, Size len,
@@ -54,15 +55,10 @@ RelationGetBufferForZTuple(Relation relation, Size len,
 	bool		recheck = true;
 	bool		tpdPage = false;
 
-	if (data_alignment_zheap == 0)
-		;	/* no alignment */
-	else if (data_alignment_zheap == 4)
-		len = INTALIGN(len);	/* four byte alignment */
-	else
-		len = MAXALIGN(len);		/* be conservative */
-
 	/* Bulk insert is not supported for updates, only inserts. */
 	Assert(otherBuffer == InvalidBuffer || !bistate);
+
+	len = SHORTALIGN(len);
 
 	/*
 	 * If we're gonna fail for oversize tuple, do it right away

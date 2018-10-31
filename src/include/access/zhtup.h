@@ -57,7 +57,7 @@ typedef struct ZHeapTupleHeaderData
 
 	uint8		t_hoff;		/* sizeof header incl. bitmap, padding */
 
-	/* ^ - 4 bytes - ^ */
+	/* ^ - 5 bytes - ^ */
 
 	bits8		t_bits[FLEXIBLE_ARRAY_MEMBER];	/* bitmap of NULLs */
 
@@ -254,6 +254,8 @@ extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
 				Datum *values, bool *isnull);
 extern void zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 				  Datum *values, bool *isnull);
+extern Size zheap_compute_data_size(TupleDesc tupleDesc, Datum *values,
+				bool *isnull, int t_hoff);
 extern void zheap_fill_tuple(TupleDesc tupleDesc,
 				Datum *values, bool *isnull,
 				char *data, Size data_size,
@@ -273,14 +275,7 @@ extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
 	(*(isnull) = false),											\
 	ZHeapTupleNoNulls(tup) ?											\
 	(																\
-		TupleDescAttr((tupleDesc), (attnum)-1)->attcacheoff >= 0 ?	\
-		(															\
-			fetchatt(TupleDescAttr((tupleDesc), (attnum)-1),		\
-				(char *) (tup)->t_data + (tup)->t_data->t_hoff +	\
-				TupleDescAttr((tupleDesc), (attnum)-1)->attcacheoff)\
-		)															\
-		:															\
-			znocachegetattr((tup), (attnum), (tupleDesc))			\
+		znocachegetattr((tup), (attnum), (tupleDesc))			\
 	)																\
 	:																\
 	(																\
@@ -341,19 +336,6 @@ extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
  * on data alignment.
  */
 #define MaxZHeapTupFixedSize \
-			(data_alignment_zheap == 0) ? \
-				SizeofZHeapTupleHeader  + sizeof(ItemIdData) \
-			: \
-			( \
-				(data_alignment_zheap == 4) ? \
-					(INTALIGN(SizeofZHeapTupleHeader) + sizeof(ItemIdData)) \
-				: \
-				( \
-					(MAXALIGN(SizeofZHeapTupleHeader) + sizeof(ItemIdData)) \
-				) \
-			)
-
-#define MaxZHeapTupFixedSizeAlign0 \
 			(SizeofZHeapTupleHeader  + sizeof(ItemIdData))
 
 
@@ -367,10 +349,6 @@ extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
 #define MaxZHeapTuplesPerPage	\
 	((int) ((MaxZHeapPageFixedSpace) / \
 			(MaxZHeapTupFixedSize)))
-
-#define MaxZHeapTuplesPerPageAlign0 \
-		((int) ((MaxZHeapPageFixedSpace) / \
-				(MaxZHeapTupFixedSizeAlign0)))
 
 #define MaxZHeapTupleSize  (BLCKSZ - MAXALIGN(SizeOfPageHeaderData + SizeOfZHeapPageOpaqueData + sizeof(ItemIdData)))
 #define MinZHeapTupleSize  MAXALIGN(SizeofZHeapTupleHeader)
