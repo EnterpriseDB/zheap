@@ -38,46 +38,25 @@ while configuring zheap.
 What doesn’t work yet?
 ======================
 
-Quite a bit.  Currently unsupported features include:
-
-- Temporary and unlogged tables
 - Logical decoding
-- Serializable isolation
-- CLUSTER
-- VACUUM FULL
-- Index-only scans
-- Insert .. On Conflict
-- Toast tables:  We would like to store toast table data in zheap, but this is
-currently work in progress.  Currently, usage of toast tables will get error
-that this feature is not supported.
-- Tuple locking: This work is in progress.  Currently, Select .. For Update
-works.  There is a partial implementation of Select .. For Share where only
-one locker is allowed.  Any further usage of locking modes will result in an
-error.
+- Snapshot too old - We might want to implement this after first version is
+committed as this will work differently for zheap.
 
 Tools
 - pg_undo_dump similar to pg_wal_dump:  We would like to develop this utility
 as it can be used to view undo record contents and can help us debug problems
 related to undo chains.
-- We also want to develop tools like pageinspect, pgstattuple, pgrowlocks that
+- We also want to develop tools like pgstattuple, pgrowlocks that
 allow us to inspect the contents of database pages at a low level.
-- wal consistency checker: We would like to develop it for zheap.  This will
-be used to check for bugs in the WAL redo routines.  This will be quite
-similar to what we have in current heap, but we want to extend it to check the
-consistency of undo pages similar to how it checks for data and index pages.
+- wal consistency checker: This will be used to check for bugs in the WAL redo
+routines.  Currently, it is quite similar to what we have in current heap, but
+we want to extend it to check the consistency of undo pages similar to how it
+checks for data and index pages.
 
 Open Issues
 ===========
-- The work for Rollbacks is in progress and following features are not working
-   - Rollback for a transaction that contains combination of DDL and DML
-statements.
-   - Rollback for concurrent DML operations.  For example, an Update is waiting
-for other transaction to commit or rollback, now if the other transaction
-rolled back, then the behavior is undefined.
-- For extremely large transactions, we might fail while getting the tuple from
-undo.  These are the cases where the size of a particular undo log exceeds 1TB.
-- Undo logs are not yet crash-safe. Fsync and some recovery details are yet to
-be implemented.
+- Currently, the TPD pages are not added to FSM even if they can be completely
+reused.
 
 The other pending code related items are tracked on zheap wiki page:
 https://wiki.postgresql.org/wiki/Zheap
