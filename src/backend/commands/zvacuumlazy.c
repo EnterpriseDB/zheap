@@ -218,7 +218,6 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 	UndoRecPtr	urecptr, prev_urecptr;
 	int			i, uncnt = 0;
 	int		trans_slot_id;
-	xl_undolog_meta undometa;
 	XLogRecPtr	RedoRecPtr;
 	bool		doPageWrites;
 	bool		lock_reacquired;
@@ -297,8 +296,7 @@ reacquire_slot:
 	urecptr = PrepareUndoInsert(&undorecord,
 								InvalidTransactionId,
 								UndoPersistenceForRelation(onerel),
-								NULL,
-								&undometa);
+								NULL);
 
 	/*
 	 * We prepare the temporary copy of the page so that during page
@@ -392,12 +390,6 @@ reacquire_slot:
 			xl_rec.flags |= XLZ_UNUSED_ALLOW_PRUNING;
 
 prepare_xlog:
-		/*
-		 * WAL-LOG undolog meta data if this is the fisrt WAL after the
-		 * checkpoint.
-		 */
-		LogUndoMetaData(&undometa);
-		
 		GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
 
 		XLogBeginInsert();

@@ -230,14 +230,6 @@ typedef struct UndoLogMetaData
 	uint16	prevlen;
 } UndoLogMetaData;
 
-/* Record the undo log number used for a transaction. */
-typedef struct xl_undolog_meta
-{
-	UndoLogMetaData	meta;
-	UndoLogNumber	logno;
-	TransactionId	xid;
-} xl_undolog_meta;
-
 #ifndef FRONTEND
 
 /*
@@ -389,9 +381,7 @@ extern void UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen);
 extern bool IsTransactionFirstRec(TransactionId xid);
 extern void UndoLogSetPrevLen(UndoLogNumber logno, uint16 prevlen);
 extern uint16 UndoLogGetPrevLen(UndoLogNumber logno);
-extern bool NeedUndoMetaLog(XLogRecPtr redo_point);
 extern void UndoLogSetLSN(XLogRecPtr lsn);
-extern void LogUndoMetaData(xl_undolog_meta *xlrec);
 void UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);
 /* Redo interface. */
 extern void undolog_redo(XLogReaderState *record);

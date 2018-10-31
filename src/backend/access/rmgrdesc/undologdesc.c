@@ -42,19 +42,6 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, "logno %u xid %u", xlrec->logno, xlrec->xid);
 	}
-	else if (info == XLOG_UNDOLOG_META)
-	{
-		xl_undolog_meta *xlrec = (xl_undolog_meta *) rec;
-
-		appendStringInfo(buf, "logno %u xid %u insert " UndoLogOffsetFormat
-						 " last_xact_start " UndoLogOffsetFormat
-						 " prevlen=%d"
-						 " is_first_record=%d",
-						 xlrec->logno, xlrec->xid, xlrec->meta.insert,
-						 xlrec->meta.last_xact_start,
-						 xlrec->meta.prevlen,
-						 xlrec->meta.is_first_rec);
-	}
 	else if (info == XLOG_UNDOLOG_DISCARD)
 	{
 		xl_undolog_discard *xlrec = (xl_undolog_discard *) rec;
@@ -88,9 +75,6 @@ undolog_identify(uint8 info)
 			break;
 		case XLOG_UNDOLOG_ATTACH:
 			id = "ATTACH";
-			break;
-		case XLOG_UNDOLOG_META:
-			id = "UNDO_META";
 			break;
 		case XLOG_UNDOLOG_DISCARD:
 			id = "DISCARD";

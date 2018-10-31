@@ -1057,21 +1057,6 @@ XLogInsertRecord(XLogRecData *rdata,
 	}
 
 	/*
-	 * If the redo point is changed and wal need to include the undo attach
-	 * information i.e. (this is the first WAL which after the checkpoint).
-	 * then return from here so that the caller can restart.
-	 */
-	if (rechdr->xl_rmid == RM_ZHEAP_ID &&
-		OldRedoRecPtr != InvalidXLogRecPtr &&
-		OldRedoRecPtr != RedoRecPtr &&
-		NeedUndoMetaLog(RedoRecPtr))
-	{
-		WALInsertLockRelease();
-		END_CRIT_SECTION();
-		return InvalidXLogRecPtr;
-	}
-
-	/*
 	 * Reserve space for the record in the WAL. This also sets the xl_prev
 	 * pointer.
 	 */

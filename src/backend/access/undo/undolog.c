@@ -1462,70 +1462,6 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 }
 
 /*
- * WAL-LOG undo log meta data information before inserting the first WAL after
- * the checkpoint for any undo log.
- */
-void
-LogUndoMetaData(xl_undolog_meta *xlrec)
-{
-	XLogRecPtr	RedoRecPtr;
-	bool		doPageWrites;
-	XLogRecPtr	recptr;
-
-prepare_xlog:
-	GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
-
-	if (NeedUndoMetaLog(RedoRecPtr))
-	{
-		XLogBeginInsert();
-		XLogRegisterData((char *) xlrec, sizeof(xl_undolog_meta));
-		recptr = XLogInsertExtended(RM_UNDOLOG_ID, XLOG_UNDOLOG_META,
-									RedoRecPtr, doPageWrites);
-		if (recptr == InvalidXLogRecPtr)
-			goto prepare_xlog;
-
-		UndoLogSetLSN(recptr);
-	}
-}
-
-/*
- * Check whether we need to log undolog meta or not.
- */
-bool
-NeedUndoMetaLog(XLogRecPtr redo_point)
-{
-	UndoLogControl *log = MyUndoLogState.logs[UNDO_PERMANENT];
-
-	/*
-	 * If the current session is not attached to any undo log then we don't
-	 * need to log meta.  It is quite possible that some operations skip
-	 * writing undo, so those won't be attached to any undo log.
-	 */
-	if (log == NULL)
-		return false;
-
-	Assert(AmAttachedToUndoLog(log));
-
-	if (log->lsn <= redo_point)
-		return true;
-
-	return false;
-}
-
-/*
- * Update the WAL lsn in the undo.  This is to test whether we need to include
- * the xid to logno mapping information in the next WAL or not.
- */
-void
-UndoLogSetLSN(XLogRecPtr lsn)
-{
-	UndoLogControl *log = MyUndoLogState.logs[UNDO_PERMANENT];
-
-	Assert(AmAttachedToUndoLog(log));
-	log->lsn = lsn;
-}
-
-/*
  * Get an UndoLogControl pointer for a given logno.  This may require
  * attaching to a DSM segment if it isn't already attached in this backend.
  * Return NULL if there is no such logno because it has been entirely
@@ -2458,34 +2394,6 @@ undolog_xlog_attach(XLogReaderState *record)
 }
 
 /*
- * replay undo log meta-data image
- */
-static void
-undolog_xlog_meta(XLogReaderState *record)
-{
-	xl_undolog_meta *xlrec = (xl_undolog_meta *) XLogRecGetData(record);
-	UndoLogControl *log;
-
-	undolog_xid_map_add(xlrec->xid, xlrec->logno);
-
-	log = get_undo_log_by_number(xlrec->logno);
-	if (log == NULL)
-		elog(ERROR, "cannot attach to unknown undo log %u", xlrec->logno);
-
-	/*
-	 * Update the insertion point.  While this races against a checkpoint,
-	 * XLOG_UNDOLOG_META always wins because it must be correct for any
-	 * subsequent data appended by this transaction, so we can simply
-	 * overwrite it here.
-	 */
-	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	log->meta = xlrec->meta;
-	log->xid = xlrec->xid;
-	log->pid = MyProcPid; /* show as recovery process */
-	LWLockRelease(&log->mutex);
-}
-
-/*
  * Drop all buffers for the given undo log, from the old_discard to up
  * new_discard.  If drop_tail is true, also drop the buffer that holds
  * new_discard; this is used when discarding undo logs completely, for example
@@ -2665,9 +2573,6 @@ undolog_redo(XLogReaderState *record)
 			break;
 		case XLOG_UNDOLOG_REWIND:
 			undolog_xlog_rewind(record);
-			break;
-		case XLOG_UNDOLOG_META:
-			undolog_xlog_meta(record);
 			break;
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);

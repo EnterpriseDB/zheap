@@ -513,8 +513,7 @@ UndoGetBufferSlot(RelFileNode rnode,
 static UndoRecPtr
 UndoRecordAllocate(UnpackedUndoRecord *undorecords, int nrecords,
 				   TransactionId txid, UndoPersistence upersistence,
-				   XLogReaderState *xlog_record,
-				   xl_undolog_meta *undometa)
+				   XLogReaderState *xlog_record)
 {
 	UnpackedUndoRecord *urec = NULL;
 	UndoLogControl *log;
@@ -674,8 +673,7 @@ resize:
 void
 UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
 				   TransactionId xid, UndoPersistence upersistence,
-				   XLogReaderState *xlog_record,
-				   xl_undolog_meta *undometa)
+				   XLogReaderState *xlog_record)
 {
 	TransactionId txid;
 
@@ -692,8 +690,7 @@ UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
 	}
 
 	prepared_urec_ptr = UndoRecordAllocate(undorecords, nrecords, txid,
-										   upersistence, xlog_record,
-										   undometa);
+										   upersistence, xlog_record);
 	if (nrecords <= MAX_PREPARED_UNDO)
 		return;
 
@@ -723,8 +720,7 @@ UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
 UndoRecPtr
 PrepareUndoInsert(UnpackedUndoRecord *urec, TransactionId xid,
 				  UndoPersistence upersistence,
-				  XLogReaderState *xlog_record,
-				  xl_undolog_meta *undometa)
+				  XLogReaderState *xlog_record)
 {
 	UndoRecordSize size;
 	UndoRecPtr	urecptr;
@@ -760,7 +756,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, TransactionId xid,
 
 	if (!UndoRecPtrIsValid(prepared_urec_ptr))
 		urecptr = UndoRecordAllocate(urec, 1, txid, upersistence,
-									 xlog_record, undometa);
+									 xlog_record);
 	else
 		urecptr = prepared_urec_ptr;
 
