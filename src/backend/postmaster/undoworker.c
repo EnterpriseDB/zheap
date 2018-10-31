@@ -20,7 +20,11 @@
 #include "access/heapam.h"
 #include "access/htup.h"
 #include "access/htup_details.h"
+#include "access/sysattr.h"
 #include "access/xact.h"
+
+#include "catalog/indexing.h"
+#include "catalog/pg_database.h"
 
 #include "libpq/pqsignal.h"
 
@@ -34,12 +38,14 @@
 #include "replication/worker_internal.h"
 
 #include "storage/ipc.h"
+#include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
 
 #include "tcop/tcopprot.h"
 
+#include "utils/fmgroids.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -150,13 +156,40 @@ WaitForUndoWorkerAttach(UndoApplyWorker *worker,
 }
 
 /*
- * Attach to a slot.
+ * Get dbid from the worker slot.
  */
 static Oid
-undo_worker_attach(int slot)
+slot_get_dbid(int slot)
 {
 	Oid dbid;
 
+	/* Block concurrent access. */
+	LWLockAcquire(UndoWorkerLock, LW_EXCLUSIVE);
+
+	MyUndoWorker = &UndoApplyCtx->workers[slot];
+
+	if (!MyUndoWorker->in_use)
+	{
+		LWLockRelease(UndoWorkerLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("undo worker slot %d is empty,",
+						slot)));
+	}
+
+	dbid = MyUndoWorker->dbid;
+
+	LWLockRelease(UndoWorkerLock);
+
+	return dbid;
+}
+
+/*
+ * Attach to a slot.
+ */
+static void
+undo_worker_attach(int slot)
+{
 	/* Block concurrent access. */
 	LWLockAcquire(UndoWorkerLock, LW_EXCLUSIVE);
 
@@ -181,12 +214,9 @@ undo_worker_attach(int slot)
 	}
 
 	MyUndoWorker->proc = MyProc;
-	dbid = MyUndoWorker->dbid;
 	before_shmem_exit(undo_worker_onexit, (Datum) 0);
 
 	LWLockRelease(UndoWorkerLock);
-
-	return dbid;
 }
 
 /*
@@ -214,6 +244,46 @@ undo_worker_find(Oid dbid)
 	}
 
 	return res;
+}
+
+/*
+ * Check whether the dbid exist or not.
+ *
+ * Refer comments from GetDatabaseTupleByOid.
+ * FIXME:  Should we expose GetDatabaseTupleByOid and directly use it.
+ */
+static bool
+dbid_exist(Oid dboid)
+{
+	HeapTuple	tuple;
+	Relation	relation;
+	SysScanDesc scan;
+	ScanKeyData key[1];
+	bool		result = false;
+	/*
+	 * form a scan key
+	 */
+	ScanKeyInit(&key[0],
+				ObjectIdAttributeNumber,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(dboid));
+
+	relation = heap_open(DatabaseRelationId, AccessShareLock);
+	scan = systable_beginscan(relation, DatabaseOidIndexId,
+							  criticalSharedRelcachesBuilt,
+							  NULL,
+							  1, key);
+
+	tuple = systable_getnext(scan);
+
+	if (HeapTupleIsValid(tuple))
+		result = true;
+
+	/* all done */
+	systable_endscan(scan);
+	heap_close(relation, AccessShareLock);
+
+	return result;
 }
 
 /*
@@ -275,6 +345,35 @@ undo_worker_launch(Oid dbid)
 	bgw.bgw_notify_pid = MyProcPid;
 	bgw.bgw_main_arg = Int32GetDatum(slot);
 
+	StartTransactionCommand();
+	/* Check the database exists or not. */
+	if (!dbid_exist(dbid))
+	{
+		CommitTransactionCommand();
+
+		LWLockAcquire(UndoWorkerLock, LW_EXCLUSIVE);
+		undo_worker_cleanup(worker);
+		LWLockRelease(UndoWorkerLock);
+		return true;
+	}
+
+	/*
+	 * Acquire database object lock before launching the worker so that it
+	 * doesn't get dropped while worker is connecting to the database.
+	 */
+	LockSharedObject(DatabaseRelationId, dbid, 0, RowExclusiveLock);
+
+	/*  Recheck whether database still exists or not. */
+	if (!dbid_exist(dbid))
+	{
+		CommitTransactionCommand();
+
+		LWLockAcquire(UndoWorkerLock, LW_EXCLUSIVE);
+		undo_worker_cleanup(worker);
+		LWLockRelease(UndoWorkerLock);
+		return true;
+	}
+
 	if (!RegisterDynamicBackgroundWorker(&bgw, &bgw_handle))
 	{
 		/* Failed to start worker, so clean up the worker slot. */
@@ -282,11 +381,21 @@ undo_worker_launch(Oid dbid)
 		undo_worker_cleanup(worker);
 		LWLockRelease(UndoWorkerLock);
 
+		UnlockSharedObject(DatabaseRelationId, dbid, 0, RowExclusiveLock);
+		CommitTransactionCommand();
+
 		return false;
 	}
 
 	/* Now wait until it attaches. */
 	WaitForUndoWorkerAttach(worker, generation, bgw_handle);
+
+	/*
+	 * By this point the undo-worker has already connected to the database so we
+	 * can release the database lock.
+	 */
+	UnlockSharedObject(DatabaseRelationId, dbid, 0, RowExclusiveLock);
+	CommitTransactionCommand();
 
 	return true;
 }
@@ -529,14 +638,17 @@ UndoWorkerMain(Datum main_arg)
 	int		worker_slot = DatumGetInt32(main_arg);
 	Oid		dbid;
 
-	/* Attach to slot */
-	dbid = undo_worker_attach(worker_slot);
+	dbid = slot_get_dbid(worker_slot);
 
 	/* Setup signal handling */
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 
+	/* Connect to the database. */
 	BackgroundWorkerInitializeConnectionByOid(dbid, 0, 0);
+
+	/* Attach to slot */
+	undo_worker_attach(worker_slot);
 
 	/*
 	 * Create resource owner for undo worker.  Undo worker need this as it
