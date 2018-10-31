@@ -1208,7 +1208,7 @@ RollbackFromHT(Oid dbid)
 	/* Fetch the rollback requests */
 	LWLockAcquire(RollbackHTLock, LW_SHARED);
 
-	Assert(hash_get_num_entries(RollbackHT) < ROLLBACK_HT_SIZE);
+	Assert(hash_get_num_entries(RollbackHT) <= ROLLBACK_HT_SIZE);
 	hash_seq_init(&status, RollbackHT);
 	while (RollbackHT != NULL &&
 		  (rh = (RollbackHashEntry *) hash_seq_search(&status)) != NULL)
