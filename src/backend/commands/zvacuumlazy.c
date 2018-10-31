@@ -792,9 +792,39 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 		{
 			empty_pages++;
 			freespace = PageGetZHeapFreeSpace(page);
-			visibilitymap_set(onerel, blkno, buf, InvalidXLogRecPtr,
-							  vmbuffer, InvalidTransactionId,
-							  VISIBILITYMAP_ALL_VISIBLE);
+			uint8		vmstatus;
+
+			vmstatus = visibilitymap_get_status(onerel,
+												blkno,
+												&vmbuffer);
+			if ((vmstatus & VISIBILITYMAP_ALL_VISIBLE) == 0)
+			{
+				START_CRIT_SECTION();
+
+				/* mark buffer dirty before writing a WAL record */
+				MarkBufferDirty(buf);
+
+				/*
+				 * It's possible that another backend has extended the heap,
+				 * initialized the page, and then failed to WAL-log the page
+				 * due to an ERROR.  Since heap extension is not WAL-logged,
+				 * recovery might try to replay our record setting the page
+				 * all-visible and find that the page isn't initialized, which
+				 * will cause a PANIC.  To prevent that, check whether the
+				 * page has been previously WAL-logged, and if not, do that
+				 * now.
+				 */
+				if (RelationNeedsWAL(onerel) &&
+					PageGetLSN(page) == InvalidXLogRecPtr)
+					log_newpage_buffer(buf, true);
+
+				visibilitymap_set(onerel, blkno, buf, InvalidXLogRecPtr,
+								  vmbuffer, InvalidTransactionId,
+								  VISIBILITYMAP_ALL_VISIBLE);
+
+				END_CRIT_SECTION();
+			}
+
 			UnlockReleaseBuffer(buf);
 			RecordPageWithFreeSpace(onerel, blkno, freespace);
 			continue;
