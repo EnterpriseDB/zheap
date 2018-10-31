@@ -790,9 +790,9 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 
 		if (PageIsEmpty(page))
 		{
+			uint8		vmstatus;
 			empty_pages++;
 			freespace = PageGetZHeapFreeSpace(page);
-			uint8		vmstatus;
 
 			vmstatus = visibilitymap_get_status(onerel,
 												blkno,
