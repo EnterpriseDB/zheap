@@ -764,7 +764,7 @@ ExecCopySlotZTuple(TupleTableSlot *slot)
 	 * sanity checks
 	 */
 	Assert(slot != NULL);
-	Assert(!slot->tts_isempty);
+	Assert(!TTS_EMPTY(slot));
 
 	/*
 	 * If we have a physical tuple (either format) then just copy it.

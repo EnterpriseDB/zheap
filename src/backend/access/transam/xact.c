@@ -4802,7 +4802,7 @@ RollbackAndReleaseCurrentSubTransaction(void)
 			 */
 			s->latest_urec_ptr[i] = latest_urec_ptr[i];
 			execute_undo_actions(latest_urec_ptr[i], start_urec_ptr[i], false,
-								 true, false);
+								 true, true);
 
 			/* Restore parent state. */
 			s->latest_urec_ptr[i] = parent_latest_urec_ptr[i];
