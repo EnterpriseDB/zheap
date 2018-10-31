@@ -892,7 +892,8 @@ ldelete:;
 								  estate->es_crosscheck_snapshot,
 								  estate->es_snapshot,
 								  true /* wait for commit */ ,
-								  &hufd);
+								  &hufd,
+								  changingPart);
 		else
 			result = heap_delete(resultRelationDesc, tupleid,
 								 estate->es_output_cid,
@@ -1868,6 +1869,14 @@ ExecOnConflictZUpdate(ModifyTableState *mtstate,
 				ereport(ERROR,
 						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 						 errmsg("could not serialize access due to concurrent update")));
+
+			/*
+			 * As long as we don't support an UPDATE of INSERT ON CONFLICT for
+			 * a partitioned table we shouldn't reach to a case where tuple to
+			 * be lock is moved to another partition due to concurrent update
+			 * of the partition key.
+			 */
+			Assert(!ItemPointerIndicatesMovedPartitions(&hufd.ctid));
 
 			/*
 			 * Tell caller to try again from the very start.

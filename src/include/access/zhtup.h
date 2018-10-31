@@ -109,6 +109,7 @@ typedef ZHeapTupleData *ZHeapTuple;
 #define ZHEAP_SPECULATIVE_INSERT	0x2000 /* tuple insertion is a speculative
 											* insertion and can be taken back */
 
+#define ZHEAP_MOVED		(ZHEAP_DELETED | ZHEAP_UPDATED)  /* moved tuple to another partition */
 #define ZHEAP_LOCK_MASK		(ZHEAP_XID_KEYSHR_LOCK | ZHEAP_XID_NOKEY_EXCL_LOCK | \
 							 ZHEAP_XID_SHR_LOCK | ZHEAP_XID_EXCL_LOCK)
 
@@ -156,6 +157,11 @@ typedef ZHeapTupleData *ZHeapTuple;
   (infomask & ZHEAP_UPDATED) != 0 \
 )
 
+#define ZHeapTupleIsMoved(infomask) \
+( \
+  (infomask & ZHEAP_MOVED) == ZHEAP_MOVED \
+)
+
 #define ZHeapTupleHasInvalidXact(infomask) \
 ( \
 	(infomask & ZHEAP_INVALID_XACT_SLOT) != 0 \
@@ -194,6 +200,11 @@ void ZHeapTupleHeaderSetXactSlot(ZHeapTupleHeader tup, int slotno)
 	(tup)->t_infomask2 = ((tup)->t_infomask2 & ~ZHEAP_XACT_SLOT) |
 						 (slotno << ZHEAP_XACT_SLOT_MASK);
 }
+
+#define ZHeapTupleHeaderSetMovedPartitions(tup) \
+( \
+	(tup)->t_infomask |= ZHEAP_MOVED \
+)
 
 #define ZHeapTupleHeaderGetOid(tup) \
 ( \

@@ -1108,9 +1108,12 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 			{
 				/*
 				 * For non-inplace-updates, ctid needs to be retrieved from
-				 * undo record if required.
+				 * undo record if required.  If the tuple is moved to another
+				 * partition, then we don't need ctid.
 				 */
-				if (tuple->t_infomask & ZHEAP_UPDATED && ctid)
+				if (ctid &&
+					tuple->t_infomask & ZHEAP_UPDATED &&
+					!ZHeapTupleIsMoved(tuple->t_infomask))
 					ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
 
 				return NULL;	/* deleted before scan started */
@@ -1128,9 +1131,12 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 		{
 			/*
 			 * For non-inplace-updates, ctid needs to be retrieved from undo
-			 * record if required.
+			 * record if required.  If the tuple is moved to another
+			 * partition, then we don't need ctid.
 			 */
-			if (tuple->t_infomask & ZHEAP_UPDATED && ctid)
+			if (ctid &&
+				!ZHeapTupleIsMoved(tuple->t_infomask) &&
+				tuple->t_infomask & ZHEAP_UPDATED)
 				ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
 
 			return NULL;	/* tuple is deleted */
@@ -1478,9 +1484,12 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 		{
 			/*
 			 * For non-inplace-updates, ctid needs to be retrieved from undo
-			 * record if required.
+			 * record if required.  If the tuple is moved to another
+			 * partition, then we don't need ctid.
 			 */
-			if (tuple->t_infomask & ZHEAP_UPDATED && ctid)
+			if (ctid &&
+				!ZHeapTupleIsMoved(tuple->t_infomask) &&
+				tuple->t_infomask & ZHEAP_UPDATED)
 				ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
 
 			/* tuple is deleted or non-inplace-updated */
@@ -1904,9 +1913,12 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		{
 			/*
 			 * For non-inplace-updates, ctid needs to be retrieved from undo
-			 * record if required.
+			 * record if required.  If the tuple is moved to another
+			 * partition, then we don't need ctid.
 			 */
-			if (tuple->t_infomask & ZHEAP_UPDATED && ctid)
+			if (ctid &&
+				!ZHeapTupleIsMoved(tuple->t_infomask) &&
+				tuple->t_infomask & ZHEAP_UPDATED)
 				ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
 			return NULL;
 		}
@@ -1921,9 +1933,12 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		{
 			/*
 			 * For non-inplace-updates, ctid needs to be retrieved from undo
-			 * record if required.
+			 * record if required.  If the tuple is moved to another
+			 * partition, then we don't need ctid.
 			 */
-			if (tuple->t_infomask & ZHEAP_UPDATED && ctid)
+			if (ctid &&
+				!ZHeapTupleIsMoved(tuple->t_infomask) &&
+				tuple->t_infomask & ZHEAP_UPDATED)
 				ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
 
 			/* tuple is deleted or non-inplace-updated */
@@ -2019,7 +2034,9 @@ ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer,
 					   ItemPointer ctid)
 {
 	/* Callers can expect ctid to be populated. */
-	if (ZHeapTupleIsUpdated(zhtup->t_data->t_infomask) && ctid)
+	if (ctid &&
+		!ZHeapTupleIsMoved(zhtup->t_data->t_infomask) &&
+		ZHeapTupleIsUpdated(zhtup->t_data->t_infomask))
 	{
 		UndoRecPtr	urec_ptr;
 		int		out_slot_no PG_USED_FOR_ASSERTS_ONLY;

@@ -124,6 +124,7 @@ typedef struct xl_zheap_insert
 #define XLZ_HAS_DELETE_UNDOTUPLE				(1<<1)
 #define XLZ_DELETE_CONTAINS_TPD_SLOT			(1<<2)
 #define XLZ_DELETE_CONTAINS_SUBXACT				(1<<3)
+#define XLZ_DELETE_IS_PARTITION_MOVE			(1<<4)
 
 /* This is what we need to know about delete */
 typedef struct xl_zheap_delete

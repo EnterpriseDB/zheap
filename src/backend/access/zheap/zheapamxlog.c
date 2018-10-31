@@ -418,6 +418,9 @@ zheap_xlog_delete(XLogReaderState *record)
 		zheaptup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
 		zheaptup.t_data->t_infomask = xlrec->infomask;
 
+		if (xlrec->flags & XLZ_DELETE_IS_PARTITION_MOVE)
+			ZHeapTupleHeaderSetMovedPartitions(zheaptup.t_data);
+
 		PageSetUNDO(undorecord, buffer, xlrec->trans_slot_id,
 					false, xid_epoch, xid, urecptr, NULL, 0);
 

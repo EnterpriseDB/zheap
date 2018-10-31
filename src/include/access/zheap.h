@@ -86,7 +86,7 @@ extern Oid zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 extern void simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot);
 extern HTSU_Result zheap_delete(Relation relation, ItemPointer tid,
 						CommandId cid, Snapshot crosscheck, Snapshot snapshot,
-						bool wait, HeapUpdateFailureData *hufd);
+						bool wait, HeapUpdateFailureData *hufd, bool changingPart);
 extern HTSU_Result zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 					CommandId cid, Snapshot crosscheck, Snapshot snapshot, bool wait,
 					HeapUpdateFailureData *hufd, LockTupleMode *lockmode);

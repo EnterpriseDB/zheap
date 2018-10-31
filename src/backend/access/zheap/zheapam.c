@@ -1052,7 +1052,7 @@ simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot)
 	result = zheap_delete(relation, tid,
 						 GetCurrentCommandId(true), InvalidSnapshot, snapshot,
 						 true, /* wait for commit */
-						 &hufd);
+						 &hufd, false /* changingPart */);
 	switch (result)
 	{
 		case HeapTupleSelfUpdated:
@@ -1114,7 +1114,7 @@ slot_getsyszattr(TupleTableSlot *slot, int attnum,
 HTSU_Result
 zheap_delete(Relation relation, ItemPointer tid,
 			 CommandId cid, Snapshot crosscheck, Snapshot snapshot, bool wait,
-			 HeapUpdateFailureData *hufd)
+			 HeapUpdateFailureData *hufd, bool changingPart)
 {
 	HTSU_Result result;
 	TransactionId xid = GetTopTransactionId();
@@ -1589,7 +1589,10 @@ zheap_tuple_updated:
 		Assert(ItemIdIsDeleted(lp) ||
 			   IsZHeapTupleModified(zheaptup.t_data->t_infomask));
 
-		hufd->ctid = ctid;
+		if (ZHeapTupleIsMoved(zheaptup.t_data->t_infomask))
+			ItemPointerSetMovedPartitions(&hufd->ctid);
+		else
+			hufd->ctid = ctid;
 		hufd->xmax = tup_xid;
 		if (result == HeapTupleSelfUpdated)
 			hufd->cmax = tup_cid;
@@ -1827,6 +1830,10 @@ zheap_tuple_updated:
 	zheaptup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
 	zheaptup.t_data->t_infomask |= ZHEAP_DELETED | new_infomask;
 
+	/* Signal that this is actually a move into another partition */
+	if (changingPart)
+		ZHeapTupleHeaderSetMovedPartitions(zheaptup.t_data);
+
 	MarkBufferDirty(buffer);
 
 	/*
@@ -1859,6 +1866,8 @@ zheap_tuple_updated:
 		xlrec.trans_slot_id = trans_slot_id;
 		xlrec.flags = all_visible_cleared ? XLZ_DELETE_ALL_VISIBLE_CLEARED : 0;
 
+		if (changingPart)
+			xlrec.flags |= XLZ_DELETE_IS_PARTITION_MOVE;
 		if (hasSubXactLock)
 			xlrec.flags |= XLZ_DELETE_CONTAINS_SUBXACT;
 
@@ -2699,7 +2708,10 @@ zheap_tuple_updated:
 		Assert(ItemIdIsDeleted(lp) ||
 			   IsZHeapTupleModified(oldtup.t_data->t_infomask));
 
-		hufd->ctid = ctid;
+		if (ZHeapTupleIsMoved(oldtup.t_data->t_infomask))
+			ItemPointerSetMovedPartitions(&hufd->ctid);
+		else
+			hufd->ctid = ctid;
 		hufd->xmax = tup_xid;
 		if (result == HeapTupleSelfUpdated)
 			hufd->cmax = tup_cid;
@@ -4254,7 +4266,8 @@ check_tup_satisfies_update:
 				 */
 				if (follow_updates && updated)
 				{
-					if (!ItemPointerEquals(&zhtup.t_self, &ctid))
+					if (!ZHeapTupleIsMoved(zhtup.t_data->t_infomask) &&
+						!ItemPointerEquals(&zhtup.t_self, &ctid))
 					{
 						HTSU_Result res;
 
@@ -4632,7 +4645,8 @@ check_tup_satisfies_update:
 			{
 				HTSU_Result res;
 
-				if (!ItemPointerEquals(&zhtup.t_self, &ctid))
+				if (!ZHeapTupleIsMoved(zhtup.t_data->t_infomask) &&
+					!ItemPointerEquals(&zhtup.t_self, &ctid))
 				{
 					res = zheap_lock_updated_tuple(relation, &zhtup, &ctid,
 												   xid, mode, cid,
@@ -4881,7 +4895,10 @@ failed:
 		Assert(ItemIdIsDeleted(lp) ||
 			   IsZHeapTupleModified(zhtup.t_data->t_infomask));
 
-		hufd->ctid = ctid;
+		if (ZHeapTupleIsMoved(zhtup.t_data->t_infomask))
+			ItemPointerSetMovedPartitions(&hufd->ctid);
+		else
+			hufd->ctid = ctid;
 		hufd->xmax = tup_xid;
 		if (result == HeapTupleSelfUpdated)
 			hufd->cmax = tup_cid;
@@ -5171,8 +5188,9 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 				!ValidateTuplesXact(mytup, SnapshotAny, buf, priorXmax, true))
 				return HeapTupleMayBeUpdated;
 
-			/* deleted, so forget about it */
-			if (ItemPointerEquals(&(mytup->t_self), ctid))
+			/* deleted or moved to another partition, so forget about it */
+			if (ZHeapTupleIsMoved(mytup->t_data->t_infomask) ||
+				ItemPointerEquals(&(mytup->t_self), ctid))
 				return HeapTupleMayBeUpdated;
 
 			/* updated row should have xid matching this xmax */
@@ -5458,6 +5476,7 @@ next:
 		 * updated the tuple is aborter, we're done.
 		 */
 		if (TransactionIdDidAbort(tup_xid) ||
+			ZHeapTupleIsMoved(mytup->t_data->t_infomask) ||
 			ItemPointerEquals(&mytup->t_self, ctid) ||
 			ZHEAP_XID_IS_LOCKED_ONLY(mytup->t_data->t_infomask))
 		{
@@ -11583,6 +11602,7 @@ zheap_get_latest_tid(Relation relation,
 		/* If there's a valid ctid link, follow it, else we're done. */
 		if (!ItemPointerIsValid(&new_ctid) ||
 			ZHEAP_XID_IS_LOCKED_ONLY(infomask) ||
+			ZHeapTupleIsMoved(infomask) ||
 			ItemPointerEquals(&ctid, &new_ctid))
 		{
 			if (resulttup != NULL)

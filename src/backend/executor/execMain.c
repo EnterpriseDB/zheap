@@ -3043,6 +3043,11 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 						ereport(ERROR,
 								(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 								 errmsg("could not serialize access due to concurrent update")));
+					if (ItemPointerIndicatesMovedPartitions(&hufd.ctid))
+						ereport(ERROR,
+						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+							errmsg("tuple to be locked was already moved to another partition due to concurrent update")));
+
 					if (!ItemPointerEquals(&hufd.ctid, &tuple->t_self) ||
 						hufd.in_place_updated_or_locked)
 					{
@@ -3089,6 +3094,12 @@ EvalPlanQualZFetch(EState *estate, Relation relation, int lockmode,
 			ReleaseBuffer(buffer);
 			return NULL;
 		}
+
+		/* check whether next version would be in a different partition */
+		if (ZHeapTupleIsMoved(tuple->t_data->t_infomask))
+			ereport(ERROR,
+					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+					 errmsg("tuple to be locked was already moved to another partition due to concurrent update")));
 
 		if (ItemPointerEquals(&(tuple->t_self), tid))
 		{
