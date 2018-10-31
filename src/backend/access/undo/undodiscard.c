@@ -107,26 +107,40 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 				if (ConditionTransactionUndoActionLock(uur->uur_xid))
 				{
 					TransactionId xid = uur->uur_xid;
+					UndoLogControl	*log = NULL;
+					UndoLogNumber 	logno;
 
-					pending_abort = true;
-					UndoRecordRelease(uur);
-
-					/* Fetch the undo record under undo action lock. */
-					uur = UndoFetchRecord(undo_recptr, InvalidBlockNumber,
-										  InvalidOffsetNumber, InvalidTransactionId,
-										  NULL, NULL);
+					logno = UndoRecPtrGetLogNo(undo_recptr);
+					log = UndoLogGet(logno);
 
 					/*
-					 * If the undo actions for the aborted transaction is
-					 * already applied then continue discarding the undo log
-					 * otherwise discard till current point and stop processing
-					 * this undo log.
+					 * If the corresponding log got rewinded to a location
+					 * prior to undo_recptr, the undo actions are already
+					 * applied.
 					 */
-					if (uur->uur_progress == 0)
+					if (log->meta.insert > undo_recptr)
 					{
-						from_urecptr = FetchLatestUndoPtrForXid(undo_recptr, uur, log);
-						(void)PushRollbackReq(from_urecptr, undo_recptr, uur->uur_dbid);
-						pending_abort = true;
+						UndoRecordRelease(uur);
+
+						/* Fetch the undo record under undo action lock. */
+						uur = UndoFetchRecord(undo_recptr, InvalidBlockNumber,
+											  InvalidOffsetNumber, InvalidTransactionId,
+											  NULL, NULL);
+						/*
+						 * If the undo actions for the aborted transaction is
+						 * already applied then continue discarding the undo log
+						 * otherwise discard till current point and stop processing
+						 * this undo log.
+						 * Also, check this is indeed the transaction id we're
+						 * looking for. It is possible that after rewinding
+						 * some other transaction has inserted an undo record.
+						 */
+						if (uur->uur_xid == xid && uur->uur_progress == 0)
+						{
+							from_urecptr = FetchLatestUndoPtrForXid(undo_recptr, uur, log);
+							(void)PushRollbackReq(from_urecptr, undo_recptr, uur->uur_dbid);
+							pending_abort = true;
+						}
 					}
 
 					TransactionUndoActionLockRelease(xid);
