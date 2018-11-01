@@ -565,29 +565,28 @@ UndoLauncherMain(Datum main_arg)
 	for (;;)
 	{
 		int			rc;
-		HTAB	   *dbhash;
-		Oid		   *dbid;
-		HASH_SEQ_STATUS status;
+		List	   *dblist;
+		ListCell   *l;
 
 		CHECK_FOR_INTERRUPTS();
 
+		/* switch to the temp context. */
 		oldctx = MemoryContextSwitchTo(tmpctx);
+		dblist = RollbackHTGetDBList();
 
-		dbhash = RollbackHTGetDBList(tmpctx);
-
-		hash_seq_init(&status, dbhash);
-		while ((dbid = (Oid *) hash_seq_search(&status)) != NULL)
+		foreach(l, dblist)
 		{
 			UndoApplyWorker *w;
+			Oid	dbid = lfirst_oid(l);
 
 			LWLockAcquire(UndoWorkerLock, LW_SHARED);
-			w = undo_worker_find(*dbid);
+			w = undo_worker_find(dbid);
 			LWLockRelease(UndoWorkerLock);
 
 			if (w == NULL)
 			{
 retry:
-				if (!undo_worker_launch(*dbid))
+				if (!undo_worker_launch(dbid))
 				{
 					/* Could not launch the worker, retry after sometime, */
 					rc = WaitLatch(MyLatch,

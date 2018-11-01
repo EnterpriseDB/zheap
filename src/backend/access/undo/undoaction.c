@@ -1273,20 +1273,12 @@ RollbackHTIsFull(void)
 /*
  * Get database list from the rollback hash table.
  */
-HTAB *
-RollbackHTGetDBList(MemoryContext tmpctx)
+List *
+RollbackHTGetDBList()
 {
-	HTAB	*dbhash;
-	HASHCTL	 hctl;
 	HASH_SEQ_STATUS status;
 	RollbackHashEntry	*rh;
-
-	hctl.keysize = sizeof(Oid);
-	hctl.entrysize = sizeof(Oid);
-	hctl.hcxt = tmpctx;
-
-	dbhash = hash_create("db hash", 20, &hctl,
-						 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	List	*dblist = NIL;
 
 	/* Fetch the rollback requests */
 	LWLockAcquire(RollbackHTLock, LW_SHARED);
@@ -1294,11 +1286,11 @@ RollbackHTGetDBList(MemoryContext tmpctx)
 	hash_seq_init(&status, RollbackHT);
 	while (RollbackHT != NULL &&
 		  (rh = (RollbackHashEntry *) hash_seq_search(&status)) != NULL)
-		(void)hash_search(dbhash, &rh->dbid, HASH_ENTER, NULL);
+		dblist = list_append_unique_oid(dblist, rh->dbid);
 
 	LWLockRelease(RollbackHTLock);
 
-	return dbhash;
+	return dblist;
 }
 
 /*

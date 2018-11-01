@@ -11235,7 +11235,6 @@ void
 zheap_mask(char *pagedata, BlockNumber blkno)
 {
 	Page		page = (Page) pagedata;
-	OffsetNumber off;
 
 	mask_page_lsn_and_checksum(page);
 
@@ -11256,21 +11255,6 @@ zheap_mask(char *pagedata, BlockNumber blkno)
 	{
 		/* It's a TPD page, no need to mask further. */
 		return;
-	}
-
-	for (off = 1; off <= PageGetMaxOffsetNumber(page); off++)
-	{
-		ItemId		iid = PageGetItemId(page, off);
-
-		 /* We don't pad after the tuple. */
-		if (ItemIdHasStorage(iid))
-		{
-			int			len = ItemIdGetLength(iid);
-			int			padlen PG_USED_FOR_ASSERTS_ONLY;
-
-			padlen = MAXALIGN(len) - len;
-			Assert(padlen <= 0);
-		}
 	}
 }
 

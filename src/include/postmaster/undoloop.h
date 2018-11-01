@@ -79,7 +79,7 @@ extern bool PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr,
 /* To perform the undo actions reading from the hash table */
 extern void RollbackFromHT(Oid dbid);
 
-extern HTAB *RollbackHTGetDBList(MemoryContext tmpctx);
+extern List *RollbackHTGetDBList(void);
 extern bool ConditionTransactionUndoActionLock(TransactionId xid);
 extern void TransactionUndoActionLockRelease(TransactionId xid);
 #endif   /* _UNDOLOOP_H */
