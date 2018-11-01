@@ -37,10 +37,12 @@ while configuring zheap.
 
 What doesn’t work yet?
 ======================
-
 - Logical decoding
 - Snapshot too old - We might want to implement this after first version is
 committed as this will work differently for zheap.
+- Alter Table <table_name> Set Tablesapce <tbs_name> - For this feature to work
+correctly in zheap, while copying pages, we need to ensure that pending aborts
+gets applied before copying the page.
 
 Tools
 - pg_undo_dump similar to pg_wal_dump:  We would like to develop this utility
@@ -57,6 +59,9 @@ Open Issues
 ===========
 - Currently, the TPD pages are not added to FSM even if they can be completely
 reused.
+- Single user mode: This needs some investigation as to what exactly is required.
+I think we need to ensure that undo gets applied without the need to invoke undo
+worker.
 
 The other pending code related items are tracked on zheap wiki page:
 https://wiki.postgresql.org/wiki/Zheap
