@@ -6396,7 +6396,6 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 TupleDesc tupleDesc, bool *isnull)
 {
 	Datum		result;
-	CommandId cid;
 	TransactionId xid = InvalidTransactionId;
 	bool	release_buf = false;
 
@@ -6435,59 +6434,23 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 			/*
 			 * Fixme - Need to check whether we need any handling of epoch here.
 			 */
-			if(ZHeapTupleHeaderGetXactSlot(zhtup->t_data) == ZHTUP_SLOT_FROZEN)
-				result = TransactionIdGetDatum(FrozenTransactionId);
-			else if (IsZHeapTupleModified(zhtup->t_data->t_infomask) ||
-					 ZHeapTupleHasInvalidXact(zhtup->t_data->t_infomask))
-				result = TransactionIdGetDatum(zheap_fetchinsertxid(zhtup, buf));
-			else
-			{
-				uint64  epoch_xid;
-				ZHeapTupleGetTransInfo(zhtup, buf, NULL, &epoch_xid, &xid,
-									   NULL, NULL, false);
+			uint64  epoch_xid;
+			ZHeapTupleGetTransInfo(zhtup, buf, NULL, &epoch_xid, &xid,
+								   NULL, NULL, false);
 
-				if (!TransactionIdIsValid(xid) || epoch_xid <
-					pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
-					xid = FrozenTransactionId;
-				result = TransactionIdGetDatum(xid);
-			}
+			if (!TransactionIdIsValid(xid) || epoch_xid <
+				pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+				xid = FrozenTransactionId;
+
+			result = TransactionIdGetDatum(xid);
 		}
 			break;
 		case MaxTransactionIdAttributeNumber:
-			if (IsZHeapTupleModified(zhtup->t_data->t_infomask))
-			{
-				uint64  epoch_xid;
-
-				ZHeapTupleGetTransInfo(zhtup, buf, NULL, &epoch_xid, &xid,
-									   NULL, NULL, false);
-
-				if (!TransactionIdIsValid(xid) || epoch_xid <
-					pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
-					xid = FrozenTransactionId;
-				result = TransactionIdGetDatum(xid);
-			}
-			else
-				result = TransactionIdGetDatum(InvalidTransactionId);
-
-			break;
 		case MinCommandIdAttributeNumber:
 		case MaxCommandIdAttributeNumber:
-			Assert (BufferIsValid(buf));
-			/*
-			 * Fixme: this could be an undo tuple so we might need to paas
-			 * proper transaction slot.
-			 */
-			cid = ZHeapTupleGetCid(zhtup, buf, InvalidUndoRecPtr, InvalidXactSlotId);
-
-			/*
-			 * To maintain the compatibility of cid with that of heap,
-			 * return the FirstCommandId if it comes to be InvalidCommandId
-			 * otherwise the command id as returned by ZHeapTupleGetCid.
-			 */
-			if (cid == InvalidCommandId)
-				result = CommandIdGetDatum(FirstCommandId);
-			else
-				result = CommandIdGetDatum(cid);
+			ereport(ERROR,
+				   (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				   errmsg("XMax, CMin, and CMax are not supported for ZHeap tuples")));
 			break;
 		case TableOidAttributeNumber:
 			result = ObjectIdGetDatum(zhtup->t_tableOid);
