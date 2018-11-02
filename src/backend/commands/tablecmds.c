@@ -22,8 +22,10 @@
 #include "access/relscan.h"
 #include "access/sysattr.h"
 #include "access/tupconvert.h"
+#include "access/tpd.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/zheap.h"
 #include "access/zheaputils.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
@@ -473,6 +475,7 @@ static void ATExecForceNoForceRowSecurity(Relation rel, bool force_rls);
 
 static void copy_relation_data(SMgrRelation rel, SMgrRelation dst,
 				   ForkNumber forkNum, char relpersistence);
+static void copy_zrelation_data(Relation srcRel, SMgrRelation dst, ForkNumber forkNum);
 static const char *storage_name(char c);
 
 static void RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid,
@@ -11351,8 +11354,11 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 	RelationCreateStorage(newrnode, rel->rd_rel->relpersistence);
 
 	/* copy main fork */
-	copy_relation_data(rel->rd_smgr, dstrel, MAIN_FORKNUM,
-					   rel->rd_rel->relpersistence);
+	if (RelationStorageIsZHeap(rel))
+		copy_zrelation_data(rel, dstrel, MAIN_FORKNUM);
+	else
+		copy_relation_data(rel->rd_smgr, dstrel, MAIN_FORKNUM,
+						   rel->rd_rel->relpersistence);
 
 	/* copy those extra forks that exist */
 	for (forkNum = MAIN_FORKNUM + 1; forkNum <= MAX_FORKNUM; forkNum++)
@@ -11693,6 +11699,135 @@ copy_relation_data(SMgrRelation src, SMgrRelation dst,
 		 * write; we'll do it ourselves below.
 		 */
 		smgrextend(dst, forkNum, blkno, buf.data, true);
+	}
+
+	/*
+	 * If the rel is WAL-logged, must fsync before commit.  We use heap_sync
+	 * to ensure that the toast table gets fsync'd too.  (For a temp or
+	 * unlogged rel we don't care since the data will be gone after a crash
+	 * anyway.)
+	 *
+	 * It's obvious that we must do this when not WAL-logging the copy. It's
+	 * less obvious that we have to do it even if we did WAL-log the copied
+	 * pages. The reason is that since we're copying outside shared buffers, a
+	 * CHECKPOINT occurring during the copy has no way to flush the previously
+	 * written data to disk (indeed it won't know the new rel even exists).  A
+	 * crash later on would replay WAL from the checkpoint, therefore it
+	 * wouldn't replay our earlier WAL entries. If we do not fsync those pages
+	 * here, they might still not be on disk when the crash occurs.
+	 */
+	if (relpersistence == RELPERSISTENCE_PERMANENT || copying_initfork)
+		smgrimmedsync(dst, forkNum);
+}
+
+/*
+ * copy_zrelation_data - same as copy_relation_data but for zheap
+ *
+ * In this method, we copy a zheap relation block by block. Here is the algorithm
+ * for the same:
+ * For each zheap page,
+ * a. If it's a meta page, copy it as it is.
+ * b. If it's a TPD page, copy it as it is.
+ * c. If it's a zheap data page, apply pending aborts, copy the page and
+ *    the corresponding TPD page (if any).
+ *
+ * Please note that we may copy a tpd page multiple times. The reason is one
+ * tpd page can be referred by multiple zheap pages. While applying pending
+ * aborts on a zheap page, we also need to modify the transaction and undo
+ * information in the corresponding TPD page, hence, we need to copy it again
+ * to reflect the changes.
+ */
+static void
+copy_zrelation_data(Relation srcRel, SMgrRelation dst, ForkNumber forkNum)
+{
+	Page		page;
+	bool		use_wal;
+	bool		copying_initfork;
+	BlockNumber nblocks;
+	BlockNumber blkno;
+	SMgrRelation src = srcRel->rd_smgr;
+	char relpersistence = srcRel->rd_rel->relpersistence;
+
+	/*
+	 * The init fork for an unlogged relation in many respects has to be
+	 * treated the same as normal relation, changes need to be WAL logged and
+	 * it needs to be synced to disk.
+	 */
+	copying_initfork = relpersistence == RELPERSISTENCE_UNLOGGED &&
+		forkNum == INIT_FORKNUM;
+
+	/*
+	 * We need to log the copied data in WAL iff WAL archiving/streaming is
+	 * enabled AND it's a permanent relation.
+	 */
+	use_wal = XLogIsNeeded() &&
+		(relpersistence == RELPERSISTENCE_PERMANENT || copying_initfork);
+
+	nblocks = smgrnblocks(src, forkNum);
+
+	for (blkno = 0; blkno < nblocks; blkno++)
+	{
+		BlockNumber	target_blkno = InvalidBlockNumber;
+		BlockNumber	tpd_blkno = InvalidBlockNumber;
+		Buffer		buffer = InvalidBuffer;
+
+		/* If we got a cancel signal during the copy of the data, quit */
+		CHECK_FOR_INTERRUPTS();
+
+		if (blkno != ZHEAP_METAPAGE)
+		{
+			buffer = ReadBuffer(srcRel, blkno);
+
+			/* If it's a zheap page, apply the pending undo actions */
+			if (PageGetSpecialSize(BufferGetPage(buffer)) !=
+				MAXALIGN(sizeof(TPDPageOpaqueData)))
+				zbuffer_exec_pending_rollback(srcRel, buffer, &tpd_blkno);
+		}
+
+		target_blkno = blkno;
+
+copy_buffer:
+		/* Read the buffer if not already done. */
+		if (!BufferIsValid(buffer))
+			buffer = ReadBuffer(srcRel, target_blkno);
+		page = (Page) BufferGetPage(buffer);
+
+		if (!PageIsVerified(page, target_blkno))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("invalid page in block %u of relation %s",
+							target_blkno,
+							relpathbackend(src->smgr_rnode.node,
+										   src->smgr_rnode.backend,
+										   forkNum))));
+
+		/*
+		 * WAL-log the copied page. Unfortunately we don't know what kind of a
+		 * page this is, so we have to log the full page including any unused
+		 * space.
+		 */
+		if (use_wal)
+			log_newpage(&dst->smgr_rnode.node, forkNum, target_blkno, page, false);
+
+		PageSetChecksumInplace(page, target_blkno);
+
+		/*
+		 * Now write the page.  We say isTemp = true even if it's not a temp
+		 * rel, because there's no need for smgr to schedule an fsync for this
+		 * write; we'll do it ourselves below.
+		 */
+		smgrextend(dst, forkNum, target_blkno, page, true);
+
+		ReleaseBuffer(buffer);
+
+		/* If there is a TPD page corresponding to the current page, copy it. */
+		if (BlockNumberIsValid(tpd_blkno))
+		{
+			target_blkno = tpd_blkno;
+			tpd_blkno = InvalidBlockNumber;
+			buffer = InvalidBuffer;
+			goto copy_buffer;
+		}
 	}
 
 	/*

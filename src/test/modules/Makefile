@@ -19,6 +19,7 @@ SUBDIRS = \
 		  test_rls_hooks \
 		  test_shm_mq \
 		  test_undo \
+		  test_alter_tablespace_zheap \
 		  worker_spi
 
 $(recurse)

@@ -1,0 +1,47 @@
+create tablespace regress_ts location '/home/edb/Projects/Undo/zheap/src/test/modules/test_alter_tablespace_zheap/testtablespace';
+create table t1(a int);
+insert into t1 select generate_series(1,10);
+-- Rollback some transactions for which undo actions must be performed before
+-- modifying the tablespace.
+begin;update t1 set a=a+10 where a=1;rollback;
+begin;update t1 set a=a+10 where a=2;rollback;
+begin;update t1 set a=a+10 where a=3;rollback;
+begin;update t1 set a=a+10 where a=4;rollback;
+alter table t1 set tablespace regress_ts;
+-- Now, check the table definition
+\d+ t1;
+                                    Table "public.t1"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ a      | integer |           |          |         | plain   |              | 
+Tablespace: "regress_ts"
+
+-- Check whether rollback has been performed.
+select a from t1;
+ a  
+----
+  1
+  2
+  3
+  4
+  5
+  6
+  7
+  8
+  9
+ 10
+(10 rows)
+
+create extension pageinspect;
+-- There can be at most one slot which has a valid xid - xid of the transaction
+-- that inserted the tuples.
+select count(*) <= 1 from zheap_page_slots(get_raw_page('t1', 1)) where xid != 0;
+ ?column? 
+----------
+ t
+(1 row)
+
+drop extension pageinspect;
+drop table t1;
+-- check that we can drop tablespaces (because there is nothing in them)
+drop tablespace regress_ts;

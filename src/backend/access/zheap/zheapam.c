@@ -670,6 +670,71 @@ zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no,
 }
 
 /*
+ * zbuffer_exec_pending_rollback - apply any pending rollback on the input buffer
+ *
+ * This method traverses all the transaction slots of the current page including
+ * tpd slots and applies any pending aborts on the page.
+ *
+ * It expects the caller has an exclusive lock on the relation. It also returns
+ * the corresponding TPD block number in case it has rolled back any transactions
+ * from the corresponding TPD page, if any.
+ */
+void
+zbuffer_exec_pending_rollback(Relation rel, Buffer buf, BlockNumber *tpd_blkno)
+{
+	int				slot_no;
+	int				total_trans_slots = 0;
+	uint64			epoch;
+	TransactionId	xid;
+	UndoRecPtr		urec_ptr;
+	TransInfo 		*trans_slots = NULL;
+	bool			any_tpd_slot_rolled_back = false;
+
+	Assert(tpd_blkno != NULL);
+
+	/*
+	 * Fetch all the transaction information from the page and its corresponding
+	 * TPD page.
+	 */
+	trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots, tpd_blkno);
+
+	for (slot_no = 0; slot_no < total_trans_slots; slot_no++)
+	{
+		epoch = trans_slots[slot_no].xid_epoch;
+		xid = trans_slots[slot_no].xid;
+		urec_ptr = trans_slots[slot_no].urec_ptr;
+
+		/*
+		 * There shouldn't be any other in-progress transaction as we hold an
+		 * exclusive lock on the relation.
+		 */
+		Assert(TransactionIdIsCurrentTransactionId(xid) ||
+			   !TransactionIdIsInProgress(xid));
+
+		/* If the transaction is aborted, apply undo actions */
+		if (TransactionIdIsValid(xid) && TransactionIdDidAbort(xid))
+		{
+			/* Remember if we've rolled back a transactio from a TPD-slot. */
+			if ((slot_no >= ZHEAP_PAGE_TRANS_SLOTS - 1) &&
+				BlockNumberIsValid(*tpd_blkno))
+				any_tpd_slot_rolled_back = true;
+			process_and_execute_undo_actions_page(urec_ptr, rel, buf, epoch,
+												  xid, slot_no);
+		}
+	}
+
+	/*
+	 * If we've not rolled back anything from TPD slot, there is no
+	 * need set the TPD buffer.
+	 */
+	if (!any_tpd_slot_rolled_back)
+		*tpd_blkno = InvalidBlockNumber;
+
+	/* be tidy */
+	pfree(trans_slots);
+}
+
+/*
  * zheap_insert - insert tuple into a zheap
  *
  * The functionality related to heap is quite similar to heap_insert,
