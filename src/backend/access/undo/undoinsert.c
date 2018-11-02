@@ -509,7 +509,17 @@ resize:
 				urec->uur_dbid = MyDatabaseId;
 		}
 		else
+		{
+			/*
+			 * It is okay to initialize these variables as these are used only
+			 * with the first record of transaction.
+			 */
 			urec->uur_next = InvalidUndoRecPtr;
+			urec->uur_xidepoch = 0;
+			urec->uur_dbid = 0;
+			urec->uur_progress = 0;
+		}
+
 
 		/* calculate the size of the undo record. */
 		size += UndoRecordExpectedSize(urec);
