@@ -6450,7 +6450,7 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 		case MaxCommandIdAttributeNumber:
 			ereport(ERROR,
 				   (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				   errmsg("XMax, CMin, and CMax are not supported for ZHeap tuples")));
+				   errmsg("xmax, cmin, and cmax are not supported for zheap tuples")));
 			break;
 		case TableOidAttributeNumber:
 			result = ObjectIdGetDatum(zhtup->t_tableOid);
