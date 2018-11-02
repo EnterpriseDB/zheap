@@ -290,19 +290,22 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 	/* Do the real work */
 	smgrtruncate(rel->rd_smgr, MAIN_FORKNUM, nblocks);
 
-	/* Create the meta page for zheap */
-	if (RelationStorageIsZHeap(rel))
-				RelationSetNewRelfilenode(rel, rel->rd_rel->relpersistence,
-										  InvalidTransactionId,
-										  InvalidMultiXactId);
+	/*
+	 * Initialize the meta page for zheap when the relation is completely
+	 * truncated.
+	 */
+	if (RelationStorageIsZHeap(rel) && nblocks <= 0)
+	{
+		RelationSetNewRelfilenode(rel, rel->rd_rel->relpersistence,
+								  InvalidTransactionId,
+								  InvalidMultiXactId);
 		if (rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED &&
 			rel->rd_rel->relkind != 'p')
 		{
-				heap_create_init_fork(rel);
-				if (RelationStorageIsZHeap(rel))
-					ZheapInitMetaPage(rel, INIT_FORKNUM);
+			heap_create_init_fork(rel);
+			ZheapInitMetaPage(rel, INIT_FORKNUM);
 		}
-
+	}
 }
 
 /*
