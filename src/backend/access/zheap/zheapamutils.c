@@ -43,6 +43,8 @@ zheap_to_heap(ZHeapTuple ztuple, TupleDesc tupDesc)
 	tuple = heap_form_tuple(tupDesc, values, nulls);
 	tuple->t_self = ztuple->t_self;
 	tuple->t_tableOid = ztuple->t_tableOid;
+	if (tupDesc->tdhasoid)
+		HeapTupleSetOid(tuple, ZHeapTupleGetOid(ztuple));
 
 	pfree(values);
 	pfree(nulls);
@@ -65,6 +67,9 @@ heap_to_zheap(HeapTuple tuple, TupleDesc tupDesc)
 	heap_deform_tuple(tuple, tupDesc, values, nulls);
 	ztuple = zheap_form_tuple(tupDesc, values, nulls);
 	ztuple->t_self = tuple->t_self;
+	ztuple->t_tableOid = tuple->t_tableOid;
+	if (tupDesc->tdhasoid)
+		ZHeapTupleSetOid(ztuple, HeapTupleGetOid(tuple));
 
 	pfree(values);
 	pfree(nulls);
