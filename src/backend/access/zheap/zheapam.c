@@ -6233,7 +6233,7 @@ znocachegetattr(ZHeapTuple tuple,
 {
 	ZHeapTupleHeader tup = tuple->t_data;
 	Form_pg_attribute thisatt;
-	Datum		ret_datum;
+	Datum		ret_datum = (Datum) 0;
 	char	   *tp;				/* ptr to data part of tuple */
 	bits8	   *bp = tup->t_bits;	/* ptr to null bitmap in tuple */
 	int			off;			/* current offset within data */
