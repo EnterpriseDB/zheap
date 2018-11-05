@@ -1154,6 +1154,9 @@ PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr, Oid dbid)
 	bool found = false;
 	RollbackHashEntry *rh;
 
+	/* Do not push any rollback request if working in single user-mode */
+	if (!IsUnderPostmaster)
+		return false;
 	/*
 	 * If the location upto which rollback need to be done is not provided,
 	 * then rollback the complete transaction.
