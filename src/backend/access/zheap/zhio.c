@@ -176,7 +176,17 @@ loop:
 		}
 
 		if (PageGetSpecialSize(BufferGetPage(buffer)) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+		{
 			tpdPage = true;
+			page = BufferGetPage(buffer);
+
+			/* If the tpd page is empty, then we can use it as an empty zheap page. */
+			if (PageIsEmpty(page))
+			{
+				ZheapInitPage(page, BufferGetPageSize(buffer));
+				tpdPage = false;
+			}
+		}
 
 		if (!tpdPage)
 		{
@@ -200,6 +210,10 @@ loop:
 			 * cleared by some other backend anyway.  In that case, we'll have
 			 * done a bit of extra work for no gain, but there's no real harm
 			 * done.
+			 *
+			 * Fixme: GetVisibilityMapPins use PageIsAllVisible which is not
+			 * required for zheap, so either we need to rewrite that function or
+			 * somehow avoid the usage of that call.
 			 */
 			if (otherBuffer == InvalidBuffer || buffer <= otherBuffer)
 				GetVisibilityMapPins(relation, buffer, otherBuffer,

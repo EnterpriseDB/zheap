@@ -30,6 +30,13 @@ tpd_desc(StringInfo buf, XLogReaderState *record)
 		appendStringInfo(buf, "prevblk %u nextblk %u offset %u",
 						 xlrec->prevblk, xlrec->nextblk, xlrec->offnum);
 	}
+	else if (info == XLOG_TPD_FREE_PAGE)
+	{
+		xl_tpd_free_page *xlrec = (xl_tpd_free_page *) rec;
+
+		appendStringInfo(buf, "prevblk %u nextblk %u",
+						 xlrec->prevblkno, xlrec->nextblkno);
+	}
 }
 
 const char *
@@ -53,6 +60,9 @@ tpd_identify(uint8 info)
 			break;
 		case XLOG_INPLACE_UPDATE_TPD_ENTRY:
 			id = "INPLACE UPDATE TPD ENTRY";
+			break;
+		case XLOG_TPD_FREE_PAGE:
+			id = "TPD FREE PAGE";
 			break;
 	}
 

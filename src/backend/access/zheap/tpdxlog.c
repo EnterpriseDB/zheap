@@ -353,6 +353,121 @@ tpd_xlog_clear_location(XLogReaderState *record)
 		UnlockReleaseBuffer(buffer);
 }
 
+/*
+ * replay for freeing tpd page.
+ */
+static void
+tpd_xlog_free_page(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	RelFileNode		rnode;
+	xl_tpd_free_page *xlrec = (xl_tpd_free_page *) XLogRecGetData(record);
+	Buffer	buffer = InvalidBuffer,
+			prevbuf = InvalidBuffer,
+			nextbuf = InvalidBuffer,
+			metabuf = InvalidBuffer;
+	BlockNumber		blkno;
+	Page	page;
+	XLogRedoAction action;
+	Size		freespace;
+
+	if (XLogRecHasBlockRef(record, 0))
+	{
+		action = XLogReadBufferForRedo(record, 0, &prevbuf);
+
+		/*
+		 * Note that we still update the page even if it was restored from a full
+		 * page image, because the special space is not included in the image.
+		 */
+		if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
+		{
+			TPDPageOpaque	prevtpdopaque;
+			Page	prevpage = (Page) BufferGetPage(prevbuf);
+
+			prevtpdopaque = (TPDPageOpaque) PageGetSpecialPointer(prevpage);
+			prevtpdopaque->tpd_nextblkno = xlrec->nextblkno;
+
+			MarkBufferDirty(prevbuf);
+			PageSetLSN(prevpage, lsn);
+		}
+	}
+
+	XLogRecGetBlockTag(record, 1, &rnode, NULL, &blkno);
+	action = XLogReadBufferForRedo(record, 1, &buffer);
+	page = (Page) BufferGetPage(buffer);
+
+	/*
+	 * Note that we still update the page even if it was restored from a full
+	 * page image, because the special space is not included in the image.
+	 */
+	if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
+	{
+		TPDPageOpaque	tpdopaque;
+
+		tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(page);
+
+		tpdopaque->tpd_prevblkno = InvalidBlockNumber;
+		tpdopaque->tpd_nextblkno = InvalidBlockNumber;
+		tpdopaque->tpd_latest_xid_epoch = 0;
+		tpdopaque->tpd_latest_xid = InvalidTransactionId;
+
+		MarkBufferDirty(buffer);
+		PageSetLSN(page, lsn);
+	}
+
+	Assert(PageIsEmpty(page));
+	Assert(blkno == BufferGetBlockNumber(buffer));
+	freespace = PageGetTPDFreeSpace(page);
+
+	if (XLogRecHasBlockRef(record, 2))
+	{
+		action = XLogReadBufferForRedo(record, 3, &nextbuf);
+
+		if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
+		{
+			TPDPageOpaque	nexttpdopaque;
+			Page	nextpage = (Page) BufferGetPage(nextbuf);
+
+			nexttpdopaque = (TPDPageOpaque) PageGetSpecialPointer(nextpage);
+			nexttpdopaque->tpd_prevblkno = xlrec->prevblkno;
+
+			MarkBufferDirty(nextbuf);
+			PageSetLSN(nextpage, lsn);
+		}
+	}
+
+	if (XLogRecHasBlockRef(record, 3))
+	{
+		xl_zheap_metadata	*xlrecmeta;
+		char	   *ptr;
+		Size		len;
+
+		metabuf = XLogInitBufferForRedo(record, 3);
+		ptr = XLogRecGetBlockData(record, 3, &len);
+
+		Assert(len == SizeOfMetaData);
+		Assert(BufferGetBlockNumber(metabuf) == ZHEAP_METAPAGE);
+		xlrecmeta = (xl_zheap_metadata *) ptr;
+
+		zheap_init_meta_page(metabuf, xlrecmeta->first_used_tpd_page,
+							 xlrecmeta->last_used_tpd_page);
+		MarkBufferDirty(metabuf);
+		PageSetLSN(BufferGetPage(metabuf), lsn);
+	}
+
+	if (BufferIsValid(prevbuf))
+		UnlockReleaseBuffer(prevbuf);
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+	if (BufferIsValid(nextbuf))
+		UnlockReleaseBuffer(nextbuf);
+	if (BufferIsValid(metabuf))
+		UnlockReleaseBuffer(metabuf);
+
+	/* Record the empty page in FSM. */
+	XLogRecordPageWithFreeSpace(rnode, blkno, freespace);
+}
+
 void
 tpd_redo(XLogReaderState *record)
 {
@@ -371,6 +486,9 @@ tpd_redo(XLogReaderState *record)
 			break;
 		case XLOG_TPD_CLEAR_LOCATION:
 			tpd_xlog_clear_location(record);
+			break;
+		case XLOG_TPD_FREE_PAGE:
+			tpd_xlog_free_page(record);
 			break;
 		default:
 			elog(PANIC, "tpd_redo: unknown op code %u", info);

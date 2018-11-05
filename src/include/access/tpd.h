@@ -85,6 +85,7 @@ extern OffsetNumber TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 extern void SetTPDLocation(Buffer heapbuffer, Buffer tpdbuffer, uint16 offset);
 extern void ClearTPDLocation(Buffer heapbuf);
 extern void TPDInitPage(Page page, Size pageSize);
+extern bool TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy);
 extern int TPDAllocateAndReserveTransSlot(Relation relation, Buffer buf,
 								OffsetNumber offnum, UndoRecPtr *urec_ptr);
 extern TransInfo *TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
@@ -111,12 +112,13 @@ extern void TPDPageGetOffsetMap(Buffer heapbuf, char *tpd_entry_data,
 								int map_size);
 extern int TPDPageGetOffsetMapSize(Buffer heapbuf);
 extern void TPDPageSetOffsetMap(Buffer heapbuf, char *tpd_offset_map);
-extern void TPDPageLock(Relation relation, Buffer heapbuf);
+extern bool TPDPageLock(Relation relation, Buffer heapbuf);
 extern XLogRedoAction XLogReadTPDBuffer(XLogReaderState *record,
 										uint8 block_id);
 extern uint8 RegisterTPDBuffer(Page heappage, uint8 block_id);
 extern void TPDPageSetLSN(Page heappage, XLogRecPtr recptr);
 extern void UnlockReleaseTPDBuffers(void);
+extern Size PageGetTPDFreeSpace(Page page);
 extern void ResetRegisteredTPDBuffers(void);
 
 /* interfaces exposed via prunetpd.c */

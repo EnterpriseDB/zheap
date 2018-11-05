@@ -471,7 +471,7 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buffer);
 		slot_no = PageGetTransactionSlotId(rel, buffer, epoch, xid, &urec_ptr,
-										   true, false);
+										   true, false, NULL);
 		/*
 		 * If someone has already cleared the transaction info, then we don't
 		 * need to do anything.
@@ -607,6 +607,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
 	Buffer		vmbuffer = InvalidBuffer;
 	bool		need_init = false;
+	bool		tpd_page_locked = false;
 
 	/*
 	 * FIXME: If reloid is not valid then we have nothing to do. In future,
@@ -667,8 +668,9 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	 */
 	epoch = GetEpochForXid(xid);
 	slot_no = PageGetTransactionSlotId(rel, buffer, epoch, xid,
-							&slot_urec_ptr, true,
-							options & UNDO_ACTION_UPDATE_TPD ? true : false);
+									   &slot_urec_ptr, true,
+									   options & UNDO_ACTION_UPDATE_TPD ?
+									   true : false, &tpd_page_locked);
 
 	/*
 	 * If undo action has been already applied for this page then skip
@@ -699,9 +701,12 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	 */
 	if ((options & UNDO_ACTION_UPDATE_TPD) != 0)
 	{
-		tpd_map_size = TPDPageGetOffsetMapSize(buffer);
-		if (tpd_map_size > 0)
-			tpd_offset_map = palloc(tpd_map_size);
+		if (tpd_page_locked)
+		{
+			tpd_map_size = TPDPageGetOffsetMapSize(buffer);
+			if (tpd_map_size > 0)
+				tpd_offset_map = palloc(tpd_map_size);
+		}
 	}
 
 	START_CRIT_SECTION();
@@ -1055,6 +1060,9 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 		 */
 		if (flags & XLU_CONTAINS_TPD_OFFSET_MAP)
 		{
+			/* tpd_offset_map must be non-null. */
+			Assert(tpd_offset_map);
+
 			/* Fetch the TPD offset map and write into the WAL record. */
 			TPDPageGetOffsetMap(buffer, tpd_offset_map, tpd_map_size);
 			XLogRegisterData((char *) tpd_offset_map, tpd_map_size);

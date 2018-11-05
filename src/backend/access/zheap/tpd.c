@@ -96,7 +96,6 @@ static void TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf,
 						bool delete_old_entry);
 static bool TPDBufferAlreadyRegistered(Buffer tpd_buf);
 static void ReleaseLastTPDBuffer(Buffer buf);
-static Size PageGetTPDFreeSpace(Page page);
 static void LogAndClearTPDLocation(Relation relation, Buffer heapbuf,
 								   bool *tpd_e_pruned);
 void
@@ -510,7 +509,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 
 	/* The last slot in page has the address of the required TPD entry. */
 	old_tpd_page = BufferGetPage(old_tpd_buf);
-	zopaque = (ZHeapPageOpaque)PageGetSpecialPointer(BufferGetPage(heapbuf));
+	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(heapbuf));
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
 	itemId = PageGetItemId(old_tpd_page, tpdItemOff);
@@ -570,12 +569,18 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	else
 		tpd_e_header.tpe_flags = TPE_FOUR_BYTE;
 
+	/*
+	 * Even if all the entries on page got pruned away, the page can't be reused
+	 * for other purpose as we have a lock on it.
+	 */
+	Assert(PageGetSpecialSize(old_tpd_page) == MAXALIGN(sizeof(TPDPageOpaqueData)));
+
 	/* 
 	 * If the item got pruned then clear the TPD slot from the page and
 	 * return.  Although, we have a lock on tpd page, so nobody else can
 	 * prune our entry, but we ourselves might have pruned it.
 	 */
-	if (!ItemIdIsUsed(itemId))
+	if (PageIsEmpty(old_tpd_page) || !ItemIdIsUsed(itemId))
 	{
 		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
 		*reserved_slot_no = InvalidXactSlotId;
@@ -969,6 +974,216 @@ TPDInitPage(Page page, Size pageSize)
 }
 
 /*
+ * TPDFreePage - Remove the TPD page from the chain.
+ *
+ * Initialize the empty page and remove it from the chain.  This function
+ * ensures that the buffers are locked such that the block that exists prior
+ * in chain gets locked first and meta page is locked at end after which no
+ * existing page is locked.  This is to avoid deadlocks, see comments atop
+ * function TPDAllocatePageAndAddEntry.
+ *
+ * We expect that the caller must have acquired EXCLUSIVE lock the
+ * current buffer (buf) and it is this function's responsibility to
+ * free the buffer.
+ *
+ * Returns true, if we are able to successfully remove the page from chain,
+ * false, otherwise.
+ */
+bool
+TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
+{
+	TPDPageOpaque	tpdopaque,
+					prevtpdopaque,
+					nexttpdopaque;
+	ZHeapMetaPage	metapage;
+	Page			page,
+					prevpage,
+					nextpage;
+	BlockNumber		curblkno = InvalidBlockNumber;
+	BlockNumber		prevblkno = InvalidBlockNumber;
+	BlockNumber		nextblkno = InvalidBlockNumber;
+	Buffer			prevbuf = InvalidBuffer;
+	Buffer			nextbuf = InvalidBuffer;
+	Buffer			metabuf = InvalidBuffer;
+	bool			update_meta = false;
+
+	page = BufferGetPage(buf);
+	curblkno = BufferGetBlockNumber(buf);
+	tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(page);
+
+	prevblkno = tpdopaque->tpd_prevblkno;
+
+	if (BlockNumberIsValid(prevblkno))
+	{
+		/*
+		 * Before taking the lock on previous block, we need to release the
+		 * lock on the current buffer.  This is to ensure that we always lock
+		 * the buffers in the order in which they are present in list.  This
+		 * avoids the deadlock risks.  See atop TPDAllocatePageAndAddEntry.
+		 */
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		prevbuf = ReadBufferExtended(rel, MAIN_FORKNUM, prevblkno, RBM_NORMAL,
+									 bstrategy);
+		LockBuffer(prevbuf, BUFFER_LOCK_EXCLUSIVE);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+
+		/*
+		 * After reaquiring the lock, check whether page is still empty, if
+		 * not, then we don't need to do anything.  As of now, there is no
+		 * possiblity that the empty page in the chain can be reused, however,
+		 * in future, we can use it.
+		 */
+		page = BufferGetPage(buf);
+		if (!PageIsEmpty(page))
+		{
+			UnlockReleaseBuffer(prevbuf);
+			UnlockReleaseBuffer(buf);
+			return false;
+		}
+		tpdopaque = (TPDPageOpaque)PageGetSpecialPointer(page);
+	}
+
+	nextblkno = tpdopaque->tpd_nextblkno;
+
+	if (BlockNumberIsValid(nextblkno))
+	{
+		nextbuf = ReadBufferExtended(rel, MAIN_FORKNUM, nextblkno, RBM_NORMAL,
+									 bstrategy);
+		LockBuffer(nextbuf, BUFFER_LOCK_EXCLUSIVE);
+	}
+
+	metabuf = ReadBufferExtended(rel, MAIN_FORKNUM, ZHEAP_METAPAGE,
+								 RBM_NORMAL, bstrategy);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+
+	metapage = ZHeapPageGetMeta(BufferGetPage(metabuf));
+	Assert(metapage->zhm_magic == ZHEAP_MAGIC);
+
+	START_CRIT_SECTION();
+
+	/* Update the current page. */
+	tpdopaque->tpd_prevblkno = InvalidBlockNumber;
+	tpdopaque->tpd_nextblkno = InvalidBlockNumber;
+	tpdopaque->tpd_latest_xid_epoch = 0;
+	tpdopaque->tpd_latest_xid = InvalidTransactionId;
+
+	MarkBufferDirty(buf);
+
+	/* Update the previous page. */
+	if (BufferIsValid(prevbuf))
+	{
+		prevpage = BufferGetPage(prevbuf);
+		prevtpdopaque = (TPDPageOpaque) PageGetSpecialPointer(prevpage);
+
+		prevtpdopaque->tpd_nextblkno = nextblkno;
+		MarkBufferDirty(prevbuf);
+	}
+	/* Update the next page. */
+	if (BufferIsValid(nextbuf))
+	{
+		nextpage = BufferGetPage(nextbuf);
+		nexttpdopaque = (TPDPageOpaque) PageGetSpecialPointer(nextpage);
+
+		nexttpdopaque->tpd_prevblkno = prevblkno;
+		MarkBufferDirty(nextbuf);
+	}
+
+	/*
+	 * Update the metapage.  If the previous or next block is invalid, the
+	 * page to be removed could be first or last page in the chain in which
+	 * case we need to update the metapage accordingly.
+	 */
+	if (!BlockNumberIsValid(prevblkno) ||
+		!BlockNumberIsValid(nextblkno))
+	{
+		if (!BlockNumberIsValid(prevblkno))
+		{
+			/*
+			 * If there is no prevblock, then the current page must be the
+			 * first and the last page.
+			 */
+			Assert(metapage->zhm_first_used_tpd_page == curblkno);
+			Assert(metapage->zhm_last_used_tpd_page == curblkno ||
+				   metapage->zhm_last_used_tpd_page == InvalidBlockNumber);
+			metapage->zhm_first_used_tpd_page = InvalidBlockNumber;
+			metapage->zhm_last_used_tpd_page = InvalidBlockNumber;
+		}
+		else if (!BlockNumberIsValid(nextblkno))
+		{
+			/*
+			 * If next block is invalid, then the current block must be last
+			 * used page.
+			 */
+			Assert(metapage->zhm_last_used_tpd_page == curblkno);
+			metapage->zhm_last_used_tpd_page = prevblkno;
+		}
+		else
+		{
+			/* one of the above two conditions must be satisfied. */
+			Assert(false);
+		}
+
+		MarkBufferDirty(metabuf);
+		update_meta = true;
+	}
+	else
+	{
+		/*
+		 * If next block is a valid block then the last used page can't be the
+		 * current page being removed.
+		 */
+		Assert(metapage->zhm_last_used_tpd_page != curblkno);
+	}
+
+	if (RelationNeedsWAL(rel))
+	{
+		XLogRecPtr	recptr;
+		xl_tpd_free_page	xlrec;
+
+		xlrec.prevblkno = prevblkno;
+		xlrec.nextblkno = nextblkno;
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, SizeOfTPDFreePage);
+		if (BufferIsValid(prevbuf))
+			XLogRegisterBuffer(0, prevbuf, REGBUF_STANDARD);
+		XLogRegisterBuffer(1, buf, REGBUF_STANDARD);
+		if (BufferIsValid(nextbuf))
+			XLogRegisterBuffer(2, nextbuf, REGBUF_STANDARD);
+		if (update_meta)
+		{
+			xl_zheap_metadata		xl_meta;
+
+			xl_meta.first_used_tpd_page = metapage->zhm_first_used_tpd_page;
+			xl_meta.last_used_tpd_page = metapage->zhm_last_used_tpd_page;
+			XLogRegisterBuffer(3, metabuf, REGBUF_STANDARD | REGBUF_WILL_INIT);
+			XLogRegisterBufData(3, (char *) &xl_meta, SizeOfMetaData);
+		}
+
+		recptr = XLogInsert(RM_TPD_ID, XLOG_TPD_FREE_PAGE);
+
+		if (BufferIsValid(prevbuf))
+			PageSetLSN(prevpage, recptr);
+		PageSetLSN(page, recptr);
+		if (BufferIsValid(nextbuf))
+			PageSetLSN(nextpage, recptr);
+		if (update_meta)
+			PageSetLSN(BufferGetPage(metabuf), recptr);
+	}
+
+	END_CRIT_SECTION();
+
+	if (BufferIsValid(prevbuf))
+		UnlockReleaseBuffer(prevbuf);
+	UnlockReleaseBuffer(buf);
+	if (BufferIsValid(nextbuf))
+		UnlockReleaseBuffer(nextbuf);
+	UnlockReleaseBuffer(metabuf);
+
+	return true;
+}
+
+/*
  * TPDEntryUpdate - Update the TPD entry inplace and write a WAL record for
  *					the same.
  */
@@ -1050,6 +1265,8 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 
 	if (add_new_tpd_page)
 	{
+		BlockNumber		targetBlock = InvalidBlockNumber;
+		Size	len = MaxTPDEntrySize;
 		int		buf_idx;
 		bool	needLock;
 		bool	already_exists;
@@ -1061,14 +1278,19 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 		Assert(!delete_old_entry || BufferIsValid(old_tpd_buf));
 		Assert(delete_old_entry || !BufferIsValid(old_tpd_buf));
 
-		/* Must extend the file */
-		needLock = !RELATION_IS_LOCAL(relation);
+		/* Before extending the relation, check the FSM for free page. */
+		targetBlock = GetPageWithFreeSpace(relation, len);
+
+		if (targetBlock == InvalidBlockNumber)
+			targetBlock = P_NEW;
+
+		/* Acquire the extension lock, if extension is required. */
+		needLock = !RELATION_IS_LOCAL(relation) && (targetBlock == P_NEW);
 		if (needLock)
 			LockRelationForExtension(relation, ExclusiveLock);
 
-		/* Allocate a new TPD page */
-		buf_idx = GetTPDBuffer(relation, P_NEW, InvalidBuffer, TPD_BUF_ENTER,
-							   &already_exists);
+		buf_idx = GetTPDBuffer(relation, targetBlock, InvalidBuffer,
+							   TPD_BUF_ENTER, &already_exists);
 		/* This must be a new buffer. */
 		Assert(!already_exists);
 		tpd_buf = tpd_buffers[buf_idx].buf;
@@ -1136,6 +1358,9 @@ recheck_meta:
 	if (add_new_tpd_page)
 	{
 		BlockNumber tpdblkno;
+
+		/* Page must be new or empty. */
+		Assert(PageIsEmpty(tpdpage) || PageIsNew(tpdpage));
 
 		TPDInitPage(tpdpage, BufferGetPageSize(tpd_buf));
 		tpdblkno = BufferGetBlockNumber(tpd_buf);
@@ -1435,6 +1660,12 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
  * The tpd entries are stored unaligned, so we need to be careful to read
  * them.  We use memcpy to avoid unaligned reads.
  *
+ * It is quite possible that the TPD entry containing required transaction slot
+ * information got pruned away (as all the transaction entries are all-visible)
+ * by the time caller tries to enquire about it.  See atop
+ * TPDPageGetTransactionSlotInfo for more details on how we deal with pruned
+ * TPD entries.
+ *
  * This function returns a pointer to an array of transaction slots, it is the
  * responsibility of the caller to free it.
  */
@@ -1453,6 +1684,7 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	Buffer	tpd_buf;
 	Page	tpdpage;
 	BlockNumber	tpdblk;
+	BlockNumber lastblock;
 	TPDEntryHeaderData	tpd_e_hdr;
 	Size	size_tpd_e_map;
 	Size	size_tpd_e_slots;
@@ -1486,6 +1718,21 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	tpdblk = last_trans_slot_info.xid_epoch;
 	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
 
+	lastblock = RelationGetNumberOfBlocks(relation);
+
+	if (lastblock < tpdblk)
+	{
+		/*
+		 * The required TPD block has been pruned and then truncated away
+		 * which means all transaction slots on that page are older than
+		 * oldestXidHavingUndo.  So, we can assume the transaction slot is
+		 * frozen aka transaction is all-visible and can clear the slot from
+		 * heap tuples.
+		 */
+		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+		goto failed_and_buf_not_locked;
+	}
+
 	/*
 	 * Fetch the required TPD entry.  We need to lock the buffer in exclusive
 	 * mode as we later want to set the values in one of the transaction slot.
@@ -1502,6 +1749,19 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	}
 
 	tpdpage = BufferGetPage(tpd_buf);
+
+	/* Check whether TPD entry can exist on page? */
+	if (PageIsEmpty(tpdpage))
+	{
+		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+		goto failed;
+	}
+	if (PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData)))
+	{
+		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+		goto failed;
+	}
+
 	itemId = PageGetItemId(tpdpage, tpdItemOff);
 
 	/* TPD entry has been pruned */
@@ -1582,6 +1842,7 @@ failed:
 			*tpd_buf_id = -1;
 	}
 
+failed_and_buf_not_locked:
 	return trans_slots;
 }
 
@@ -1794,6 +2055,23 @@ TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
  * TPDPageGetTransactionSlotInfo - Get the required transaction information from
  *		heap page's TPD entry.
  *
+ * It is quite possible that the TPD entry containing required transaction slot
+ * information got pruned away (as all the transaction entries are all-visible)
+ * by the time caller tries to enquire about it.  One might expect that if the
+ * TPD entry is pruned, the corresponding affected tuples should be updated to
+ * reflect the same, however, we don't do that due to multiple reasons (a) we
+ * don't access heap pages from TPD layer, it can lead to deadlock, (b) it
+ * might lead to dirtying a lot of pages and random I/O.  However, the first
+ * time we detect it and we have exclusive lock on page, we update the
+ * corresponding heap page.
+ *
+ * We can consider TPD entry to be pruned under following conditions: (a) the
+ * tpd block doesn't exist (pruned and truncated by vacuum), (b) the tpd block
+ * is empty which means all the entries in it are pruned, (c) the tpd block
+ * has been reused as a heap page, (d) the corresponding TPD entry has been
+ * pruned away and either the itemid is unused or is reused for some other
+ * block's TPD entry.
+ *
  * NoTPDBufLock - This indicates that caller doesn't have lock on required tpd
  * buffer in which case we need to read and lock the required buffer.
  */
@@ -1837,6 +2115,9 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 
 	if (NoTPDBufLock)
 	{
+		SMgrRelation	smgr;
+		BlockNumber		lastblock;
+
 		BufferGetTag(heapbuf, &rnode, &forknum, &heapblk);
 
 		if (InRecovery)
@@ -1849,12 +2130,32 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 			relpersistence = get_rel_persistence(reloid);
 		}
 
-		tpdbuffer = ReadBufferWithoutRelcache(rnode, forknum, tpdblk, RBM_NORMAL,
-											  NULL, relpersistence);
-		if (keepTPDBufLock)
-			LockBuffer(tpdbuffer, BUFFER_LOCK_EXCLUSIVE);
+		smgr = smgropen(rnode,
+						relpersistence == RELPERSISTENCE_TEMP ?
+						MyBackendId : InvalidBackendId);
+
+		lastblock = smgrnblocks(smgr, forknum);
+
+		/* required block exists? */
+		if (tpdblk < lastblock)
+		{
+			tpdbuffer = ReadBufferWithoutRelcache(rnode, forknum, tpdblk, RBM_NORMAL,
+												  NULL, relpersistence);
+			if (keepTPDBufLock)
+				LockBuffer(tpdbuffer, BUFFER_LOCK_EXCLUSIVE);
+			else
+				LockBuffer(tpdbuffer, BUFFER_LOCK_SHARE);
+		}
 		else
-			LockBuffer(tpdbuffer, BUFFER_LOCK_SHARE);
+		{
+			/*
+			 * The required TPD block has been pruned and then truncated away
+			 * which means all transaction slots on that page are older than
+			 * oldestXidHavingUndo.  So, we can assume the transaction slot is
+			 * frozen aka transaction is all-visible.
+			 */
+			goto slot_is_frozen_and_buf_not_locked;
+		}
 	}
 	else
 	{
@@ -1870,6 +2171,13 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 	}
 
 	tpdpage = BufferGetPage(tpdbuffer);
+
+	/* Check whether TPD entry can exist on page? */
+	if (PageIsEmpty(tpdpage))
+		goto slot_is_frozen;
+	if (PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData)))
+		goto slot_is_frozen;
+
 	itemId = PageGetItemId(tpdpage, tpdItemOff);
 
 	/* TPD entry has been pruned */
@@ -1979,6 +2287,7 @@ slot_is_frozen:
 	if (NoTPDBufLock && !keepTPDBufLock)
 		UnlockReleaseBuffer(tpdbuffer);
 
+slot_is_frozen_and_buf_not_locked:
 	trans_slot_id = ZHTUP_SLOT_FROZEN;
 	if (epoch)
 		*epoch = 0;
@@ -2140,6 +2449,11 @@ GetTPDEntryData(Buffer heapbuf, int *num_entries, int *entry_size,
 	tpdblk = last_trans_slot_info.xid_epoch;
 	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
 
+	/*
+	 * Here we don't need to check if the tpd block is pruned and truncated
+	 * away because the tpd buffer must be locked before.
+	 */
+
 	buf_idx = GetTPDBuffer(NULL, tpdblk, InvalidBuffer, TPD_BUF_FIND,
 						   &already_exists);
 	/* We must get a valid buffer. */
@@ -2153,6 +2467,13 @@ GetTPDEntryData(Buffer heapbuf, int *num_entries, int *entry_size,
 	Assert(BufferGetBlockNumber(tpd_buf) == tpdblk);
 
 	tpdpage = BufferGetPage(tpd_buf);
+
+	/* Check whether TPD entry can exist on page? */
+	if (PageIsEmpty(tpdpage))
+		return NULL;
+	if (PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData)))
+		return NULL;
+
 	itemId = PageGetItemId(tpdpage, tpdItemOff);
 
 	/* TPD entry is already pruned away. */
@@ -2493,16 +2814,21 @@ TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
  * TPDPageLock - Routine to lock the TPD page corresponding to heap page
  *
  * Caller should not already hold the lock.
+ *
+ * Returns false, if couldn't acquire lock because the page is pruned,
+ * otherwise, true.
  */
-void
+bool
 TPDPageLock(Relation relation, Buffer heapbuf)
 {
 	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
 	Page		heappage = BufferGetPage(heapbuf);
+	Page		tpdpage;
 	ZHeapPageOpaque	zopaque;
 	TransInfo	last_trans_slot_info;
 	Buffer	tpd_buf;
-	BlockNumber	tpdblk;
+	BlockNumber	tpdblk,
+				lastblock;
 	int		buf_idx;
 	bool	already_exists;
 
@@ -2517,6 +2843,18 @@ TPDPageLock(Relation relation, Buffer heapbuf)
 
 	tpdblk = last_trans_slot_info.xid_epoch;
 
+	lastblock = RelationGetNumberOfBlocks(relation);
+
+	if (lastblock < tpdblk)
+	{
+		/*
+		 * The required TPD block has been pruned and then truncated away
+		 * which means all transaction slots on that page are older than
+		 * oldestXidHavingUndo.  So, we can't lock the page.
+		 */
+		return false;
+	}
+
 	/*
 	 * Fetch the required TPD entry.  We need to lock the buffer in exclusive
 	 * mode as we later want to set the values in one of the transaction slot.
@@ -2524,10 +2862,25 @@ TPDPageLock(Relation relation, Buffer heapbuf)
 	buf_idx = GetTPDBuffer(relation, tpdblk, InvalidBuffer,
 						   TPD_BUF_FIND_OR_ENTER, &already_exists);
 	tpd_buf = tpd_buffers[buf_idx].buf;
+	tpdpage = BufferGetPage(tpd_buf);
+
+	/* Check whether TPD entry can exist on page? */
+	if (PageIsEmpty(tpdpage))
+	{
+		ReleaseLastTPDBuffer(tpd_buf);
+		return false;
+	}
+	else if (PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData)))
+	{
+		ReleaseLastTPDBuffer(tpd_buf);
+		return false;
+	}
 
 	Assert(!already_exists);
 
 	LockBuffer(tpd_buf, BUFFER_LOCK_EXCLUSIVE);
+
+	return true;
 }
 
 /*
@@ -2686,7 +3039,7 @@ UnlockReleaseTPDBuffers(void)
  * As of now, this is just a wrapper over PageGetFreeSpace, however in future,
  * the space management in TPD pages could be different.
  */
-static Size
+Size
 PageGetTPDFreeSpace(Page page)
 {
 	int			space;

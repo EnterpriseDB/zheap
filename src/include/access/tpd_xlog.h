@@ -27,6 +27,7 @@
 #define XLOG_TPD_CLEAN					0x10
 #define XLOG_TPD_CLEAR_LOCATION			0x20
 #define XLOG_INPLACE_UPDATE_TPD_ENTRY	0x30
+#define XLOG_TPD_FREE_PAGE				0x40
 
 #define	XLOG_TPD_OPMASK				0x70
 
@@ -61,6 +62,16 @@ typedef struct xl_tpd_clean
 } xl_tpd_clean;
 
 #define SizeOfTPDClean	(offsetof(xl_tpd_clean, flags) + sizeof(uint8))
+
+/* This is what we need to know about tpd free page */
+
+typedef struct xl_tpd_free_page
+{
+	BlockNumber		prevblkno;
+	BlockNumber		nextblkno;
+} xl_tpd_free_page;
+
+#define SizeOfTPDFreePage	(offsetof(xl_tpd_free_page, nextblkno) + sizeof(BlockNumber))
 
 extern void tpd_redo(XLogReaderState *record);
 extern void tpd_desc(StringInfo buf, XLogReaderState *record);

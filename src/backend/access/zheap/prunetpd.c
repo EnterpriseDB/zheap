@@ -357,6 +357,7 @@ TPDPageRepairFragmentation(Page page, Page tmppage, OffsetNumber target_offnum,
 	if (nstorage == 0)
 	{
 		/* Page is completely empty, so just reset it quickly */
+		((PageHeader) page)->pd_lower = SizeOfPageHeaderData;
 		((PageHeader) page)->pd_upper = pd_special;
 	}
 	else

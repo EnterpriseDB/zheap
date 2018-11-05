@@ -782,9 +782,30 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 		 * pages can also be empty, but we don't want to deal with it like a
 		 * heap page.
 		 */
+		/*
+		 * Prune the TPD pages and if all the entries are removed, then record
+		 * it in FSM, so that it can be reused as a zheap page.
+		 */
 		if (PageGetSpecialSize(page) == sizeof(TPDPageOpaqueData))
 		{
-			UnlockReleaseBuffer(buf);
+			TPDPagePrune(onerel, buf, InvalidOffsetNumber, 0, NULL);
+			if (PageIsEmpty(page))
+			{
+				/*
+				 * We can reuse empty page as either a heap page or a TPD
+				 * page, so no need to consider opaque space.
+				 */
+				freespace = BLCKSZ - SizeOfPageHeaderData;
+
+				/*
+				 * TPD page is empty, remove it from TPD used page list and
+				 * record it in FSM.
+				 */
+				if (TPDFreePage(onerel, buf, vac_strategy))
+					RecordPageWithFreeSpace(onerel, blkno, freespace);
+			}
+			else
+				UnlockReleaseBuffer(buf);
 			continue;
 		}
 
