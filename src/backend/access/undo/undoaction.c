@@ -1120,7 +1120,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 int
 RollbackHTSize(void)
 {
-	return ROLLBACK_HT_SIZE * sizeof(RollbackHashEntry);
+	return hash_estimate_size(ROLLBACK_HT_SIZE, sizeof(RollbackHashEntry));
 }
 
 /*
@@ -1130,7 +1130,6 @@ RollbackHTSize(void)
 void
 InitRollbackHashTable(void)
 {
-	int ht_size = RollbackHTSize();
 	HASHCTL info;
 	MemSet(&info, 0, sizeof(info));
 
@@ -1139,8 +1138,8 @@ InitRollbackHashTable(void)
 	info.hash = tag_hash;
 
 	RollbackHT = ShmemInitHash("Undo actions Lookup Table",
-								ht_size, ht_size, &info,
-								HASH_ELEM | HASH_FUNCTION);
+								ROLLBACK_HT_SIZE, ROLLBACK_HT_SIZE, &info,
+								HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
 }
 
 /*
