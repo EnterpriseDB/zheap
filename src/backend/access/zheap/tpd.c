@@ -996,9 +996,9 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 					prevtpdopaque,
 					nexttpdopaque;
 	ZHeapMetaPage	metapage;
-	Page			page,
-					prevpage,
-					nextpage;
+	Page			page = NULL,
+					prevpage = NULL,
+					nextpage = NULL;
 	BlockNumber		curblkno = InvalidBlockNumber;
 	BlockNumber		prevblkno = InvalidBlockNumber;
 	BlockNumber		nextblkno = InvalidBlockNumber;
