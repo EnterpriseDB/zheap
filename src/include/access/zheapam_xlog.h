@@ -186,28 +186,14 @@ typedef struct xl_zheap_update
 
 #define SizeOfZHeapUpdate	(offsetof(xl_zheap_update, new_offnum) + sizeof(OffsetNumber))
 
-#define XLZ_FREEZE_TPD_SLOT			(1<<0)
-
 /* This is what we need to know for freezing transaction slots */
 typedef struct xl_zheap_freeze_xact_slot
 {
 	TransactionId	lastestFrozenXid;	/* latest frozen xid */
 	uint16			nFrozen;	/* number of transaction slots to freeze */
-	uint8			flags;
 } xl_zheap_freeze_xact_slot;
 
-#define SizeOfZHeapFreezeXactSlot	(offsetof(xl_zheap_freeze_xact_slot, flags) + sizeof(uint8))
-
-#define	XLZ_INVALID_XACT_TPD_SLOT		(1<<0)
-
-/* This is what we need to know for invalidating xact slot */
-typedef struct xl_zheap_invalid_xact_slot
-{
-	uint16			nCompletedSlots;	/* number of completed slots */
-	uint8			flags;
-} xl_zheap_invalid_xact_slot;
-
-#define SizeOfZHeapInvalidXactSlot (offsetof(xl_zheap_invalid_xact_slot, flags) + sizeof(uint8))
+#define SizeOfZHeapFreezeXactSlot	(offsetof(xl_zheap_freeze_xact_slot, nFrozen) + sizeof(uint16))
 
 /*
  * xl_zheap_lock flag values, 8 bits are available.

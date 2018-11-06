@@ -7468,7 +7468,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 	int		*frozen_slots = NULL;
 	int		nFrozenSlots = 0;
 	int		*completed_xact_slots = NULL;
-	int		nCompletedXactSlots = 0;
+	uint16	 nCompletedXactSlots = 0;
 	int		*aborted_xact_slots = NULL;
 	int		nAbortedXactSlots = 0;
 	bool	TPDSlot;
@@ -7620,10 +7620,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 			XLogRegisterData((char *) frozen_slots, nFrozenSlots * sizeof(int));
 			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
 			if (TPDSlot)
-			{
 				RegisterTPDBuffer(page, 1);
-				xlrec.flags |= XLZ_FREEZE_TPD_SLOT;
-			}
 
 			recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_FREEZE_XACT_SLOT);
 			PageSetLSN(page, recptr);
@@ -7710,25 +7707,19 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		 */
 		if (RelationNeedsWAL(relation))
 		{
-			xl_zheap_invalid_xact_slot xlrec = {0};
 			XLogRecPtr	recptr;
 
 			XLogBeginInsert();
 
-			xlrec.nCompletedSlots = nCompletedXactSlots;
-
-			XLogRegisterData((char *) &xlrec, SizeOfZHeapInvalidXactSlot);
 
 			/* See comments while registering frozen slot. */
+			XLogRegisterData((char *) &nCompletedXactSlots, sizeof(uint16));
 			XLogRegisterData((char *) completed_xact_slots, nCompletedXactSlots * sizeof(int));
 
 			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
 
 			if (TPDSlot)
-			{
 				RegisterTPDBuffer(page, 1);
-				xlrec.flags |= XLZ_INVALID_XACT_TPD_SLOT;
-			}
 
 			recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_INVALID_XACT_SLOT);
 			PageSetLSN(page, recptr);

@@ -1078,9 +1078,13 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	Buffer		buffer;
+	Page		page;
 	xl_zheap_freeze_xact_slot *xlrec =
 			(xl_zheap_freeze_xact_slot *) XLogRecGetData(record);
-	XLogRedoAction action;
+	XLogRedoAction action, tpdaction = -1;
+	int	   *frozen;
+	int		i;
+	bool	hasTPDSlot = false;
 
 	/* There must be some frozen slots.*/
 	Assert(xlrec->nFrozen > 0);
@@ -1102,55 +1106,32 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 		ResolveRecoveryConflictWithSnapshot(lastestFrozenXid, rnode);
 	}
 
+	frozen = (int *) ((char *) xlrec + SizeOfZHeapFreezeXactSlot);
+
 	action = XLogReadBufferForRedo(record, 0, &buffer);
+	if (XLogRecHasBlockRef(record, 1))
+	{
+		tpdaction = XLogReadTPDBuffer(record, 1);
+		hasTPDSlot = true;
+	}
+
+	page = BufferGetPage(buffer);
+
 	if (action == BLK_NEEDS_REDO)
 	{
-		Page	page;
 		ZHeapPageOpaque	opaque;
 		int		slot_no;
-		int	   *frozen;
-		int		i;
-
-		frozen = (int *) ((char *) xlrec + SizeOfZHeapFreezeXactSlot);
-
-		page = BufferGetPage(buffer);
-		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-
-		/* clear the transaction slot info on tuples */
-		if (xlrec->flags & XLZ_FREEZE_TPD_SLOT)
+		if (hasTPDSlot)
 		{
-			Assert(XLogRecHasBlockRef(record, 1));
-			action = XLogReadTPDBuffer(record, 1);
 			zheap_freeze_or_invalidate_tuples(buffer, xlrec->nFrozen, frozen,
-											  true, true);
-		}
-		else
-			zheap_freeze_or_invalidate_tuples(buffer, xlrec->nFrozen, frozen,
-											  true, false);
-
-		if (xlrec->flags & XLZ_FREEZE_TPD_SLOT)
-		{
-			if (action == BLK_NEEDS_REDO)
-			{
-				/* Initialize the frozen slots. */
-				for (i = 0; i < xlrec->nFrozen; i++)
-				{
-					int	tpd_slot_id;
-
-					/* Calculate the actual slot no. */
-					tpd_slot_id = frozen[i] + ZHEAP_PAGE_TRANS_SLOTS + 1;
-
-					/* Clear slot information from the TPD slot. */
-					TPDPageSetTransactionSlotInfo(buffer, tpd_slot_id, 0,
-											  InvalidTransactionId,
-											  InvalidUndoRecPtr);
-				}
-
-				TPDPageSetLSN(page, lsn);
-			}
+				true, true);
 		}
 		else
 		{
+			zheap_freeze_or_invalidate_tuples(buffer, xlrec->nFrozen, frozen,
+				true, false);
+			opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
 			/* Initialize the frozen slots. */
 			for (i = 0; i < xlrec->nFrozen; i++)
 			{
@@ -1163,8 +1144,26 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 		}
 
 		PageSetLSN(page, lsn);
-
 		MarkBufferDirty(buffer);
+	}
+
+	if (tpdaction == BLK_NEEDS_REDO)
+	{
+		/* Initialize the frozen slots. */
+		for (i = 0; i < xlrec->nFrozen; i++)
+		{
+			int	tpd_slot_id;
+
+			/* Calculate the actual slot no. */
+			tpd_slot_id = frozen[i] + ZHEAP_PAGE_TRANS_SLOTS + 1;
+
+			/* Clear slot information from the TPD slot. */
+			TPDPageSetTransactionSlotInfo(buffer, tpd_slot_id, 0,
+										  InvalidTransactionId,
+										  InvalidUndoRecPtr);
+		}
+
+		TPDPageSetLSN(page, lsn);
 	}
 
 	if (BufferIsValid(buffer))
@@ -1178,74 +1177,49 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	Buffer		buffer;
-	xl_zheap_invalid_xact_slot *xlrec =
-			(xl_zheap_invalid_xact_slot *) XLogRecGetData(record);
-	XLogRedoAction action;
+	Page		page;
+	char	   *data = XLogRecGetData(record);
+	uint16		nCompletedSlots;
+	XLogRedoAction action, tpdaction = -1;
+	int	   *completed_slots;
+	int		i;
+	bool	hasTPDSlot = false;
+
+	nCompletedSlots = *(uint16 *) data;
 
 	/* There must be some frozen slots.*/
-	Assert(xlrec->nCompletedSlots > 0);
+	Assert(nCompletedSlots > 0);
+
+	completed_slots = (int *) ((char *) data + sizeof(uint16));
 
 	action = XLogReadBufferForRedo(record, 0, &buffer);
+	if (XLogRecHasBlockRef(record, 1))
+	{
+		tpdaction = XLogReadTPDBuffer(record, 1);
+		hasTPDSlot = true;
+	}
+	page = BufferGetPage(buffer);
+
 	if (action == BLK_NEEDS_REDO)
 	{
-		Page	page;
 		ZHeapPageOpaque	opaque;
-		TransInfo	*tpd_slots;
 		int		slot_no;
-		int	   *completed_slots;
-		int		i;
 
-		completed_slots = (int *) ((char *) xlrec + SizeOfZHeapInvalidXactSlot);
-
-		page = BufferGetPage(buffer);
 		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 
 		/* clear the transaction slot info on tuples. */
-		if (xlrec->flags & XLZ_INVALID_XACT_TPD_SLOT)
+		if (hasTPDSlot)
 		{
-			Assert(XLogRecHasBlockRef(record, 1));
-
-			action = XLogReadTPDBuffer(record, 1);
-			zheap_freeze_or_invalidate_tuples(buffer, xlrec->nCompletedSlots,
+			zheap_freeze_or_invalidate_tuples(buffer, nCompletedSlots,
 											  completed_slots, false, true);
 		}
 		else
-			zheap_freeze_or_invalidate_tuples(buffer, xlrec->nCompletedSlots,
+		{
+			zheap_freeze_or_invalidate_tuples(buffer, nCompletedSlots,
 											  completed_slots, false, false);
 
-		if (xlrec->flags & XLZ_INVALID_XACT_TPD_SLOT)
-		{
-			if (action == BLK_NEEDS_REDO)
-			{
-				/*
-				 * Read TPD slot array. So that we can keep the slot urec_ptr
-				 * intact while clearing the transaction id from the slot.
-				 */
-				tpd_slots = TPDPageGetTransactionSlots(NULL, buffer,
-													   InvalidOffsetNumber,
-													   true, false, NULL, NULL,
-													   NULL, NULL, NULL);
-
-				for (i = 0; i < xlrec->nCompletedSlots; i++)
-				{
-					int slot_no, tpd_slot_id;
-
-					slot_no = completed_slots[i];
-					tpd_slot_id = slot_no + ZHEAP_PAGE_TRANS_SLOTS + 1;
-
-					/* Clear the XID information from the TPD. */
-					TPDPageSetTransactionSlotInfo(buffer, tpd_slot_id, 0,
-												  InvalidTransactionId,
-												  tpd_slots[slot_no].urec_ptr);
-				}
-
-				TPDPageSetLSN(page, lsn);
-			}
-		}
-		else
-		{
 			/* Clear xid from the slots. */
-			for (i = 0; i < xlrec->nCompletedSlots; i++)
+			for (i = 0; i < nCompletedSlots; i++)
 			{
 				slot_no = completed_slots[i];
 				opaque->transinfo[slot_no].xid_epoch = 0;
@@ -1254,10 +1228,35 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 		}
 
 		PageSetLSN(page, lsn);
-		if (xlrec->flags & XLZ_INVALID_XACT_TPD_SLOT)
-			TPDPageSetLSN(page, lsn);
-
 		MarkBufferDirty(buffer);
+	}
+	if (tpdaction == BLK_NEEDS_REDO)
+	{
+		TransInfo *tpd_slots;
+
+		/*
+		 * Read TPD slot array. So that we can keep the slot urec_ptr
+		 * intact while clearing the transaction id from the slot.
+		 */
+		tpd_slots = TPDPageGetTransactionSlots(NULL, buffer,
+											   InvalidOffsetNumber,
+											   true, false, NULL, NULL,
+											   NULL, NULL, NULL);
+
+		for (i = 0; i < nCompletedSlots; i++)
+		{
+			int tpd_slot_id;
+
+			/* Calculate the actual slot no. */
+			tpd_slot_id = completed_slots[i] + ZHEAP_PAGE_TRANS_SLOTS + 1;
+
+			/* Clear the XID information from the TPD. */
+			TPDPageSetTransactionSlotInfo(buffer, tpd_slot_id, 0,
+										  InvalidTransactionId,
+										  tpd_slots[completed_slots[i]].urec_ptr);
+		}
+
+		TPDPageSetLSN(page, lsn);
 	}
 
 	if (BufferIsValid(buffer))

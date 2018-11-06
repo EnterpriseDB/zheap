@@ -1718,19 +1718,22 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	tpdblk = last_trans_slot_info.xid_epoch;
 	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
 
-	lastblock = RelationGetNumberOfBlocks(relation);
-
-	if (lastblock < tpdblk)
+	if (!InRecovery)
 	{
-		/*
-		 * The required TPD block has been pruned and then truncated away
-		 * which means all transaction slots on that page are older than
-		 * oldestXidHavingUndo.  So, we can assume the transaction slot is
-		 * frozen aka transaction is all-visible and can clear the slot from
-		 * heap tuples.
-		 */
-		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
-		goto failed_and_buf_not_locked;
+		lastblock = RelationGetNumberOfBlocks(relation);
+
+		if (lastblock < tpdblk)
+		{
+			/*
+			 * The required TPD block has been pruned and then truncated away
+			 * which means all transaction slots on that page are older than
+			 * oldestXidHavingUndo.  So, we can assume the transaction slot is
+			 * frozen aka transaction is all-visible and can clear the slot from
+			 * heap tuples.
+			 */
+			LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+			goto failed_and_buf_not_locked;
+		}
 	}
 
 	/*
