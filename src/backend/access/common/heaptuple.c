@@ -1591,16 +1591,16 @@ slot_getsysattr(TupleTableSlot *slot, int attnum,
 
 	Assert(attnum < 0);			/* else caller error */
 	
-	if (tuple != NULL && tuple != &(slot->tts_minhdr))
-	{
-		*value = heap_getsysattr(tuple, attnum, slot->tts_tupleDescriptor,
-								 isnull);
-		return true;
-	}
-	else if (ztuple != NULL)
+	if (ztuple != NULL)
 	{
 		*value = zheap_getsysattr(ztuple, slot->tts_buffer, attnum,
 								  slot->tts_tupleDescriptor, isnull);
+		return true;
+	}
+	else if (tuple != NULL && tuple != &(slot->tts_minhdr))
+	{
+		*value = heap_getsysattr(tuple, attnum, slot->tts_tupleDescriptor,
+								 isnull);
 		return true;
 	}
 	else
