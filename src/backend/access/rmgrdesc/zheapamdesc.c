@@ -73,9 +73,9 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 	}
 	else if (info == XLOG_ZHEAP_INVALID_XACT_SLOT)
 	{
-		xl_zheap_invalid_xact_slot *xlrec = (xl_zheap_invalid_xact_slot *) rec;
+		uint16  nCompletedSlots = *(uint16 *) rec;
 
-		appendStringInfo(buf, "completed_slots %u", xlrec->nCompletedSlots);
+		appendStringInfo(buf, "completed_slots %u", nCompletedSlots);
 	}
 	else if (info == XLOG_ZHEAP_LOCK)
 	{
