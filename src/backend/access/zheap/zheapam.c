@@ -3518,6 +3518,12 @@ reacquire_buffer:
 	}
 	else
 	{
+		/*
+		 * If the tuple was updated in-place earlier, clear the inplace update
+		 * flag from the tuple.
+		 */
+		if (ZHeapTupleIsInPlaceUpdated(old_infomask))
+			old_infomask &= ~ZHEAP_INPLACE_UPDATED;
 		infomask_old_tuple = old_infomask | ZHEAP_UPDATED;
 		infomask_new_tuple = new_infomask;
 	}
