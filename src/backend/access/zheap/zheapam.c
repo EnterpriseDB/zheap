@@ -5627,7 +5627,11 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	undorecord.uur_relfilenode = rel->rd_node.relNode;
 	undorecord.uur_prevxid = tup_xid;
 	undorecord.uur_xid = xid;
-	undorecord.uur_cid = cid;
+	/*
+	 * While locking the tuple, we set the command id as FirstCommandId since
+	 * it doesn't modify the tuple, just updates the infomask.
+	 */
+	undorecord.uur_cid = FirstCommandId;
 	undorecord.uur_tsid = rel->rd_node.spcNode;
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
