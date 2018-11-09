@@ -118,7 +118,7 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 					 * prior to undo_recptr, the undo actions are already
 					 * applied.
 					 */
-					if (log->meta.insert > undo_recptr)
+					if (MakeUndoRecPtr(logno, log->meta.insert) > undo_recptr)
 					{
 						UndoRecordRelease(uur);
 
