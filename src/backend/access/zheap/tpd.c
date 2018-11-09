@@ -1722,7 +1722,7 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	{
 		lastblock = RelationGetNumberOfBlocks(relation);
 
-		if (lastblock < tpdblk)
+		if (lastblock <= tpdblk)
 		{
 			/*
 			 * The required TPD block has been pruned and then truncated away
