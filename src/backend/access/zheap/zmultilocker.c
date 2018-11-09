@@ -619,7 +619,8 @@ ZGetMultiLockInfo(uint16 old_infomask, TransactionId tup_xid,
 
 	old_mode = get_old_lock_mode(old_infomask);
 
-	if (IsZHeapTupleModified(old_infomask) &&
+	/* We want to propagate the updaters information for lockers only. */
+	if (!is_update && IsZHeapTupleModified(old_infomask) &&
 		!ZHEAP_XID_IS_LOCKED_ONLY(old_infomask))
 	{
 		*old_tuple_has_update = true;
