@@ -122,8 +122,9 @@ extern Size PageGetTPDFreeSpace(Page page);
 extern void ResetRegisteredTPDBuffers(void);
 
 /* interfaces exposed via prunetpd.c */
-extern int TPDPagePrune(Relation rel, Buffer tpdbuf, OffsetNumber target_offnum,
-				Size space_required, bool *update_tpd_inplace);
+extern int TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
+				OffsetNumber target_offnum,  Size space_required, bool can_free,
+				bool *update_tpd_inplace, bool *tpd_e_pruned);
 extern void TPDPagePruneExecute(Buffer tpdbuf, OffsetNumber *nowunused,
 								int nunused);
 extern void TPDPageRepairFragmentation(Page page, Page tmppage,

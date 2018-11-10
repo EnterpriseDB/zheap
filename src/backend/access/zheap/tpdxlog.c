@@ -468,6 +468,29 @@ tpd_xlog_free_page(XLogReaderState *record)
 	XLogRecordPageWithFreeSpace(rnode, blkno, freespace);
 }
 
+/*
+ * replay of pruning all the entries in tpd page.
+ */
+static void
+tpd_xlog_clean_all_entries(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer	buffer;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page	page = (Page) BufferGetPage(buffer);
+
+		((PageHeader) page)->pd_lower = SizeOfPageHeaderData;
+		((PageHeader) page)->pd_upper = ((PageHeader) page)->pd_special;
+
+		MarkBufferDirty(buffer);
+		PageSetLSN(page, lsn);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
 void
 tpd_redo(XLogReaderState *record)
 {
@@ -489,6 +512,9 @@ tpd_redo(XLogReaderState *record)
 			break;
 		case XLOG_TPD_FREE_PAGE:
 			tpd_xlog_free_page(record);
+			break;
+		case XLOG_TPD_CLEAN_ALL_ENTRIES:
+			tpd_xlog_clean_all_entries(record);
 			break;
 		default:
 			elog(PANIC, "tpd_redo: unknown op code %u", info);

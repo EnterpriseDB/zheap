@@ -17,6 +17,7 @@
 #include "access/tpd_xlog.h"
 #include "miscadmin.h"
 #include "storage/bufpage.h"
+#include "storage/freespace.h"
 #include "storage/proc.h"
 
 typedef struct TPDPruneState
@@ -30,6 +31,7 @@ static void TPDEntryPrune(Buffer buf, OffsetNumber offnum, TPDPruneState *prstat
 static XLogRecPtr LogTPDClean(Relation rel, Buffer tpdbuf,
 					OffsetNumber *nowunused, int nunused,
 					OffsetNumber target_offnum, Size space_required);
+static int TPDPruneEntirePage(Relation rel, Buffer tpdbuf);
 
 /*
  * TPDPagePrune - Prune the TPD page.
@@ -43,20 +45,37 @@ static XLogRecPtr LogTPDClean(Relation rel, Buffer tpdbuf,
  * Returns the number of entries pruned.
  */
 int
-TPDPagePrune(Relation rel, Buffer tpdbuf, OffsetNumber target_offnum,
-			 Size space_required, bool *update_tpd_inplace)
+TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
+			 OffsetNumber target_offnum, Size space_required, bool can_free,
+			 bool *update_tpd_inplace, bool *tpd_e_pruned)
 {
 	Page	tpdpage, tmppage = NULL;
+	TPDPageOpaque	tpdopaque;
 	TPDPruneState	prstate;
 	OffsetNumber	offnum, maxoff;
 	ItemId	itemId;
+	uint64	epoch_xid;
+	uint64	epoch;
 	Size	space_freed;
 
 	prstate.nunused = 0;
 	tpdpage = BufferGetPage(tpdbuf);
 
+	/* Initialise the out variables. */
 	if (update_tpd_inplace)
 		*update_tpd_inplace = false;
+	if (tpd_e_pruned)
+		*tpd_e_pruned = false;
+
+	/* Can we prune the entire page? */
+	tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(tpdpage);
+	epoch = tpdopaque->tpd_latest_xid_epoch;
+	epoch_xid = MakeEpochXid(epoch, tpdopaque->tpd_latest_xid);
+	if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	{
+		prstate.nunused = TPDPruneEntirePage(rel, tpdbuf);
+		goto free_tpd_page;
+	}
 
 	/* initialize the space_free with already existing free space in page */
 	space_freed = PageGetExactFreeSpace(tpdpage);
@@ -152,6 +171,32 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, OffsetNumber target_offnum,
 	/* be tidy. */
 	if (tmppage)
 		pfree(tmppage);
+
+free_tpd_page:
+	if (can_free && PageIsEmpty(tpdpage))
+	{
+		Size	freespace;
+
+		/*
+		 * If the page is empty, we have certainly pruned all the tpd
+		 * entries.
+		 */
+		if (tpd_e_pruned)
+			*tpd_e_pruned = true;
+		/*
+		 * We can reuse empty page as either a heap page or a TPD
+		 * page, so no need to consider opaque space.
+		 */
+		freespace = BLCKSZ - SizeOfPageHeaderData;
+
+		/*
+		 * TPD page is empty, remove it from TPD used page list and
+		 * record it in FSM.
+		 */
+		if (TPDFreePage(rel, tpdbuf, strategy))
+			RecordPageWithFreeSpace(rel, BufferGetBlockNumber(tpdbuf),
+									freespace);
+	}
 
 	return prstate.nunused;
 }
@@ -424,4 +469,39 @@ LogTPDClean(Relation rel, Buffer tpdbuf,
 	recptr = XLogInsert(RM_TPD_ID, XLOG_TPD_CLEAN);
 
 	return recptr;
+}
+
+/*
+ * TPDPruneEntirePage
+ */
+static int
+TPDPruneEntirePage(Relation rel, Buffer tpdbuf)
+{
+	Page	page = BufferGetPage(tpdbuf);
+	int		entries_removed = PageGetMaxOffsetNumber(page);
+
+	START_CRIT_SECTION();
+
+	/* Page is completely empty, so just reset it quickly */
+	((PageHeader) page)->pd_lower = SizeOfPageHeaderData;
+	((PageHeader) page)->pd_upper = ((PageHeader) page)->pd_special;
+
+	MarkBufferDirty(tpdbuf);
+
+	if (RelationNeedsWAL(rel))
+	{
+		XLogRecPtr      recptr;
+
+		XLogBeginInsert();
+
+		XLogRegisterBuffer(0, tpdbuf, REGBUF_STANDARD);
+
+		recptr = XLogInsert(RM_TPD_ID, XLOG_TPD_CLEAN_ALL_ENTRIES);
+
+		PageSetLSN(BufferGetPage(tpdbuf), recptr);
+	}
+
+	END_CRIT_SECTION();
+
+	return entries_removed;
 }

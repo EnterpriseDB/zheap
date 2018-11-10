@@ -412,7 +412,8 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	char		*tpd_entry;
 	bool		already_exists;
 	bool		allocate_new_tpd_page = false;
-	bool		update_tpd_inplace;
+	bool		update_tpd_inplace,
+				tpd_pruned;
 
 	heappage = BufferGetPage(heapbuf);
 	max_page_offnum = PageGetMaxOffsetNumber(heappage);
@@ -524,9 +525,26 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	 * Call TPDPagePrune to ensure that it will create a space adjacent to
 	 * current offset for the new (bigger) TPD entry, if possible.
 	 */
-	entries_removed = TPDPagePrune(relation, old_tpd_buf, tpdItemOff,
+	entries_removed = TPDPagePrune(relation, old_tpd_buf, NULL, tpdItemOff,
 								   (new_size_tpd_entry - old_size_tpd_entry),
-								   &update_tpd_inplace);
+								   true, &update_tpd_inplace, &tpd_pruned);
+	/*
+	 * If the item got pruned, then clear the TPD slot from the page and
+	 * return.  The entry can be pruned by ourselves or by anyone else
+	 * as we release the lock during pruning if the page is empty.
+	 */
+	if (PageIsEmpty(old_tpd_page) ||
+		!ItemIdIsUsed(itemId) ||
+		tpd_pruned)
+	{
+		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+		*reserved_slot_no = InvalidXactSlotId;
+		*tpd_e_pruned = true;
+		if (metabuf != InvalidBuffer)
+			ReleaseBuffer(metabuf);
+		return;
+	}
+
 	if (!update_tpd_inplace)
 	{
 		if (entries_removed > 0)
@@ -570,25 +588,9 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 		tpd_e_header.tpe_flags = TPE_FOUR_BYTE;
 
 	/*
-	 * Even if all the entries on page got pruned away, the page can't be reused
-	 * for other purpose as we have a lock on it.
+	 * If we reach here, then the page must be a TPD page.
 	 */
 	Assert(PageGetSpecialSize(old_tpd_page) == MAXALIGN(sizeof(TPDPageOpaqueData)));
-
-	/* 
-	 * If the item got pruned then clear the TPD slot from the page and
-	 * return.  Although, we have a lock on tpd page, so nobody else can
-	 * prune our entry, but we ourselves might have pruned it.
-	 */
-	if (PageIsEmpty(old_tpd_page) || !ItemIdIsUsed(itemId))
-	{
-		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
-		*reserved_slot_no = InvalidXactSlotId;
-		*tpd_e_pruned = true;
-		if (metabuf != InvalidBuffer)
-			ReleaseBuffer(metabuf);
-		return;
-	}
 
 	/* TPD entry isn't pruned */
 	tpd_e_offset = ItemIdGetOffset(itemId);
@@ -982,9 +984,8 @@ TPDInitPage(Page page, Size pageSize)
  * existing page is locked.  This is to avoid deadlocks, see comments atop
  * function TPDAllocatePageAndAddEntry.
  *
- * We expect that the caller must have acquired EXCLUSIVE lock the
- * current buffer (buf) and it is this function's responsibility to
- * free the buffer.
+ * We expect that the caller must have acquired EXCLUSIVE lock on the current
+ * buffer (buf) and will be responsible for releasing the same.
  *
  * Returns true, if we are able to successfully remove the page from chain,
  * false, otherwise.
@@ -1037,7 +1038,6 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 		if (!PageIsEmpty(page))
 		{
 			UnlockReleaseBuffer(prevbuf);
-			UnlockReleaseBuffer(buf);
 			return false;
 		}
 		tpdopaque = (TPDPageOpaque)PageGetSpecialPointer(page);
@@ -1175,7 +1175,6 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 
 	if (BufferIsValid(prevbuf))
 		UnlockReleaseBuffer(prevbuf);
-	UnlockReleaseBuffer(buf);
 	if (BufferIsValid(nextbuf))
 		UnlockReleaseBuffer(nextbuf);
 	UnlockReleaseBuffer(metabuf);
@@ -1281,24 +1280,68 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 		/* Before extending the relation, check the FSM for free page. */
 		targetBlock = GetPageWithFreeSpace(relation, len);
 
+		while (targetBlock != InvalidBlockNumber)
+		{
+			Page	page;
+			Size	pageFreeSpace;
+
+			tpd_buf = ReadBuffer(relation, targetBlock);
+
+			/*
+			 * We need to take the lock on meta page before new page to avoid
+			 * deadlocks.  See comments atop of function.
+			 */
+			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+			LockBuffer(tpd_buf, BUFFER_LOCK_EXCLUSIVE);
+
+			page = BufferGetPage(tpd_buf);
+
+			if (PageIsEmpty(page))
+			{
+				GetTPDBuffer(relation, targetBlock, tpd_buf,
+							 TPD_BUF_FIND_OR_KNOWN_ENTER, &already_exists);
+				break;
+			}
+			else
+			{
+				LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
+				UnlockReleaseBuffer(tpd_buf);
+			}
+
+			if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+				pageFreeSpace = PageGetTPDFreeSpace(page);
+			else
+				pageFreeSpace = PageGetZHeapFreeSpace(page);
+
+			/*
+			 * Update FSM as to condition of this page, and ask for another page
+			 * to try.
+			 */
+			targetBlock = RecordAndGetPageWithFreeSpace(relation,
+														targetBlock,
+														pageFreeSpace,
+														len);
+		}
+
+		/* Extend the relation, if required? */
 		if (targetBlock == InvalidBlockNumber)
-			targetBlock = P_NEW;
+		{
+			/* Acquire the extension lock, if extension is required. */
+			needLock = !RELATION_IS_LOCAL(relation);
+			if (needLock)
+				LockRelationForExtension(relation, ExclusiveLock);
 
-		/* Acquire the extension lock, if extension is required. */
-		needLock = !RELATION_IS_LOCAL(relation) && (targetBlock == P_NEW);
-		if (needLock)
-			LockRelationForExtension(relation, ExclusiveLock);
+			buf_idx = GetTPDBuffer(relation, P_NEW, InvalidBuffer,
+									TPD_BUF_ENTER, &already_exists);
+			/* This must be a new buffer. */
+			Assert(!already_exists);
+			tpd_buf = tpd_buffers[buf_idx].buf;
+			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+			LockBuffer(tpd_buf, BUFFER_LOCK_EXCLUSIVE);
 
-		buf_idx = GetTPDBuffer(relation, targetBlock, InvalidBuffer,
-							   TPD_BUF_ENTER, &already_exists);
-		/* This must be a new buffer. */
-		Assert(!already_exists);
-		tpd_buf = tpd_buffers[buf_idx].buf;
-		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-		LockBuffer(tpd_buf, BUFFER_LOCK_EXCLUSIVE);
-
-		if (needLock)
-			UnlockRelationForExtension(relation, ExclusiveLock);
+			if (needLock)
+				UnlockRelationForExtension(relation, ExclusiveLock);
+		}
 
 		/*
 		 * Lock the last tpd page in list, so that we can append new page to
@@ -1591,10 +1634,12 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 			/*
 			 * Prune the TPD page to make space for new TPD entries.  After
 			 * pruning, check again to see if the TPD entry can be accomodated
-			 * on the page.
+			 * on the page. We can't afford to free the page while pruning as
+			 * we need to use it to insert the TPD entry.
 			 */
-			entries_removed = TPDPagePrune(relation, tpd_buf, InvalidOffsetNumber,
-										   0, NULL);
+			entries_removed = TPDPagePrune(relation, tpd_buf, NULL,
+										   InvalidOffsetNumber, 0, false, NULL,
+										   NULL);
 
 			if (entries_removed > 0)
 				tpdpageFreeSpace = PageGetTPDFreeSpace(BufferGetPage(tpd_buf));

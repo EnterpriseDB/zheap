@@ -64,6 +64,9 @@ tpd_identify(uint8 info)
 		case XLOG_TPD_FREE_PAGE:
 			id = "TPD FREE PAGE";
 			break;
+		case XLOG_TPD_CLEAN_ALL_ENTRIES:
+			id = "TPD CLEAN ALL ENTRIES";
+			break;
 	}
 
 	return id;
