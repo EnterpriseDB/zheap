@@ -1000,7 +1000,7 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 	Page			page = NULL,
 					prevpage = NULL,
 					nextpage = NULL;
-	BlockNumber		curblkno = InvalidBlockNumber PG_USED_FOR_ASSERTS_ONLY;
+	BlockNumber		curblkno PG_USED_FOR_ASSERTS_ONLY = InvalidBlockNumber;
 	BlockNumber		prevblkno = InvalidBlockNumber;
 	BlockNumber		nextblkno = InvalidBlockNumber;
 	Buffer			prevbuf = InvalidBuffer;
