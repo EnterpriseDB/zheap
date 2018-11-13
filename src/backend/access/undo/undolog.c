@@ -636,8 +636,6 @@ extend_undo_log(UndoLogNumber logno, UndoLogOffset new_end)
 		end += UndoLogSegmentSize;
 	}
 
-	Assert(end == new_end);
-
 	/*
 	 * Flush the parent dir so that the directory metadata survives a crash
 	 * after this point.
