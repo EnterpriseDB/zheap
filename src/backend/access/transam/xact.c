@@ -2231,6 +2231,10 @@ CommitTransaction(void)
 	AtEOXact_ApplyLauncher(true);
 	pgstat_report_xact_timestamp(0);
 
+	/* In single user mode, discard all the undo logs, once committed. */
+	if (!IsUnderPostmaster)
+		UndoLogDiscardAll();
+
 	CurrentResourceOwner = NULL;
 	ResourceOwnerDelete(TopTransactionResourceOwner);
 	s->curTransactionOwner = NULL;

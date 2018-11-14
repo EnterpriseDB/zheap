@@ -313,6 +313,31 @@ UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 }
 
 /*
+ * To discard all the logs. Particularly required in single user mode.
+ * At the commit time, discard all the undo logs.
+ */
+void
+UndoLogDiscardAll()
+{
+	UndoLogControl *log = NULL;
+
+	Assert(!IsUnderPostmaster);
+
+	while ((log = UndoLogNext(log)))
+	{
+		/*
+		 * Process the undo log. No locks are required for discard,
+		 * since this called only in single-user mode. Similarly,
+		 * no transaction id is required here because WAL-logging the
+		 * xid till whom the undo is discarded will not be required
+		 * for single user mode.
+		 */
+		UndoLogDiscard(MakeUndoRecPtr(log->logno, log->meta.insert),
+					   InvalidTransactionId);
+	}
+
+}
+/*
  * Fetch the latest urec pointer for the transaction.
  */
 UndoRecPtr

@@ -82,4 +82,7 @@ extern void RollbackFromHT(Oid dbid);
 extern List *RollbackHTGetDBList(void);
 extern bool ConditionTransactionUndoActionLock(TransactionId xid);
 extern void TransactionUndoActionLockRelease(TransactionId xid);
+
+/* To discard the logs in single user mode. */
+extern void UndoLogDiscardAll(void);
 #endif   /* _UNDOLOOP_H */
