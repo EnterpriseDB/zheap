@@ -695,7 +695,7 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	UndoRecPtr	urecptr = InvalidUndoRecPtr,
 				prev_urecptr = InvalidUndoRecPtr;
 	xl_undolog_meta	undometa;
-	uint8		vm_status;
+	uint8		vm_status = 0;
 	bool		lock_reacquired;
 	bool		skip_undo;
 
@@ -853,7 +853,8 @@ reacquire_buffer:
 	 * RelationGetBufferForZTuple. Also, anyway by default vm status
 	 * bits are clear for those pages hence no need to clear it again!
 	 */
-	vm_status = visibilitymap_get_status(relation,
+	if (BufferIsValid(vmbuffer))
+		vm_status = visibilitymap_get_status(relation,
 								BufferGetBlockNumber(buffer),
 								&vmbuffer);
 
@@ -3526,12 +3527,14 @@ reacquire_buffer:
 	Assert(BufferIsValid(vmbuffer));
 	vm_status = visibilitymap_get_status(relation,
 								BufferGetBlockNumber(buffer), &vmbuffer);
-	if (newbuf != buffer)
-	{
-		Assert(vmbuffer_new);
+
+	/*
+	 * If the page is new, then there will no valid vmbuffer_new and the
+	 * visisbilitymap is reset already, hence, need not to clear anything.
+	 */
+	if (newbuf != buffer && BufferIsValid(vmbuffer_new))
 		vm_status_new = visibilitymap_get_status(relation,
 								BufferGetBlockNumber(newbuf), &vmbuffer_new);
-	}
 
 	START_CRIT_SECTION();
 
