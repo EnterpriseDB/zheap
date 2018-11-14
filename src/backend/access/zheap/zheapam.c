@@ -11504,3 +11504,86 @@ log_zheap_visible(RelFileNode rnode, Buffer heap_buffer, Buffer vm_buffer,
 
 	return recptr;
 }
+
+/*
+ * GetTransactionsSlotsForPage - returns transaction slots for a zheap page
+ *
+ * This method returns all the transaction slots for the input zheap page
+ * including the corresponding TPD page. It also returns the corresponding
+ * TPD buffer if there is one.
+ */
+TransInfo *
+GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
+							BlockNumber *tpd_blkno)
+{
+	Page	page;
+	PageHeader	phdr;
+	TransInfo *tpd_trans_slots;
+	TransInfo *trans_slots = NULL;
+	bool	tpd_e_pruned;
+
+	*total_trans_slots = 0;
+	if (tpd_blkno)
+		*tpd_blkno = InvalidBlockNumber;
+
+	page = BufferGetPage(buf);
+	phdr = (PageHeader) page;
+
+	if (ZHeapPageHasTPDSlot(phdr))
+	{
+		int		num_tpd_trans_slots;
+
+		tpd_trans_slots = TPDPageGetTransactionSlots(rel,
+													 buf,
+													 InvalidOffsetNumber,
+													 false,
+													 false,
+													 NULL,
+													 &num_tpd_trans_slots,
+													 NULL,
+													 &tpd_e_pruned,
+													 NULL);
+		if (!tpd_e_pruned)
+		{
+			ZHeapPageOpaque	zopaque;
+			TransInfo	last_trans_slot_info;
+
+			zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+			last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
+
+			if (tpd_blkno)
+				*tpd_blkno = last_trans_slot_info.xid_epoch;
+
+			/*
+			 * The last slot in page contains TPD information, so we don't need to
+			 * include it.
+			 */
+			*total_trans_slots = num_tpd_trans_slots + ZHEAP_PAGE_TRANS_SLOTS - 1;
+			trans_slots = (TransInfo *)
+					palloc(*total_trans_slots * sizeof(TransInfo));
+			/* Copy the transaction slots from the page. */
+			memcpy(trans_slots, page + phdr->pd_special,
+				   (ZHEAP_PAGE_TRANS_SLOTS - 1) * sizeof(TransInfo));
+			/* Copy the transaction slots from the tpd entry. */
+			memcpy((char *) trans_slots + ((ZHEAP_PAGE_TRANS_SLOTS - 1) * sizeof(TransInfo)),
+				   tpd_trans_slots, num_tpd_trans_slots * sizeof(TransInfo));
+
+			pfree(tpd_trans_slots);
+		}
+	}
+
+	if (!ZHeapPageHasTPDSlot(phdr) || tpd_e_pruned)
+	{
+		Assert (trans_slots == NULL);
+
+		*total_trans_slots = ZHEAP_PAGE_TRANS_SLOTS;
+		trans_slots = (TransInfo *)
+				palloc(*total_trans_slots * sizeof(TransInfo));
+		memcpy(trans_slots, page + phdr->pd_special,
+			   *total_trans_slots * sizeof(TransInfo));
+	}
+
+	Assert(*total_trans_slots >= ZHEAP_PAGE_TRANS_SLOTS);
+
+	return trans_slots;
+}

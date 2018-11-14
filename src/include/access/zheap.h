@@ -108,6 +108,9 @@ extern void PageGetTransactionSlotInfo(Buffer buf, int slot_no,
 									   uint32 *epoch, TransactionId *xid,
 									   UndoRecPtr *urec_ptr,
 									   bool keepTPDBufLock);
+extern TransInfo* GetTransactionsSlotsForPage(Relation rel, Buffer buf,
+											  int *total_trans_slots,
+											  BlockNumber *tpd_blkno);
 
 extern void ZheapInitPage(Page page, Size pageSize);
 extern void zheap_multi_insert(Relation relation, ZHeapTuple *tuples,

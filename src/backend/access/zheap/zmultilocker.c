@@ -154,14 +154,11 @@ List *
 ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 					 bool nobuflock)
 {
-	Page	page;
-	PageHeader	phdr;
 	ZHeapTuple		undo_tup;
 	UnpackedUndoRecord	*urec = NULL;
 	UndoRecPtr		urec_ptr;
 	ZMultiLockMember		*mlmember;
 	List	*multilockmembers = NIL;
-	TransInfo *tpd_trans_slots;
 	TransInfo *trans_slots = NULL;
 	TransactionId	xid;
 	SubTransactionId	subxid = InvalidSubTransactionId;
@@ -172,7 +169,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	uint8	uur_type;
 	int		slot_no;
 	int		total_trans_slots = 0;
-	bool	tpd_e_pruned;
+	BlockNumber	tpd_blkno = InvalidBlockNumber;
 
 	if (nobuflock)
 	{
@@ -196,53 +193,8 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		}
 	}
 
-	page = BufferGetPage(buf);
-	phdr = (PageHeader) page;
-
-	if (ZHeapPageHasTPDSlot(phdr))
-	{
-		int		num_tpd_trans_slots;
-
-		tpd_trans_slots = TPDPageGetTransactionSlots(rel,
-													 buf,
-													 InvalidOffsetNumber,
-													 false,
-													 false,
-													 NULL,
-													 &num_tpd_trans_slots,
-													 NULL,
-													 &tpd_e_pruned,
-													 NULL);
-		if (!tpd_e_pruned)
-		{
-			/*
-			 * The last slot in page contains TPD information, so we don't need to
-			 * include it.
-			 */
-			total_trans_slots = num_tpd_trans_slots + ZHEAP_PAGE_TRANS_SLOTS - 1;
-			trans_slots = (TransInfo *)
-					palloc(total_trans_slots * sizeof(TransInfo));
-			/* Copy the transaction slots from the page. */
-			memcpy(trans_slots, page + phdr->pd_special,
-				   (ZHEAP_PAGE_TRANS_SLOTS - 1) * sizeof(TransInfo));
-			/* Copy the transaction slots from the tpd entry. */
-			memcpy((char *) trans_slots + ((ZHEAP_PAGE_TRANS_SLOTS - 1) * sizeof(TransInfo)),
-				   tpd_trans_slots, num_tpd_trans_slots * sizeof(TransInfo));
-
-			pfree(tpd_trans_slots);
-		}
-	}
-
-	if (!ZHeapPageHasTPDSlot(phdr) || tpd_e_pruned)
-	{
-		Assert (trans_slots == NULL);
-
-		total_trans_slots = ZHEAP_PAGE_TRANS_SLOTS;
-		trans_slots = (TransInfo *)
-				palloc(total_trans_slots * sizeof(TransInfo));
-		memcpy(trans_slots, page + phdr->pd_special,
-			   total_trans_slots * sizeof(TransInfo));
-	}
+	trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots,
+											  &tpd_blkno);
 
 	if (nobuflock)
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
@@ -272,10 +224,8 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		 * the last slot in the page by increasing the slot index by 1.
 		 */
 		if ((trans_slot_id >= ZHEAP_PAGE_TRANS_SLOTS) &&
-			(ZHeapPageHasTPDSlot(phdr) && !tpd_e_pruned))
-		{
+			BlockNumberIsValid(tpd_blkno))
 			trans_slot_id += 1;
-		}
 
 		do
 		{
@@ -679,12 +629,9 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				   TransactionId *xid_out, CommandId *cid_out,
 				   UndoRecPtr *urec_ptr_out)
 {
-	Page	page;
-	PageHeader	phdr;
 	UnpackedUndoRecord	*urec = NULL;
 	UndoRecPtr		urec_ptr;
 	UndoRecPtr		save_urec_ptr = InvalidUndoRecPtr;
-	TransInfo *tpd_trans_slots;
 	TransInfo *trans_slots = NULL;
 	TransactionId	xid;
 	CommandId	cid = InvalidCommandId;
@@ -695,55 +642,10 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	int		slot_no;
 	int		total_trans_slots = 0;
 	bool	found = false;
-	bool	tpd_e_pruned;
+	BlockNumber	tpd_blkno;
 
-	page = BufferGetPage(buf);
-	phdr = (PageHeader) page;
-
-	if (ZHeapPageHasTPDSlot(phdr))
-	{
-		int		num_tpd_trans_slots;
-
-		tpd_trans_slots = TPDPageGetTransactionSlots(rel,
-													 buf,
-													 InvalidOffsetNumber,
-													 false,
-													 false,
-													 NULL,
-													 &num_tpd_trans_slots,
-													 NULL,
-													 &tpd_e_pruned,
-													 NULL);
-		if (!tpd_e_pruned)
-		{
-			/*
-			 * The last slot in page contains TPD information, so we don't need to
-			 * include it.
-			 */
-			total_trans_slots = num_tpd_trans_slots + ZHEAP_PAGE_TRANS_SLOTS - 1;
-			trans_slots = (TransInfo *)
-					palloc(total_trans_slots * sizeof(TransInfo));
-			/* Copy the transaction slots from the page. */
-			memcpy(trans_slots, page + phdr->pd_special,
-				   (ZHEAP_PAGE_TRANS_SLOTS - 1) * sizeof(TransInfo));
-			/* Copy the transaction slots from the tpd entry. */
-			memcpy((char *) trans_slots + ((ZHEAP_PAGE_TRANS_SLOTS - 1) * sizeof(TransInfo)),
-				   tpd_trans_slots, num_tpd_trans_slots * sizeof(TransInfo));
-
-			pfree(tpd_trans_slots);
-		}
-	}
-
-	if (!ZHeapPageHasTPDSlot(phdr) || tpd_e_pruned)
-	{
-		Assert (trans_slots == NULL);
-
-		total_trans_slots = ZHEAP_PAGE_TRANS_SLOTS;
-		trans_slots = (TransInfo *)
-				palloc(total_trans_slots * sizeof(TransInfo));
-		memcpy(trans_slots, page + phdr->pd_special,
-			   total_trans_slots * sizeof(TransInfo));
-	}
+	trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots,
+											  &tpd_blkno);
 
 	for (slot_no = 0; slot_no < total_trans_slots; slot_no++)
 	{
@@ -847,10 +749,8 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			 * the last slot in the page by increasing the slot index by 1.
 			 */
 			if ((trans_slot_id >= ZHEAP_PAGE_TRANS_SLOTS) &&
-				(ZHeapPageHasTPDSlot(phdr) || !tpd_e_pruned))
-			{
+				BlockNumberIsValid(tpd_blkno))
 				trans_slot_id += 1;
-			}
 
 			break;
 		}
