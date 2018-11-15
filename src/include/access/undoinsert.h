@@ -30,16 +30,21 @@ typedef bool (*SatisfyUndoRecordCallback) (UnpackedUndoRecord* urec,
 
 /*
  * Call PrepareUndoInsert to tell the undo subsystem about the undo record you
- * intended to insert.  Upon return, the necessary undo buffers are pinned.
+ * intended to insert.  Upon return, the necessary undo buffers are pinned and
+ * locked.
  * This should be done before any critical section is established, since it
  * can fail.
+ *
+ * If not in recovery, 'xid' should refer to the top transaction id because
+ * undo log only stores mapping for the top most transactions.
+ * If in recovery, 'xid' refers to the transaction id stored in WAL.
  */
 extern UndoRecPtr PrepareUndoInsert(UnpackedUndoRecord *, UndoPersistence,
 									TransactionId, xl_undolog_meta *);
 
 /*
- * Insert a previously-prepared undo record.  This will lock the buffers
- * pinned in the previous step, write the actual undo record into them,
+ * Insert a previously-prepared undo record.  This will write the actual undo
+ * record into the buffers already pinned and locked in PreparedUndoInsert,
  * and mark them dirty.  For persistent undo, this step should be performed
  * after entering a critical section; it should never fail.
  */

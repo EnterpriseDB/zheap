@@ -3,13 +3,22 @@
  * undoinsert.c
  *	  entry points for inserting undo records
  *
- * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/undo/undoinsert.c
  *
  * NOTES:
- * Handling multilog -
+ * Undo record layout:
+ *
+ *  Undo record are stored in sequential order in the undo log.  And, each
+ *  transaction's first undo record a.k.a. transaction header points to the next
+ *  transaction's start header.  Transaction headers are linked so that the
+ *  discard worker can read undo log transaction by transaction and avoid
+ *  reading each undo record.
+ *
+ * Handling multi log:
+ *
  *  It is possible that the undo record of a transaction can be spread across
  *  multiple undo log.  And, we need some special handling while inserting the
  *  undo for discard and rollback to work sanely.
@@ -52,19 +61,24 @@
 #include "commands/tablecmds.h"
 
 /*
- * FIXME:  Do we want to support undo tuple size which is more than the BLCKSZ
+ * XXX Do we want to support undo tuple size which is more than the BLCKSZ
  * if not than undo record can spread across 2 buffers at the max.
  */
 #define MAX_BUFFER_PER_UNDO    2
+
+/*
+ * This defines the number of undo records that can be prepared before
+ * calling insert by default.  If you need to prepare more than
+ * MAX_PREPARED_UNDO undo records, then you must call UndoSetPrepareSize
+ * first.
+ */
+#define MAX_PREPARED_UNDO 2
 
 /*
  * Consider buffers needed for updating previous transaction's
  * starting undo record. Hence increased by 1.
  */
 #define MAX_UNDO_BUFFERS       (MAX_PREPARED_UNDO + 1) * MAX_BUFFER_PER_UNDO
-
-/* Maximum number of undo record that can be prepared before calling insert. */
-#define MAX_PREPARED_UNDO 2
 
 /*
  * Previous top transaction id which inserted the undo.  Whenever a new main
@@ -119,7 +133,7 @@ typedef struct PreviousTxnUndoRecord
 {
 	UndoRecPtr	prev_urecptr; /* prev txn's starting urecptr */
 	int			prev_txn_undo_buffers[MAX_BUFFER_PER_UNDO];
-	UnpackedUndoRecord uur;	/* prev txn's first undo record.*/
+	UnpackedUndoRecord uur;	/* prev txn's first undo record. */
 } PreviousTxnInfo;
 
 static PreviousTxnInfo prev_txn_info;
@@ -128,32 +142,40 @@ static PreviousTxnInfo prev_txn_info;
 static UnpackedUndoRecord* UndoGetOneRecord(UnpackedUndoRecord *urec,
 											UndoRecPtr urp, RelFileNode rnode,
 											UndoPersistence persistence);
-static void PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr,
+static void UndoRecordPrepareTransInfo(UndoRecPtr urecptr,
 											 bool log_switched);
 static int InsertFindBufferSlot(RelFileNode rnode, BlockNumber blk,
 								ReadBufferMode rbm,
 								UndoPersistence persistence);
-static bool IsPrevTxnUndoDiscarded(UndoLogControl *log,
-								   UndoRecPtr prev_xact_urp);
+static bool UndoRecordIsValid(UndoLogControl *log,
+							  UndoRecPtr prev_xact_urp);
 
 /*
- * Check if previous transactions undo is already discarded.
+ * Check whether the undo record is discarded or not.  If it's already discarded
+ * return false otherwise return true.
  *
- * Caller should call this under log->discard_lock
+ * Caller must hold lock on log->discard_lock.  This function will release the
+ * lock if return false otherwise lock will be held on return and the caller
+ * need to release it.
  */
 static bool
-IsPrevTxnUndoDiscarded(UndoLogControl *log, UndoRecPtr prev_xact_urp)
+UndoRecordIsValid(UndoLogControl *log, UndoRecPtr prev_xact_urp)
 {
+	Assert(LWLockHeldByMeInMode(&log->discard_lock, LW_SHARED));
+
 	if (log->oldest_data == InvalidUndoRecPtr)
 	{
 		/*
-		 * oldest_data is not yet initialized.  We have to check
-		 * UndoLogIsDiscarded and if it's already discarded then we have
-		 * nothing to do.
+		 * oldest_data is only initialized when the DiscardWorker first time
+		 * attempts to discard undo logs so we can not rely on this value to
+		 * identify whether the undo record pointer is already discarded or not
+		 * so we can check it by calling undo log routine.  If its not yet
+		 * discarded then we have to reacquire the log->discard_lock so that the
+		 * doesn't get discarded concurrently.
 		 */
 		LWLockRelease(&log->discard_lock);
 		if (UndoLogIsDiscarded(prev_xact_urp))
-			return true;
+			return false;
 		LWLockAcquire(&log->discard_lock, LW_SHARED);
 	}
 
@@ -161,10 +183,10 @@ IsPrevTxnUndoDiscarded(UndoLogControl *log, UndoRecPtr prev_xact_urp)
 	if (prev_xact_urp < log->oldest_data)
 	{
 		LWLockRelease(&log->discard_lock);
-		return true;
+		return false;
 	}
 
-	return false;
+	return true;
 }
 
 /*
@@ -174,8 +196,8 @@ IsPrevTxnUndoDiscarded(UndoLogControl *log, UndoRecPtr prev_xact_urp)
  * The actual update will be done by UndoRecordUpdateTransInfo under the
  * critical section.
  */
-void
-PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr, bool log_switched)
+static void
+UndoRecordPrepareTransInfo(UndoRecPtr urecptr, bool log_switched)
 {
 	UndoRecPtr	prev_xact_urp;
 	Buffer		buffer = InvalidBuffer;
@@ -198,12 +220,8 @@ PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr, bool log_switched)
 	}
 
 	/*
-	 * TODO: For now we don't know how to build a transaction chain for
-	 * temporary undo logs.  That's because this log might have been used by a
-	 * different backend, and we can't access its buffers.  What should happen
-	 * is that the undo data should be automatically discarded when the other
-	 * backend detaches, but that code doesn't exist yet and the undo worker
-	 * can't do it either.
+	 * Temporary undo logs are discarded on transaction commit so we don't
+	 * need to do anything.
 	 */
 	if (log->meta.persistence == UNDO_TEMP)
 		return;
@@ -221,22 +239,20 @@ PrepareUndoRecordUpdateTransInfo(UndoRecPtr urecptr, bool log_switched)
 		prev_xact_urp = MakeUndoRecPtr(log->logno, log->meta.last_xact_start);
 
 	/*
-	 * If previous transaction's urp is not valid means this backend is
-	 * preparing its first undo so fetch the information from the undo log
-	 * if it's still invalid urp means this is the first undo record for this
-	 * log and we have nothing to update.
+	 * The absence of previous transaction's undo indicate that this backend
+	 * is preparing its first undo in which case we have nothing to update.
 	 */
 	if (!UndoRecPtrIsValid(prev_xact_urp))
 		return;
 
 	/*
 	 * Acquire the discard lock before accessing the undo record so that
-	 * discard worker doen't remove the record while we are in process of
+	 * discard worker doesn't remove the record while we are in process of
 	 * reading it.
 	 */
 	LWLockAcquire(&log->discard_lock, LW_SHARED);
 
-	if (IsPrevTxnUndoDiscarded(log, prev_xact_urp))
+	if (!UndoRecordIsValid(log, prev_xact_urp))
 		return;
 
 	UndoRecPtrAssignRelFileNode(rnode, prev_xact_urp);
@@ -317,8 +333,8 @@ PrepareUpdateUndoActionProgress(UndoRecPtr urecptr, int progress)
 /*
  * Overwrite the first undo record of the previous transaction to update its
  * next pointer.  This will just insert the already prepared record by
- * PrepareUndoRecordUpdateTransInfo.  This must be called under the critical
- * section.  This will just overwrite the undo header not the data.
+ * UndoRecordPrepareTransInfo.  This must be called under the critical section.
+ * This will just overwrite the undo header not the data.
  */
 void
 UndoRecordUpdateTransInfo(void)
@@ -336,12 +352,12 @@ UndoRecordUpdateTransInfo(void)
 
 	/*
 	 * Acquire the discard lock before accessing the undo record so that
-	 * discard worker doen't remove the record while we are in process of
+	 * discard worker can't remove the record while we are in process of
 	 * reading it.
 	 */
 	LWLockAcquire(&log->discard_lock, LW_SHARED);
 
-	if (IsPrevTxnUndoDiscarded(log, prev_urp))
+	if (!UndoRecordIsValid(log, prev_urp))
 		return;
 
 	/*
@@ -568,7 +584,7 @@ resize:
 	{
 		/* Don't update our own start header. */
 		if (log->meta.last_xact_start != log->meta.insert)
-			PrepareUndoRecordUpdateTransInfo(urecptr, log_switched);
+			UndoRecordPrepareTransInfo(urecptr, log_switched);
 
 		/* Remember the current transaction's xid. */
 		prev_txid[upersistence] = txid;
@@ -654,7 +670,8 @@ UndoSetPrepareSize(int max_prepare, UnpackedUndoRecord *undorecords,
 
 /*
  * Call PrepareUndoInsert to tell the undo subsystem about the undo record you
- * intended to insert.  Upon return, the necessary undo buffers are pinned.
+ * intended to insert.  Upon return, the necessary undo buffers are pinned and
+ * locked.
  * This should be done before any critical section is established, since it
  * can fail.
  *
@@ -767,8 +784,8 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 }
 
 /*
- * Insert a previously-prepared undo record.  This will lock the buffers
- * pinned in the previous step, write the actual undo record into them,
+ * Insert a previously-prepared undo record.  This will write the actual undo
+ * record into the buffers already pinned and locked in PreparedUndoInsert,
  * and mark them dirty.  For persistent undo, this step should be performed
  * after entering a critical section; it should never fail.
  */
@@ -788,6 +805,9 @@ InsertPreparedUndo(void)
 	uint16	prev_undolen;
 
 	Assert(prepare_idx > 0);
+
+	/* This must be called under a critical section. */
+	Assert(CritSectionCount > 0);
 
 	for (idx = 0; idx < prepare_idx; idx++)
 	{
@@ -1073,6 +1093,12 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 
 		logno = UndoRecPtrGetLogNo(urp);
 		log = UndoLogGet(logno);
+		if (log == NULL)
+		{
+			if (BufferIsValid(urec->uur_buffer))
+				ReleaseBuffer(urec->uur_buffer);
+			return NULL;
+		}
 
 		/*
 		 * Prevent UndoDiscardOneLog() from discarding data while we try to
