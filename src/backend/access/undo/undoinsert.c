@@ -807,7 +807,7 @@ InsertPreparedUndo(void)
 	Assert(prepare_idx > 0);
 
 	/* This must be called under a critical section. */
-	Assert(CritSectionCount > 0);
+	Assert(InRecovery || CritSectionCount > 0);
 
 	for (idx = 0; idx < prepare_idx; idx++)
 	{
