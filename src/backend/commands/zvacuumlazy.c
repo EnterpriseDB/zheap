@@ -269,11 +269,10 @@ reacquire_slot:
 	undorecord.uur_type = UNDO_ITEMID_UNUSED;
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;
-	undorecord.uur_relfilenode = onerel->rd_node.relNode;
+	undorecord.uur_reloid = onerel->rd_id;
 	undorecord.uur_prevxid = xid;
 	undorecord.uur_xid = xid;
 	undorecord.uur_cid = InvalidCommandId;
-	undorecord.uur_tsid = onerel->rd_node.spcNode;
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
 	undorecord.uur_block = blkno;
@@ -369,8 +368,7 @@ reacquire_slot:
 		 * Store the information required to generate undo record during
 		 * replay.
 		 */
-		xlundohdr.relfilenode = undorecord.uur_relfilenode;
-		xlundohdr.tsid = undorecord.uur_tsid;
+		xlundohdr.reloid = undorecord.uur_reloid;
 		xlundohdr.urec_ptr = urecptr;
 		xlundohdr.blkprev = prev_urecptr;
 

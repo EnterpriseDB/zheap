@@ -44,7 +44,7 @@ typedef struct UndoRecordHeader
 	uint8		urec_type;		/* record type code */
 	uint8		urec_info;		/* flag bits */
 	uint16		urec_prevlen;	/* length of previous record in bytes */
-	Oid			urec_relfilenode;		/* relfilenode for relation */
+	Oid		urec_reloid;		/* relation OID */
 	/*
 	 * Transaction id that has modified the tuple present in this undo record.
 	 * If this is older then RecentGlobalXmin, then we can consider the tuple
@@ -89,7 +89,6 @@ typedef struct UndoRecordHeader
  */
 typedef struct UndoRecordRelationDetails
 {
-	Oid			urec_tsid;		/* tablespace OID */
 	ForkNumber		urec_fork;		/* fork number */
 } UndoRecordRelationDetails;
 
@@ -163,11 +162,10 @@ typedef struct UnpackedUndoRecord
 	uint8		uur_type;		/* record type code */
 	uint8		uur_info;		/* flag bits */
 	uint16		uur_prevlen;	/* length of previous record */
-	Oid			uur_relfilenode;	/* relfilenode for relation */
+	Oid			uur_reloid;	/* relation OID */
 	TransactionId uur_prevxid;		/* transaction id */
 	TransactionId uur_xid;		/* transaction id */
 	CommandId	uur_cid;		/* command id */
-	Oid			uur_tsid;		/* tablespace OID */
 	ForkNumber	uur_fork;		/* fork number */
 	uint64		uur_blkprev;	/* byte offset of previous undo for block */
 	BlockNumber uur_block;		/* block number */

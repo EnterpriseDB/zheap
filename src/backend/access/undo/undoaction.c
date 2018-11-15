@@ -27,6 +27,7 @@
 #include "storage/buf.h"
 #include "storage/bufmgr.h"
 #include "utils/relfilenodemap.h"
+#include "utils/syscache.h"
 #include "miscadmin.h"
 #include "storage/shmem.h"
 #include "access/undodiscard.h"
@@ -76,7 +77,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 					 bool nopartial, bool rewind, bool rellock)
 {
 	UnpackedUndoRecord *uur = NULL;
-	UndoRecPtr	urec_ptr, prev_urec_ptr;
+	UndoRecPtr	urec_ptr, prev_urec_ptr, prev_blkprev;
 	UndoRecPtr	save_urec_ptr;
 	Oid			prev_reloid = InvalidOid;
 	ForkNumber	prev_fork = InvalidForkNumber;
@@ -100,7 +101,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		to_urecptr = UndoLogGetLastXactStartPoint(logno);
 	}
 
-	save_urec_ptr = urec_ptr = from_urecptr;
+	prev_blkprev = save_urec_ptr = urec_ptr = from_urecptr;
 
 	if (nopartial)
 	{
@@ -139,7 +140,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 						 InvalidOffsetNumber, InvalidTransactionId, NULL, NULL);
 
 		if (uur != NULL)
-			reloid = RelidByRelfilenode(uur->uur_tsid, uur->uur_relfilenode);
+			reloid = uur->uur_reloid;
 
 		/*
 		 * If the record is already discarded by undo worker or if the relation
@@ -177,7 +178,8 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		if (!OidIsValid(prev_reloid) ||
 			(prev_reloid == reloid &&
 			 prev_fork == uur->uur_fork &&
-			 prev_block == uur->uur_block))
+			 prev_block == uur->uur_block &&
+			 prev_blkprev == urec_ptr))
 		{
 			prev_reloid = reloid;
 			prev_fork = uur->uur_fork;
@@ -199,6 +201,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			if (urec_prevlen > 0 && urec_ptr != to_urecptr)
 			{
 				urec_ptr = UndoGetPrevUndoRecptr(urec_ptr, urec_prevlen);
+				prev_blkprev = uur->uur_blkprev;
 				continue;
 			}
 			else
@@ -619,6 +622,9 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 		elog(LOG, "ignoring undo for invalid reloid");
 		return false;
 	}
+
+	if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(reloid)))
+		return false;
 
 	/*
 	 * If the action is executed by backend as a result of rollback, we must

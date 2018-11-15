@@ -98,11 +98,10 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		work_hdr.urec_type = uur->uur_type;
 		work_hdr.urec_info = uur->uur_info;
 		work_hdr.urec_prevlen = uur->uur_prevlen;
-		work_hdr.urec_relfilenode = uur->uur_relfilenode;
+		work_hdr.urec_reloid = uur->uur_reloid;
 		work_hdr.urec_prevxid = uur->uur_prevxid;
 		work_hdr.urec_xid = uur->uur_xid;
 		work_hdr.urec_cid = uur->uur_cid;
-		work_rd.urec_tsid = uur->uur_tsid;
 		work_rd.urec_fork = uur->uur_fork;
 		work_blk.urec_blkprev = uur->uur_blkprev;
 		work_blk.urec_block = uur->uur_block;
@@ -123,11 +122,10 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		Assert(work_hdr.urec_type == uur->uur_type);
 		Assert(work_hdr.urec_info == uur->uur_info);
 		Assert(work_hdr.urec_prevlen == uur->uur_prevlen);
-		Assert(work_hdr.urec_relfilenode == uur->uur_relfilenode);
+		Assert(work_hdr.urec_reloid == uur->uur_reloid);
 		Assert(work_hdr.urec_prevxid == uur->uur_prevxid);
 		Assert(work_hdr.urec_xid == uur->uur_xid);
 		Assert(work_hdr.urec_cid == uur->uur_cid);
-		Assert(work_rd.urec_tsid == uur->uur_tsid);
 		Assert(work_rd.urec_fork == uur->uur_fork);
 		Assert(work_blk.urec_blkprev == uur->uur_blkprev);
 		Assert(work_blk.urec_block == uur->uur_block);
@@ -285,7 +283,7 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 	uur->uur_type = work_hdr.urec_type;
 	uur->uur_info = work_hdr.urec_info;
 	uur->uur_prevlen = work_hdr.urec_prevlen;
-	uur->uur_relfilenode = work_hdr.urec_relfilenode;
+	uur->uur_reloid = work_hdr.urec_reloid;
 	uur->uur_prevxid = work_hdr.urec_prevxid;
 	uur->uur_xid = work_hdr.urec_xid;
 	uur->uur_cid = work_hdr.urec_cid;
@@ -298,7 +296,6 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 							&my_bytes_decoded, already_decoded, false))
 			return false;
 
-		uur->uur_tsid = work_rd.urec_tsid;
 		uur->uur_fork = work_rd.urec_fork;
 	}
 
@@ -447,8 +444,7 @@ ReadUndoBytes(char *destptr, int readlen, char **readptr, char *endptr,
 static void
 UndoRecordSetInfo(UnpackedUndoRecord *uur)
 {
-	if (uur->uur_tsid != DEFAULTTABLESPACE_OID ||
-		uur->uur_fork != MAIN_FORKNUM)
+	if (uur->uur_fork != MAIN_FORKNUM)
 		uur->uur_info |= UREC_INFO_RELATION_DETAILS;
 	if (uur->uur_block != InvalidBlockNumber)
 		uur->uur_info |= UREC_INFO_BLOCK;

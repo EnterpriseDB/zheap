@@ -72,8 +72,7 @@ typedef struct xl_zheap_metadata
 /* common undo record related info */
 typedef struct xl_undo_header
 {
-	Oid			relfilenode;	/* relfilenode for relation */
-	Oid			tsid;	/* tablespace OID */
+	Oid			reloid;	/* relation OID*/
 	uint64		blkprev;	/* byte offset of previous undo for block */
 	UndoRecPtr	urec_ptr;	/* undo location for undo tuple */
 } xl_undo_header;

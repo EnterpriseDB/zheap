@@ -33,8 +33,7 @@ test_undo_insert(PG_FUNCTION_ARGS)
 	memset(&uur, 0, sizeof(UnpackedUndoRecord));
 	uur.uur_type = 0xaa;
 	uur.uur_prevlen = 0xbbbb;
-	uur.uur_relfilenode = 0xdeadbeef;
-	uur.uur_tsid = PG_GETARG_INT32(0);
+	uur.uur_reloid = 0xdeadbeef;
 	uur.uur_fork = PG_GETARG_INT32(1);
 	uur.uur_blkprev = 0x0123456789abcdef;
 	uur.uur_block = PG_GETARG_INT32(2);

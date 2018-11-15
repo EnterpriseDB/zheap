@@ -809,11 +809,10 @@ reacquire_buffer:
 		undorecord.uur_type = UNDO_INSERT;
 		undorecord.uur_info = 0;
 		undorecord.uur_prevlen = 0;
-		undorecord.uur_relfilenode = relation->rd_node.relNode;
+		undorecord.uur_reloid = relation->rd_id;
 		undorecord.uur_prevxid = FrozenTransactionId;
 		undorecord.uur_xid = xid;
 		undorecord.uur_cid = cid;
-		undorecord.uur_tsid = relation->rd_node.spcNode;
 		undorecord.uur_fork = MAIN_FORKNUM;
 		undorecord.uur_blkprev = prev_urecptr;
 		undorecord.uur_block = BufferGetBlockNumber(buffer);
@@ -943,8 +942,7 @@ reacquire_buffer:
 		 * Store the information required to generate undo record during
 		 * replay.
 		 */
-		xlundohdr.relfilenode = relation->rd_node.relNode;
-		xlundohdr.tsid = relation->rd_node.spcNode;
+		xlundohdr.reloid = relation->rd_id;
 		xlundohdr.urec_ptr = urecptr;
 		xlundohdr.blkprev = prev_urecptr;
 
@@ -1767,11 +1765,10 @@ zheap_tuple_updated:
 	undorecord.uur_type = UNDO_DELETE;
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;
-	undorecord.uur_relfilenode = relation->rd_node.relNode;
+	undorecord.uur_reloid = relation->rd_id;
 	undorecord.uur_prevxid = tup_xid;
 	undorecord.uur_xid = xid;
 	undorecord.uur_cid = cid;
-	undorecord.uur_tsid = relation->rd_node.spcNode;
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
 	undorecord.uur_block = blkno;
@@ -1905,8 +1902,7 @@ zheap_tuple_updated:
 		 * Store the information required to generate undo record during
 		 * replay.
 		 */
-		xlundohdr.relfilenode = undorecord.uur_relfilenode;
-		xlundohdr.tsid = undorecord.uur_tsid;
+		xlundohdr.reloid = undorecord.uur_reloid;
 		xlundohdr.urec_ptr = urecptr;
 		xlundohdr.blkprev = prev_urecptr;
 
@@ -2910,11 +2906,10 @@ zheap_tuple_updated:
 		 */
 		undorecord.uur_info = 0;
 		undorecord.uur_prevlen = 0;
-		undorecord.uur_relfilenode = relation->rd_node.relNode;
+		undorecord.uur_reloid = relation->rd_id;
 		undorecord.uur_prevxid = tup_xid;
 		undorecord.uur_xid = xid;
 		undorecord.uur_cid = cid;
-		undorecord.uur_tsid = relation->rd_node.spcNode;
 		undorecord.uur_fork = MAIN_FORKNUM;
 		undorecord.uur_blkprev = prev_urecptr;
 		undorecord.uur_block = ItemPointerGetBlockNumber(&(oldtup.t_self));
@@ -3027,8 +3022,7 @@ zheap_tuple_updated:
 			 * Store the information required to generate undo record during
 			 * replay.
 			 */
-			xlundohdr.relfilenode = undorecord.uur_relfilenode;
-			xlundohdr.tsid = undorecord.uur_tsid;
+			xlundohdr.reloid = undorecord.uur_reloid;
 			xlundohdr.urec_ptr = urecptr;
 			xlundohdr.blkprev = undorecord.uur_blkprev;
 
@@ -3289,11 +3283,10 @@ reacquire_buffer:
 	 */
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;
-	undorecord.uur_relfilenode = relation->rd_node.relNode;
+	undorecord.uur_reloid = relation->rd_id;
 	undorecord.uur_prevxid = tup_xid;
 	undorecord.uur_xid = xid;
 	undorecord.uur_cid = cid;
-	undorecord.uur_tsid = relation->rd_node.spcNode;
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
 	undorecord.uur_block = ItemPointerGetBlockNumber(&(oldtup.t_self));
@@ -3407,11 +3400,10 @@ reacquire_buffer:
 		new_undorecord.uur_type = UNDO_INSERT;
 		new_undorecord.uur_info = 0;
 		new_undorecord.uur_prevlen = 0;
-		new_undorecord.uur_relfilenode = relation->rd_node.relNode;
+		new_undorecord.uur_reloid = relation->rd_id;
 		new_undorecord.uur_prevxid = xid;
 		new_undorecord.uur_xid = xid;
 		new_undorecord.uur_cid = cid;
-		new_undorecord.uur_tsid = relation->rd_node.spcNode;
 		new_undorecord.uur_fork = MAIN_FORKNUM;
 		new_undorecord.uur_block = BufferGetBlockNumber(newbuf);
 		new_undorecord.uur_payload.len = 0;
@@ -3877,8 +3869,7 @@ log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 	 * Store the information required to generate undo record during
 	 * replay.
 	 */
-	xlundohdr.relfilenode = undorecord.uur_relfilenode;
-	xlundohdr.tsid = undorecord.uur_tsid;
+	xlundohdr.reloid = undorecord.uur_reloid;
 	xlundohdr.urec_ptr = urecptr;
 	xlundohdr.blkprev = undorecord.uur_blkprev;
 
@@ -3905,8 +3896,7 @@ log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 
 		xlrec.flags |= XLZ_NON_INPLACE_UPDATE;
 
-		xlnewundohdr.relfilenode = newundorecord.uur_relfilenode;
-		xlnewundohdr.tsid = newundorecord.uur_tsid;
+		xlnewundohdr.reloid = newundorecord.uur_reloid;
 		xlnewundohdr.urec_ptr = newurecptr;
 		xlnewundohdr.blkprev = newundorecord.uur_blkprev;
 
@@ -5627,7 +5617,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		undorecord.uur_type = UNDO_XID_LOCK_ONLY;
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;
-	undorecord.uur_relfilenode = rel->rd_node.relNode;
+	undorecord.uur_reloid = rel->rd_id;
 	undorecord.uur_prevxid = tup_xid;
 	undorecord.uur_xid = xid;
 	/*
@@ -5635,7 +5625,6 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	 * it doesn't modify the tuple, just updates the infomask.
 	 */
 	undorecord.uur_cid = FirstCommandId;
-	undorecord.uur_tsid = rel->rd_node.spcNode;
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
 	undorecord.uur_block = ItemPointerGetBlockNumber(&(zhtup->t_self));
@@ -5723,8 +5712,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		 * Store the information required to generate undo record during
 		 * replay.
 		 */
-		xlundohdr.relfilenode = undorecord.uur_relfilenode;
-		xlundohdr.tsid = undorecord.uur_tsid;
+		xlundohdr.reloid = undorecord.uur_reloid;
 		xlundohdr.urec_ptr = urecptr;
 		xlundohdr.blkprev = prev_urecptr;
 
@@ -6855,7 +6843,7 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
 
 	elog(DEBUG1, "undo record: TransSlot: %d, Epoch: %d, TransactionId: %d, urec: " UndoRecPtrFormat ", prev_urec: " UINT64_FORMAT ", block: %d, offset: %d, undo_op: %d, xid_tup: %d, reloid: %d",
 				 trans_slot_id, epoch, xid, urecptr, undorecord.uur_blkprev, undorecord.uur_block, undorecord.uur_offset, undorecord.uur_type,
-				 undorecord.uur_prevxid, undorecord.uur_relfilenode);
+				 undorecord.uur_prevxid, undorecord.uur_reloid);
 }
 
 /*
@@ -10859,11 +10847,10 @@ reacquire_buffer:
 				undorecord[i].uur_type = UNDO_MULTI_INSERT;
 				undorecord[i].uur_info = 0;
 				undorecord[i].uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
-				undorecord[i].uur_relfilenode = relation->rd_node.relNode;
+				undorecord[i].uur_reloid = relation->rd_id;
 				undorecord[i].uur_prevxid = FrozenTransactionId;
 				undorecord[i].uur_xid = xid;
 				undorecord[i].uur_cid = cid;
-				undorecord[i].uur_tsid = relation->rd_node.spcNode;
 				undorecord[i].uur_fork = MAIN_FORKNUM;
 				undorecord[i].uur_blkprev = urecptr;
 				undorecord[i].uur_block = BufferGetBlockNumber(buffer);
@@ -11060,8 +11047,7 @@ reacquire_buffer:
 			 * replay. All undo records have same information apart from the
 			 * payload data. Hence, we can copy the same from the last record.
 			 */
-			xlundohdr.relfilenode = relation->rd_node.relNode;
-			xlundohdr.tsid = relation->rd_node.spcNode;
+			xlundohdr.reloid = relation->rd_id;
 			xlundohdr.urec_ptr = urecptr;
 			xlundohdr.blkprev = prev_urecptr;
 

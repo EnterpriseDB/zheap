@@ -406,7 +406,7 @@ typedef struct TestRecordHeader
 	uint8		urec_type;
 	uint8		urec_info;
 	uint16		urec_prevlen;
-	Oid			urec_relfilenode;
+	Oid			urec_reloid;
 	TransactionId urec_prevxid;
 	TransactionId urec_xid;
 	CommandId	urec_cid;
