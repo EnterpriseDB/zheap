@@ -7021,7 +7021,7 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
 	}
 	else
 	{
-		/* 
+		/*
 		 * Lock the TPD page if the caller has instructed so and the page
 		 * has tpd slot.
 		 */
