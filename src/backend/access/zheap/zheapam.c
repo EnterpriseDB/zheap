@@ -6989,7 +6989,8 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
 		{
 			*urec_ptr = opaque->transinfo[slot_no].urec_ptr;
 
-			if (locktpd)
+			/* Check if TPD has page slot, then lock TPD page */
+			if (locktpd && ZHeapPageHasTPDSlot(phdr))
 			{
 				Assert(tpd_page_locked);
 				*tpd_page_locked = TPDPageLock(rel, buf);
@@ -7018,10 +7019,17 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
 			return tpd_e_slot;
 		}
 	}
-	else if (locktpd)
+	else
 	{
-		Assert(tpd_page_locked);
-		*tpd_page_locked = TPDPageLock(rel, buf);
+		/* 
+		 * Lock the TPD page if the caller has instructed so and the page
+		 * has tpd slot.
+		 */
+		if (locktpd && ZHeapPageHasTPDSlot(phdr))
+		{
+			Assert(tpd_page_locked);
+			*tpd_page_locked = TPDPageLock(rel, buf);
+		}
 	}
 
 	return InvalidXactSlotId;
