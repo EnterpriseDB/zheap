@@ -903,16 +903,15 @@ InsertPreparedUndo(void)
 }
 
 /*
- * Unlock and release undo buffers.  This step performed after exiting any
- * critical section.
+ *  Reset the global variables related to undo buffers. This is required at the
+ *  transaction abort or releasing undo buffers
  */
 void
-UnlockReleaseUndoBuffers(void)
+ResetUndoBuffers(void)
 {
 	int	i;
 	for (i = 0; i < buffer_idx; i++)
 	{
-		UnlockReleaseBuffer(undo_buffer[i].buf);
 		undo_buffer[i].blk = InvalidBlockNumber;
 		undo_buffer[i].buf = InvalidBuffer;
 	}
@@ -936,6 +935,20 @@ UnlockReleaseUndoBuffers(void)
 		prepared_undo = def_prepared;
 		max_prepare_undo = MAX_PREPARED_UNDO;
 	}
+}
+
+/*
+ * Unlock and release undo buffers.  This step performed after exiting any
+ * critical section.
+ */
+void
+UnlockReleaseUndoBuffers(void)
+{
+	int	i;
+	for (i = 0; i < buffer_idx; i++)
+		UnlockReleaseBuffer(undo_buffer[i].buf);
+
+	ResetUndoBuffers();
 }
 
 /*

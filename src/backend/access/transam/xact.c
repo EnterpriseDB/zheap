@@ -30,6 +30,7 @@
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
+#include "access/tpd.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_enum.h"
 #include "catalog/storage.h"
@@ -67,6 +68,8 @@
 #include "utils/timestamp.h"
 #include "pg_trace.h"
 
+#define	AtAbort_ResetUndoBuffers ResetUndoBuffers()
+#define	AtAbort_ResetTPDBuffers	ResetTPDBuffers()
 
 /*
  *	User-tweakable parameters
@@ -2715,6 +2718,8 @@ AbortTransaction(void)
 		AtEOXact_PgStat(false);
 		AtEOXact_ApplyLauncher(false);
 		pgstat_report_xact_timestamp(0);
+		AtAbort_ResetUndoBuffers;
+		AtAbort_ResetTPDBuffers;
 	}
 
 	/*

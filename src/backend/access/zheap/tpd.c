@@ -3056,6 +3056,23 @@ TPDPageSetLSN(Page heappage, XLogRecPtr recptr)
 }
 
 /*
+ * ResetTPDBuffers  - Reset TPD buffer index. Required at the time of
+ * transaction abort or release TPD buffers.
+ */
+void
+ResetTPDBuffers(void)
+{
+	int i;
+
+	for (i = 0; i < tpd_buf_idx; i++)
+	{
+		tpd_buffers[i].buf = InvalidBuffer;
+		tpd_buffers[i].blk = InvalidBlockNumber;
+	}
+
+	tpd_buf_idx = 0;
+}
+/*
  * UnlockReleaseTPDBuffers - Release all the TPD buffers locked by me.
  */
 void
@@ -3073,11 +3090,9 @@ UnlockReleaseTPDBuffers(void)
 		Assert(LWLockHeldByMeInMode(BufferDescriptorGetContentLock(tpdbufhdr),
 									LW_EXCLUSIVE));
 		UnlockReleaseBuffer(tpd_buf);
-		tpd_buffers[i].buf = InvalidBuffer;
-		tpd_buffers[i].blk = InvalidBlockNumber;
 	}
 
-	tpd_buf_idx = 0;
+	ResetTPDBuffers();
 }
 
 /*

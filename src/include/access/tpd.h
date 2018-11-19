@@ -130,4 +130,6 @@ extern void TPDPagePruneExecute(Buffer tpdbuf, OffsetNumber *nowunused,
 extern void TPDPageRepairFragmentation(Page page, Page tmppage,
 					OffsetNumber target_offnum, Size space_required);
 
+/* Reset globals related to TPD buffers. */
+extern void ResetTPDBuffers(void);
 #endif   /* TPD_H */

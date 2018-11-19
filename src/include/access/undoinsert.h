@@ -103,4 +103,6 @@ extern void UndoRecordOnUndoLogChange(UndoPersistence persistence);
 extern void PrepareUpdateUndoActionProgress(UndoRecPtr urecptr, int progress);
 extern void UndoRecordUpdateTransInfo(void);
 
+/* Reset globals related to undo buffers */
+extern void ResetUndoBuffers(void);
 #endif   /* UNDOINSERT_H */
