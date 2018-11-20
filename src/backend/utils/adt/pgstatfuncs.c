@@ -137,7 +137,7 @@ pg_stat_get_tuples_hot_updated(PG_FUNCTION_ARGS)
 	Oid			relid = PG_GETARG_OID(0);
 	int64		result;
 	PgStat_StatTabEntry *tabentry;
-	Relation	rel = heap_open(relid, NoLock);
+	Relation	rel = heap_open(relid, AccessShareLock);
 
 	/*
 	 * Counter tuples_hot_updated stores number of hot updates for heap table
@@ -149,7 +149,7 @@ pg_stat_get_tuples_hot_updated(PG_FUNCTION_ARGS)
 	else
 		result = (int64) (tabentry->tuples_hot_updated);
 
-	heap_close(rel, NoLock);
+	heap_close(rel, AccessShareLock);
 
 	PG_RETURN_INT64(result);
 }
@@ -161,7 +161,7 @@ pg_stat_get_tuples_inplace_updated(PG_FUNCTION_ARGS)
 	Oid			relid = PG_GETARG_OID(0);
 	int64		result;
 	PgStat_StatTabEntry *tabentry;
-	Relation	rel = heap_open(relid, NoLock);
+	Relation	rel = heap_open(relid, AccessShareLock);
 
 	/*
 	 * Counter tuples_hot_updated stores number of hot updates for heap table
@@ -173,7 +173,7 @@ pg_stat_get_tuples_inplace_updated(PG_FUNCTION_ARGS)
 	else
 		result = (int64) (tabentry->tuples_hot_updated);
 
-	heap_close(rel, NoLock);
+	heap_close(rel, AccessShareLock);
 
 	PG_RETURN_INT64(result);
 }
@@ -1717,7 +1717,7 @@ pg_stat_get_xact_tuples_hot_updated(PG_FUNCTION_ARGS)
 	Oid			relid = PG_GETARG_OID(0);
 	int64		result;
 	PgStat_TableStatus *tabentry;
-	Relation	rel = heap_open(relid, NoLock);
+	Relation	rel = heap_open(relid, AccessShareLock);
 
 	/*
 	 * Counter t_tuples_hot_updated stores number of hot updates for heap
@@ -1729,7 +1729,7 @@ pg_stat_get_xact_tuples_hot_updated(PG_FUNCTION_ARGS)
 	else
 		result = (int64) (tabentry->t_counts.t_tuples_hot_updated);
 
-	heap_close(rel, NoLock);
+	heap_close(rel, AccessShareLock);
 
 	PG_RETURN_INT64(result);
 }
@@ -1740,7 +1740,7 @@ pg_stat_get_xact_tuples_inplace_updated(PG_FUNCTION_ARGS)
 	Oid			relid = PG_GETARG_OID(0);
 	int64		result;
 	PgStat_TableStatus *tabentry;
-	Relation	rel = heap_open(relid, NoLock);
+	Relation	rel = heap_open(relid, AccessShareLock);
 
 	/*
 	 * Counter t_tuples_hot_updated stores number of hot updates for heap table
@@ -1752,7 +1752,7 @@ pg_stat_get_xact_tuples_inplace_updated(PG_FUNCTION_ARGS)
 	else
 		result = (int64) (tabentry->t_counts.t_tuples_hot_updated);
 
-	heap_close(rel, NoLock);
+	heap_close(rel, AccessShareLock);
 
 	PG_RETURN_INT64(result);
 }
