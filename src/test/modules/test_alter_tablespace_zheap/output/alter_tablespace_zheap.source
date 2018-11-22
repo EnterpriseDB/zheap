@@ -1,4 +1,4 @@
-create tablespace regress_ts location '/home/edb/Projects/Undo/zheap/src/test/modules/test_alter_tablespace_zheap/testtablespace';
+create tablespace regress_ts location '@testtablespace@';
 create table t1(a int);
 insert into t1 select generate_series(1,10);
 -- Rollback some transactions for which undo actions must be performed before
