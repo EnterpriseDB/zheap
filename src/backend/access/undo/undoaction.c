@@ -671,12 +671,19 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	/*
 	 * Identify the slot number for this transaction.  As we never allow undo
 	 * more than 2-billion transactions, we can compute epoch from xid.
+	 *
+	 * Here, we will always take a lock on the tpd_page, if there is a tpd
+	 * slot on the page.  This is required because sometimes we only come to
+	 * know that we need to update the tpd page after applying the undo record.
+	 * Now, the case where this can happen is when during DO operation the
+	 * slot of previous updater is a non-TPD slot, but by the time we came for
+	 * rollback it became a TPD slot which means this information won't be even
+	 * recorded in undo.
 	 */
 	epoch = GetEpochForXid(xid);
 	slot_no = PageGetTransactionSlotId(rel, buffer, epoch, xid,
-									   &slot_urec_ptr, true,
-									   options & UNDO_ACTION_UPDATE_TPD ?
-									   true : false, &tpd_page_locked);
+									   &slot_urec_ptr, true, true,
+									   &tpd_page_locked);
 
 	/*
 	 * If undo action has been already applied for this page then skip
@@ -792,6 +799,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					uint32		undo_tup_len;
 					int			trans_slot;
 					uint16		infomask;
+					int			prev_trans_slot;
 
 					/* Copy the entire tuple from undo. */
 					lp = PageGetItemId(page, uur->uur_offset);
@@ -803,10 +811,17 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					undo_tup_len = *((uint32 *) &uur->uur_tuple.data[offset]);
 					ItemIdChangeLen(lp, undo_tup_len);
 					/* skip ctid and tableoid stored in undo tuple */
-					offset += sizeof(uint32) + sizeof(ItemPointerData) + sizeof(Oid);
+					offset += sizeof(uint32) + sizeof(ItemPointerData) +
+						sizeof(Oid);
 					memcpy(zhtup,
 						   (ZHeapTupleHeader) &uur->uur_tuple.data[offset],
 						   undo_tup_len);
+
+					/*
+					 * Fetch previous transaction slot on tuple formed from
+					 * undo record.
+					 */
+					prev_trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
 
 					/*
 					 * If the previous version of the tuple points to a TPD
@@ -818,8 +833,6 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					if (uur->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT &&
 						tpd_offset_map)
 					{
-						int prev_trans_slot;
-
 						/* Fetch TPD slot from the undo. */
 						if (uur->uur_type == UNDO_UPDATE)
 							prev_trans_slot = *(int *) ((char *) uur->uur_payload.data +
@@ -833,6 +846,80 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					else if (uur->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
 					{
 						ZHeapTupleHeaderSetXactSlot(zhtup, ZHTUP_SLOT_FROZEN);
+					}
+					else if (prev_trans_slot == ZHEAP_PAGE_TRANS_SLOTS &&
+							 ZHeapPageHasTPDSlot((PageHeader) page))
+					{
+						TransactionId	prev_slot_xid;
+
+						/* TPD page must be locked by now. */
+						Assert(tpd_page_locked);
+
+						/*
+						 * If the previous transaction slot points to a TPD
+						 * slot then we need to update the slot in the offset
+						 * map of the TPD entry.
+						 *
+						 * This is the case where during DO operation the
+						 * previous updater belongs to a non-TPD slot whereas
+						 * now the same slot has become a TPD slot.  In such
+						 * cases, we need to update offset-map.
+						 */
+						GetTransactionSlotInfo(buffer,
+											   InvalidOffsetNumber,
+											   prev_trans_slot,
+											   NULL,
+											   &prev_slot_xid,
+											   NULL,
+											   false,
+											   true);
+
+						TPDPageSetOffsetMapSlot(buffer,
+												ZHEAP_PAGE_TRANS_SLOTS + 1,
+												uur->uur_offset);
+
+						/* Current and previous slot xid must be different. */
+						Assert(prev_slot_xid != slot_xid);
+
+						/*
+						 * Here, transaction slot to which tuple point is not
+						 * same as the previous transaction slot, so that we
+						 * need to mark the tuple with a special flag.
+						 */
+						zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+					}
+					else
+					{
+						trans_slot = GetTransactionSlotInfo(buffer,
+															uur->uur_offset,
+															trans_slot,
+															NULL,
+															&slot_xid,
+															NULL,
+															false,
+															false);
+
+						if (TransactionIdEquals(uur->uur_prevxid,
+												FrozenTransactionId))
+						{
+							/*
+							 * If the previous xid is frozen, then we can
+							 * safely mark the tuple as frozen.
+							 */
+							ZHeapTupleHeaderSetXactSlot(zhtup,
+														ZHTUP_SLOT_FROZEN);
+						}
+						else if (trans_slot != ZHTUP_SLOT_FROZEN &&
+								 uur->uur_prevxid != slot_xid)
+						{
+							/*
+							 * If the transaction slot to which tuple point got
+							 * reused by this time, then we need to mark the
+							 * tuple with a special flag.  See comments atop
+							 * PageFreezeTransSlots.
+							 */
+							zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+						}
 					}
 
 					/*
@@ -851,45 +938,17 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					{
 						/* ZHeapTupleHeaderSetXactSlot(zhtup, trans_slot); */
 						zhtup->t_infomask |= ZHEAP_MULTI_LOCKERS;
-						zhtup->t_infomask &= ~(zhtup->t_infomask & ZHEAP_LOCK_MASK);
+						zhtup->t_infomask &= ~(zhtup->t_infomask &
+											   ZHEAP_LOCK_MASK);
 						zhtup->t_infomask |= infomask & ZHEAP_LOCK_MASK;
 
 						/*
 						 * If the tuple originally has INVALID_XACT_SLOT set,
-						 * then we need to retain it as that must be the information
-						 * of strongest locker.
+						 * then we need to retain it as that must be the
+						 * information of strongest locker.
 						 */
 						if (ZHeapTupleHasInvalidXact(infomask))
 							zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
-					}
-
-					trans_slot = GetTransactionSlotInfo(buffer,
-														uur->uur_offset,
-														trans_slot,
-														NULL,
-														&slot_xid,
-														NULL,
-														false,
-														false);
-
-					if (TransactionIdEquals(uur->uur_prevxid,
-											FrozenTransactionId))
-					{
-						/*
-						 * If the previous xid is frozen, then we can safely
-						 * mark the tuple as frozen.
-						 */
-						ZHeapTupleHeaderSetXactSlot(zhtup, ZHTUP_SLOT_FROZEN);
-					}
-					else if (trans_slot != ZHTUP_SLOT_FROZEN &&
-								uur->uur_prevxid != slot_xid)
-					{
-						/*
-						 * If the transaction slot to which tuple point got reused
-						 * by this time, then we need to mark the tuple with a
-						 * special flag.  See comments atop PageFreezeTransSlots.
-						 */
-						zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
 					}
 				}
 				break;
