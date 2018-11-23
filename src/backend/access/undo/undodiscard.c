@@ -157,7 +157,7 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 
 		/* we can discard upto this point. */
 		if (TransactionIdFollowsOrEquals(undoxid, xmin) ||
-			next_urecptr == SpecialUndoRecPtr ||
+			next_urecptr == InvalidUndoRecPtr ||
 			UndoRecPtrGetLogNo(next_urecptr) != log->logno ||
 			log_complete  || pending_abort)
 		{
@@ -371,7 +371,7 @@ FetchLatestUndoPtrForXid(UndoRecPtr urecptr, UnpackedUndoRecord *uur_start,
 		 * urec pointer using next insert location of the undo log.  Otherwise,
 		 * calculate using next transaction's start pointer.
 		 */
-		if (uur->uur_next == SpecialUndoRecPtr)
+		if (uur->uur_next == InvalidUndoRecPtr)
 		{
 			/*
 			 * While fetching the next insert location if the new transaction

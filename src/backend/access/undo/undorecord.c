@@ -25,7 +25,6 @@ static UndoRecordTransaction work_txn;
 static UndoRecordPayload work_payload;
 
 /* Prototypes for static functions. */
-static void UndoRecordSetInfo(UnpackedUndoRecord *uur);
 static bool InsertUndoBytes(char *sourceptr, int sourcelen,
 				char **writeptr, char *endptr,
 				int *my_bytes_written, int *total_bytes_written);
@@ -40,10 +39,6 @@ Size
 UndoRecordExpectedSize(UnpackedUndoRecord *uur)
 {
 	Size	size;
-
-	/* Fixme : Temporary hack to allow zheap to set some value for uur_info. */
-	/* if (uur->uur_info == 0) */
-		UndoRecordSetInfo(uur);
 
 	size = SizeOfUndoRecordHeader;
 	if ((uur->uur_info & UREC_INFO_RELATION_DETAILS) != 0)
@@ -84,8 +79,7 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 	char   *endptr = (char *) page + BLCKSZ;
 	int		my_bytes_written = *already_written;
 
-	if (uur->uur_info == 0)
-		UndoRecordSetInfo(uur);
+	Assert (uur->uur_info != 0);
 
 	/*
 	 * If this is the first call, copy the UnpackedUndoRecord into the
@@ -441,7 +435,7 @@ ReadUndoBytes(char *destptr, int readlen, char **readptr, char *endptr,
  * Set uur_info for an UnpackedUndoRecord appropriately based on which
  * other fields are set.
  */
-static void
+void
 UndoRecordSetInfo(UnpackedUndoRecord *uur)
 {
 	if (uur->uur_fork != MAIN_FORKNUM)

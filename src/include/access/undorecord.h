@@ -186,6 +186,11 @@ typedef struct UnpackedUndoRecord
 } UnpackedUndoRecord;
 
 /*
+ * Set uur_info for an UnpackedUndoRecord appropriately based on which
+ * other fields are set.
+ */
+extern void UndoRecordSetInfo(UnpackedUndoRecord *uur);
+/*
  * Compute the number of bytes of storage that will be required to insert
  * an undo record.  Sets uur->uur_info as a side effect.
  */

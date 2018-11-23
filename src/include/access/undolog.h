@@ -104,14 +104,6 @@ typedef uint64 UndoLogOffset;
 #define InvalidUndoLogNumber -1
 
 /*
- * This undo record pointer will be used in the transaction header this special
- * value is the indication that currently we don't have the value of the the
- * next transactions start point but it will be updated with a valid value
- * in the future.
- */
-#define SpecialUndoRecPtr	((UndoRecPtr) 0xFFFFFFFFFFFFFFFF)
-
-/*
  * The maximum amount of data that can be stored in an undo log.  Can be set
  * artificially low to test full log behavior.
  */
