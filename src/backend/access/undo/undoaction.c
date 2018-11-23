@@ -878,15 +878,13 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 												ZHEAP_PAGE_TRANS_SLOTS + 1,
 												uur->uur_offset);
 
-						/* Current and previous slot xid must be different. */
-						Assert(prev_slot_xid != slot_xid);
-
 						/*
-						 * Here, transaction slot to which tuple point is not
+						 * If transaction slot to which tuple point is not
 						 * same as the previous transaction slot, so that we
 						 * need to mark the tuple with a special flag.
 						 */
-						zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
+						if (uur->uur_prevxid != prev_slot_xid)
+							zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
 					}
 					else
 					{
