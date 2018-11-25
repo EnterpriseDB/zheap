@@ -8180,7 +8180,7 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, int *trans_slot,
 	}
 	else
 	{
-		if(cid_out)
+		if(cid_out && TransactionIdIsCurrentTransactionId(xid))
 		{
 			lp = PageGetItemId(page, offnum);
 			if (!ItemIdIsDeleted(lp))

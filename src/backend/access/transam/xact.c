@@ -731,6 +731,15 @@ GetCurrentCommandId(bool used)
 }
 
 /*
+ *	GetCurrentCommandIdUsed
+ */
+bool
+GetCurrentCommandIdUsed(void)
+{
+	return currentCommandIdUsed;
+}
+
+/*
  *	SetParallelStartTimestamps
  *
  * In a parallel worker, we should inherit the parent transaction's

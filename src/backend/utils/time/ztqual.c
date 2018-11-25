@@ -620,14 +620,29 @@ fetch_prior_undo_record:
 	}
 	else if (cid == InvalidCommandId)
 	{
+		CommandId		cur_cid = GetCurrentCommandId(false);
+
 		/*
-		 * we don't use prev_undo_xid to fetch the undo record for cid as it is
-		 * required only when transaction is current transaction in which case
-		 * there is no risk of transaction chain switching, so we are safe.  It
-		 * might be better to move this check near to it's usage, but that will
-		 * make code look ugly, so keeping it here.
+		 * If the current command doesn't need to modify any tuple and the
+		 * snapshot used is not of any previous command, then it can see all the
+		 * modifications made by current transactions till now.  So, we don't even
+		 * attempt to fetch CID from undo in such cases.
 		 */
-		cid = ZHeapTupleGetCid(undo_tup, buffer, prev_urec_ptr, trans_slot_id);
+		if (!GetCurrentCommandIdUsed() && cur_cid == snapshot->curcid)
+		{
+			cid = InvalidCommandId;
+		}
+		else
+		{
+			/*
+			 * we don't use prev_undo_xid to fetch the undo record for cid as it is
+			 * required only when transaction is current transaction in which case
+			 * there is no risk of transaction chain switching, so we are safe.  It
+			 * might be better to move this check near to it's usage, but that will
+			 * make code look ugly, so keeping it here.
+			 */
+			cid = ZHeapTupleGetCid(undo_tup, buffer, prev_urec_ptr, trans_slot_id);
+		}
 	}
 
 	/*
@@ -927,14 +942,29 @@ fetch_prior_undo_record:
 	}
 	else if (cid == InvalidCommandId)
 	{
+		CommandId		cur_comm_cid = GetCurrentCommandId(false);
+
 		/*
-		 * we don't use prev_undo_xid to fetch the undo record for cid as it is
-		 * required only when transaction is current transaction in which case
-		 * there is no risk of transaction chain switching, so we are safe.  It
-		 * might be better to move this check near to it's usage, but that will
-		 * make code look ugly, so keeping it here.
+		 * If the current command doesn't need to modify any tuple and the
+		 * snapshot used is not of any previous command, then it can see all the
+		 * modifications made by current transactions till now.  So, we don't even
+		 * attempt to fetch CID from undo in such cases.
 		 */
-		cid = ZHeapTupleGetCid(undo_tup, buffer, prev_urec_ptr, trans_slot_id);
+		if (!GetCurrentCommandIdUsed() && cur_comm_cid == curcid)
+		{
+			cid = InvalidCommandId;
+		}
+		else
+		{
+			/*
+			 * we don't use prev_undo_xid to fetch the undo record for cid as it is
+			 * required only when transaction is current transaction in which case
+			 * there is no risk of transaction chain switching, so we are safe.  It
+			 * might be better to move this check near to it's usage, but that will
+			 * make code look ugly, so keeping it here.
+			 */
+			cid = ZHeapTupleGetCid(undo_tup, buffer, prev_urec_ptr, trans_slot_id);
+		}
 	}
 
 	/*
@@ -1067,15 +1097,33 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	TransactionId	xid;
-	CommandId		cid = InvalidCommandId;
+	CommandId		*cid;
+	CommandId		cur_cid = GetCurrentCommandId(false);
+	CommandId		tmp_cid;
 	uint64		epoch_xid;
 	int			trans_slot;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
+	/*
+	 * If the current command doesn't need to modify any tuple and the
+	 * snapshot used is not of any previous command, then it can see all the
+	 * modifications made by current transactions till now.  So, we don't even
+	 * attempt to fetch CID from undo in such cases.
+	 */
+	if (!GetCurrentCommandIdUsed() && cur_cid == snapshot->curcid)
+	{
+		cid = NULL;
+	}
+	else
+	{
+		cid = &tmp_cid;
+		*cid = InvalidCommandId;
+	}
+
 	/* Get transaction info */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &trans_slot, &epoch_xid, &xid, &cid,
+	ZHeapTupleGetTransInfo(zhtup, buffer, &trans_slot, &epoch_xid, &xid, cid,
 						   &urec_ptr, false);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
@@ -1093,7 +1141,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
-			if (cid >= snapshot->curcid)
+			if (cid && *cid >= snapshot->curcid)
 			{
 				/* deleted after scan started, get previous tuple from undo */
 				return GetTupleFromUndo(urec_ptr,
@@ -1164,7 +1212,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
-			if (cid >= snapshot->curcid)
+			if (cid && *cid >= snapshot->curcid)
 			{
 				/*
 				 * updated/locked after scan started, get previous tuple from
@@ -1212,7 +1260,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 
 	if (TransactionIdIsCurrentTransactionId(xid))
 	{
-		if (cid >= snapshot->curcid)
+		if (cid && *cid >= snapshot->curcid)
 			return NULL;	/* inserted after scan started */
 		else
 			return zhtup;	/* inserted before scan started */
@@ -1410,6 +1458,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	uint64	epoch_xid;
+	CommandId	cur_comm_cid = GetCurrentCommandId(false);
 	bool	visible;
 
 	*single_locker_xid = InvalidTransactionId;
@@ -1418,6 +1467,17 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
+
+	/*
+	 * If the current command doesn't need to modify any tuple and the
+	 * snapshot used is not of any previous command, then it can see all the
+	 * modifications made by current transactions till now.  So, we don't even
+	 * attempt to fetch CID from undo in such cases.
+	 */
+	if (!GetCurrentCommandIdUsed() && cur_comm_cid == curcid)
+	{
+		cid = NULL;
+	}
 
 	/* Get transaction info */
 	ZHeapTupleGetTransInfo(zhtup, buffer, trans_slot, &epoch_xid, xid, cid,
@@ -1438,7 +1498,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 
 		if (TransactionIdIsCurrentTransactionId(*xid))
 		{
-			if (*cid >= curcid)
+			if (cid && *cid >= curcid)
 			{
 				/* deleted after scan started, check previous tuple from undo */
 				visible = UndoTupleSatisfiesUpdate(urec_ptr,
@@ -1560,7 +1620,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 
 		if (TransactionIdIsCurrentTransactionId(*xid))
 		{
-			if (*cid >= curcid)
+			if (cid && *cid >= curcid)
 			{
 				/*
 				 * updated/locked after scan started, check previous tuple
@@ -1665,7 +1725,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 
 	if (TransactionIdIsCurrentTransactionId(*xid))
 	{
-		if (*cid >= curcid)
+		if (cid && *cid >= curcid)
 			return HeapTupleInvisible;	/* inserted after scan started */
 		else
 			return HeapTupleMayBeUpdated;	/* inserted before scan started */
