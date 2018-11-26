@@ -311,7 +311,7 @@ ForgetLocalBuffer(RelFileNode rnode, ForkNumber forkNum, BlockNumber blockNum)
 	bufHdr = GetLocalBufferDescriptor(hresult->id);
 	CLEAR_BUFFERTAG(bufHdr->tag);
 	buf_state = pg_atomic_read_u32(&bufHdr->state);
-	buf_state &= ~(BM_VALID | BM_TAG_VALID);
+	buf_state &= ~(BM_VALID | BM_TAG_VALID | BM_DIRTY);
 	pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
 }
 

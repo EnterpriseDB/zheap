@@ -2530,9 +2530,11 @@ forget_undo_buffers(int logno, UndoLogOffset old_discard,
 	if (drop_tail)
 		++new_blockno;
 	while (old_blockno < new_blockno)
-		ForgetBuffer(rnode, UndoLogForkNum, old_blockno++);
+	{
+		ForgetBuffer(rnode, UndoLogForkNum, old_blockno);
+		ForgetLocalBuffer(rnode, UndoLogForkNum, old_blockno++);
+	}
 }
-
 /*
  * replay an undo segment discard record
  */
