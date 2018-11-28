@@ -122,6 +122,9 @@ static void compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf,
 static ZHeapFreeOffsetRanges *
 ZHeapGetUsableOffsetRanges(Buffer buffer, ZHeapTuple *tuples, int ntuples,
 						   Size saveFreeSpace);
+static inline void CheckAndLockTPDPage(Relation relation, int new_trans_slot_id,
+									   int old_trans_slot_id, Buffer newbuf,
+									   Buffer oldbuf);
 
 /*
  * zheap_compute_data_size
@@ -3518,20 +3521,10 @@ reacquire_buffer:
 										InvalidTransactionId,
 										NULL);
 
-		/*
-		 * Lock the TPD page before starting critical section.  We might need
-		 * to access it in ZPageAddItemExtended.  Note that if the transaction
-		 * slot belongs to TPD entry, then the TPD page must be locked during
-		 * slot reservation.
-		 *
-		 * XXX We can optimize this by avoid taking TPD page lock unless the page
-		 * has some unused item which requires us to fetch the transaction
-		 * information from TPD.
-		 */
-		if (new_trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS &&
-			ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(newbuf)) &&
-			PageHasFreeLinePointers((PageHeader)BufferGetPage(newbuf)))
-			TPDPageLock(relation, buffer);
+		/* Check and lock the TPD page before starting critical section. */
+		CheckAndLockTPDPage(relation, new_trans_slot_id, trans_slot_id,
+							newbuf, buffer);
+
 	}
 
 	/*
@@ -11665,4 +11658,54 @@ GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
 	Assert(*total_trans_slots >= ZHEAP_PAGE_TRANS_SLOTS);
 
 	return trans_slots;
+}
+
+/*
+ * CheckAndLockTPDPage - Check and lock the TPD page before starting critical
+ * section.
+ *
+ * We might need to access it in ZPageAddItemExtended.  Note that if the
+ * transaction slot belongs to TPD entry, then the TPD page must be locked during
+ * slot reservation.  Also, if the old buffer and new buffer refers to the
+ * same TPD page and the old transaction slot corresponds to a TPD slot,
+ * the TPD page must be locked during slot reservation.
+ *
+ * XXX We can optimize this by avoid taking TPD page lock unless the page
+ * has some unused item which requires us to fetch the transaction
+ * information from TPD.
+ */
+static inline void
+CheckAndLockTPDPage(Relation relation, int new_trans_slot_id, int old_trans_slot_id,
+					Buffer newbuf, Buffer oldbuf)
+{
+	if (new_trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS &&
+		ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(newbuf)) &&
+		PageHasFreeLinePointers((PageHeader)BufferGetPage(newbuf)))
+	{
+		/*
+		 * If the old buffer and new buffer refers to the same TPD page
+		 * and the old transaction slot corresponds to a TPD slot,
+		 * we must have locked the TPD page during slot reservation.
+		 */
+		if (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)) &&
+			(old_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS))
+		{
+			Page oldpage, newpage;
+			ZHeapPageOpaque oldopaque, newopaque;
+			BlockNumber oldtpdblk, newtpdblk;
+
+			oldpage = BufferGetPage(oldbuf);
+			newpage = BufferGetPage(newbuf);
+			oldopaque = (ZHeapPageOpaque) PageGetSpecialPointer(oldpage);
+			newopaque = (ZHeapPageOpaque) PageGetSpecialPointer(newpage);
+
+			oldtpdblk = oldopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid_epoch;
+			newtpdblk = newopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid_epoch;
+
+			if (oldtpdblk != newtpdblk)
+				TPDPageLock(relation, newbuf);
+		}
+		else
+			TPDPageLock(relation, newbuf);
+	}
 }

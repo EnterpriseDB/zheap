@@ -786,8 +786,10 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 		 */
 		if (PageGetSpecialSize(page) == sizeof(TPDPageOpaqueData))
 		{
-			TPDPagePrune(onerel, buf, vac_strategy, InvalidOffsetNumber, 0,
-						 true, NULL, NULL);
+			/* If the page is already pruned, skip it. */
+			if (!PageIsEmpty(page))
+				TPDPagePrune(onerel, buf, vac_strategy, InvalidOffsetNumber, 0,
+							 true, NULL, NULL);
 			UnlockReleaseBuffer(buf);
 			continue;
 		}

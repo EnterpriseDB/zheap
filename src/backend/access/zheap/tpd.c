@@ -1096,17 +1096,25 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 	if (!BlockNumberIsValid(prevblkno) ||
 		!BlockNumberIsValid(nextblkno))
 	{
-		if (!BlockNumberIsValid(prevblkno))
+		if (!BlockNumberIsValid(prevblkno) && !BlockNumberIsValid(nextblkno))
 		{
 			/*
-			 * If there is no prevblock, then the current page must be the
-			 * first and the last page.
+			 * If there is no prevblock and nextblock, then the current page
+			 * must be the first and the last page.
 			 */
 			Assert(metapage->zhm_first_used_tpd_page == curblkno);
-			Assert(metapage->zhm_last_used_tpd_page == curblkno ||
-				   metapage->zhm_last_used_tpd_page == InvalidBlockNumber);
+			Assert(metapage->zhm_last_used_tpd_page == curblkno);
 			metapage->zhm_first_used_tpd_page = InvalidBlockNumber;
 			metapage->zhm_last_used_tpd_page = InvalidBlockNumber;
+		}
+		else if (!BlockNumberIsValid(prevblkno))
+		{
+			/*
+			 * If there is no prevblock, then the current block must be first
+			 * used page.
+			 */
+			Assert(BlockNumberIsValid(nextblkno));
+			metapage->zhm_first_used_tpd_page = nextblkno;
 		}
 		else if (!BlockNumberIsValid(nextblkno))
 		{
@@ -1292,35 +1300,47 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 			 * deadlocks.  See comments atop of function.
 			 */
 			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-			LockBuffer(tpd_buf, BUFFER_LOCK_EXCLUSIVE);
 
-			page = BufferGetPage(tpd_buf);
-
-			if (PageIsEmpty(page))
+			/*
+			 *  It's possible that FSM returns a zheap page on which the current
+			 *  backend already holds a lock in exclusive mode. Hence, try using
+			 *  conditional lock. If it can't get the lock immediately, extend
+			 *  the relation and allocate a new TPD block.
+			 */
+			if (ConditionalLockBuffer(tpd_buf))
 			{
-				GetTPDBuffer(relation, targetBlock, tpd_buf,
-							 TPD_BUF_FIND_OR_KNOWN_ENTER, &already_exists);
-				break;
+				page = BufferGetPage(tpd_buf);
+
+				if (PageIsEmpty(page))
+				{
+					GetTPDBuffer(relation, targetBlock, tpd_buf,
+								 TPD_BUF_FIND_OR_KNOWN_ENTER, &already_exists);
+					break;
+				}
+
+				LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
+
+				if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+					pageFreeSpace = PageGetTPDFreeSpace(page);
+				else
+					pageFreeSpace = PageGetZHeapFreeSpace(page);
+
+				/*
+				 * Update FSM as to condition of this page, and ask for another page
+				 * to try.
+				 */
+				targetBlock = RecordAndGetPageWithFreeSpace(relation,
+															targetBlock,
+															pageFreeSpace,
+															len);
+				UnlockReleaseBuffer(tpd_buf);
 			}
 			else
 			{
 				LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
-				UnlockReleaseBuffer(tpd_buf);
+				ReleaseBuffer(tpd_buf);
+				targetBlock = InvalidBlockNumber;
 			}
-
-			if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
-				pageFreeSpace = PageGetTPDFreeSpace(page);
-			else
-				pageFreeSpace = PageGetZHeapFreeSpace(page);
-
-			/*
-			 * Update FSM as to condition of this page, and ask for another page
-			 * to try.
-			 */
-			targetBlock = RecordAndGetPageWithFreeSpace(relation,
-														targetBlock,
-														pageFreeSpace,
-														len);
 		}
 
 		/* Extend the relation, if required? */
@@ -2893,14 +2913,14 @@ TPDPageLock(Relation relation, Buffer heapbuf)
 
 	lastblock = RelationGetNumberOfBlocks(relation);
 
-	if (lastblock < tpdblk)
+	if (lastblock <= tpdblk)
 	{
 		/*
 		 * The required TPD block has been pruned and then truncated away
 		 * which means all transaction slots on that page are older than
 		 * oldestXidHavingUndo.  So, we can't lock the page.
 		 */
-		return false;
+		goto failed;
 	}
 
 	/*
@@ -2912,23 +2932,32 @@ TPDPageLock(Relation relation, Buffer heapbuf)
 	tpd_buf = tpd_buffers[buf_idx].buf;
 	tpdpage = BufferGetPage(tpd_buf);
 
+	Assert(!already_exists);
+	LockBuffer(tpd_buf, BUFFER_LOCK_EXCLUSIVE);
+
 	/* Check whether TPD entry can exist on page? */
 	if (PageIsEmpty(tpdpage))
 	{
 		ReleaseLastTPDBuffer(tpd_buf);
-		return false;
+		goto failed;
 	}
 	else if (PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData)))
 	{
 		ReleaseLastTPDBuffer(tpd_buf);
-		return false;
+		goto failed;
 	}
 
-	Assert(!already_exists);
-
-	LockBuffer(tpd_buf, BUFFER_LOCK_EXCLUSIVE);
-
 	return true;
+
+failed:
+	/*
+	 * The required TPD block has been pruned which means all transaction slots
+	 * on that page are older than oldestXidHavingUndo.  So, we can assume the
+	 * TPD transaction slots are frozen aka transactions are all-visible and
+	 * can clear the TPD slots from heap tuples.
+	 */
+	LogAndClearTPDLocation(relation, heapbuf, NULL);
+	return false;
 }
 
 /*
