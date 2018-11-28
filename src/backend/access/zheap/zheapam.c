@@ -1702,7 +1702,9 @@ zheap_tuple_updated:
 		Assert(ItemIdIsDeleted(lp) ||
 			   IsZHeapTupleModified(zheaptup.t_data->t_infomask));
 
-		if (ZHeapTupleIsMoved(zheaptup.t_data->t_infomask))
+		/* If item id is deleted, tuple can't be marked as moved. */
+		if (!ItemIdIsDeleted(lp) &&
+			ZHeapTupleIsMoved(zheaptup.t_data->t_infomask))
 			ItemPointerSetMovedPartitions(&hufd->ctid);
 		else
 			hufd->ctid = ctid;
@@ -2809,7 +2811,9 @@ zheap_tuple_updated:
 		Assert(ItemIdIsDeleted(lp) ||
 			   IsZHeapTupleModified(oldtup.t_data->t_infomask));
 
-		if (ZHeapTupleIsMoved(oldtup.t_data->t_infomask))
+		/* If item id is deleted, tuple can't be marked as moved. */
+		if (!ItemIdIsDeleted(lp) &&
+			ZHeapTupleIsMoved(oldtup.t_data->t_infomask))
 			ItemPointerSetMovedPartitions(&hufd->ctid);
 		else
 			hufd->ctid = ctid;
@@ -4991,7 +4995,9 @@ failed:
 		Assert(ItemIdIsDeleted(lp) ||
 			   IsZHeapTupleModified(zhtup.t_data->t_infomask));
 
-		if (ZHeapTupleIsMoved(zhtup.t_data->t_infomask))
+		/* If item id is deleted, tuple can't be marked as moved. */
+		if (!ItemIdIsDeleted(lp) &&
+			ZHeapTupleIsMoved(zhtup.t_data->t_infomask))
 			ItemPointerSetMovedPartitions(&hufd->ctid);
 		else
 			hufd->ctid = ctid;
