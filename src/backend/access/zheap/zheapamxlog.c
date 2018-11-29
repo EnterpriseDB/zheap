@@ -1314,6 +1314,8 @@ zheap_xlog_lock(XLogReaderState *record)
 	/* prepare an undo record */
 	if (ZHeapTupleHasMultiLockers(xlrec->infomask))
 		undorecord.uur_type = UNDO_XID_MULTI_LOCK_ONLY;
+	else if (xlrec->flags & XLZ_LOCK_FOR_UPDATE)
+		undorecord.uur_type = UNDO_XID_LOCK_FOR_UPDATE;
 	else
 		undorecord.uur_type = UNDO_XID_LOCK_ONLY;
 	undorecord.uur_info = 0;
@@ -1410,7 +1412,7 @@ zheap_xlog_lock(XLogReaderState *record)
 		{
 			TPDPageSetUndo(buffer,
 						   undo_slot_no,
-						   false,
+						   (xlrec->flags & XLZ_LOCK_FOR_UPDATE) ? true : false,
 						   xid_epoch,
 						   xid,
 						   urecptr,

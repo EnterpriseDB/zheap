@@ -73,9 +73,11 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 
 		/* don't free the tuple passed by caller */
 		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id, NULL,
-										   (undo_tup) == (zhtup) ? false : true);
+										   (undo_tup) == (zhtup) ? false : true,
+											NULL);
 
 		if (uur_type == UNDO_XID_LOCK_ONLY ||
+			uur_type == UNDO_XID_LOCK_FOR_UPDATE ||
 			uur_type == UNDO_XID_MULTI_LOCK_ONLY)
 		{
 			mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
@@ -85,7 +87,7 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 			multilockmembers = lappend(multilockmembers, mlmember);
 		}
 		else if (uur_type == UNDO_UPDATE ||
-					 uur_type == UNDO_INPLACE_UPDATE)
+				 uur_type == UNDO_INPLACE_UPDATE)
 		{
 			mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
 			mlmember->xid = urec->uur_xid;
@@ -268,9 +270,11 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 			/* don't free the tuple passed by caller */
 			undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
-										NULL, (undo_tup) == (zhtup) ? false : true);
+										NULL, (undo_tup) == (zhtup) ? false : true,
+										BufferGetPage(buf));
 
 			if (uur_type == UNDO_XID_LOCK_ONLY ||
+				uur_type == UNDO_XID_LOCK_FOR_UPDATE ||
 				uur_type == UNDO_XID_MULTI_LOCK_ONLY)
 			{
 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
@@ -710,7 +714,8 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				break;
 			}
 
-			if (uur_type == UNDO_XID_LOCK_ONLY)
+			if (uur_type == UNDO_XID_LOCK_ONLY ||
+				uur_type == UNDO_XID_LOCK_FOR_UPDATE)
 			{
 				found = true;
 				break;

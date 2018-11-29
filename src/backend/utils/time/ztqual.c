@@ -109,7 +109,8 @@ fetch_prior_undo:
 
 	if (skip_lockers &&
 		(urec->uur_type == UNDO_XID_LOCK_ONLY ||
-		urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY))
+		 urec->uur_type == UNDO_XID_LOCK_FOR_UPDATE ||
+		 urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY))
 	{
 		*xid = InvalidTransactionId;
 		*urec_ptr = urec->uur_blkprev;
@@ -381,7 +382,7 @@ fetch_prior_undo_record:
 
 	/* Here, we free the previous version and palloc a new tuple from undo. */
 	undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id, NULL,
-									   true);
+									   true, BufferGetPage(buffer));
 
 	prev_urec_ptr = urec->uur_blkprev;
 	*xid = urec->uur_prevxid;
@@ -541,7 +542,8 @@ fetch_prior_undo_record:
 	if (urec == NULL)
 		return zhtup;
 
-	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, &trans_slot_id, &cid, true);
+	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, &trans_slot_id, &cid, true,
+									   BufferGetPage(buffer));
 	prev_urec_ptr = urec->uur_blkprev;
 	xid = urec->uur_prevxid;
 
@@ -763,7 +765,8 @@ GetTupleFromUndoWithOffset(UndoRecPtr urec_ptr, Snapshot snapshot,
 
 	/* need to ensure that undo record contains complete tuple */
 	Assert(urec->uur_type == UNDO_DELETE || urec->uur_type == UNDO_UPDATE);
-	undo_tup = CopyTupleFromUndoRecord(urec, NULL, &trans_slot_id, &cid, false);
+	undo_tup = CopyTupleFromUndoRecord(urec, NULL, &trans_slot_id, &cid, false,
+									   BufferGetPage(buffer));
 	prev_urec_ptr = urec->uur_blkprev;
 	xid = urec->uur_prevxid;
 
@@ -831,7 +834,6 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	int	undo_oper;
 	bool result;
 
-
 	/*
 	 * tuple is modified after the scan is started, fetch the prior record
 	 * from undo to see if it is visible.
@@ -859,7 +861,7 @@ fetch_prior_undo_record:
 	}
 
 	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, &trans_slot_id, &cid,
-									   free_zhtup);
+									   free_zhtup, BufferGetPage(buffer));
 	prev_urec_ptr = urec->uur_blkprev;
 	xid = urec->uur_prevxid;
 	/*

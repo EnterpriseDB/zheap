@@ -200,6 +200,7 @@ typedef struct xl_zheap_freeze_xact_slot
 #define XLZ_LOCK_TRANS_SLOT_FOR_UREC		(1<<0)
 #define XLZ_LOCK_CONTAINS_TPD_SLOT			(1<<1)
 #define XLZ_LOCK_CONTAINS_SUBXACT			(1<<2)
+#define XLZ_LOCK_FOR_UPDATE					(1<<3)
 
 /* This is what we need to know about zheap lock tuple. */
 typedef struct xl_zheap_lock

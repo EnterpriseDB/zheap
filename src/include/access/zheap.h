@@ -196,9 +196,10 @@ extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 extern TransactionId zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer);
 
 /* Zheap and undo record interaction related API's */
-extern ZHeapTuple
-CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
-						int *trans_slot_id, CommandId *cid, bool free_zhtup);
+extern ZHeapTuple CopyTupleFromUndoRecord(UnpackedUndoRecord *urec,
+										  ZHeapTuple zhtup, int *trans_slot_id,
+										  CommandId *cid, bool free_zhtup,
+										  Page page);
 extern bool
 ZHeapSatisfyUndoRecord(UnpackedUndoRecord* uurec, BlockNumber blkno,
 								OffsetNumber offset, TransactionId xid);
