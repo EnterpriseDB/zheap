@@ -302,7 +302,7 @@ AllocateAndFormTPDEntry(Buffer buf, OffsetNumber offset,
 	 * transaction slot in the heap page.
 	 */
 	for (offnum = FirstOffsetNumber;
-		 offnum <= max_required_offset;
+		 offnum <= PageGetMaxOffsetNumber(page);
 		 offnum = OffsetNumberNext(offnum))
 	{
 		ZHeapTupleHeader	tup_hdr;
