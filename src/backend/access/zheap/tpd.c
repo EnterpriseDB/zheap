@@ -1147,6 +1147,7 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 	{
 		XLogRecPtr	recptr;
 		xl_tpd_free_page	xlrec;
+		uint8 	info =  XLOG_TPD_FREE_PAGE;
 
 		xlrec.prevblkno = prevblkno;
 		xlrec.nextblkno = nextblkno;
@@ -1162,13 +1163,14 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 		{
 			xl_zheap_metadata		xl_meta;
 
+			info |= XLOG_TPD_INIT_PAGE;
 			xl_meta.first_used_tpd_page = metapage->zhm_first_used_tpd_page;
 			xl_meta.last_used_tpd_page = metapage->zhm_last_used_tpd_page;
 			XLogRegisterBuffer(3, metabuf, REGBUF_STANDARD | REGBUF_WILL_INIT);
 			XLogRegisterBufData(3, (char *) &xl_meta, SizeOfMetaData);
 		}
 
-		recptr = XLogInsert(RM_TPD_ID, XLOG_TPD_FREE_PAGE);
+		recptr = XLogInsert(RM_TPD_ID, info);
 
 		if (BufferIsValid(prevbuf))
 			PageSetLSN(prevpage, recptr);
