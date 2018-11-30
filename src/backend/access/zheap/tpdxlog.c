@@ -370,15 +370,7 @@ tpd_xlog_free_page(XLogReaderState *record)
 	Page	page;
 	XLogRedoAction action;
 	Size		freespace;
-	bool		isinit = (XLogRecGetInfo(record) & XLOG_TPD_INIT_PAGE) != 0;
 
-	if (isinit)
-	{
-		buffer = XLogInitBufferForRedo(record, 0);
-		page = BufferGetPage(buffer);
-		ZheapInitPage(page, BufferGetPageSize(buffer));
-		action = BLK_NEEDS_REDO;
-	}
 	if (XLogRecHasBlockRef(record, 0))
 	{
 		action = XLogReadBufferForRedo(record, 0, &prevbuf);
