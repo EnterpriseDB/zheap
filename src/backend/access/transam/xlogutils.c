@@ -294,9 +294,39 @@ XLogReadBufferForRedo(XLogReaderState *record, uint8 block_id,
 }
 
 /*
- * If the caller doesn't know the the block ID, but does know the RelFileNode,
- * forknum and block number, then we search all registered blocks.  This is
- * expected to be a small number.
+ * Find the block ID of the first block that matches the given rnode forknum
+ * and blockno.  If blockno is InvalidBlockNumber, then match any block
+ * number.  Return true if found.
+ */
+bool
+XLogFindBlockId(XLogReaderState *record,
+				RelFileNode rnode,
+				ForkNumber forknum,
+				BlockNumber blockno,
+				uint8 *block_id)
+{
+	uint8	i;
+
+	for (i = 0; i <= record->max_block_id; ++i)
+	{
+		DecodedBkpBlock *block = &record->blocks[i];
+
+		if (block->in_use &&
+			RelFileNodeEquals(block->rnode, rnode) &&
+			block->forknum == forknum &&
+			(block->blkno == blockno || blockno == InvalidBlockNumber))
+		{
+			*block_id = i;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+ * If the caller doesn't know the the block_id, but does know the RelFileNode,
+ * forknum and block number, then we try to find it.
  */
 XLogRedoAction
 XLogReadBufferForRedoBlock(XLogReaderState *record,
@@ -307,27 +337,16 @@ XLogReadBufferForRedoBlock(XLogReaderState *record,
 						   bool get_cleanup_lock,
 						   Buffer *buf)
 {
-	int		i;
+	uint8  	block_id;
 
-	for (i = 0; i <= record->max_block_id; ++i)
-	{
-		DecodedBkpBlock *block = &record->blocks[i];
+	if (XLogFindBlockId(record, rnode, forknum, blockno, &block_id))
+		return XLogReadBufferForRedoExtended(record,
+											 block_id,
+											 mode,
+											 get_cleanup_lock,
+											 buf);
 
-		if (block->in_use &&
-			RelFileNodeEquals(block->rnode, rnode) &&
-			block->forknum == forknum &&
-			block->blkno == blockno)
-		{
-			return XLogReadBufferForRedoExtended(record,
-												 i,
-												 mode,
-												 get_cleanup_lock,
-												 buf);
-		}
-	}
-
-	elog(ERROR,
-		 "could not find block ref rel %u/%u/%u, forknum = %u, block = %u",
+	elog(ERROR, "failed to find block reference rel %u/%u/%u, forknum = %u, block = %u",
 		 rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blockno);
 }
 

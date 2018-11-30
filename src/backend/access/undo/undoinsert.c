@@ -225,8 +225,8 @@ UndoRecordPrepareTransInfo(XLogReaderState *xlog_record, UndoRecPtr urecptr,
 
 	if (log_switched)
 	{
-		Assert(log->meta.prevlogno != InvalidUndoLogNumber);
-		log = UndoLogGet(log->meta.prevlogno, true);
+		Assert(log->meta.unlogged.prevlogno != InvalidUndoLogNumber);
+		log = UndoLogGet(log->meta.unlogged.prevlogno, true);
 		if (log == NULL)
 			return;
 	}
@@ -245,10 +245,10 @@ UndoRecordPrepareTransInfo(XLogReaderState *xlog_record, UndoRecPtr urecptr,
 	 */
 	Assert(AmAttachedToUndoLog(log) || InRecovery || log_switched);
 
-	if (log->meta.last_xact_start == 0)
+	if (log->meta.unlogged.last_xact_start == 0)
 		xact_urp = InvalidUndoRecPtr;
 	else
-		xact_urp = MakeUndoRecPtr(log->logno, log->meta.last_xact_start);
+		xact_urp = MakeUndoRecPtr(log->logno, log->meta.unlogged.last_xact_start);
 
 	/*
 	 * The absence of previous transaction's undo indicate that this backend
@@ -509,6 +509,8 @@ UndoGetBufferSlot(RelFileNode rnode,
  * recovery we don't have mechanism to map xid to multiple log number during one
  * WAL operation.  So in short all the operation under one WAL must allocate
  * their undo from the same undo log.
+ *
+ * TODO: That is not true anymore.  Do we still need this?
  */
 static UndoRecPtr
 UndoRecordAllocate(UnpackedUndoRecord *undorecords, int nrecords,
@@ -578,7 +580,8 @@ resize:
 	}
 
 	if (InRecovery)
-		urecptr = UndoLogAllocateInRecovery(txid, size, upersistence);
+		urecptr = UndoLogAllocateInRecovery(txid, size, upersistence,
+											xlog_record);
 	else
 		urecptr = UndoLogAllocate(size, upersistence);
 
@@ -595,7 +598,7 @@ resize:
 	 * continued from the previous log.
 	 */
 	if ((UndoRecPtrGetOffset(urecptr) == UndoLogBlockHeaderSize) &&
-		log->meta.prevlogno != InvalidUndoLogNumber)
+		log->meta.unlogged.prevlogno != InvalidUndoLogNumber)
 		log_switched = true;
 
 	/*
@@ -605,7 +608,7 @@ resize:
 	 * If we weren't already generating one, then do it now.
 	 */
 	if (!need_xact_hdr &&
-		(log->meta.insert == log->meta.last_xact_start ||
+		(log->meta.unlogged.insert == log->meta.unlogged.last_xact_start ||
 		 UndoRecPtrGetOffset(urecptr) == UndoLogBlockHeaderSize))
 	{
 		need_xact_hdr = true;
@@ -625,7 +628,7 @@ resize:
 	if (need_xact_hdr || log_switched)
 	{
 		/* Don't update our own start header. */
-		if (log->meta.last_xact_start != log->meta.insert)
+		if (log->meta.unlogged.last_xact_start != log->meta.unlogged.insert)
 			UndoRecordPrepareTransInfo(xlog_record, urecptr, log_switched);
 
 		/* Remember the current transaction's xid. */
@@ -646,7 +649,7 @@ resize:
 		 * We only need to register when we are inserting in temp undo logs
 		 * for the first time after the discard.
 		 */
-		if (log->meta.insert == log->meta.discard)
+		if (log->meta.unlogged.insert == log->meta.discard)
 		{
 			/*
 			 * XXX Here, we are overriding the first parameter of function
@@ -755,8 +758,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, TransactionId xid,
 	}
 
 	if (!UndoRecPtrIsValid(prepared_urec_ptr))
-		urecptr = UndoRecordAllocate(urec, 1, txid, upersistence,
-									 xlog_record);
+		urecptr = UndoRecordAllocate(urec, 1, txid, upersistence, xlog_record);
 	else
 		urecptr = prepared_urec_ptr;
 
@@ -825,8 +827,11 @@ RegisterUndoLogBuffers(uint8 first_block_id)
 
 	for (idx = 0; idx < buffer_idx; idx++)
 	{
-		flags = undo_buffer[idx].zero ? REGBUF_WILL_INIT : 0;
+		flags = undo_buffer[idx].zero
+			? REGBUF_KEEP_DATA_AFTER_CP | REGBUF_WILL_INIT
+			: REGBUF_KEEP_DATA_AFTER_CP;
 		XLogRegisterBuffer(first_block_id + idx, undo_buffer[idx].buf, flags);
+		UndoLogRegister(first_block_id + idx, undo_buffer[idx].logno);
 	}
 }
 
@@ -888,7 +893,7 @@ InsertPreparedUndo(void)
 		 * Store the previous undo record length in the header.  We can read
 		 * meta.prevlen without locking, because only we can write to it.
 		 */
-		uur->uur_prevlen = log->meta.prevlen;
+		uur->uur_prevlen = log->meta.unlogged.prevlen;
 
 		/*
 		 * If starting a new log then there is no prevlen to store except when
@@ -897,10 +902,11 @@ InsertPreparedUndo(void)
 		 */
 		if (offset == UndoLogBlockHeaderSize)
 		{
-			if (log->meta.prevlogno != InvalidUndoLogNumber)
+			if (log->meta.unlogged.prevlogno != InvalidUndoLogNumber)
 			{
-				UndoLogControl *prevlog = UndoLogGet(log->meta.prevlogno, false);
-				uur->uur_prevlen = prevlog->meta.prevlen;
+				UndoLogControl *prevlog =
+					UndoLogGet(log->meta.unlogged.prevlogno, false);
+				uur->uur_prevlen = prevlog->meta.unlogged.prevlen;
 			}
 			else
 				uur->uur_prevlen = 0;
@@ -1251,12 +1257,12 @@ UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen)
 
 		log = UndoLogGet(logno, false);
 
-		Assert(log->meta.prevlogno != InvalidUndoLogNumber);
+		Assert(log->meta.unlogged.prevlogno != InvalidUndoLogNumber);
 
 		/* Fetch the previous log control. */
-		prevlog = UndoLogGet(log->meta.prevlogno, false);	/* TODO */
-		logno = log->meta.prevlogno;
-		offset = prevlog->meta.insert;
+		prevlog = UndoLogGet(log->meta.unlogged.prevlogno, false);
+		logno = log->meta.unlogged.prevlogno;
+		offset = prevlog->meta.unlogged.insert;
 	}
 
 	/* calculate the previous undo record pointer */
