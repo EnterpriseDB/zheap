@@ -298,6 +298,9 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 
 	if (rewind)
 	{
+		/* Read the current log from undo */
+		UndoLogControl *log = UndoLogGet(UndoRecPtrGetLogNo(to_urecptr));
+
 		/* Read the prevlen from the first record of this transaction. */
 		uur = UndoFetchRecord(to_urecptr, InvalidBlockNumber,
 							  InvalidOffsetNumber, InvalidTransactionId,
@@ -310,15 +313,20 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 
 
 		/*
-		* Rewind the insert location to start of this transaction.  This is
-		* to avoid reapplying some intermediate undo. We do not need to wal
-		* log this information here, because if the system crash before we
-		* rewind the insert pointer then after recovery we can identify
-		* whether the undo is already applied or not from the slot undo record
-		* pointer. Also set the correct prevlen value (what we have fetched
-		* from the undo).
-		*/
+		 * In ZGetMultiLockMembers we fetch the undo record without a
+		 * buffer lock so it's possible that a transaction in the slot
+		 * can rollback and rewind the undo record pointer.  To prevent
+		 * that we acquire the rewind lock before rewinding the undo record
+		 * pointer and the same lock will be acquire by ZGetMultiLockMembers
+		 * lock in shared mode.  Other places where we fetch the undo
+		 * record we don't need this lock as we are doing that under the
+		 * buffer lock.  So remember to acquire the rewind lock in shared
+		 * mode wherever we are fetching the undo record of non commited
+		 * transaction without buffer lock.
+		 */
+		LWLockAcquire(&log->rewind_lock, LW_EXCLUSIVE);
 		UndoLogRewind(to_urecptr, uur->uur_prevlen);
+		LWLockRelease(&log->rewind_lock);
 
 		UndoRecordRelease(uur);
 	}

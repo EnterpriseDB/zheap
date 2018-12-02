@@ -263,6 +263,7 @@ typedef struct UndoLogControl
 	uint32		oldest_xidepoch;
 	UndoRecPtr	oldest_data;
 	LWLock		discard_lock;		/* prevents discarding while reading */
+	LWLock		rewind_lock;		/* prevent rewinding while reading */
 
 	UndoLogNumber next_free;		/* protected by UndoLogLock */
 } UndoLogControl;
