@@ -318,11 +318,11 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		 * can rollback and rewind the undo record pointer.  To prevent
 		 * that we acquire the rewind lock before rewinding the undo record
 		 * pointer and the same lock will be acquire by ZGetMultiLockMembers
-		 * lock in shared mode.  Other places where we fetch the undo
-		 * record we don't need this lock as we are doing that under the
-		 * buffer lock.  So remember to acquire the rewind lock in shared
-		 * mode wherever we are fetching the undo record of non commited
-		 * transaction without buffer lock.
+		 * in shared mode.  Other places where we fetch the undo record we
+		 * don't need this lock as we are doing that under the buffer lock.
+		 * So remember to acquire the rewind lock in shared mode wherever we
+		 * are fetching the undo record of non commited transaction without
+		 * buffer lock.
 		 */
 		LWLockAcquire(&log->rewind_lock, LW_EXCLUSIVE);
 		UndoLogRewind(to_urecptr, uur->uur_prevlen);

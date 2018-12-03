@@ -234,19 +234,25 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		{
 			UndoLogControl *log = NULL;
 
-			/* Re-verify the undo urec pointer, may be it was rewinded.
-			 * In do-while loop, only once we have to verify urec pointer,
-			 * because we are sure that previous attached undo can not
-			 * rewinded.
-			 * If there is already buf LOCK, then there is no need to verify
-			 * because that time rewind process will not happen.
+			/*
+			 * After we release the buffer lock, the transaction can be
+			 * rolled-back and undo record poiner can be re-winded.  Ensure
+			 * that undo record pointer is sane by acquiring rewind lock so
+			 * that undo worker can't rewind it concurrently.
+			 *
+			 * It is sufficient to verify the first undo record of slot as
+			 * the previous one's can't be re-wounded.
+			 *
+			 * If we already have a buf LOCK, then there is no need to verify
+			 * undo record pointer as rollback can't rewind till the undo actions
+			 * are applied.
 			 */
 			if (nobuflock && first_urp)
 			{
 				log = UndoLogGet(UndoRecPtrGetLogNo(urec_ptr));
 
 				/*
-				 * Acquire rewind lock to prevend rewinding the undo record
+				 * Acquire rewind lock to prevent rewinding the undo record
 				 * pointer while we are fetching the undo record.
 				 */
 				LWLockAcquire(&log->rewind_lock, LW_SHARED);
@@ -255,10 +261,9 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				LockBuffer(buf, BUFFER_LOCK_SHARE);
 
 				/*
-				 * Read the slot information under the buffer lock we can
-				 * release the buffer lock after we read the slot information
-				 * because we already hold the rewind lock so the undo can
-				 * not be rewound. Althoug, it can be discarded but we have
+				 * We can release the buffer lock after reading the slot
+				 * information as we already hold the rewind lock, so the undo
+				 * can't be re-winded.  Although, it can be discarded but we have
 				 * handling for the same.
 				 */
 				trans_slot_id = GetTransactionSlotInfo(buf,
