@@ -394,6 +394,27 @@ tts_heap_get_heap_tuple(TupleTableSlot *slot)
 	Assert(!TTS_EMPTY(slot));
 	if (!hslot->tuple)
 		tts_heap_materialize(slot);
+	else if (HeapTupleHeaderGetNatts(hslot->tuple->t_data)
+			 < slot->tts_tupleDescriptor->natts)
+	{
+		MemoryContext oldContext;
+		HeapTuple oldtuple;
+
+		oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
+
+		oldtuple = hslot->tuple;
+		hslot->tuple = heap_expand_tuple(hslot->tuple,
+										 slot->tts_tupleDescriptor);
+		MemoryContextSwitchTo(oldContext);
+
+		if (slot->tts_flags & TTS_FLAG_SHOULDFREE)
+			heap_freetuple(oldtuple);
+		slot->tts_flags |= TTS_FLAG_SHOULDFREE;
+
+		slot->tts_nvalid = 0;
+		hslot->off = 0;
+		slot_getallattrs(slot);
+	}
 
 	return hslot->tuple;
 }
@@ -762,6 +783,33 @@ tts_buffer_heap_get_heap_tuple(TupleTableSlot *slot)
 
 	if (!bslot->base.tuple)
 		tts_buffer_heap_materialize(slot);
+	else if (HeapTupleHeaderGetNatts(bslot->base.tuple->t_data)
+			 < slot->tts_tupleDescriptor->natts)
+	{
+		MemoryContext oldContext;
+		HeapTuple oldtuple;
+
+		oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
+
+		oldtuple = bslot->base.tuple;
+		bslot->base.tuple = heap_expand_tuple(bslot->base.tuple,
+										 slot->tts_tupleDescriptor);
+		MemoryContextSwitchTo(oldContext);
+
+		if (slot->tts_flags & TTS_FLAG_SHOULDFREE)
+			heap_freetuple(oldtuple);
+		slot->tts_flags |= TTS_FLAG_SHOULDFREE;
+
+		if (BufferIsValid(bslot->buffer))
+		{
+			ReleaseBuffer(bslot->buffer);
+			bslot->buffer = InvalidBuffer;
+		}
+
+		slot->tts_nvalid = 0;
+		bslot->base.off = 0;
+		slot_getallattrs(slot);
+	}
 
 	return bslot->base.tuple;
 }
