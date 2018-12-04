@@ -1434,6 +1434,7 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 
 		isnull[attnum] = false;
 
+		/* XXX: We don't align for byval attributes in zheap. */
 		if (!slow && thisatt->attcacheoff >= 0)
 			off = thisatt->attcacheoff;
 		else if (thisatt->attlen == -1)
@@ -1454,18 +1455,7 @@ slot_deform_tuple(TupleTableSlot *slot, int natts)
 				slow = true;
 			}
 		}
-		else if (slot->tts_ztuple && thisatt->attbyval)
-		{
-			/*
-			 * We don't align for byval attributes in zheap.
-			 *
-			 * Fixme - Having a check like this is a big time hack, but
-			 * we expect it to change this code as per pluggable storage
-			 * API.
-			 */
-			off = off;
-		}
-		else
+		else if (!(slot->tts_ztuple && thisatt->attbyval))
 		{
 			/* not varlena, so safe to use att_align_nominal */
 			off = att_align_nominal(off, thisatt->attalign);
