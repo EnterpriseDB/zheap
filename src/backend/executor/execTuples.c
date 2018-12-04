@@ -1459,6 +1459,29 @@ ExecForceStoreMinimalTuple(MinimalTuple mtup,
 	}
 }
 
+void
+ExecForceStoreHeapTupleDatum(Datum data, TupleTableSlot *slot)
+{
+	HeapTuple	tuple;
+	HeapTupleHeader td;
+
+	td = DatumGetHeapTupleHeader(data);
+
+	tuple = (HeapTuple) palloc(HEAPTUPLESIZE + HeapTupleHeaderGetDatumLength(td));
+	tuple->t_len = HeapTupleHeaderGetDatumLength(td);
+	tuple->t_self = td->t_ctid;
+	tuple->t_data = (HeapTupleHeader) ((char *) tuple + HEAPTUPLESIZE);
+	memcpy((char *) tuple->t_data, (char *) td, tuple->t_len);
+
+	ExecClearTuple(slot);
+
+	heap_deform_tuple(tuple, slot->tts_tupleDescriptor,
+					  slot->tts_values, slot->tts_isnull);
+	ExecStoreVirtualTuple(slot);
+
+	ExecMaterializeSlot(slot);
+}
+
 /* --------------------------------
  *		ExecStoreVirtualTuple
  *			Mark a slot as containing a virtual tuple.
