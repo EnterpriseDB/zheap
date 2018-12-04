@@ -506,12 +506,7 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 				off = att_align_pointer(off, thisatt->attalign, -1,
 										tp + off);
 		}
-		else if (thisatt->attbyval)
-		{
-			/* We don't align for byval attributes in zheap. */
-			off = off;
-		}
-		else
+		else if (!thisatt->attbyval)
 		{
 			/* not varlena, so safe to use att_align_nominal */
 			off = att_align_nominal(off, thisatt->attalign);
@@ -6358,12 +6353,7 @@ znocachegetattr(ZHeapTuple tuple,
 				off = att_align_pointer(off, att->attalign, -1,
 										tp + off);
 		}
-		else if (att->attbyval)
-		{
-			/* We don't align for byval attributes in zheap. */
-			off = off;
-		}
-		else
+		else if (!att->attbyval)
 		{
 			/* not varlena, so safe to use att_align_nominal */
 			off = att_align_nominal(off, att->attalign);

@@ -1062,7 +1062,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 								 * same as the previous transaction slot, so that we
 								 * need to mark the tuple with a special flag.
 								 */
-								if (prev_slot_xid != slot_xid);
+								if (prev_slot_xid != uur->uur_prevxid)
 									zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
 							}
 							else if (uur->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
@@ -1140,7 +1140,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 								 * same as the previous transaction slot, so that we
 								 * need to mark the tuple with a special flag.
 								 */
-								if (prev_slot_xid != slot_xid);
+								if (prev_slot_xid != uur->uur_prevxid)
 									zhtup->t_infomask |= ZHEAP_INVALID_XACT_SLOT;
 							}
 							else if (uur->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
@@ -1178,7 +1178,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 														ZHEAP_PAGE_TRANS_SLOTS + 1,
 														uur->uur_offset);
 
-								if (prev_slot_xid != slot_xid);
+								if (prev_slot_xid != uur->uur_prevxid)
 								{
 									/*
 									 * Here, transaction slot to which tuple point is not
