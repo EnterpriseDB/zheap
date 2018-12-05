@@ -121,7 +121,7 @@ zheap_xlog_insert(XLogReaderState *record)
 		else
 			undorecord.uur_payload.len = 0;
 
-		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
+		urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, NULL);
 		InsertPreparedUndo();
 
 		/*
@@ -399,7 +399,7 @@ zheap_xlog_delete(XLogReaderState *record)
 	if (!hasPayload)
 		undorecord.uur_payload.len = 0;
 
-	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
+	urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, NULL);
 	InsertPreparedUndo();
 
 	/*
@@ -701,7 +701,7 @@ zheap_xlog_update(XLogReaderState *record)
 		if (!hasPayload)
 			undorecord.uur_payload.len = 0;
 
-		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
+		urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, NULL);
 	}
 	else
 	{
@@ -767,12 +767,12 @@ zheap_xlog_update(XLogReaderState *record)
 		undorec[0] = undorecord;
 		undorec[1] = newundorecord;
 
-		UndoSetPrepareSize(2, undorec, xid, UNDO_PERMANENT, NULL);
+		UndoSetPrepareSize(undorec, 2, xid, UNDO_PERMANENT, NULL);
 		undorecord = undorec[0];
 		newundorecord = undorec[1];
 
-		urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
-		newurecptr = PrepareUndoInsert(&newundorecord, UNDO_PERMANENT, xid, NULL);
+		urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, NULL);
+		newurecptr = PrepareUndoInsert(&newundorecord, xid, UNDO_PERMANENT, NULL);
 
 		Assert (newurecptr == xlnewundohdr->urec_ptr);
 	}
@@ -1379,7 +1379,7 @@ zheap_xlog_lock(XLogReaderState *record)
 							   sizeof(SubTransactionId));
 	}
 
-	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
+	urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, NULL);
 	InsertPreparedUndo();
 
 	/*
@@ -1556,12 +1556,12 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			ranges_data_size += undorecord[i].uur_payload.len;
 		}
 
-		UndoSetPrepareSize(nranges, undorecord, xid,
+		UndoSetPrepareSize(undorecord, nranges, xid,
 						   UNDO_PERMANENT, NULL);
 		for (i = 0; i < nranges; i++)
 		{
 			undorecord[i].uur_blkprev = urecptr;
-			urecptr = PrepareUndoInsert(&undorecord[i], UNDO_PERMANENT, xid, NULL);
+			urecptr = PrepareUndoInsert(&undorecord[i], xid, UNDO_PERMANENT, NULL);
 		}
 
 		elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
@@ -1973,7 +1973,7 @@ zheap_xlog_unused(XLogReaderState *record)
 		   (char *) unused,
 		   undorecord.uur_payload.len);
 
-	urecptr = PrepareUndoInsert(&undorecord, UNDO_PERMANENT, xid, NULL);
+	urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, NULL);
 	InsertPreparedUndo();
 
 	/*

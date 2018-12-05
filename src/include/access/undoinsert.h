@@ -3,7 +3,7 @@
  * undoinsert.h
  *	  entry points for inserting undo records
  *
- * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/undoinsert.h
@@ -23,10 +23,10 @@
  *
  * This checks whether an undorecord satisfies the given conditions.
  */
-typedef bool (*SatisfyUndoRecordCallback) (UnpackedUndoRecord* urec,
-											BlockNumber blkno,
-											OffsetNumber offset,
-											TransactionId xid);
+typedef bool (*SatisfyUndoRecordCallback) (UnpackedUndoRecord *urec,
+										   BlockNumber blkno,
+										   OffsetNumber offset,
+										   TransactionId xid);
 
 /*
  * Call PrepareUndoInsert to tell the undo subsystem about the undo record you
@@ -39,8 +39,8 @@ typedef bool (*SatisfyUndoRecordCallback) (UnpackedUndoRecord* urec,
  * undo log only stores mapping for the top most transactions.
  * If in recovery, 'xid' refers to the transaction id stored in WAL.
  */
-extern UndoRecPtr PrepareUndoInsert(UnpackedUndoRecord *, UndoPersistence,
-									TransactionId, xl_undolog_meta *);
+extern UndoRecPtr PrepareUndoInsert(UnpackedUndoRecord *, TransactionId xid,
+				  UndoPersistence, xl_undolog_meta *);
 
 /*
  * Insert a previously-prepared undo record.  This will write the actual undo
@@ -52,7 +52,7 @@ extern void InsertPreparedUndo(void);
 
 /*
  * Unlock and release undo buffers.  This step performed after exiting any
- * critical section.
+ * critical section where we have prepared the undo record.
  */
 extern void UnlockReleaseUndoBuffers(void);
 
@@ -68,12 +68,13 @@ extern void CancelPreparedUndo(void);
  * from urp.  Caller need to call UndoRecordRelease to release the resources
  * allocated by this function.
  */
-extern UnpackedUndoRecord* UndoFetchRecord(UndoRecPtr urp,
-										   BlockNumber blkno,
-										   OffsetNumber offset,
-										   TransactionId xid,
-										   UndoRecPtr *urec_ptr_out,
-										   SatisfyUndoRecordCallback callback);
+extern UnpackedUndoRecord *UndoFetchRecord(UndoRecPtr urp,
+				BlockNumber blkno,
+				OffsetNumber offset,
+				TransactionId xid,
+				UndoRecPtr *urec_ptr_out,
+				SatisfyUndoRecordCallback callback);
+
 /*
  * Release the resources allocated by UndoFetchRecord.
  */
@@ -89,9 +90,9 @@ extern void UndoRecordSetPrevUndoLen(uint16 len);
  * be done before inserting the prepared undo.  If size is > MAX_PREPARED_UNDO
  * then it will allocate extra memory to hold the extra prepared undo.
  */
-extern void UndoSetPrepareSize(int max_prepare, UnpackedUndoRecord *undorecords,
-							   TransactionId xid, UndoPersistence upersistence,
-							   xl_undolog_meta *undometa);
+extern void UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
+				   TransactionId xid, UndoPersistence upersistence,
+				   xl_undolog_meta *undometa);
 
 /*
  * return the previous undo record pointer.
@@ -105,4 +106,5 @@ extern void UndoRecordUpdateTransInfo(void);
 
 /* Reset globals related to undo buffers */
 extern void ResetUndoBuffers(void);
-#endif   /* UNDOINSERT_H */
+
+#endif							/* UNDOINSERT_H */

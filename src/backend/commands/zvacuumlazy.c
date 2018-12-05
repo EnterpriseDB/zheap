@@ -287,8 +287,8 @@ reacquire_slot:
 	 */
 
 	urecptr = PrepareUndoInsert(&undorecord,
-								UndoPersistenceForRelation(onerel),
 								InvalidTransactionId,
+								UndoPersistenceForRelation(onerel),
 								&undometa);
 
 	/*

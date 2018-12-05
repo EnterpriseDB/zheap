@@ -3,7 +3,7 @@
  * undorecord.h
  *	  encode and decode undo records
  *
- * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/undorecord.h
@@ -45,20 +45,22 @@ typedef struct UndoRecordHeader
 	uint8		urec_type;		/* record type code */
 	uint8		urec_info;		/* flag bits */
 	uint16		urec_prevlen;	/* length of previous record in bytes */
-	Oid		urec_reloid;		/* relation OID */
+	Oid			urec_reloid;	/* relation OID */
+
 	/*
 	 * Transaction id that has modified the tuple present in this undo record.
 	 * If this is older then RecentGlobalXmin, then we can consider the tuple
 	 * in this undo record as visible.
 	 */
 	TransactionId urec_prevxid;
+
 	/*
 	 * Transaction id that has modified the tuple for which this undo record
 	 * is written.  We use this to skip the undo records.  See comments atop
 	 * function UndoFetchRecord.
 	 */
-	TransactionId urec_xid;			/* Transaction id */
-	CommandId	urec_cid;			/* command id */
+	TransactionId urec_xid;		/* Transaction id */
+	CommandId	urec_cid;		/* command id */
 } UndoRecordHeader;
 
 #define SizeOfUndoRecordHeader	\
@@ -90,7 +92,7 @@ typedef struct UndoRecordHeader
  */
 typedef struct UndoRecordRelationDetails
 {
-	ForkNumber		urec_fork;		/* fork number */
+	ForkNumber	urec_fork;		/* fork number */
 } UndoRecordRelationDetails;
 
 #define SizeOfUndoRecordRelationDetails \
@@ -111,15 +113,15 @@ typedef struct UndoRecordBlock
 	(offsetof(UndoRecordBlock, urec_offset) + sizeof(OffsetNumber))
 
 /*
- * Identifying information for a transaction to which this undo belongs.
- * it will also store the total size of the undo for this transaction.
+ * Identifying information for a transaction to which this undo belongs.  This
+ * also stores the dbid and the progress of the undo apply during rollback.
  */
 typedef struct UndoRecordTransaction
 {
-	uint32			urec_progress;  /* undo applying progress. */
-	uint32			urec_xidepoch;  /* epoch of the current transaction */
-	Oid				urec_dbid;		/* database id */
-	uint64			urec_next;		/* urec pointer of the next transaction */
+	uint32		urec_progress;	/* undo applying progress. */
+	uint32		urec_xidepoch;	/* epoch of the current transaction */
+	Oid			urec_dbid;		/* database id */
+	uint64		urec_next;		/* urec pointer of the next transaction */
 } UndoRecordTransaction;
 
 #define SizeOfUrecNext (sizeof(UndoRecPtr))
@@ -137,7 +139,7 @@ typedef struct UndoRecordTransaction
  */
 typedef struct UndoRecordPayload
 {
-	uint16		urec_payload_len;		/* # of payload bytes */
+	uint16		urec_payload_len;	/* # of payload bytes */
 	uint16		urec_tuple_len; /* # of tuple bytes */
 } UndoRecordPayload;
 
@@ -163,8 +165,8 @@ typedef struct UnpackedUndoRecord
 	uint8		uur_type;		/* record type code */
 	uint8		uur_info;		/* flag bits */
 	uint16		uur_prevlen;	/* length of previous record */
-	Oid			uur_reloid;	/* relation OID */
-	TransactionId uur_prevxid;		/* transaction id */
+	Oid			uur_reloid;		/* relation OID */
+	TransactionId uur_prevxid;	/* transaction id */
 	TransactionId uur_xid;		/* transaction id */
 	CommandId	uur_cid;		/* command id */
 	ForkNumber	uur_fork;		/* fork number */
@@ -174,15 +176,15 @@ typedef struct UnpackedUndoRecord
 	Buffer		uur_buffer;		/* buffer in which undo record data points */
 	uint32		uur_xidepoch;	/* epoch of the inserting transaction. */
 	uint64		uur_next;		/* urec pointer of the next transaction */
-	Oid			uur_dbid;		/* database id*/
+	Oid			uur_dbid;		/* database id */
 
 	/*
 	 * undo action apply progress 0 = not started, 1 = completed. In future it
 	 * can also be used to show the progress of how much undo has been applied
 	 * so far with some formulae but currently only 0 and 1 is used.
 	 */
-	uint32         uur_progress;
-	StringInfoData uur_payload;	/* payload bytes */
+	uint32		uur_progress;
+	StringInfoData uur_payload; /* payload bytes */
 	StringInfoData uur_tuple;	/* tuple bytes */
 } UnpackedUndoRecord;
 
@@ -191,6 +193,7 @@ typedef struct UnpackedUndoRecord
  * other fields are set.
  */
 extern void UndoRecordSetInfo(UnpackedUndoRecord *uur);
+
 /*
  * Compute the number of bytes of storage that will be required to insert
  * an undo record.  Sets uur->uur_info as a side effect.
@@ -229,4 +232,4 @@ extern bool InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 extern bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page,
 				 int starting_byte, int *already_decoded, bool header_only);
 
-#endif   /* UNDORECORD_H */
+#endif							/* UNDORECORD_H */

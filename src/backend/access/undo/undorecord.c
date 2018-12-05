@@ -3,7 +3,7 @@
  * undorecord.c
  *	  encode and decode undo records
  *
- * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/undo/undorecord.c
@@ -38,7 +38,7 @@ static bool ReadUndoBytes(char *destptr, int readlen,
 Size
 UndoRecordExpectedSize(UnpackedUndoRecord *uur)
 {
-	Size	size;
+	Size		size;
 
 	size = SizeOfUndoRecordHeader;
 	if ((uur->uur_info & UREC_INFO_RELATION_DETAILS) != 0)
@@ -75,17 +75,18 @@ bool
 InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 				 int starting_byte, int *already_written, bool header_only)
 {
-	char   *writeptr = (char *) page + starting_byte;
-	char   *endptr = (char *) page + BLCKSZ;
-	int		my_bytes_written = *already_written;
+	char	   *writeptr = (char *) page + starting_byte;
+	char	   *endptr = (char *) page + BLCKSZ;
+	int			my_bytes_written = *already_written;
 
-	Assert (uur->uur_info != 0);
+	/* The undo record must contain a valid information. */
+	Assert(uur->uur_info != 0);
 
 	/*
 	 * If this is the first call, copy the UnpackedUndoRecord into the
 	 * temporary variables of the types that will actually be stored in the
-	 * undo pages.  We just initialize everything here, on the assumption
-	 * that it's not worth adding branches to save a handful of assignments.
+	 * undo pages.  We just initialize everything here, on the assumption that
+	 * it's not worth adding branches to save a handful of assignments.
 	 */
 	if (*already_written == 0)
 	{
@@ -110,8 +111,8 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 	else
 	{
 		/*
-		 * We should have been passed the same record descriptor as before,
-		 * or caller has messed up.
+		 * We should have been passed the same record descriptor as before, or
+		 * caller has messed up.
 		 */
 		Assert(work_hdr.urec_type == uur->uur_type);
 		Assert(work_hdr.urec_info == uur->uur_info);
@@ -216,13 +217,13 @@ InsertUndoBytes(char *sourceptr, int sourcelen,
 				char **writeptr, char *endptr,
 				int *my_bytes_written, int *total_bytes_written)
 {
-	int		can_write;
-	int		remaining;
+	int			can_write;
+	int			remaining;
 
 	/*
-	 * If we've previously written all of these bytes, there's nothing
-	 * to do except update *my_bytes_written, which we must do to ensure
-	 * that the next call to this function gets the right starting value.
+	 * If we've previously written all of these bytes, there's nothing to do
+	 * except update *my_bytes_written, which we must do to ensure that the
+	 * next call to this function gets the right starting value.
 	 */
 	if (*my_bytes_written >= sourcelen)
 	{
@@ -260,13 +261,14 @@ InsertUndoBytes(char *sourceptr, int sourcelen,
  * should be called again with the next page, passing starting_byte as the
  * sizeof(PageHeaderData).
  */
-bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
-					  int *already_decoded, bool header_only)
+bool
+UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
+				 int *already_decoded, bool header_only)
 {
-	char	*readptr = (char *)page + starting_byte;
-	char	*endptr = (char *) page + BLCKSZ;
-	int		my_bytes_decoded = *already_decoded;
-	bool	is_undo_splited = (my_bytes_decoded > 0) ? true : false;
+	char	   *readptr = (char *) page + starting_byte;
+	char	   *endptr = (char *) page + BLCKSZ;
+	int			my_bytes_decoded = *already_decoded;
+	bool		is_undo_splited = (my_bytes_decoded > 0) ? true : false;
 
 	/* Decode header (if not already done). */
 	if (!ReadUndoBytes((char *) &work_hdr, SizeOfUndoRecordHeader,
@@ -286,8 +288,8 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 	{
 		/* Decode header (if not already done). */
 		if (!ReadUndoBytes((char *) &work_rd, SizeOfUndoRecordRelationDetails,
-							&readptr, endptr,
-							&my_bytes_decoded, already_decoded, false))
+						   &readptr, endptr,
+						   &my_bytes_decoded, already_decoded, false))
 			return false;
 
 		uur->uur_fork = work_rd.urec_fork;
@@ -296,8 +298,8 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 	if ((uur->uur_info & UREC_INFO_BLOCK) != 0)
 	{
 		if (!ReadUndoBytes((char *) &work_blk, SizeOfUndoRecordBlock,
-							&readptr, endptr,
-							&my_bytes_decoded, already_decoded, false))
+						   &readptr, endptr,
+						   &my_bytes_decoded, already_decoded, false))
 			return false;
 
 		uur->uur_blkprev = work_blk.urec_blkprev;
@@ -308,8 +310,8 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 	if ((uur->uur_info & UREC_INFO_TRANSACTION) != 0)
 	{
 		if (!ReadUndoBytes((char *) &work_txn, SizeOfUndoRecordTransaction,
-							&readptr, endptr,
-							&my_bytes_decoded, already_decoded, false))
+						   &readptr, endptr,
+						   &my_bytes_decoded, already_decoded, false))
 			return false;
 
 		uur->uur_next = work_txn.urec_next;
@@ -325,8 +327,8 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 	if ((uur->uur_info & UREC_INFO_PAYLOAD) != 0)
 	{
 		if (!ReadUndoBytes((char *) &work_payload, SizeOfUndoRecordPayload,
-							&readptr, endptr,
-							&my_bytes_decoded, already_decoded, false))
+						   &readptr, endptr,
+						   &my_bytes_decoded, already_decoded, false))
 			return false;
 
 		uur->uur_payload.len = work_payload.urec_payload_len;
@@ -338,8 +340,8 @@ bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 		 * the memory.
 		 *
 		 * XXX There is possibility of optimization that instead of always
-		 * allocating the memory whenever tuple is split we can check if any of
-		 * the payload or tuple data falling into the same page then don't
+		 * allocating the memory whenever tuple is split we can check if any
+		 * of the payload or tuple data falling into the same page then don't
 		 * allocate the memory for that.
 		 */
 		if (!is_undo_splited &&
@@ -401,8 +403,8 @@ static bool
 ReadUndoBytes(char *destptr, int readlen, char **readptr, char *endptr,
 			  int *my_bytes_read, int *total_bytes_read, bool nocopy)
 {
-	int		can_read;
-	int		remaining;
+	int			can_read;
+	int			remaining;
 
 	if (*my_bytes_read >= readlen)
 	{

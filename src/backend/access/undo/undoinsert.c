@@ -103,16 +103,17 @@ static int	buffer_idx;
  */
 typedef struct PreparedUndoSpace
 {
-	UndoRecPtr urp;						/* undo record pointer */
-	UnpackedUndoRecord *urec;			/* undo record */
-	int undo_buffer_idx[MAX_BUFFER_PER_UNDO]; /* undo_buffer array index */
+	UndoRecPtr	urp;			/* undo record pointer */
+	UnpackedUndoRecord *urec;	/* undo record */
+	int			undo_buffer_idx[MAX_BUFFER_PER_UNDO];	/* undo_buffer array
+														 * index */
 } PreparedUndoSpace;
 
-static PreparedUndoSpace  def_prepared[MAX_PREPARED_UNDO];
-static int prepare_idx;
-static int	max_prepare_undo = MAX_PREPARED_UNDO;
-static UndoRecPtr	multi_prep_urp = InvalidUndoRecPtr;
-static bool	update_prev_header = false;
+static PreparedUndoSpace def_prepared[MAX_PREPARED_UNDO];
+static int	prepare_idx;
+static int	max_prepared_undo = MAX_PREPARED_UNDO;
+static UndoRecPtr prepared_urec_ptr = InvalidUndoRecPtr;
+static bool update_prev_header = false;
 
 /*
  * By default prepared_undo and undo_buffer points to the static memory.
@@ -141,16 +142,16 @@ typedef struct XactUndoRecordInfo
 static XactUndoRecordInfo xact_urec_info;
 
 /* Prototypes for static functions. */
-static UnpackedUndoRecord* UndoGetOneRecord(UnpackedUndoRecord *urec,
-											UndoRecPtr urp, RelFileNode rnode,
-											UndoPersistence persistence);
+static UnpackedUndoRecord *UndoGetOneRecord(UnpackedUndoRecord *urec,
+				 UndoRecPtr urp, RelFileNode rnode,
+				 UndoPersistence persistence);
 static void UndoRecordPrepareTransInfo(UndoRecPtr urecptr,
-											 bool log_switched);
+						   bool log_switched);
 static int UndoGetBufferSlot(RelFileNode rnode, BlockNumber blk,
-							 ReadBufferMode rbm,
-							 UndoPersistence persistence);
-static bool UndoRecordIsValid(UndoLogControl *log,
-							  UndoRecPtr urp);
+				  ReadBufferMode rbm,
+				  UndoPersistence persistence);
+static bool UndoRecordIsValid(UndoLogControl * log,
+				  UndoRecPtr urp);
 
 /*
  * Check whether the undo record is discarded or not.  If it's already discarded
@@ -161,7 +162,7 @@ static bool UndoRecordIsValid(UndoLogControl *log,
  * need to release it.
  */
 static bool
-UndoRecordIsValid(UndoLogControl *log, UndoRecPtr urp)
+UndoRecordIsValid(UndoLogControl * log, UndoRecPtr urp)
 {
 	Assert(LWLockHeldByMeInMode(&log->discard_lock, LW_SHARED));
 
@@ -170,10 +171,10 @@ UndoRecordIsValid(UndoLogControl *log, UndoRecPtr urp)
 		/*
 		 * oldest_data is only initialized when the DiscardWorker first time
 		 * attempts to discard undo logs so we can not rely on this value to
-		 * identify whether the undo record pointer is already discarded or not
-		 * so we can check it by calling undo log routine.  If its not yet
-		 * discarded then we have to reacquire the log->discard_lock so that the
-		 * doesn't get discarded concurrently.
+		 * identify whether the undo record pointer is already discarded or
+		 * not so we can check it by calling undo log routine.  If its not yet
+		 * discarded then we have to reacquire the log->discard_lock so that
+		 * the doesn't get discarded concurrently.
 		 */
 		LWLockRelease(&log->discard_lock);
 		if (UndoLogIsDiscarded(urp))
@@ -203,8 +204,8 @@ UndoRecordPrepareTransInfo(UndoRecPtr urecptr, bool log_switched)
 {
 	UndoRecPtr	xact_urp;
 	Buffer		buffer = InvalidBuffer;
-	BlockNumber	cur_blk;
-	RelFileNode	rnode;
+	BlockNumber cur_blk;
+	RelFileNode rnode;
 	UndoLogNumber logno = UndoRecPtrGetLogNo(urecptr);
 	UndoLogControl *log;
 	Page		page;
@@ -268,7 +269,7 @@ UndoRecordPrepareTransInfo(UndoRecPtr urecptr, bool log_switched)
 
 	/*
 	 * Read undo record header in by calling UnpackUndoRecord, if the undo
-	 * record header is splited across buffers then we need to read the complete
+	 * record header is split across buffers then we need to read the complete
 	 * header by invoking UnpackUndoRecord multiple times.
 	 */
 	while (true)
@@ -372,15 +373,14 @@ UndoRecordUpdateTransInfo(void)
 		return;
 
 	/*
-	 * Update the next transactions start urecptr in the transaction
-	 * header.
+	 * Update the next transactions start urecptr in the transaction header.
 	 */
 	starting_byte = UndoRecPtrGetPageOffset(urec_ptr);
 
 	do
 	{
-		Buffer  buffer;
-		int		buf_idx;
+		Buffer		buffer;
+		int			buf_idx;
 
 		buf_idx = xact_urec_info.idx_undo_buffers[idx];
 		buffer = undo_buffer[buf_idx].buf;
@@ -398,7 +398,7 @@ UndoRecordUpdateTransInfo(void)
 		idx++;
 
 		Assert(idx < MAX_BUFFER_PER_UNDO);
-	} while(true);
+	} while (true);
 
 	LWLockRelease(&log->discard_lock);
 }
@@ -421,17 +421,17 @@ UndoGetBufferSlot(RelFileNode rnode,
 				  ReadBufferMode rbm,
 				  UndoPersistence persistence)
 {
-	int 	i;
-	Buffer 	buffer;
+	int			i;
+	Buffer		buffer;
 
 	/* Don't do anything, if we already have a buffer pinned for the block. */
 	for (i = 0; i < buffer_idx; i++)
 	{
 		/*
 		 * It's not enough to just compare the block number because the
-		 * undo_buffer might holds the undo from different undo logs (e.g
-		 * when previous transaction start header is in previous undo log)
-		 * so compare (logno + blkno).
+		 * undo_buffer might holds the undo from different undo logs (e.g when
+		 * previous transaction start header is in previous undo log) so
+		 * compare (logno + blkno).
 		 */
 		if ((blk == undo_buffer[i].blk) &&
 			(undo_buffer[i].logno == rnode.relNode))
@@ -439,7 +439,7 @@ UndoGetBufferSlot(RelFileNode rnode,
 			/* caller must hold exclusive lock on buffer */
 			Assert(BufferIsLocal(undo_buffer[i].buf) ||
 				   LWLockHeldByMeInMode(BufferDescriptorGetContentLock(
-										GetBufferDescriptor(undo_buffer[i].buf - 1)),
+																	   GetBufferDescriptor(undo_buffer[i].buf - 1)),
 										LW_EXCLUSIVE));
 			break;
 		}
@@ -484,30 +484,26 @@ UndoGetBufferSlot(RelFileNode rnode,
  * their undo from the same undo log.
  */
 static UndoRecPtr
-UndoRecordAllocateMulti(UnpackedUndoRecord *undorecords, int nrecords,
-						UndoPersistence upersistence, TransactionId txid,
-						xl_undolog_meta *undometa)
+UndoRecordAllocate(UnpackedUndoRecord *undorecords, int nrecords,
+				   TransactionId txid, UndoPersistence upersistence,
+				   xl_undolog_meta *undometa)
 {
-	UnpackedUndoRecord *urec;
+	UnpackedUndoRecord *urec = NULL;
 	UndoLogControl *log;
-	UndoRecordSize	size;
-	UndoRecPtr		urecptr;
-	bool	need_start_undo = false;
-	bool	first_rec_in_recovery;
-	bool	log_switched = false;
-	int	i;
+	UndoRecordSize size;
+	UndoRecPtr	urecptr;
+	bool		need_xact_hdr = false;
+	bool		log_switched = false;
+	int			i;
 
 	/* There must be at least one undo record. */
 	if (nrecords <= 0)
 		elog(ERROR, "cannot allocate space for zero undo records");
 
-	first_rec_in_recovery = InRecovery && IsTransactionFirstRec(txid);
-
-	if ((!InRecovery && prev_txid[upersistence] != txid) ||
-		first_rec_in_recovery)
-	{
-		need_start_undo = true;
-	}
+	/* Is this the first undo record of the transaction? */
+	if ((InRecovery && IsTransactionFirstRec(txid)) ||
+		(!InRecovery && prev_txid[upersistence] != txid))
+		need_xact_hdr = true;
 
 resize:
 	size = 0;
@@ -517,18 +513,18 @@ resize:
 		urec = undorecords + i;
 
 		/*
-		 * If this is the first undo record of the transaction then initialize
-		 * the transaction header fields of the undorecord. Also, set the flag
-		 * in the uur_info to indicate that this record contains the transaction
-		 * header so allocate the space for the same.
+		 * Prepare the transacion header for the first undo record of
+		 * transaction. XXX there is also an option that instead of adding the
+		 * information to this record we can prepare a new record which only
+		 * contain transaction informations.
 		 */
-		if (need_start_undo && i == 0)
+		if (need_xact_hdr && i == 0)
 		{
 			urec->uur_next = InvalidUndoRecPtr;
 			urec->uur_xidepoch = GetEpochForXid(txid);
 			urec->uur_progress = 0;
 
-			/* During recovery, Fetch database id from the undo log state. */
+			/* During recovery, get the database id from the undo log state. */
 			if (InRecovery)
 				urec->uur_dbid = UndoLogStateGetDatabaseId();
 			else
@@ -540,8 +536,8 @@ resize:
 		else
 		{
 			/*
-			 * It is okay to initialize these variables as these are used only
-			 * with the first record of transaction.
+			 * It is okay to initialize these variables with invalid values as
+			 * these are used only with the first record of transaction.
 			 */
 			urec->uur_next = InvalidUndoRecPtr;
 			urec->uur_xidepoch = 0;
@@ -549,11 +545,7 @@ resize:
 			urec->uur_progress = 0;
 		}
 
-		/*
-		 * Set uur_info for an UnpackedUndoRecord appropriately based on which
-		 * fields are set and calculate the size of the undo record based on the
-		 * uur_info.
-		 */
+		/* Calculate the size of the undo record based on the info required. */
 		UndoRecordSetInfo(urec);
 		size += UndoRecordExpectedSize(urec);
 	}
@@ -564,11 +556,16 @@ resize:
 		urecptr = UndoLogAllocate(size, upersistence);
 
 	log = UndoLogGet(UndoRecPtrGetLogNo(urecptr));
+
+	/*
+	 * By now, we must be attached to some undo log unless we are in recovery.
+	 */
 	Assert(AmAttachedToUndoLog(log) || InRecovery);
 
 	/*
-	 * If this is the first record of the log and not the first record of
-	 * the transaction i.e. same transaction continued from the previous log
+	 * We can consider the log as switched if this is the first record of the
+	 * log and not the first record of the transaction i.e. same transaction
+	 * continued from the previous log.
 	 */
 	if ((UndoRecPtrGetOffset(urecptr) == UndoLogBlockHeaderSize) &&
 		log->meta.prevlogno != InvalidUndoLogNumber)
@@ -578,26 +575,19 @@ resize:
 	 * If we've rewound all the way back to the start of the transaction by
 	 * rolling back the first subtransaction (which we can't detect until
 	 * after we've allocated some space), we'll need a new transaction header.
-	 * If we weren't already generating one, that will make the record larger,
-	 * so we'll have to go back and recompute the size.
+	 * If we weren't already generating one, then do it now.
 	 */
-	if (!need_start_undo &&
+	if (!need_xact_hdr &&
 		(log->meta.insert == log->meta.last_xact_start ||
 		 UndoRecPtrGetOffset(urecptr) == UndoLogBlockHeaderSize))
 	{
-		need_start_undo = true;
+		need_xact_hdr = true;
 		urec->uur_info = 0;		/* force recomputation of info bits */
-
 		goto resize;
 	}
 
-	/*
-	 * If transaction id is switched then update the previous transaction's
-	 * start undo record.
-	 */
-	if (first_rec_in_recovery ||
-		(!InRecovery && prev_txid[upersistence] != txid) ||
-		log_switched)
+	/* Update the previous transaction's start undo record, if required. */
+	if (need_xact_hdr || log_switched)
 	{
 		/* Don't update our own start header. */
 		if (log->meta.last_xact_start != log->meta.insert)
@@ -646,12 +636,15 @@ resize:
 }
 
 /*
- * Call UndoSetPrepareSize to set the value of how many maximum prepared can
- * be done before inserting the prepared undo.  If size is > MAX_PREPARED_UNDO
- * then it will allocate extra memory to hold the extra prepared undo.
+ * Call UndoSetPrepareSize to set the value of how many undo records can be
+ * prepared before we can insert them.  If the size is greater than
+ * MAX_PREPARED_UNDO then it will allocate extra memory to hold the extra
+ * prepared undo.
+ *
+ * This is normally used when more than one undo record needs to be prepared.
  */
 void
-UndoSetPrepareSize(int max_prepare, UnpackedUndoRecord *undorecords,
+UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
 				   TransactionId xid, UndoPersistence upersistence,
 				   xl_undolog_meta *undometa)
 {
@@ -660,96 +653,92 @@ UndoSetPrepareSize(int max_prepare, UnpackedUndoRecord *undorecords,
 	/* Get the top transaction id. */
 	if (xid == InvalidTransactionId)
 	{
-		Assert (!InRecovery);
+		Assert(!InRecovery);
 		txid = GetTopTransactionId();
 	}
 	else
 	{
-		Assert (InRecovery || (xid == GetTopTransactionId()));
+		Assert(InRecovery || (xid == GetTopTransactionId()));
 		txid = xid;
 	}
 
-	multi_prep_urp = UndoRecordAllocateMulti(undorecords, max_prepare,
-											 upersistence, txid, undometa);
-	if (max_prepare <= MAX_PREPARED_UNDO)
+	prepared_urec_ptr = UndoRecordAllocate(undorecords, nrecords, txid,
+										   upersistence, undometa);
+	if (nrecords <= MAX_PREPARED_UNDO)
 		return;
 
-	prepared_undo = palloc0(max_prepare * sizeof(PreparedUndoSpace));
+	prepared_undo = palloc0(nrecords * sizeof(PreparedUndoSpace));
 
 	/*
-	 * Consider buffers needed for updating previous transaction's
-	 * starting undo record. Hence increased by 1.
+	 * Consider buffers needed for updating previous transaction's starting
+	 * undo record. Hence increased by 1.
 	 */
-	undo_buffer = palloc0((max_prepare + 1) * MAX_BUFFER_PER_UNDO *
-						 sizeof(UndoBuffers));
-	max_prepare_undo = max_prepare;
+	undo_buffer = palloc0((nrecords + 1) * MAX_BUFFER_PER_UNDO *
+						  sizeof(UndoBuffers));
+	max_prepared_undo = nrecords;
 }
 
 /*
  * Call PrepareUndoInsert to tell the undo subsystem about the undo record you
  * intended to insert.  Upon return, the necessary undo buffers are pinned and
  * locked.
+ *
  * This should be done before any critical section is established, since it
  * can fail.
  *
- * If not in recovery, 'xid' should refer to the top transaction id because
- * undo log only stores mapping for the top most transactions.
- * If in recovery, 'xid' refers to the transaction id stored in WAL.
+ * In recovery, 'xid' refers to the transaction id stored in WAL, otherwise,
+ * it refers to the top transaction id because undo log only stores mapping
+ * for the top most transactions.
  */
 UndoRecPtr
-PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
-				  TransactionId xid, xl_undolog_meta *undometa)
+PrepareUndoInsert(UnpackedUndoRecord *urec, TransactionId xid,
+				  UndoPersistence upersistence, xl_undolog_meta *undometa)
 {
-	UndoRecordSize	size;
-	UndoRecPtr		urecptr;
-	RelFileNode		rnode;
-	UndoRecordSize  cur_size = 0;
-	BlockNumber		cur_blk;
-	TransactionId	txid;
-	int				starting_byte;
-	int				index = 0;
-	int				bufidx;
-	ReadBufferMode	rbm;
+	UndoRecordSize size;
+	UndoRecPtr	urecptr;
+	RelFileNode rnode;
+	UndoRecordSize cur_size = 0;
+	BlockNumber cur_blk;
+	TransactionId txid;
+	int			starting_byte;
+	int			index = 0;
+	int			bufidx;
+	ReadBufferMode rbm;
 
 	/* Already reached maximum prepared limit. */
-	if (prepare_idx == max_prepare_undo)
-		return InvalidUndoRecPtr;
+	if (prepare_idx == max_prepared_undo)
+		elog(ERROR, "already reached the maximum prepared limit");
 
-	/*
-	 * If this is the first undo record for this top transaction add the
-	 * transaction information to the undo record.
-	 *
-	 * XXX there is also an option that instead of adding the information to
-	 * this record we can prepare a new record which only contain transaction
-	 * informations.
-	 */
+
 	if (xid == InvalidTransactionId)
 	{
-		/* we expect during recovery, we always have a valid transaction id. */
-		Assert (!InRecovery);
+		/* During recovery, we must have a valid transaction id. */
+		Assert(!InRecovery);
 		txid = GetTopTransactionId();
 	}
 	else
 	{
 		/*
-		 * Assign the top transaction id because undo log only stores mapping for
-		 * the top most transactions.
+		 * Assign the top transaction id because undo log only stores mapping
+		 * for the top most transactions.
 		 */
-		Assert (InRecovery || (xid == GetTopTransactionId()));
+		Assert(InRecovery || (xid == GetTopTransactionId()));
 		txid = xid;
 	}
 
-	if (!UndoRecPtrIsValid(multi_prep_urp))
-		urecptr = UndoRecordAllocateMulti(urec, 1, upersistence, txid, undometa);
+	if (!UndoRecPtrIsValid(prepared_urec_ptr))
+		urecptr = UndoRecordAllocate(urec, 1, txid, upersistence, undometa);
 	else
-		urecptr = multi_prep_urp;
+		urecptr = prepared_urec_ptr;
 
+	/* advance the prepared ptr location for next record. */
 	size = UndoRecordExpectedSize(urec);
-	if (UndoRecPtrIsValid(multi_prep_urp))
+	if (UndoRecPtrIsValid(prepared_urec_ptr))
 	{
-		UndoLogOffset insert = UndoRecPtrGetOffset(multi_prep_urp);
+		UndoLogOffset insert = UndoRecPtrGetOffset(prepared_urec_ptr);
+
 		insert = UndoLogOffsetPlusUsableBytes(insert, size);
-		multi_prep_urp = MakeUndoRecPtr(UndoRecPtrGetLogNo(urecptr), insert);
+		prepared_urec_ptr = MakeUndoRecPtr(UndoRecPtrGetLogNo(urecptr), insert);
 	}
 
 	cur_blk = UndoRecPtrGetBlockNum(urecptr);
@@ -773,25 +762,23 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 		else
 			cur_size += BLCKSZ - UndoLogBlockHeaderSize;
 
-		/* FIXME: Should we just report error ? */
+		/* undo record can't use buffers more than MAX_BUFFER_PER_UNDO. */
 		Assert(index < MAX_BUFFER_PER_UNDO);
 
-		/* Keep the track of the buffers we have pinned. */
+		/* Keep the track of the buffers we have pinned and locked. */
 		prepared_undo[prepare_idx].undo_buffer_idx[index++] = bufidx;
-
-		/* Undo record can not fit into this block so go to the next block. */
-		cur_blk++;
 
 		/*
 		 * If we need more pages they'll be all new so we can definitely skip
 		 * reading from disk.
 		 */
 		rbm = RBM_ZERO;
+		cur_blk++;
 	} while (cur_size < size);
 
 	/*
-	 * Save referenced of undo record pointer as well as undo record.
-	 * InsertPreparedUndo will use these to insert the prepared record.
+	 * Save the undo record information to be later used by InsertPreparedUndo
+	 * to insert the prepared record.
 	 */
 	prepared_undo[prepare_idx].urec = urec;
 	prepared_undo[prepare_idx].urp = urecptr;
@@ -803,27 +790,29 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, UndoPersistence upersistence,
 /*
  * Insert a previously-prepared undo record.  This will write the actual undo
  * record into the buffers already pinned and locked in PreparedUndoInsert,
- * and mark them dirty.  For persistent undo, this step should be performed
- * after entering a critical section; it should never fail.
+ * and mark them dirty.  This step should be performed after entering a
+ * criticalsection; it should never fail.
  */
 void
 InsertPreparedUndo(void)
 {
-	Page	page;
-	int		starting_byte;
-	int		already_written;
-	int		bufidx = 0;
-	int		idx;
-	uint16	undo_len = 0;
+	Page		page;
+	int			starting_byte;
+	int			already_written;
+	int			bufidx = 0;
+	int			idx;
+	uint16		undo_len = 0;
 	UndoRecPtr	urp;
-	UnpackedUndoRecord	*uur;
+	UnpackedUndoRecord *uur;
 	UndoLogOffset offset;
 	UndoLogControl *log;
-	uint16	prev_undolen;
 
+	/* There must be atleast one prepared undo record. */
 	Assert(prepare_idx > 0);
 
-	/* This must be called under a critical section. */
+	/*
+	 * This must be called under a critical section or we must be in recovery.
+	 */
 	Assert(InRecovery || CritSectionCount > 0);
 
 	for (idx = 0; idx < prepare_idx; idx++)
@@ -836,18 +825,20 @@ InsertPreparedUndo(void)
 		starting_byte = UndoRecPtrGetPageOffset(urp);
 		offset = UndoRecPtrGetOffset(urp);
 
-		/*
-		 * We can read meta.prevlen without locking, because only we can write
-		 * to it.
-		 */
 		log = UndoLogGet(UndoRecPtrGetLogNo(urp));
 		Assert(AmAttachedToUndoLog(log) || InRecovery);
-		prev_undolen = log->meta.prevlen;
 
-		/* store the previous undo record length in the header */
-		uur->uur_prevlen = prev_undolen;
+		/*
+		 * Store the previous undo record length in the header.  We can read
+		 * meta.prevlen without locking, because only we can write to it.
+		 */
+		uur->uur_prevlen = log->meta.prevlen;
 
-		/* if starting a new log then there is no prevlen to store */
+		/*
+		 * If starting a new log then there is no prevlen to store except when
+		 * the same transaction is continuing from the previous undo log read
+		 * detailed comment atop this file.
+		 */
 		if (offset == UndoLogBlockHeaderSize)
 		{
 			if (log->meta.prevlogno != InvalidUndoLogNumber)
@@ -859,23 +850,26 @@ InsertPreparedUndo(void)
 				uur->uur_prevlen = 0;
 		}
 
-		/* if starting from a new page then include header in prevlen */
+		/*
+		 * if starting from a new page then consider block header size in
+		 * prevlen calculation.
+		 */
 		else if (starting_byte == UndoLogBlockHeaderSize)
-				uur->uur_prevlen += UndoLogBlockHeaderSize;
+			uur->uur_prevlen += UndoLogBlockHeaderSize;
 
 		undo_len = 0;
 
 		do
 		{
 			PreparedUndoSpace undospace = prepared_undo[idx];
-			Buffer  buffer;
+			Buffer		buffer;
 
 			buffer = undo_buffer[undospace.undo_buffer_idx[bufidx]].buf;
 			page = BufferGetPage(buffer);
 
 			/*
 			 * Initialize the page whenever we try to write the first record
-			 * in page.
+			 * in page.  We start writting immediately after the block header.
 			 */
 			if (starting_byte == UndoLogBlockHeaderSize)
 				PageInit(page, BLCKSZ, 0);
@@ -892,22 +886,25 @@ InsertPreparedUndo(void)
 			}
 
 			MarkBufferDirty(buffer);
-			starting_byte = UndoLogBlockHeaderSize;
-			bufidx++;
 
 			/*
 			 * If we are swithing to the next block then consider the header
 			 * in total undo length.
 			 */
+			starting_byte = UndoLogBlockHeaderSize;
 			undo_len += UndoLogBlockHeaderSize;
+			bufidx++;
 
+			/* undo record can't use buffers more than MAX_BUFFER_PER_UNDO. */
 			Assert(bufidx < MAX_BUFFER_PER_UNDO);
-		} while(true);
+		} while (true);
 
-		prev_undolen = undo_len;
+		UndoLogSetPrevLen(UndoRecPtrGetLogNo(urp), undo_len);
 
-		UndoLogSetPrevLen(UndoRecPtrGetLogNo(urp), prev_undolen);
-
+		/*
+		 * Link the transactions in the same log so that we can discard all
+		 * the transaction's undo log in one-shot.
+		 */
 		if (UndoRecPtrIsValid(xact_urec_info.urecptr))
 			UndoRecordUpdateTransInfo();
 
@@ -920,13 +917,14 @@ InsertPreparedUndo(void)
 }
 
 /*
- *  Reset the global variables related to undo buffers. This is required at the
- *  transaction abort or releasing undo buffers
+ * Reset the global variables related to undo buffers. This is required at the
+ * transaction abort and while releasing the undo buffers.
  */
 void
 ResetUndoBuffers(void)
 {
-	int	i;
+	int			i;
+
 	for (i = 0; i < buffer_idx; i++)
 	{
 		undo_buffer[i].blk = InvalidBlockNumber;
@@ -938,30 +936,31 @@ ResetUndoBuffers(void)
 	/* Reset the prepared index. */
 	prepare_idx = 0;
 	buffer_idx = 0;
-	multi_prep_urp = InvalidUndoRecPtr;
+	prepared_urec_ptr = InvalidUndoRecPtr;
 
 	/*
-	 * max_prepare_undo limit is changed so free the allocated memory and reset
-	 * all the variable back to its default value.
+	 * max_prepared_undo limit is changed so free the allocated memory and
+	 * reset all the variable back to their default value.
 	 */
-	if (max_prepare_undo > MAX_PREPARED_UNDO)
+	if (max_prepared_undo > MAX_PREPARED_UNDO)
 	{
 		pfree(undo_buffer);
 		pfree(prepared_undo);
 		undo_buffer = def_buffers;
 		prepared_undo = def_prepared;
-		max_prepare_undo = MAX_PREPARED_UNDO;
+		max_prepared_undo = MAX_PREPARED_UNDO;
 	}
 }
 
 /*
- * Unlock and release undo buffers.  This step performed after exiting any
- * critical section.
+ * Unlock and release the undo buffers.  This step must be performed after
+ * exiting any critical section where we have perfomed undo actions.
  */
 void
 UnlockReleaseUndoBuffers(void)
 {
-	int	i;
+	int			i;
+
 	for (i = 0; i < buffer_idx; i++)
 		UnlockReleaseBuffer(undo_buffer[i].buf);
 
@@ -971,25 +970,25 @@ UnlockReleaseUndoBuffers(void)
 /*
  * Helper function for UndoFetchRecord.  It will fetch the undo record pointed
  * by urp and unpack the record into urec.  This function will not release the
- * pin on the buffer if complete record is fetched from one buffer,  now caller
+ * pin on the buffer if complete record is fetched from one buffer, so caller
  * can reuse the same urec to fetch the another undo record which is on the
  * same block.  Caller will be responsible to release the buffer inside urec
- * and set it to invalid if he wishes to fetch the record from another block.
+ * and set it to invalid if it wishes to fetch the record from another block.
  */
-static UnpackedUndoRecord*
+static UnpackedUndoRecord *
 UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
 				 UndoPersistence persistence)
 {
-	Buffer			 buffer = urec->uur_buffer;
-	Page			 page;
-	int				 starting_byte = UndoRecPtrGetPageOffset(urp);
-	int				 already_decoded = 0;
-	BlockNumber		 cur_blk;
-	bool			 is_undo_splited = false;
+	Buffer		buffer = urec->uur_buffer;
+	Page		page;
+	int			starting_byte = UndoRecPtrGetPageOffset(urp);
+	int			already_decoded = 0;
+	BlockNumber cur_blk;
+	bool		is_undo_rec_split = false;
 
 	cur_blk = UndoRecPtrGetBlockNum(urp);
 
-	/* If we already have a previous buffer then no need to allocate new. */
+	/* If we already have a buffer pin then no need to allocate a new one. */
 	if (!BufferIsValid(buffer))
 	{
 		buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
@@ -1005,19 +1004,19 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
 		page = BufferGetPage(buffer);
 
 		/*
-		 * FIXME: This can be optimized to just fetch header first and only
-		 * if matches with block number and offset then fetch the complete
+		 * XXX This can be optimized to just fetch header first and only if
+		 * matches with block number and offset then fetch the complete
 		 * record.
 		 */
 		if (UnpackUndoRecord(urec, page, starting_byte, &already_decoded, false))
 			break;
 
 		starting_byte = UndoLogBlockHeaderSize;
-		is_undo_splited = true;
+		is_undo_rec_split = true;
 
 		/*
-		 * Complete record is not fitting into one buffer so release the buffer
-		 * pin and also set invalid buffer in the undo record.
+		 * The record spans more than a page so we would have copied it (see
+		 * UnpackUndoRecord).  In such cases, we can release the buffer.
 		 */
 		urec->uur_buffer = InvalidBuffer;
 		UnlockReleaseBuffer(buffer);
@@ -1030,10 +1029,10 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
 	}
 
 	/*
-	 * If we have copied the data then release the buffer. Otherwise just
+	 * If we have copied the data then release the buffer, otherwise, just
 	 * unlock it.
 	 */
-	if (is_undo_splited)
+	if (is_undo_rec_split)
 		UnlockReleaseBuffer(buffer);
 	else
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
@@ -1042,84 +1041,87 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
 }
 
 /*
+ * ResetUndoRecord - Helper function for UndoFetchRecord to reset the current
+ * record.
+ */
+static void
+ResetUndoRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode *rnode,
+				RelFileNode *prevrec_rnode)
+{
+	/*
+	 * If we have a valid buffer pinned then just ensure that we want to find
+	 * the next tuple from the same block.  Otherwise release the buffer and
+	 * set it invalid
+	 */
+	if (BufferIsValid(urec->uur_buffer))
+	{
+		/*
+		 * Undo buffer will be changed if the next undo record belongs to a
+		 * different block or undo log.
+		 */
+		if ((UndoRecPtrGetBlockNum(urp) !=
+			 BufferGetBlockNumber(urec->uur_buffer)) ||
+			(prevrec_rnode->relNode != rnode->relNode))
+		{
+			ReleaseBuffer(urec->uur_buffer);
+			urec->uur_buffer = InvalidBuffer;
+		}
+	}
+	else
+	{
+		/*
+		 * If there is not a valid buffer in urec->uur_buffer that means we
+		 * had copied the payload data and tuple data so free them.
+		 */
+		if (urec->uur_payload.data)
+			pfree(urec->uur_payload.data);
+		if (urec->uur_tuple.data)
+			pfree(urec->uur_tuple.data);
+	}
+
+	/* Reset the urec before fetching the tuple */
+	urec->uur_tuple.data = NULL;
+	urec->uur_tuple.len = 0;
+	urec->uur_payload.data = NULL;
+	urec->uur_payload.len = 0;
+}
+
+/*
  * Fetch the next undo record for given blkno, offset and transaction id (if
- * valid).  We need to match transaction id along with block number and offset
- * because in some cases (like reuse of slot for committed transaction), we
- * need to skip the record if it is modified by a transaction later than the
- * transaction indicated by previous undo record.  For example, consider a
- * case where tuple (ctid - 0,1) is modified by transaction id 500 which
- * belongs to transaction slot 0. Then, the same tuple is modified by
- * transaction id 501 which belongs to transaction slot 1.  Then, both the
- * transaction slots are marked for reuse. Then, again the same tuple is
- * modified by transaction id 502 which has used slot 0.  Now, some
- * transaction which has started before transaction 500 wants to traverse the
- * chain to find visible tuple will keep on rotating infinitely between undo
- * tuple written by 502 and 501.  In such a case, we need to skip the undo
- * tuple written by transaction 502 when we want to find the undo record
- * indicated by the previous pointer of undo tuple written by transaction 501.
+ * valid).  The same tuple can be modified by multiple transactions, so during
+ * undo chain traversal sometimes we need to distinguish based on transaction
+ * id.  Callers that don't have any such requirement can pass
+ * InvalidTransactionId.
+ *
  * Start the search from urp.  Caller need to call UndoRecordRelease to release the
  * resources allocated by this function.
  *
  * urec_ptr_out is undo record pointer of the qualified undo record if valid
  * pointer is passed.
+ *
+ * callback function decides whether particular undo record satisfies the
+ * condition of caller.
  */
-UnpackedUndoRecord*
+UnpackedUndoRecord *
 UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 				TransactionId xid, UndoRecPtr *urec_ptr_out,
 				SatisfyUndoRecordCallback callback)
 {
-	RelFileNode		 rnode, prevrnode = {0};
+	RelFileNode rnode,
+				prevrec_rnode = {0};
 	UnpackedUndoRecord *urec = NULL;
-	int	logno;
+	int			logno;
 
 	if (urec_ptr_out)
 		*urec_ptr_out = InvalidUndoRecPtr;
 
 	urec = palloc0(sizeof(UnpackedUndoRecord));
+	UndoRecPtrAssignRelFileNode(rnode, urp);
 
 	/* Find the undo record pointer we are interested in. */
 	while (true)
 	{
 		UndoLogControl *log;
-
-		UndoRecPtrAssignRelFileNode(rnode, urp);
-
-		/*
-		 * If we have a valid buffer pinned then just ensure that we want to
-		 * find the next tuple from the same block.  Otherwise release the
-		 * buffer and set it invalid
-		 */
-		if (BufferIsValid(urec->uur_buffer))
-		{
-			/*
-			 * Undo buffer will be changed if the next undo record belongs to a
-			 * different block or undo log.
-			 */
-			if (UndoRecPtrGetBlockNum(urp) != BufferGetBlockNumber(urec->uur_buffer) ||
-				(prevrnode.relNode != rnode.relNode))
-			{
-				ReleaseBuffer(urec->uur_buffer);
-				urec->uur_buffer = InvalidBuffer;
-			}
-		}
-		else
-		{
-			/*
-			 * If there is not a valid buffer in urec->uur_buffer that means we
-			 * had copied the payload data and tuple data so free them.
-			 */
-			if (urec->uur_payload.data)
-				pfree(urec->uur_payload.data);
-			if (urec->uur_tuple.data)
-				pfree(urec->uur_tuple.data);
-		}
-
-		/* Reset the urec before fetching the tuple */
-		urec->uur_tuple.data = NULL;
-		urec->uur_tuple.len = 0;
-		urec->uur_payload.data = NULL;
-		urec->uur_payload.len = 0;
-		prevrnode = rnode;
 
 		logno = UndoRecPtrGetLogNo(urp);
 		log = UndoLogGet(logno);
@@ -1137,28 +1139,8 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 		 * also holding log->discard_lock.
 		 */
 		LWLockAcquire(&log->discard_lock, LW_SHARED);
-		if (!UndoRecPtrIsValid(log->oldest_data))
+		if (!UndoRecordIsValid(log, urp))
 		{
-			/*
-			 * UndoDiscardInfo is not yet initialized. Hence, we've to check
-			 * UndoLogIsDiscarded and if it's already discarded then we have
-			 * nothing to do.
-			 */
-			LWLockRelease(&log->discard_lock);
-			if (UndoLogIsDiscarded(urp))
-			{
-				if (BufferIsValid(urec->uur_buffer))
-					ReleaseBuffer(urec->uur_buffer);
-				return NULL;
-			}
-
-			LWLockAcquire(&log->discard_lock, LW_SHARED);
-		}
-
-		/* Check if it's already discarded. */
-		if (urp < log->oldest_data)
-		{
-			LWLockRelease(&log->discard_lock);
 			if (BufferIsValid(urec->uur_buffer))
 				ReleaseBuffer(urec->uur_buffer);
 			return NULL;
@@ -1176,6 +1158,13 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 			break;
 
 		urp = urec->uur_blkprev;
+		prevrec_rnode = rnode;
+
+		/* Get rnode for the current undo record pointer. */
+		UndoRecPtrAssignRelFileNode(rnode, urp);
+
+		/* Reset the current undorecord before fetching the next. */
+		ResetUndoRecord(urec, urp, &rnode, &prevrec_rnode);
 	}
 
 	if (urec_ptr_out)
@@ -1201,7 +1190,8 @@ UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen)
 	 */
 	if (offset == UndoLogBlockHeaderSize)
 	{
-		UndoLogControl	*prevlog, *log;
+		UndoLogControl *prevlog,
+				   *log;
 
 		log = UndoLogGet(logno);
 
@@ -1214,7 +1204,7 @@ UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen)
 	}
 
 	/* calculate the previous undo record pointer */
-	return MakeUndoRecPtr (logno, offset - prevlen);
+	return MakeUndoRecPtr(logno, offset - prevlen);
 }
 
 /*
@@ -1239,7 +1229,7 @@ UndoRecordRelease(UnpackedUndoRecord *urec)
 			pfree(urec->uur_tuple.data);
 	}
 
-	pfree (urec);
+	pfree(urec);
 }
 
 /*
