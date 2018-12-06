@@ -45,7 +45,7 @@
 #define UNLINKS_PER_ABSORB		10
 
 /*
- * Special values for the segno arg to RememberFsyncRequest.
+ * Special values for the segno arg to mdrequestsync.
  *
  * Note that CompactCheckpointerRequestQueue assumes that it's OK to remove an
  * fsync request from the queue if an identical, subsequent request is found.
@@ -1420,7 +1420,7 @@ register_dirty_segment(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
 	if (pendingOpsTable)
 	{
 		/* push it into local pending-ops table */
-		RememberFsyncRequest(reln->smgr_rnode.node, forknum, seg->mdfd_segno);
+		mdrequestsync(reln->smgr_rnode.node, forknum, seg->mdfd_segno);
 	}
 	else
 	{
@@ -1456,8 +1456,7 @@ register_unlink(RelFileNodeBackend rnode)
 	if (pendingOpsTable)
 	{
 		/* push it into local pending-ops table */
-		RememberFsyncRequest(rnode.node, MAIN_FORKNUM,
-							 UNLINK_RELATION_REQUEST);
+		mdrequestsync(rnode.node, MAIN_FORKNUM, UNLINK_RELATION_REQUEST);
 	}
 	else
 	{
@@ -1476,7 +1475,7 @@ register_unlink(RelFileNodeBackend rnode)
 }
 
 /*
- * RememberFsyncRequest() -- callback from checkpointer side of fsync request
+ * mdrequestsync() -- callback from checkpointer side of fsync request
  *
  * We stuff fsync requests into the local hash table for execution
  * during the checkpointer's next checkpoint.  UNLINK requests go into a
@@ -1497,7 +1496,7 @@ register_unlink(RelFileNodeBackend rnode)
  * heavyweight operation anyhow, so we'll live with it.)
  */
 void
-RememberFsyncRequest(RelFileNode rnode, ForkNumber forknum, BlockNumber segno)
+mdrequestsync(RelFileNode rnode, ForkNumber forknum, int segno)
 {
 	Assert(pendingOpsTable);
 
@@ -1640,7 +1639,7 @@ ForgetRelationFsyncRequests(RelFileNode rnode, ForkNumber forknum)
 	if (pendingOpsTable)
 	{
 		/* standalone backend or startup process: fsync state is local */
-		RememberFsyncRequest(rnode, forknum, FORGET_RELATION_FSYNC);
+		mdrequestsync(rnode, forknum, FORGET_RELATION_FSYNC);
 	}
 	else if (IsUnderPostmaster)
 	{
@@ -1679,7 +1678,7 @@ ForgetDatabaseFsyncRequests(Oid dbid)
 	if (pendingOpsTable)
 	{
 		/* standalone backend or startup process: fsync state is local */
-		RememberFsyncRequest(rnode, InvalidForkNumber, FORGET_DATABASE_FSYNC);
+		mdrequestsync(rnode, InvalidForkNumber, FORGET_DATABASE_FSYNC);
 	}
 	else if (IsUnderPostmaster)
 	{

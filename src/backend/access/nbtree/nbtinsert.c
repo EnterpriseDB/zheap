@@ -57,7 +57,7 @@ static TransactionId _bt_check_unique(Relation rel, IndexTuple itup,
 				 Relation heapRel, Buffer buf, OffsetNumber offset,
 				 ScanKey itup_scankey,
 				 IndexUniqueCheck checkUnique, bool *is_unique,
-				 uint32 *speculativeToken);
+				 uint32 *speculativeToken, SubTransactionId *subxid);
 static void _bt_findinsertloc(Relation rel,
 				  Buffer *bufptr,
 				  OffsetNumber *offsetptr,
@@ -250,10 +250,12 @@ top:
 	{
 		TransactionId xwait;
 		uint32		speculativeToken;
+		SubTransactionId subxid = InvalidSubTransactionId;
 
 		offset = _bt_binsrch(rel, buf, indnkeyatts, itup_scankey, false);
 		xwait = _bt_check_unique(rel, itup, heapRel, buf, offset, itup_scankey,
-								 checkUnique, &is_unique, &speculativeToken);
+								 checkUnique, &is_unique, &speculativeToken,
+								 &subxid);
 
 		if (TransactionIdIsValid(xwait))
 		{
@@ -267,9 +269,12 @@ top:
 			 */
 			if (speculativeToken)
 				SpeculativeInsertionWait(xwait, speculativeToken);
+			else if (subxid != InvalidSubTransactionId)
+				SubXactLockTableWait(xwait, subxid, rel, &itup->t_tid,
+									 XLTW_InsertIndex);
 			else
-				XactLockTableWait(xwait, rel, &itup->t_tid, XLTW_InsertIndex);
-
+				XactLockTableWait(xwait, rel, &itup->t_tid,
+								  XLTW_InsertIndex);
 			/* start over... */
 			if (stack)
 				_bt_freestack(stack);
@@ -331,7 +336,7 @@ static TransactionId
 _bt_check_unique(Relation rel, IndexTuple itup, Relation heapRel,
 				 Buffer buf, OffsetNumber offset, ScanKey itup_scankey,
 				 IndexUniqueCheck checkUnique, bool *is_unique,
-				 uint32 *speculativeToken)
+				 uint32 *speculativeToken, SubTransactionId *subxid)
 {
 	TupleDesc	itupdesc = RelationGetDescr(rel);
 	int			indnkeyatts = IndexRelationGetNumberOfKeyAttributes(rel);
@@ -449,6 +454,7 @@ _bt_check_unique(Relation rel, IndexTuple itup, Relation heapRel,
 							_bt_relbuf(rel, nbuf);
 						/* Tell _bt_doinsert to wait... */
 						*speculativeToken = SnapshotDirty.speculativeToken;
+						*subxid = SnapshotDirty.subxid;
 						return xwait;
 					}
 

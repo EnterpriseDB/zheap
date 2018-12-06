@@ -18467,6 +18467,11 @@ SELECT collation for ('foo' COLLATE "de_DE");
        <entry><type>timestamp with time zone</type></entry>
       </row>
 
+      <row>
+       <entry><literal>oldest_xid_with_epoch_having_undo</literal></entry>
+       <entry><type>xid</type></entry>
+      </row>
+
      </tbody>
     </tgroup>
    </table>

@@ -260,18 +260,25 @@ typedef struct xl_hash_init_bitmap_page
  *
  * Backup Blk 0: bucket page
  * Backup Blk 1: meta page
+ *
+ * In Hot Standby, we need to scan the entire relation to verify whether any
+ * hash delete index item conflicts with any standby query. For that, we need to
+ * know the relation type which is stored in xlog record.
  */
+#define	XLOG_HASH_VACUUM_RELATION_STORAGE_ZHEAP	0x0001
+
 typedef struct xl_hash_vacuum_one_page
 {
 	TransactionId latestRemovedXid;
 	RelFileNode hnode;
 	int			ntuples;
+	uint8		flags;			/* See XLOG_HASH_VACUUM_* flags for details */
 
 	/* TARGET OFFSET NUMBERS FOLLOW AT THE END */
 } xl_hash_vacuum_one_page;
 
 #define SizeOfHashVacuumOnePage \
-	(offsetof(xl_hash_vacuum_one_page, ntuples) + sizeof(int))
+	(offsetof(xl_hash_vacuum_one_page, flags) + sizeof(uint8))
 
 extern void hash_redo(XLogReaderState *record);
 extern void hash_desc(StringInfo buf, XLogReaderState *record);

@@ -78,8 +78,8 @@ pg_control_system(PG_FUNCTION_ARGS)
 Datum
 pg_control_checkpoint(PG_FUNCTION_ARGS)
 {
-	Datum		values[19];
-	bool		nulls[19];
+	Datum		values[20];
+	bool		nulls[20];
 	TupleDesc	tupdesc;
 	HeapTuple	htup;
 	ControlFileData *ControlFile;
@@ -91,7 +91,7 @@ pg_control_checkpoint(PG_FUNCTION_ARGS)
 	 * Construct a tuple descriptor for the result row.  This must match this
 	 * function's pg_proc entry!
 	 */
-	tupdesc = CreateTemplateTupleDesc(18);
+	tupdesc = CreateTemplateTupleDesc(19);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "checkpoint_lsn",
 					   LSNOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "redo_lsn",
@@ -128,6 +128,8 @@ pg_control_checkpoint(PG_FUNCTION_ARGS)
 					   XIDOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 18, "checkpoint_time",
 					   TIMESTAMPTZOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 19, "oldest_xid_with_epoch_having_undo",
+					   INT8OID, -1, 0);
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	/* Read the control file. */
@@ -201,6 +203,9 @@ pg_control_checkpoint(PG_FUNCTION_ARGS)
 	values[17] = TimestampTzGetDatum(
 									 time_t_to_timestamptz(ControlFile->checkPointCopy.time));
 	nulls[17] = false;
+
+	values[18] = Int64GetDatum(ControlFile->checkPointCopy.oldestXidWithEpochHavingUndo);
+	nulls[18] = false;
 
 	htup = heap_form_tuple(tupdesc, values, nulls);
 

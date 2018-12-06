@@ -726,7 +726,7 @@ retry:
 
 	while (index_getnext_slot(index_scan, ForwardScanDirection, existing_slot))
 	{
-		TransactionId xwait;
+		TransactionId xwait, xid;
 		XLTW_Oper	reason_wait;
 		Datum		existing_values[INDEX_MAX_KEYS];
 		bool		existing_isnull[INDEX_MAX_KEYS];
@@ -778,11 +778,22 @@ retry:
 		xwait = TransactionIdIsValid(DirtySnapshot.xmin) ?
 			DirtySnapshot.xmin : DirtySnapshot.xmax;
 
+		/* For zheap, we always use Top Transaction Id. */
+		// ZBORKED: What does this even mean?
+		if (RelationStorageIsZHeap(heap))
+		{
+			xid = GetTopTransactionId();
+		}
+		else
+		{
+			xid = GetCurrentTransactionId();
+		}
+
 		if (TransactionIdIsValid(xwait) &&
 			(waitMode == CEOUC_WAIT ||
 			 (waitMode == CEOUC_LIVELOCK_PREVENTING_WAIT &&
 			  DirtySnapshot.speculativeToken &&
-			  TransactionIdPrecedes(GetCurrentTransactionId(), xwait))))
+			  TransactionIdPrecedes(xid, xwait))))
 		{
 			/*
 			 * PBORKED? When waiting, we used to use t_ctid, rather than
@@ -794,6 +805,9 @@ retry:
 			if (DirtySnapshot.speculativeToken)
 				SpeculativeInsertionWait(DirtySnapshot.xmin,
 										 DirtySnapshot.speculativeToken);
+			else if (DirtySnapshot.subxid != InvalidSubTransactionId)
+				SubXactLockTableWait(xwait, DirtySnapshot.subxid, heap,
+									 &existing_slot->tts_tid, reason_wait);
 			else
 				XactLockTableWait(xwait, heap,
 								  &existing_slot->tts_tid, reason_wait);

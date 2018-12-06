@@ -17,6 +17,7 @@
 
 #include "utils/snapshot.h"
 #include "access/xlogdefs.h"
+#include "utils/ztqual.h"
 
 /* Static variables representing various special snapshot semantics */
 extern PGDLLIMPORT SnapshotData SnapshotSelfData;
@@ -31,6 +32,8 @@ extern PGDLLIMPORT SnapshotData CatalogSnapshotData;
 	((snapshot)->visibility_type == MVCC_VISIBILITY || \
 	 (snapshot)->visibility_type == HISTORIC_MVCC_VISIBILITY)
 
+extern bool XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot);
+
 /*
  * To avoid leaking too much knowledge about reorderbuffer implementation
  * details this is implemented in reorderbuffer.c not tqual.c.
@@ -41,6 +44,14 @@ extern bool ResolveCminCmaxDuringDecoding(struct HTAB *tuplecid_data,
 							  HeapTuple htup,
 							  Buffer buffer,
 							  CommandId *cmin, CommandId *cmax);
+
+extern bool HeapTupleHasSerializableConflictOut(bool visible,
+												HeapTuple htup, Buffer buffer,
+												TransactionId *xid);
+
+extern bool ZHeapTupleHasSerializableConflictOut(bool visible,
+						Relation relation, ItemPointer tid, Buffer buffer,
+						TransactionId *xid);
 
 /*
  * We don't provide a static SnapshotDirty variable because it would be

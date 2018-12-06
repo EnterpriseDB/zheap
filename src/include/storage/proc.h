@@ -270,6 +270,8 @@ typedef struct PROC_HDR
 	int			startupProcPid;
 	/* Buffer id of the buffer that Startup process waits for pin on, or -1 */
 	int			startupBufferPinWaitBufId;
+	/* Oldest transaction id which is having undo. */
+	pg_atomic_uint64 oldestXidWithEpochHavingUndo;
 } PROC_HDR;
 
 extern PGDLLIMPORT PROC_HDR *ProcGlobal;

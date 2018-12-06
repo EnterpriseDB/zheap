@@ -286,6 +286,8 @@ InitProcGlobal(void)
 	/* Create ProcStructLock spinlock, too */
 	ProcStructLock = (slock_t *) ShmemAlloc(sizeof(slock_t));
 	SpinLockInit(ProcStructLock);
+
+	pg_atomic_init_u64(&ProcGlobal->oldestXidWithEpochHavingUndo, 0);
 }
 
 /*

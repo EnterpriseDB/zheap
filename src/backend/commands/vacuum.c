@@ -1262,12 +1262,15 @@ vac_update_datfrozenxid(void)
 		Form_pg_class classForm = (Form_pg_class) GETSTRUCT(classTup);
 
 		/*
-		 * Only consider relations able to hold unfrozen XIDs (anything else
-		 * should have InvalidTransactionId in relfrozenxid anyway.)
+		 * Only consider relations able to hold unfrozen XIDs
 		 */
-		if (classForm->relkind != RELKIND_RELATION &&
-			classForm->relkind != RELKIND_MATVIEW &&
-			classForm->relkind != RELKIND_TOASTVALUE)
+		if ((classForm->relkind != RELKIND_RELATION &&
+			 classForm->relkind != RELKIND_MATVIEW &&
+			 classForm->relkind != RELKIND_TOASTVALUE))
+			continue;
+
+		/* some AMs might not use frozen xids */
+		if (!TransactionIdIsValid(classForm->relfrozenxid))
 			continue;
 
 		Assert(TransactionIdIsNormal(classForm->relfrozenxid));
@@ -1382,6 +1385,7 @@ vac_truncate_clog(TransactionId frozenXID,
 				  MultiXactId lastSaneMinMulti)
 {
 	TransactionId nextXID = ReadNewTransactionId();
+	TransactionId oldestXidHavingUndo;
 	Relation	relation;
 	TableScanDesc scan;
 	HeapTuple	tuple;
@@ -1474,6 +1478,16 @@ vac_truncate_clog(TransactionId frozenXID,
 	/* chicken out if data is bogus in any other way */
 	if (bogus)
 		return;
+
+	/*
+	 * We can't truncate the clog for transactions that still have undo.  The
+	 * oldestXidHavingUndo will be only valid for zheap storage engine, so it
+	 * won't impact any other storage engine.
+	 */
+	oldestXidHavingUndo = GetXidFromEpochXid(
+						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+	if (TransactionIdIsValid(oldestXidHavingUndo))
+		frozenXID = Min(frozenXID, oldestXidHavingUndo);
 
 	/*
 	 * Advance the oldest value for commit timestamps before truncating, so

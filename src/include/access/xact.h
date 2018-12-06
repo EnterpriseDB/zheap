@@ -14,12 +14,14 @@
 #ifndef XACT_H
 #define XACT_H
 
+#include "access/undolog.h"
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
 #include "storage/relfilenode.h"
 #include "storage/sinval.h"
 #include "utils/datetime.h"
+#include "utils/resowner.h"
 
 /*
  * Maximum size of Global Transaction ID (including '\0').
@@ -355,10 +357,14 @@ extern TransactionId GetTopTransactionIdIfAny(void);
 extern TransactionId GetCurrentTransactionId(void);
 extern TransactionId GetCurrentTransactionIdIfAny(void);
 extern TransactionId GetStableLatestTransactionId(void);
+extern void SetCurrentSubTransactionLocked(void);
+extern bool HasCurrentSubTransactionLock(void);
 extern SubTransactionId GetCurrentSubTransactionId(void);
+extern ResourceOwner GetCurrentTransactionResOwner(void);
 extern void MarkCurrentTransactionIdLoggedIfAny(void);
 extern bool SubTransactionIsActive(SubTransactionId subxid);
 extern CommandId GetCurrentCommandId(bool used);
+extern bool GetCurrentCommandIdUsed(void);
 extern void SetParallelStartTimestamps(TimestampTz xact_ts, TimestampTz stmt_ts);
 extern TimestampTz GetCurrentTransactionStartTimestamp(void);
 extern TimestampTz GetCurrentStatementStartTimestamp(void);
@@ -419,6 +425,7 @@ extern XLogRecPtr XactLogAbortRecord(TimestampTz abort_time,
 				   const char *twophase_gid);
 extern void xact_redo(XLogReaderState *record);
 
+extern void XactPerformUndoActionsIfPending(void);
 /* xactdesc.c */
 extern void xact_desc(StringInfo buf, XLogReaderState *record);
 extern const char *xact_identify(uint8 info);
@@ -430,5 +437,7 @@ extern void ParseAbortRecord(uint8 info, xl_xact_abort *xlrec, xl_xact_parsed_ab
 extern void EnterParallelMode(void);
 extern void ExitParallelMode(void);
 extern bool IsInParallelMode(void);
+extern void SetCurrentUndoLocation(UndoRecPtr urec_ptr);
+extern bool XidIsConcurrent(TransactionId xid);
 
 #endif							/* XACT_H */

@@ -1314,7 +1314,7 @@ AbsorbFsyncRequests(void)
 	LWLockRelease(CheckpointerCommLock);
 
 	for (request = requests; n > 0; request++, n--)
-		RememberFsyncRequest(request->rnode, request->forknum, request->segno);
+		smgrrequestsync(request->rnode, request->forknum, request->segno);
 
 	END_CRIT_SECTION();
 

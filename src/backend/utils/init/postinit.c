@@ -557,6 +557,7 @@ BaseInit(void)
 	InitFileAccess();
 	smgrinit();
 	InitBufferPoolAccess();
+	UndoLogInit();
 }
 
 

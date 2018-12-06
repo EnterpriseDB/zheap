@@ -294,6 +294,44 @@ XLogReadBufferForRedo(XLogReaderState *record, uint8 block_id,
 }
 
 /*
+ * If the caller doesn't know the the block ID, but does know the RelFileNode,
+ * forknum and block number, then we search all registered blocks.  This is
+ * expected to be a small number.
+ */
+XLogRedoAction
+XLogReadBufferForRedoBlock(XLogReaderState *record,
+						   RelFileNode rnode,
+						   ForkNumber forknum,
+						   BlockNumber blockno,
+						   ReadBufferMode mode,
+						   bool get_cleanup_lock,
+						   Buffer *buf)
+{
+	int		i;
+
+	for (i = 0; i <= record->max_block_id; ++i)
+	{
+		DecodedBkpBlock *block = &record->blocks[i];
+
+		if (block->in_use &&
+			RelFileNodeEquals(block->rnode, rnode) &&
+			block->forknum == forknum &&
+			block->blkno == blockno)
+		{
+			return XLogReadBufferForRedoExtended(record,
+												 i,
+												 mode,
+												 get_cleanup_lock,
+												 buf);
+		}
+	}
+
+	elog(ERROR,
+		 "could not find block ref rel %u/%u/%u, forknum = %u, block = %u",
+		 rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blockno);
+}
+
+/*
  * Pin and lock a buffer referenced by a WAL record, for the purpose of
  * re-initializing it.
  */
@@ -346,7 +384,8 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 	 * Make sure that if the block is marked with WILL_INIT, the caller is
 	 * going to initialize it. And vice versa.
 	 */
-	zeromode = (mode == RBM_ZERO_AND_LOCK || mode == RBM_ZERO_AND_CLEANUP_LOCK);
+	zeromode = (mode == RBM_ZERO || mode == RBM_ZERO_AND_LOCK ||
+				mode == RBM_ZERO_AND_CLEANUP_LOCK);
 	willinit = (record->blocks[block_id].flags & BKPBLOCK_WILL_INIT) != 0;
 	if (willinit && !zeromode)
 		elog(PANIC, "block with WILL_INIT flag in WAL record must be zeroed by redo routine");
@@ -462,7 +501,7 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 	{
 		/* page exists in file */
 		buffer = ReadBufferWithoutRelcache(rnode, forknum, blkno,
-										   mode, NULL);
+										   mode, NULL, RELPERSISTENCE_PERMANENT);
 	}
 	else
 	{
@@ -487,7 +526,8 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 				ReleaseBuffer(buffer);
 			}
 			buffer = ReadBufferWithoutRelcache(rnode, forknum,
-											   P_NEW, mode, NULL);
+											   P_NEW, mode, NULL,
+											   RELPERSISTENCE_PERMANENT);
 		}
 		while (BufferGetBlockNumber(buffer) < blkno);
 		/* Handle the corner case that P_NEW returns non-consecutive pages */
@@ -497,7 +537,8 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 			ReleaseBuffer(buffer);
 			buffer = ReadBufferWithoutRelcache(rnode, forknum, blkno,
-											   mode, NULL);
+											   mode, NULL,
+											   RELPERSISTENCE_PERMANENT);
 		}
 	}
 

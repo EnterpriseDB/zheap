@@ -1415,9 +1415,10 @@ heapam_scan_bitmap_pagescan(TableScanDesc sscan,
 			if (valid)
 			{
 				scan->rs_vistuples[ntup++] = offnum;
-				PredicateLockTuple(scan->rs_scan.rs_rd, &loctup, snapshot);
+				PredicateLockTid(scan->rs_scan.rs_rd, &loctup.t_self, snapshot,
+								 HeapTupleHeaderGetXmin(loctup.t_data));
 			}
-			CheckForSerializableConflictOut(valid, scan->rs_scan.rs_rd, &loctup,
+			CheckForSerializableConflictOut(valid, scan->rs_scan.rs_rd, (void *) &loctup,
 											buffer, snapshot);
 		}
 	}
@@ -1643,7 +1644,7 @@ heapam_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scans
 
 			/* in pagemode, heapgetpage did this for us */
 			if (!pagemode)
-				CheckForSerializableConflictOut(visible, scan->rs_scan.rs_rd, tuple,
+				CheckForSerializableConflictOut(visible, scan->rs_scan.rs_rd, (void *) tuple,
 												scan->rs_cbuf, scan->rs_scan.rs_snapshot);
 
 			/* Try next tuple from same page. */

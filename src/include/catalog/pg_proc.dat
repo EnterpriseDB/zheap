@@ -868,6 +868,10 @@
   descr => 'row-oriented heap table access method handler',
   proname => 'heap_tableam_handler', provolatile => 'v', prorettype => 'table_am_handler',
   proargtypes => 'internal', prosrc => 'heap_tableam_handler' },
+{ oid => '6667', oid_symbol => 'ZHEAP_TABLE_AM_HANDLER_OID',
+  descr => 'row-oriented, undo based, heap table access method handler',
+  proname => 'zheap_tableam_handler', provolatile => 'v', prorettype => 'table_am_handler',
+  proargtypes => 'internal', prosrc => 'zheap_tableam_handler' },
 
 # Index access method handlers
 { oid => '330', descr => 'btree index access method handler',
@@ -10413,6 +10417,15 @@
   proname => 'pg_relation_is_publishable', provolatile => 's',
   prorettype => 'bool', proargtypes => 'regclass',
   prosrc => 'pg_relation_is_publishable' },
+{ oid => '6122', descr => 'statistics: number of inplace updates performed',
+  proname => 'pg_stat_get_tuples_inplace_updated', provolatile => 's', proparallel => 'r',
+  prorettype => 'int8', proargtypes => 'oid',
+  prosrc => 'pg_stat_get_tuples_inplace_updated' },
+{ oid => '6123',
+  descr => 'statistics: number of inplace updates performed in current transaction',
+  proname => 'pg_stat_get_xact_tuples_inplace_updated', provolatile => 'v',
+  proparallel => 'r', prorettype => 'int8', proargtypes => 'oid',
+  prosrc => 'pg_stat_get_xact_tuples_inplace_updated' },
 
 # rls
 { oid => '3298',
@@ -10444,9 +10457,9 @@
   descr => 'pg_controldata checkpoint state information as a function',
   proname => 'pg_control_checkpoint', provolatile => 'v',
   prorettype => 'record', proargtypes => '',
-  proallargtypes => '{pg_lsn,pg_lsn,text,int4,int4,bool,text,oid,xid,xid,xid,oid,xid,xid,oid,xid,xid,timestamptz}',
-  proargmodes => '{o,o,o,o,o,o,o,o,o,o,o,o,o,o,o,o,o,o}',
-  proargnames => '{checkpoint_lsn,redo_lsn,redo_wal_file,timeline_id,prev_timeline_id,full_page_writes,next_xid,next_oid,next_multixact_id,next_multi_offset,oldest_xid,oldest_xid_dbid,oldest_active_xid,oldest_multi_xid,oldest_multi_dbid,oldest_commit_ts_xid,newest_commit_ts_xid,checkpoint_time}',
+  proallargtypes => '{pg_lsn,pg_lsn,text,int4,int4,bool,text,oid,xid,xid,xid,oid,xid,xid,oid,xid,xid,timestamptz,int8}',
+  proargmodes => '{o,o,o,o,o,o,o,o,o,o,o,o,o,o,o,o,o,o,o}',
+  proargnames => '{checkpoint_lsn,redo_lsn,redo_wal_file,timeline_id,prev_timeline_id,full_page_writes,next_xid,next_oid,next_multixact_id,next_multi_offset,oldest_xid,oldest_xid_dbid,oldest_active_xid,oldest_multi_xid,oldest_multi_dbid,oldest_commit_ts_xid,newest_commit_ts_xid,checkpoint_time,oldest_xid_with_epoch_having_undo}',
   prosrc => 'pg_control_checkpoint' },
 
 { oid => '3443',
@@ -10521,5 +10534,12 @@
   proargmodes => '{i,o,o,o,o}',
   proargnames => '{rootrelid,relid,parentrelid,isleaf,level}',
   prosrc => 'pg_partition_tree' },
+
+# undo logs
+{ oid => '5032', descr => 'list undo logs',
+  proname => 'pg_stat_get_undo_logs', procost => '1', prorows => '10', proretset => 't',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{oid,text,text,text,text,text,xid,int4}', proargmodes => '{o,o,o,o,o,o,o,o}',
+  proargnames => '{log_number,persistence,tablespace,discard,insert,end,xid,pid}', prosrc => 'pg_stat_get_undo_logs' },
 
 ]

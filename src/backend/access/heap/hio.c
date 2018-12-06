@@ -19,6 +19,8 @@
 #include "access/hio.h"
 #include "access/htup_details.h"
 #include "access/visibilitymap.h"
+#include "access/zheap.h"
+#include "access/zhtup.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
 #include "storage/lmgr.h"
@@ -76,7 +78,7 @@ RelationPutHeapTuple(Relation relation,
 /*
  * Read in a buffer, using bulk-insert strategy if bistate isn't NULL.
  */
-static Buffer
+Buffer
 ReadBufferBI(Relation relation, BlockNumber targetBlock,
 			 BulkInsertState bistate)
 {
@@ -118,7 +120,7 @@ ReadBufferBI(Relation relation, BlockNumber targetBlock,
  * must not be InvalidBuffer.  If both buffers are specified, buffer1 must
  * be less than buffer2.
  */
-static void
+void
 GetVisibilityMapPins(Relation relation, Buffer buffer1, Buffer buffer2,
 					 BlockNumber block1, BlockNumber block2,
 					 Buffer *vmbuffer1, Buffer *vmbuffer2)
@@ -174,7 +176,7 @@ GetVisibilityMapPins(Relation relation, Buffer buffer1, Buffer buffer2,
  * amount which ramps up as the degree of contention ramps up, but limiting
  * the result to some sane overall value.
  */
-static void
+void
 RelationAddExtraBlocks(Relation relation, BulkInsertState bistate)
 {
 	BlockNumber blockNum,

@@ -346,30 +346,30 @@ ALTER TABLE f_star ADD COLUMN f int4;
 UPDATE f_star SET f = 10;
 ALTER TABLE e_star* ADD COLUMN e int4;
 --UPDATE e_star* SET e = 42;
-SELECT * FROM e_star*;
+SELECT * FROM e_star* ORDER BY class, aa, cc, ee;
  class | aa |     cc      | ee  | e 
 -------+----+-------------+-----+---
  e     | 15 | hi carol    |  -1 |  
  e     | 16 | hi bob      |     |  
  e     | 17 |             |  -2 |  
- e     |    | hi michelle |  -3 |  
  e     | 18 |             |     |  
  e     |    | hi elisa    |     |  
+ e     |    | hi michelle |  -3 |  
  e     |    |             |  -4 |  
  f     | 19 | hi claire   |  -5 |  
  f     | 20 | hi mike     |  -6 |  
  f     | 21 | hi marcel   |     |  
  f     | 22 |             |  -7 |  
- f     |    | hi keith    |  -8 |  
  f     | 24 | hi marc     |     |  
  f     | 25 |             |  -9 |  
  f     | 26 |             |     |  
- f     |    | hi allison  | -10 |  
- f     |    | hi jeff     |     |  
- f     |    |             | -11 |  
  f     | 27 |             |     |  
+ f     |    | hi allison  | -10 |  
  f     |    | hi carl     |     |  
+ f     |    | hi jeff     |     |  
+ f     |    | hi keith    |  -8 |  
  f     |    |             | -12 |  
+ f     |    |             | -11 |  
  f     |    |             |     |  
  f     |    |             |     |  
 (23 rows)
@@ -390,7 +390,7 @@ SELECT relname, reltoastrelid <> 0 AS has_toast_table
 --UPDATE b_star*
 --   SET a = text 'gazpacho'
 --   WHERE aa > 4;
-SELECT class, aa, a FROM a_star*;
+SELECT class, aa, a FROM a_star* ORDER BY class, aa, a;
  class | aa | a 
 -------+----+---
  a     |  1 | 
@@ -408,14 +408,14 @@ SELECT class, aa, a FROM a_star*;
  d     |  8 | 
  d     |  9 | 
  d     | 10 | 
- d     |    | 
  d     | 11 | 
  d     | 12 | 
  d     | 13 | 
- d     |    | 
- d     |    | 
- d     |    | 
  d     | 14 | 
+ d     |    | 
+ d     |    | 
+ d     |    | 
+ d     |    | 
  d     |    | 
  d     |    | 
  d     |    | 
@@ -423,22 +423,22 @@ SELECT class, aa, a FROM a_star*;
  e     | 15 | 
  e     | 16 | 
  e     | 17 | 
- e     |    | 
  e     | 18 | 
+ e     |    | 
  e     |    | 
  e     |    | 
  f     | 19 | 
  f     | 20 | 
  f     | 21 | 
  f     | 22 | 
- f     |    | 
  f     | 24 | 
  f     | 25 | 
  f     | 26 | 
- f     |    | 
- f     |    | 
- f     |    | 
  f     | 27 | 
+ f     |    | 
+ f     |    | 
+ f     |    | 
+ f     |    | 
  f     |    | 
  f     |    | 
  f     |    | 

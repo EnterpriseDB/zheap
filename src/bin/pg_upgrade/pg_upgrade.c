@@ -468,6 +468,15 @@ copy_xact_xlog_xid(void)
 					  GET_MAJOR_VERSION(new_cluster.major_version) < 1000 ?
 					  "pg_clog" : "pg_xact");
 
+	/* copy old undo checkpoint files to new data dir */
+	copy_subdir_files("pg_undo", "pg_undo");
+
+	/*
+	 * copy old undo logs to new data dir assuming that the
+	 * undo logs exist in default location i.e. 'base/undo'.
+	 */
+	copy_subdir_files("base/undo", "base/undo");
+
 	/* set the next transaction id and epoch of the new cluster */
 	prep_status("Setting next transaction ID and epoch for new cluster");
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,

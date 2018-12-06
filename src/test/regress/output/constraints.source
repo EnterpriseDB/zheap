@@ -329,14 +329,14 @@ UPDATE INSERT_TBL SET x = -z, z = -x;
 UPDATE INSERT_TBL SET x = z, z = x;
 ERROR:  new row for relation "insert_tbl" violates check constraint "insert_tbl_con"
 DETAIL:  Failing row contains (-4, Y, 4).
-SELECT * FROM INSERT_TBL;
+SELECT * FROM INSERT_TBL ORDER BY x;
  x |       y       | z  
 ---+---------------+----
  4 | Y             | -4
-   | try again     |   
- 7 | try again     | -7
  5 | !check failed |   
  6 | try again     | -6
+ 7 | try again     | -7
+   | try again     |   
 (5 rows)
 
 -- DROP TABLE INSERT_TBL;
@@ -429,16 +429,16 @@ INSERT INTO UNIQUE_TBL VALUES (6, 'six-upsert-insert') ON CONFLICT (i) DO UPDATE
 INSERT INTO UNIQUE_TBL VALUES (1, 'a'), (2, 'b'), (2, 'b') ON CONFLICT (i) DO UPDATE SET t = 'fails';
 ERROR:  ON CONFLICT DO UPDATE command cannot affect row a second time
 HINT:  Ensure that no rows proposed for insertion within the same command have duplicate constrained values.
-SELECT '' AS five, * FROM UNIQUE_TBL;
+SELECT '' AS five, * FROM UNIQUE_TBL ORDER BY i, t;
  five | i |         t          
 ------+---+--------------------
       | 1 | one
       | 2 | two
       | 4 | four
-      |   | six
-      |   | seven
       | 5 | five-upsert-update
       | 6 | six-upsert-insert
+      |   | seven
+      |   | six
 (7 rows)
 
 DROP TABLE UNIQUE_TBL;

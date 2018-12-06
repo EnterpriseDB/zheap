@@ -17,6 +17,7 @@
 #include "access/htup.h"
 #include "access/sysattr.h"
 #include "access/tupdesc.h"
+#include "access/zhtup.h"
 #include "storage/buf.h"
 
 /*----------
@@ -225,11 +226,13 @@ extern PGDLLIMPORT const TupleTableSlotOps TTSOpsVirtual;
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsHeapTuple;
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsMinimalTuple;
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsBufferHeapTuple;
+extern PGDLLIMPORT const TupleTableSlotOps TTSOpsZHeapTuple;
 
 #define TTS_IS_VIRTUAL(slot) ((slot)->tts_ops == &TTSOpsVirtual)
 #define TTS_IS_HEAPTUPLE(slot) ((slot)->tts_ops == &TTSOpsHeapTuple)
 #define TTS_IS_MINIMALTUPLE(slot) ((slot)->tts_ops == &TTSOpsMinimalTuple)
 #define TTS_IS_BUFFERTUPLE(slot) ((slot)->tts_ops == &TTSOpsBufferHeapTuple)
+#define TTS_IS_ZHEAP(slot) ((slot)->tts_ops == &TTSOpsZHeapTuple)
 
 
 /*
@@ -289,6 +292,15 @@ typedef struct MinimalTupleTableSlot
 	uint32		off;		/* saved state for slot_deform_heap_tuple */
 } MinimalTupleTableSlot;
 
+#include <access/zhtup.h>
+typedef struct ZHeapTupleTableSlot
+{
+	TupleTableSlot base;
+	ZHeapTuple	tuple;		/* physical tuple */
+	ZHeapTupleData tupdata;
+	uint32		off;		/* saved state for slot_deform_tuple */
+} ZHeapTupleTableSlot;
+
 /*
  * TupIsNull -- is a TupleTableSlot empty?
  */
@@ -319,6 +331,10 @@ extern TupleTableSlot *ExecStoreMinimalTuple(MinimalTuple mtup,
 					  bool shouldFree);
 extern void ExecForceStoreMinimalTuple(MinimalTuple mtup, TupleTableSlot *slot,
 									   bool shouldFree);
+extern TupleTableSlot *ExecStoreZTuple(ZHeapTuple tuple,
+				TupleTableSlot *slot,
+				Buffer buffer,
+				bool shouldFree);
 extern TupleTableSlot *ExecStoreVirtualTuple(TupleTableSlot *slot);
 extern TupleTableSlot *ExecStoreAllNullTuple(TupleTableSlot *slot);
 extern HeapTuple ExecFetchSlotHeapTuple(TupleTableSlot *slot, bool materialize, bool *shouldFree);
@@ -328,6 +344,10 @@ extern Datum ExecFetchSlotHeapTupleDatum(TupleTableSlot *slot);
 extern void slot_getmissingattrs(TupleTableSlot *slot, int startAttNum,
 					 int lastAttNum);
 extern void slot_getsomeattrs_int(TupleTableSlot *slot, int attnum);
+
+
+// ZBORKED RENAME, shouldfree
+extern ZHeapTuple ExecGetZHeapTupleFromSlot(TupleTableSlot *slot);
 
 
 // FIXME: remove

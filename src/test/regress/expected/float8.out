@@ -435,14 +435,14 @@ SELECT '' AS bad, exp(f.f1) from FLOAT8_TBL f;
 ERROR:  value out of range: underflow
 SELECT '' AS bad, f.f1 / '0.0' from FLOAT8_TBL f;
 ERROR:  division by zero
-SELECT '' AS five, * FROM FLOAT8_TBL;
+SELECT '' AS five, * FROM FLOAT8_TBL ORDER BY f1 DESC;
  five |          f1           
 ------+-----------------------
       |                     0
+      | -1.2345678901234e-200
       |                -34.84
       |               -1004.3
       | -1.2345678901234e+200
-      | -1.2345678901234e-200
 (5 rows)
 
 -- test for over- and underflow

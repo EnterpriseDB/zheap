@@ -1979,7 +1979,7 @@ EXPLAIN (COSTS OFF) DELETE FROM bv1 WHERE a = 6 AND f_leak(b);
 DELETE FROM bv1 WHERE a = 6 AND f_leak(b);
 NOTICE:  f_leak => 1679091c5a880faf6fb5e6087eb1b2dc
 SET SESSION AUTHORIZATION regress_rls_alice;
-SELECT * FROM b1;
+SELECT * FROM b1 ORDER BY a;
   a  |                b                 
 -----+----------------------------------
  -10 | 1b0fd9efa5279c4203b7c70233f86dbf
@@ -1996,13 +1996,13 @@ SELECT * FROM b1;
    1 | c4ca4238a0b923820dcc509a6f75849b
    2 | c81e728d9d4c2f636f067f89cc14862c
    3 | eccbc87e4b5ce2fe28308fd9f2a7baf3
+   4 | yyy
    5 | e4da3b7fbbce2345d7772b0674a318d5
    7 | 8f14e45fceea167a5a36dedd4bea2543
    8 | c9f0f895fb98ab9159f51fd0297e236d
    9 | 45c48cce2e2d7fbdea1afc51c7c6ad26
   10 | d3d9446802a44259755d38e6d163e820
   12 | xxx
-   4 | yyy
 (21 rows)
 
 --
@@ -3052,29 +3052,29 @@ DROP POLICY p2 ON t1;
 ALTER TABLE t1 OWNER TO regress_rls_alice;
 -- Check that default deny does not apply to superuser.
 RESET SESSION AUTHORIZATION;
-SELECT * FROM t1;
+SELECT * FROM t1 ORDER BY a;
  a  |                b                 
 ----+----------------------------------
-  1 | c4ca4238a0b923820dcc509a6f75849b
-  3 | eccbc87e4b5ce2fe28308fd9f2a7baf3
-  5 | e4da3b7fbbce2345d7772b0674a318d5
-  7 | 8f14e45fceea167a5a36dedd4bea2543
-  9 | 45c48cce2e2d7fbdea1afc51c7c6ad26
- 11 | 6512bd43d9caa6e02c990b0a82652dca
- 13 | c51ce410c124a10e0db5e4b97fc2af39
- 15 | 9bf31c7ff062936a96d3c8bd1f8f2ff3
- 17 | 70efdf2ec9b086079795c442636b55fb
- 19 | 1f0e3dad99908345f7439f8ffabdffc4
   0 | cfcd208495d565ef66e7dff9f98764da
+  1 | c4ca4238a0b923820dcc509a6f75849b
   2 | c81e728d9d4c2f636f067f89cc14862c
+  3 | eccbc87e4b5ce2fe28308fd9f2a7baf3
   4 | a87ff679a2f3e71d9181a67b7542122c
+  5 | e4da3b7fbbce2345d7772b0674a318d5
   6 | 1679091c5a880faf6fb5e6087eb1b2dc
+  7 | 8f14e45fceea167a5a36dedd4bea2543
   8 | c9f0f895fb98ab9159f51fd0297e236d
+  9 | 45c48cce2e2d7fbdea1afc51c7c6ad26
  10 | d3d9446802a44259755d38e6d163e820
+ 11 | 6512bd43d9caa6e02c990b0a82652dca
  12 | c20ad4d76fe97759aa27a0c99bff6710
+ 13 | c51ce410c124a10e0db5e4b97fc2af39
  14 | aab3238922bcc25a6f606eb525ffdc56
+ 15 | 9bf31c7ff062936a96d3c8bd1f8f2ff3
  16 | c74d97b01eae257e44aa9d5bade97baf
+ 17 | 70efdf2ec9b086079795c442636b55fb
  18 | 6f4922f45568161a8cdf4ad2299f6d23
+ 19 | 1f0e3dad99908345f7439f8ffabdffc4
  20 | 98f13708210194c475687be6106a3b84
  20 | Success
 (22 rows)
@@ -3087,29 +3087,29 @@ EXPLAIN (COSTS OFF) SELECT * FROM t1;
 
 -- Check that default deny does not apply to table owner.
 SET SESSION AUTHORIZATION regress_rls_alice;
-SELECT * FROM t1;
+SELECT * FROM t1 ORDER BY a;
  a  |                b                 
 ----+----------------------------------
-  1 | c4ca4238a0b923820dcc509a6f75849b
-  3 | eccbc87e4b5ce2fe28308fd9f2a7baf3
-  5 | e4da3b7fbbce2345d7772b0674a318d5
-  7 | 8f14e45fceea167a5a36dedd4bea2543
-  9 | 45c48cce2e2d7fbdea1afc51c7c6ad26
- 11 | 6512bd43d9caa6e02c990b0a82652dca
- 13 | c51ce410c124a10e0db5e4b97fc2af39
- 15 | 9bf31c7ff062936a96d3c8bd1f8f2ff3
- 17 | 70efdf2ec9b086079795c442636b55fb
- 19 | 1f0e3dad99908345f7439f8ffabdffc4
   0 | cfcd208495d565ef66e7dff9f98764da
+  1 | c4ca4238a0b923820dcc509a6f75849b
   2 | c81e728d9d4c2f636f067f89cc14862c
+  3 | eccbc87e4b5ce2fe28308fd9f2a7baf3
   4 | a87ff679a2f3e71d9181a67b7542122c
+  5 | e4da3b7fbbce2345d7772b0674a318d5
   6 | 1679091c5a880faf6fb5e6087eb1b2dc
+  7 | 8f14e45fceea167a5a36dedd4bea2543
   8 | c9f0f895fb98ab9159f51fd0297e236d
+  9 | 45c48cce2e2d7fbdea1afc51c7c6ad26
  10 | d3d9446802a44259755d38e6d163e820
+ 11 | 6512bd43d9caa6e02c990b0a82652dca
  12 | c20ad4d76fe97759aa27a0c99bff6710
+ 13 | c51ce410c124a10e0db5e4b97fc2af39
  14 | aab3238922bcc25a6f606eb525ffdc56
+ 15 | 9bf31c7ff062936a96d3c8bd1f8f2ff3
  16 | c74d97b01eae257e44aa9d5bade97baf
+ 17 | 70efdf2ec9b086079795c442636b55fb
  18 | 6f4922f45568161a8cdf4ad2299f6d23
+ 19 | 1f0e3dad99908345f7439f8ffabdffc4
  20 | 98f13708210194c475687be6106a3b84
  20 | Success
 (22 rows)

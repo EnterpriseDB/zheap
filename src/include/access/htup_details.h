@@ -816,5 +816,6 @@ extern MinimalTuple minimal_tuple_from_heap_tuple(HeapTuple htup);
 extern size_t varsize_any(void *p);
 extern HeapTuple heap_expand_tuple(HeapTuple sourceTuple, TupleDesc tupleDesc);
 extern MinimalTuple minimal_expand_tuple(HeapTuple sourceTuple, TupleDesc tupleDesc);
+extern Datum getmissingattr(TupleDesc tupleDesc, int attnum, bool *isnull);
 
 #endif							/* HTUP_DETAILS_H */

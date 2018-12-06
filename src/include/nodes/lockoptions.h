@@ -48,4 +48,11 @@ typedef enum LockWaitPolicy
 /* Follow update chain and lock lastest version of tuple */
 #define TUPLE_LOCK_FLAG_FIND_LAST_VERSION		(1 << 1)
 
+// ZBORKED: Why is the eval flag needed, and what's it's actual documentation?
+// Because surely
+//  *	eval - indicates whether the tuple will be evaluated to see if it still
+//  *	matches the qualification.
+// isn't very descriptive.
+#define TUPLE_LOCK_FLAG_WEIRD					(1 << 2)
+
 #endif							/* LOCKOPTIONS_H */

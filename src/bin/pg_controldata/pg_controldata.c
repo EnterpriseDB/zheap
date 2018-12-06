@@ -278,6 +278,8 @@ main(int argc, char *argv[])
 		   ControlFile->checkPointCopy.oldestCommitTsXid);
 	printf(_("Latest checkpoint's newestCommitTsXid:%u\n"),
 		   ControlFile->checkPointCopy.newestCommitTsXid);
+	printf(_("Latest checkpoint's oldestXidWithEpochHavingUndo:" UINT64_FORMAT "\n"),
+		   ControlFile->checkPointCopy.oldestXidWithEpochHavingUndo);
 	printf(_("Time of latest checkpoint:            %s\n"),
 		   ckpttime_str);
 	printf(_("Fake LSN counter for unlogged rels:   %X/%X\n"),
@@ -329,6 +331,8 @@ main(int argc, char *argv[])
 		   ControlFile->toast_max_chunk_size);
 	printf(_("Size of a large-object chunk:         %u\n"),
 		   ControlFile->loblksize);
+	printf(_("Transaction slots per zheap page:     %u\n"),
+		   ControlFile->zheap_page_trans_slots);
 	/* This is no longer configurable, but users may still expect to see it: */
 	printf(_("Date/time type storage:               %s\n"),
 		   _("64-bit integers"));

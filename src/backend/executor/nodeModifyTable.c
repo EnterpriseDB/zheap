@@ -680,7 +680,7 @@ ldelete:;
 									  estate->es_snapshot,
 									  slot, estate->es_output_cid,
 									  LockTupleExclusive, LockWaitBlock,
-									  TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
+									  TUPLE_LOCK_FLAG_FIND_LAST_VERSION | TUPLE_LOCK_FLAG_WEIRD,
 									  &hufd);
 			/*hari FIXME*/
 			/*Assert(result != HeapTupleUpdated && hufd.traversed);*/
@@ -1174,7 +1174,7 @@ lreplace:;
 									  estate->es_snapshot,
 									  inputslot, estate->es_output_cid,
 									  lockmode, LockWaitBlock,
-									  TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
+									  TUPLE_LOCK_FLAG_FIND_LAST_VERSION | TUPLE_LOCK_FLAG_WEIRD,
 									  &hufd);
 			/* hari FIXME*/
 			/*Assert(result != HeapTupleUpdated && hufd.traversed);*/
@@ -1360,7 +1360,8 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 	test = table_lock_tuple(relation, conflictTid,
 							estate->es_snapshot,
 							mtstate->mt_existing, estate->es_output_cid,
-							lockmode, LockWaitBlock, TUPLE_LOCK_FLAG_LOCK_UPDATE_IN_PROGRESS,
+							lockmode, LockWaitBlock,
+							TUPLE_LOCK_FLAG_LOCK_UPDATE_IN_PROGRESS | TUPLE_LOCK_FLAG_WEIRD,
 							&hufd);
 	switch (test)
 	{
@@ -1403,6 +1404,15 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 			break;
 
 		case HeapTupleSelfUpdated:
+#ifdef ZBORKED
+			/*
+			 * ZHEAP accepts this, but this isn't ok from a layering POV (and
+			 * I'm doubtful about the correctness). See 1e9d17cc240.
+			 *
+			 * Unlike heap, we expect HeapTupleSelfUpdated in the same scenario
+			 * as the new tuple could have been in-place updated.
+			 */
+#endif
 
 			/*
 			 * This state should never be reached. As a dirty snapshot is used

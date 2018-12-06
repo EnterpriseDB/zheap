@@ -1344,6 +1344,11 @@ results_differ(const char *testname, const char *resultsfile, const char *defaul
 	int			i;
 	int			l;
 	const char *platform_expectfile;
+	const char *exclude_pattern="Options: storage_engine=zheap";
+	char  temp_resfile[MAXPGPATH];
+#ifdef WIN32
+	char  platform_resfile[MAXPGPATH];
+#endif
 
 	/*
 	 * We can pass either the resultsfile or the expectfile, they should have
@@ -1366,6 +1371,51 @@ results_differ(const char *testname, const char *resultsfile, const char *defaul
 
 	/* Name to use for temporary diff file */
 	snprintf(diff, sizeof(diff), "%s.diff", resultsfile);
+
+	/*
+	 * delete the lines beginning with: "Options: storage_engine='zheap'" and
+	 * store the output in a temporary result file.
+	 */
+	snprintf(temp_resfile, sizeof(temp_resfile), "%s.tmp", resultsfile);
+
+	if (file_exists(resultsfile) && file_line_count(resultsfile) > 0)
+	{
+#ifdef WIN32
+		strlcpy(platform_resfile, resultsfile, sizeof(platform_resfile));
+		make_native_path(temp_resfile);
+		make_native_path(platform_resfile);
+		snprintf(cmd, sizeof(cmd),
+				 "findstr /B /v /c:\"%s\" \"%s\" > \"%s\"",
+				 exclude_pattern, platform_resfile, temp_resfile);
+#else
+		snprintf(cmd, sizeof(cmd),
+				 "grep -v \"%s\" \"%s\" > \"%s\"",
+				 exclude_pattern, resultsfile, temp_resfile);
+#endif
+
+		if (system(cmd))
+		{
+			fprintf(stderr, _("grep or findstr command failed with error: %s\n"),
+					strerror(errno));
+			exit(2);
+		}
+
+		/* Move the contents of a temporary result file into the actual result file. */
+		snprintf(cmd, sizeof(cmd),
+#ifdef WIN32
+				 "move /y \"%s\" \"%s\" > null",
+#else
+				 "mv \"%s\" \"%s\"",
+#endif
+				 temp_resfile, resultsfile);
+
+		if (system(cmd))
+		{
+			fprintf(stderr, _("move command failed with error: %s\n"),
+					strerror(errno));
+			exit(2);
+		}
+	}
 
 	/* OK, run the diff */
 	snprintf(cmd, sizeof(cmd),

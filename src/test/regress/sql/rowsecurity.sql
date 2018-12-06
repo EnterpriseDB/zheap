@@ -697,7 +697,7 @@ EXPLAIN (COSTS OFF) DELETE FROM bv1 WHERE a = 6 AND f_leak(b);
 DELETE FROM bv1 WHERE a = 6 AND f_leak(b);
 
 SET SESSION AUTHORIZATION regress_rls_alice;
-SELECT * FROM b1;
+SELECT * FROM b1 ORDER BY a;
 --
 -- INSERT ... ON CONFLICT DO UPDATE and Row-level security
 --
@@ -1168,12 +1168,12 @@ ALTER TABLE t1 OWNER TO regress_rls_alice;
 
 -- Check that default deny does not apply to superuser.
 RESET SESSION AUTHORIZATION;
-SELECT * FROM t1;
+SELECT * FROM t1 ORDER BY a;
 EXPLAIN (COSTS OFF) SELECT * FROM t1;
 
 -- Check that default deny does not apply to table owner.
 SET SESSION AUTHORIZATION regress_rls_alice;
-SELECT * FROM t1;
+SELECT * FROM t1 ORDER BY a;
 EXPLAIN (COSTS OFF) SELECT * FROM t1;
 
 -- Check that default deny applies to non-owner/non-superuser when RLS on.

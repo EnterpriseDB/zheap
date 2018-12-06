@@ -49,22 +49,22 @@ UPDATE b SET aa='zzz' WHERE aa='aaa';
 UPDATE ONLY b SET aa='zzz' WHERE aa='aaa';
 UPDATE a SET aa='zzzzzz' WHERE aa LIKE 'aaa%';
 
-SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid;
+SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid order by relname, aa;
 SELECT relname, b.* FROM b, pg_class where b.tableoid = pg_class.oid;
 SELECT relname, c.* FROM c, pg_class where c.tableoid = pg_class.oid;
 SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid;
-SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid;
+SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid order by relname, aa;
 SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid;
 SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid;
 SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid;
 
 UPDATE b SET aa='new';
 
-SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid;
+SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid order by relname, aa;
 SELECT relname, b.* FROM b, pg_class where b.tableoid = pg_class.oid;
 SELECT relname, c.* FROM c, pg_class where c.tableoid = pg_class.oid;
 SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid;
-SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid;
+SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid order by relname, aa;
 SELECT relname, b.* FROM ONLY b, pg_class where b.tableoid = pg_class.oid;
 SELECT relname, c.* FROM ONLY c, pg_class where c.tableoid = pg_class.oid;
 SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid;

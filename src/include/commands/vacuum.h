@@ -14,6 +14,7 @@
 #ifndef VACUUM_H
 #define VACUUM_H
 
+#include "access/amapi.h"
 #include "access/htup.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_statistic.h"
@@ -23,6 +24,14 @@
 #include "storage/lock.h"
 #include "utils/relcache.h"
 
+/*
+ * When a table has no indexes, vacuum the FSM after every 8GB, approximately
+ * (it won't be exact because we only vacuum FSM after processing a heap/zheap
+ * page that has some removable tuples).  When there are indexes, this is
+ * ignored, and we vacuum FSM after each index/heap cleaning pass.
+ */
+#define VACUUM_FSM_EVERY_PAGES \
+	((BlockNumber) (((uint64) 8 * 1024 * 1024 * 1024) / BLCKSZ))
 
 /*----------
  * ANALYZE builds one of these structs for each attribute (column) that is
@@ -153,6 +162,34 @@ typedef struct VacuumParams
 									 * to use default */
 } VacuumParams;
 
+typedef struct LVRelStats
+{
+	/* hasindex = true means two-pass strategy; false means one-pass */
+	bool		hasindex;
+	/* Overall statistics about rel */
+	BlockNumber old_rel_pages;	/* previous value of pg_class.relpages */
+	BlockNumber rel_pages;		/* total number of pages */
+	BlockNumber scanned_pages;	/* number of pages we examined */
+	BlockNumber pinskipped_pages;	/* # of pages we skipped due to a pin */
+	BlockNumber frozenskipped_pages;	/* # of frozen pages we skipped */
+	BlockNumber tupcount_pages; /* pages whose tuples we counted */
+	double		old_live_tuples;	/* previous value of pg_class.reltuples */
+	double		new_rel_tuples; /* new estimated total # of tuples */
+	double		new_live_tuples;	/* new estimated total # of live tuples */
+	double		new_dead_tuples;	/* new estimated total # of dead tuples */
+	BlockNumber pages_removed;
+	double		tuples_deleted;
+	BlockNumber nonempty_pages; /* actually, last nonempty page + 1 */
+	/* List of TIDs of tuples we intend to delete */
+	/* NB: this list is ordered by TID address */
+	int			num_dead_tuples;	/* current # of entries */
+	int			max_dead_tuples;	/* # slots allocated in array */
+	ItemPointer dead_tuples;	/* array of ItemPointerData */
+	int			num_index_scans;
+	TransactionId latestRemovedXid;
+	bool		lock_waiter_detected;
+} LVRelStats;
+
 /* GUC parameters */
 extern PGDLLIMPORT int default_statistics_target;	/* PGDLLIMPORT for PostGIS */
 extern int	vacuum_freeze_min_age;
@@ -195,6 +232,26 @@ extern bool vacuum_is_relation_owner(Oid relid, Form_pg_class reltuple,
 						 int options);
 extern Relation vacuum_open_relation(Oid relid, RangeVar *relation,
 					 VacuumParams *params, int options, LOCKMODE lmode);
+
+// PBORKED & ZBORKED
+/* in commands/vacuumlazy.c */
+extern void lazy_vacuum_rel(Relation onerel, int options,
+				VacuumParams *params, BufferAccessStrategy bstrategy);
+extern void lazy_vacuum_index(Relation indrel, IndexBulkDeleteResult **stats,
+							  LVRelStats *vacrelstats,
+							  BufferAccessStrategy vac_strategy);
+extern void lazy_cleanup_index(Relation indrel, IndexBulkDeleteResult *stats,
+							   LVRelStats *vacrelstats,
+							   BufferAccessStrategy vac_strategy);
+extern void lazy_record_dead_tuple(LVRelStats *vacrelstats,
+					   ItemPointer itemptr);
+extern bool should_attempt_truncation(LVRelStats *vacrelstats);
+extern void lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats,
+							   BufferAccessStrategy vac_strategy);
+
+/* in commands/zvacuumlazy.c */
+extern void lazy_vacuum_zheap_rel(Relation onerel, int options,
+					VacuumParams *params, BufferAccessStrategy bstrategy);
 
 /* in commands/analyze.c */
 extern void analyze_rel(Oid relid, RangeVar *relation, int options,

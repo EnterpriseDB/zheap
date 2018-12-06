@@ -1,0 +1,20 @@
+Parsed test spec with 4 sessions
+
+starting permutation: s1a s1b s2b s2a s2b s3a s3b s4a s4b s2c s1c s1d s3d s4c
+step s1a: BEGIN;
+step s1b: INSERT INTO t VALUES (1001);
+step s2b: UPDATE t SET b = b + 1 WHERE a = 1;
+step s2a: BEGIN;
+step s2b: UPDATE t SET b = b + 1 WHERE a = 1;
+step s3a: BEGIN;
+step s3b: UPDATE t SET b = b + 1 WHERE a = 2;
+step s4a: BEGIN;
+step s4b: UPDATE t SET b = b + 1 WHERE a = 3;
+step s2c: ROLLBACK;
+step s1c: SELECT * FROM t WHERE a = 1;
+a              b              
+
+1              2              
+step s1d: END;
+step s3d: END;
+step s4c: END;

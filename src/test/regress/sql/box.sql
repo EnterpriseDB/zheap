@@ -148,6 +148,7 @@ INSERT INTO box_temp
 		   ('(-infinity,-infinity)(infinity,infinity)');
 
 SET enable_seqscan = false;
+SET enable_bitmapscan = false;
 
 SELECT * FROM box_temp WHERE f1 << '(10,20),(30,40)';
 EXPLAIN (COSTS OFF) SELECT * FROM box_temp WHERE f1 << '(10,20),(30,40)';

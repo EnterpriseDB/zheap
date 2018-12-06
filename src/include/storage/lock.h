@@ -149,10 +149,13 @@ typedef enum LockTagType
 	/* ID info for a transaction is its TransactionId */
 	LOCKTAG_VIRTUALTRANSACTION, /* virtual transaction (ditto) */
 	/* ID info for a virtual transaction is its VirtualTransactionId */
+	LOCKTAG_SUBTRANSACTION, /* virtual transaction (ditto) */
+	/* ID info for a sub transaction is its top transaction id + subTransactionId */
 	LOCKTAG_SPECULATIVE_TOKEN,	/* speculative insertion Xid and token */
 	/* ID info for a transaction is its TransactionId */
 	LOCKTAG_OBJECT,				/* non-relation database object */
-	/* ID info for an object is DB OID + CLASS OID + OBJECT OID + SUBID */
+	/* ID info for an transaction undoaction is transaction id */
+	LOCKTAG_TRANSACTION_UNDOACTION,	/* transaction (waiting for undoaction) */
 
 	/*
 	 * Note: object ID has same representation as in pg_depend and
@@ -238,12 +241,28 @@ typedef struct LOCKTAG
 	 (locktag).locktag_type = LOCKTAG_VIRTUALTRANSACTION, \
 	 (locktag).locktag_lockmethodid = DEFAULT_LOCKMETHOD)
 
+#define SET_LOCKTAG_SUBTRANSACTION(locktag,xid,subxid) \
+	((locktag).locktag_field1 = (xid), \
+	 (locktag).locktag_field2 = (subxid), \
+	 (locktag).locktag_field3 = 0, \
+	 (locktag).locktag_field4 = 0, \
+	 (locktag).locktag_type = LOCKTAG_SUBTRANSACTION, \
+	 (locktag).locktag_lockmethodid = DEFAULT_LOCKMETHOD)
+
 #define SET_LOCKTAG_SPECULATIVE_INSERTION(locktag,xid,token) \
 	((locktag).locktag_field1 = (xid), \
 	 (locktag).locktag_field2 = (token),		\
 	 (locktag).locktag_field3 = 0, \
 	 (locktag).locktag_field4 = 0, \
 	 (locktag).locktag_type = LOCKTAG_SPECULATIVE_TOKEN, \
+	 (locktag).locktag_lockmethodid = DEFAULT_LOCKMETHOD)
+
+#define SET_LOCKTAG_TRANSACTION_UNDOACTION(locktag,xid) \
+	((locktag).locktag_field1 = (xid), \
+	 (locktag).locktag_field2 = 0, \
+	 (locktag).locktag_field3 = 0, \
+	 (locktag).locktag_field4 = 0, \
+	 (locktag).locktag_type = LOCKTAG_TRANSACTION_UNDOACTION, \
 	 (locktag).locktag_lockmethodid = DEFAULT_LOCKMETHOD)
 
 #define SET_LOCKTAG_OBJECT(locktag,dboid,classoid,objoid,objsubid) \

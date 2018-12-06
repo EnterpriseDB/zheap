@@ -14,8 +14,7 @@
 #ifndef HEAPAM_H
 #define HEAPAM_H
 
-#include "access/sdir.h"
-#include "access/skey.h"
+#include "access/genham.h"
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
 #include "storage/bufpage.h"
@@ -34,57 +33,6 @@
 typedef struct BulkInsertStateData *BulkInsertState;
 
 struct TupleTableSlot;
-
-/*
- * Possible lock modes for a tuple.
- */
-typedef enum LockTupleMode
-{
-	/* SELECT FOR KEY SHARE */
-	LockTupleKeyShare,
-	/* SELECT FOR SHARE */
-	LockTupleShare,
-	/* SELECT FOR NO KEY UPDATE, and UPDATEs that don't modify key columns */
-	LockTupleNoKeyExclusive,
-	/* SELECT FOR UPDATE, UPDATEs that modify key columns, and DELETE */
-	LockTupleExclusive
-} LockTupleMode;
-
-#define MaxLockTupleMode	LockTupleExclusive
-
-/*
- * When heap_update, heap_delete, or heap_lock_tuple fail because the target
- * tuple is already outdated, they fill in this struct to provide information
- * to the caller about what happened.
- * ctid is the target's ctid link: it is the same as the target's TID if the
- * target was deleted, or the location of the replacement tuple if the target
- * was updated.
- * xmax is the outdating transaction's XID.  If the caller wants to visit the
- * replacement tuple, it must check that this matches before believing the
- * replacement is really a match.
- * cmax is the outdating command's CID, but only when the failure code is
- * HeapTupleSelfUpdated (i.e., something in the current transaction outdated
- * the tuple); otherwise cmax is zero.  (We make this restriction because
- * HeapTupleHeaderGetCmax doesn't work for tuples outdated in other
- * transactions.)
- */
-typedef struct HeapUpdateFailureData
-{
-	ItemPointerData ctid;
-	TransactionId xmax;
-	CommandId	cmax;
-	bool		traversed;
-} HeapUpdateFailureData;
-
-/* Result codes for HeapTupleSatisfiesVacuum */
-typedef enum
-{
-   HEAPTUPLE_DEAD,             /* tuple is dead and deletable */
-   HEAPTUPLE_LIVE,             /* tuple is live (committed, no deleter) */
-   HEAPTUPLE_RECENTLY_DEAD,    /* tuple is dead, but not deletable yet */
-   HEAPTUPLE_INSERT_IN_PROGRESS,   /* inserting xact is still in progress */
-   HEAPTUPLE_DELETE_IN_PROGRESS    /* deleting xact is still in progress */
-} HTSV_Result;
 
 /* struct definition is private to rewriteheap.c */
 typedef struct RewriteStateData *RewriteState;
@@ -139,6 +87,7 @@ extern void heap_rescan(TableScanDesc scan, ScanKey key, bool set_params,
 			bool allow_strat, bool allow_sync, bool allow_pagemode);
 extern void heap_rescan_set_params(TableScanDesc scan, ScanKey key,
 					   bool allow_strat, bool allow_sync, bool allow_pagemode);
+
 extern void heap_endscan(TableScanDesc scan);
 extern HeapTuple heap_getnext(TableScanDesc scan, ScanDirection direction);
 extern struct TupleTableSlot *heap_getnextslot(TableScanDesc sscan, ScanDirection direction,

@@ -146,7 +146,7 @@ SELECT '' AS bad, exp(f.f1) from FLOAT8_TBL f;
 
 SELECT '' AS bad, f.f1 / '0.0' from FLOAT8_TBL f;
 
-SELECT '' AS five, * FROM FLOAT8_TBL;
+SELECT '' AS five, * FROM FLOAT8_TBL ORDER BY f1 DESC;
 
 -- test for over- and underflow
 INSERT INTO FLOAT8_TBL(f1) VALUES ('10e400');

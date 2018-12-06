@@ -17,6 +17,9 @@
 #include "access/htup_details.h"
 #include "access/itup.h"
 #include "access/xlog.h"
+#include "access/zhtup.h"
+#include "access/zheap.h"
+#include "storage/bufmgr.h"
 #include "storage/checksum.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
@@ -107,7 +110,8 @@ PageIsVerified(Page page, BlockNumber blkno)
 		 * the block can still reveal problems, which is why we offer the
 		 * checksum option.
 		 */
-		if ((p->pd_flags & ~PD_VALID_FLAG_BITS) == 0 &&
+		if (((p->pd_flags & ~PD_VALID_FLAG_BITS) == 0 ||
+			 (p->pd_flags & ~PD_ZHEAP_VALID_FLAG_BITS) == 0) &&
 			p->pd_lower <= p->pd_upper &&
 			p->pd_upper <= p->pd_special &&
 			p->pd_special <= BLCKSZ &&
@@ -414,17 +418,6 @@ PageRestoreTempPage(Page tempPage, Page oldPage)
 	pfree(tempPage);
 }
 
-/*
- * sorting support for PageRepairFragmentation and PageIndexMultiDelete
- */
-typedef struct itemIdSortData
-{
-	uint16		offsetindex;	/* linp array index */
-	int16		itemoff;		/* page offset of item data */
-	uint16		alignedlen;		/* MAXALIGN(item data len) */
-} itemIdSortData;
-typedef itemIdSortData *itemIdSort;
-
 static int
 itemoffcompare(const void *itemidp1, const void *itemidp2)
 {
@@ -437,7 +430,7 @@ itemoffcompare(const void *itemidp1, const void *itemidp2)
  * After removing or marking some line pointers unused, move the tuples to
  * remove the gaps caused by the removed items.
  */
-static void
+void
 compactify_tuples(itemIdSort itemidbase, int nitems, Page page)
 {
 	PageHeader	phdr = (PageHeader) page;

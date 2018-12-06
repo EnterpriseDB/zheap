@@ -111,10 +111,12 @@
 #include "port/pg_bswap.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
+#include "postmaster/discardworker.h"
 #include "postmaster/fork_process.h"
 #include "postmaster/pgarch.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
+#include "postmaster/undoworker.h"
 #include "replication/logicallauncher.h"
 #include "replication/walsender.h"
 #include "storage/fd.h"
@@ -245,6 +247,8 @@ bool		Db_user_namespace = false;
 bool		enable_bonjour = false;
 char	   *bonjour_name;
 bool		restart_after_crash = true;
+
+bool		disable_undo_launcher;
 
 /* PIDs of special child processes; 0 when not running */
 static pid_t StartupPID = 0,
@@ -980,6 +984,13 @@ PostmasterMain(int argc, char *argv[])
 	 * background worker slots.
 	 */
 	ApplyLauncherRegister();
+
+	/* Register the Undo worker launcher. */
+	if (!disable_undo_launcher)
+		UndoLauncherRegister();
+
+	/* Register the Undo Discard worker. */
+	DiscardWorkerRegister();
 
 	/*
 	 * process any libraries that should be preloaded at postmaster start
