@@ -952,6 +952,9 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 						  RelationGetDescr(currentRelation),
 						  &TTSOpsBufferHeapTuple);
 
+	if (node->indexorderby != NIL)
+		indexstate->ss.ps.scanopsfixed = false;
+
 	/*
 	 * Initialize result type and projection.
 	 */
