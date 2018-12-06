@@ -36,12 +36,6 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 		appendStringInfo(buf, "logno %u end " UndoLogOffsetFormat,
 						 xlrec->logno, xlrec->end);
 	}
-	else if (info == XLOG_UNDOLOG_ATTACH)
-	{
-		xl_undolog_attach *xlrec = (xl_undolog_attach *) rec;
-
-		appendStringInfo(buf, "logno %u xid %u", xlrec->logno, xlrec->xid);
-	}
 	else if (info == XLOG_UNDOLOG_DISCARD)
 	{
 		xl_undolog_discard *xlrec = (xl_undolog_discard *) rec;
@@ -72,9 +66,6 @@ undolog_identify(uint8 info)
 			break;
 		case XLOG_UNDOLOG_EXTEND:
 			id = "EXTEND";
-			break;
-		case XLOG_UNDOLOG_ATTACH:
-			id = "ATTACH";
 			break;
 		case XLOG_UNDOLOG_DISCARD:
 			id = "DISCARD";

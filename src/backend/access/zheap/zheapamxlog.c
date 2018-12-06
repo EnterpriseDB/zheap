@@ -121,6 +121,7 @@ zheap_xlog_insert(XLogReaderState *record)
 		else
 			undorecord.uur_payload.len = 0;
 
+		UndoLogBeginInsert();
 		urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, record);
 		InsertPreparedUndo();
 
@@ -399,6 +400,7 @@ zheap_xlog_delete(XLogReaderState *record)
 	if (!hasPayload)
 		undorecord.uur_payload.len = 0;
 
+	UndoLogBeginInsert();
 	urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, record);
 	InsertPreparedUndo();
 
@@ -660,6 +662,7 @@ zheap_xlog_update(XLogReaderState *record)
 						   (char *) oldtup.t_data,
 						   oldtup.t_len);
 
+	UndoLogBeginInsert();
 	if (inplace_update)
 	{
 		bool	hasPayload = false;
@@ -1380,6 +1383,7 @@ zheap_xlog_lock(XLogReaderState *record)
 							   sizeof(SubTransactionId));
 	}
 
+	UndoLogBeginInsert();
 	urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, record);
 	InsertPreparedUndo();
 
@@ -1557,6 +1561,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			ranges_data_size += undorecord[i].uur_payload.len;
 		}
 
+		UndoLogBeginInsert();
 		UndoSetPrepareSize(undorecord, nranges, xid, UNDO_PERMANENT, record);
 		for (i = 0; i < nranges; i++)
 		{
@@ -1974,6 +1979,7 @@ zheap_xlog_unused(XLogReaderState *record)
 		   (char *) unused,
 		   undorecord.uur_payload.len);
 
+	UndoLogBeginInsert();
 	urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, record);
 	InsertPreparedUndo();
 

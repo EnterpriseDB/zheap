@@ -200,9 +200,11 @@ typedef int UndoLogNumber;
 typedef struct UndoLogUnloggedMetaData
 {
 	UndoLogOffset insert;			/* next insertion point (head) */
-	UndoLogOffset last_xact_start;	/* last transactions start undo offset */
-	uint16		prevlen;		   	/* length of the last record */
+	UndoLogOffset last_xact_start;	/* last transaction's first byte in this log */
+	UndoLogOffset this_xact_start;	/* this transaction's first byte in this log */
+	uint16		prevlen;		   	/* size of the last record in the log */
 	UndoLogNumber prevlogno;		/* Previous undo log number */
+	TransactionId xid;				/* currently attached/writing xid */
 } UndoLogUnloggedMetaData;
 
 /*
@@ -223,8 +225,6 @@ typedef struct UndoLogMetaData
 	UndoLogStatus status;
 	UndoLogOffset end;				/* one past end of highest segment */
 	UndoLogOffset discard;			/* oldest data needed (tail) */
-
-	bool	is_first_rec;
 } UndoLogMetaData;
 
 #ifndef FRONTEND
@@ -248,10 +248,7 @@ typedef struct UndoLogControl
 	/* Protected by 'mutex'. */
 	LWLock	mutex;
 	UndoLogMetaData meta;			/* current meta-data */
-	XLogRecPtr      lsn;
-	bool	need_attach_wal_record;	/* need_attach_wal_record */
 	pid_t		pid;				/* InvalidPid for unattached */
-	TransactionId xid;
 
 	/* Protected by 'discard_lock'.  State used by undo workers. */
 	TransactionId	oldest_xid;		/* cache of oldest transaction's xid */
@@ -342,15 +339,16 @@ UndoRecPtrGetTablespace(UndoRecPtr urp)
 /* Space management. */
 extern void UndoLogBeginInsert(void);
 extern void UndoLogRegister(uint8 block_id, UndoLogNumber logno);
-extern UndoRecPtr UndoLogAllocate(size_t size,
-								  UndoPersistence level);
+extern UndoRecPtr UndoLogAllocate(uint16 size,
+								  UndoRecPtr try_location,
+								  UndoPersistence level,
+								  bool *need_xact_header);
 extern UndoRecPtr UndoLogAllocateInRecovery(TransactionId xid,
-											size_t size,
-											UndoPersistence persistence,
+											uint16 size,
+											UndoRecPtr try_location,
+											bool *need_xact_header,
 											XLogReaderState *xlog_record);
-extern void UndoLogAdvance(UndoRecPtr insertion_point,
-						   size_t size,
-						   UndoPersistence persistence);
+extern void UndoLogAdvance(UndoRecPtr insertion_point, size_t size);
 extern void UndoLogDiscard(UndoRecPtr discard_point, TransactionId xid);
 extern bool UndoLogIsDiscarded(UndoRecPtr point);
 
@@ -373,13 +371,10 @@ extern void assign_undo_tablespaces(const char *newval, void *extra);
 extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
 							   XLogRecPtr priorCheckPointRedo);
 
-extern void UndoLogSetLastXactStartPoint(UndoRecPtr point);
 extern UndoRecPtr UndoLogGetLastXactStartPoint(UndoLogNumber logno);
 extern UndoRecPtr UndoLogGetNextInsertPtr(UndoLogNumber logno,
 										  TransactionId xid);
 extern void UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen);
-extern bool IsTransactionFirstRec(TransactionId xid);
-extern void UndoLogSetPrevLen(UndoLogNumber logno, uint16 prevlen);
 extern uint16 UndoLogGetPrevLen(UndoLogNumber logno);
 extern void UndoLogSetLSN(XLogRecPtr lsn);
 void UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);

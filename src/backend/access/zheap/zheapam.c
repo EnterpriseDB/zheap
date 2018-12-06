@@ -914,6 +914,7 @@ reacquire_buffer:
 		else
 			undorecord.uur_payload.len = 0;
 
+		UndoLogBeginInsert();
 		urecptr = PrepareUndoInsert(&undorecord,
 									InvalidTransactionId,
 									UndoPersistenceForRelation(relation),
@@ -1904,6 +1905,7 @@ zheap_tuple_updated:
 	if (!hasPayload)
 		undorecord.uur_payload.len = 0;
 
+	UndoLogBeginInsert();
 	urecptr = PrepareUndoInsert(&undorecord,
 								InvalidTransactionId,
 								UndoPersistenceForRelation(relation),
@@ -3027,6 +3029,7 @@ zheap_tuple_updated:
 								   sizeof(subxid));
 		}
 
+		UndoLogBeginInsert();
 		urecptr = PrepareUndoInsert(&undorecord,
 									InvalidTransactionId,
 									UndoPersistenceForRelation(relation),
@@ -5734,6 +5737,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 							   sizeof(subxid));
 	}
 
+	UndoLogBeginInsert();
 	urecptr = PrepareUndoInsert(&undorecord,
 								InvalidTransactionId,
 								UndoPersistenceForRelation(rel),
@@ -10959,6 +10963,7 @@ reacquire_buffer:
 				undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
 			}
 
+			UndoLogBeginInsert();
 			UndoSetPrepareSize(undorecord, zfree_offset_ranges->nranges,
 							   InvalidTransactionId,
 							   UndoPersistenceForRelation(relation), NULL);

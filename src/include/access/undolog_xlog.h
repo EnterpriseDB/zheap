@@ -20,10 +20,8 @@
 /* XLOG records */
 #define XLOG_UNDOLOG_CREATE		0x00
 #define XLOG_UNDOLOG_EXTEND		0x10
-#define XLOG_UNDOLOG_ATTACH		0x20
-#define XLOG_UNDOLOG_DISCARD	0x30
-#define XLOG_UNDOLOG_REWIND		0x40
-#define XLOG_UNDOLOG_META		0x50
+#define XLOG_UNDOLOG_DISCARD	0x20
+#define XLOG_UNDOLOG_REWIND		0x30
 
 /* Create a new undo log. */
 typedef struct xl_undolog_create
@@ -39,14 +37,6 @@ typedef struct xl_undolog_extend
 	UndoLogNumber logno;
 	UndoLogOffset end;
 } xl_undolog_extend;
-
-/* Record the undo log number used for a transaction. */
-typedef struct xl_undolog_attach
-{
-	TransactionId xid;
-	UndoLogNumber logno;
-	Oid				dbid;
-} xl_undolog_attach;
 
 /* Discard space, and possibly destroy or recycle undo log segments. */
 typedef struct xl_undolog_discard

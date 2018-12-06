@@ -305,6 +305,7 @@ UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 				}
 
 				LWLockAcquire(&log->discard_lock, LW_SHARED);
+
 				log->oldest_data = urp;
 				LWLockRelease(&log->discard_lock);
 			}
