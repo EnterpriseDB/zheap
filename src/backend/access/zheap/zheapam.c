@@ -8186,10 +8186,6 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, int *trans_slot,
 	 */
 	if (is_invalid_slot)
 	{
-		if ((TransactionIdIsValid(xid) &&
-			 TransactionIdPrecedes(xid, pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))) ||
-			UndoLogIsDiscarded(urec_ptr))
-			goto slot_is_frozen;
 		xid = InvalidTransactionId;
 		FetchTransInfoFromUndo(zhtup, &epoch, &xid, &cid, &urec_ptr, false);
 	}
