@@ -677,7 +677,6 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 		Assert(false);
 	}
 	
-
 	if (update_tpd_inplace)
 	{
 		TPDEntryUpdate(relation, old_tpd_buf, tpd_e_offset, tpdItemOff,

@@ -1529,7 +1529,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 
 			if (!result)
 				execute_undo_actions(end_urec_ptr[i], start_urec_ptr[i], true,
-									 true, false);
+									 true, true);
 		}
 	}
 
