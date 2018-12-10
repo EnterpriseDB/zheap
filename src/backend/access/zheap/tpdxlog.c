@@ -421,7 +421,7 @@ tpd_xlog_free_page(XLogReaderState *record)
 
 	if (XLogRecHasBlockRef(record, 2))
 	{
-		action = XLogReadBufferForRedo(record, 3, &nextbuf);
+		action = XLogReadBufferForRedo(record, 2, &nextbuf);
 
 		if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
 		{
