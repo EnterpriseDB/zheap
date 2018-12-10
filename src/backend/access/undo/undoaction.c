@@ -36,7 +36,7 @@
 
 static bool execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr,
 					 Oid reloid, TransactionId xid, BlockNumber blkno,
-					 bool blk_chain_complete, bool norellock, int options);
+					 bool blk_chain_complete, bool norellock);
 static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
 									  TransactionId xid);
 static void RollbackHTRemoveEntry(UndoRecPtr start_urec_ptr);
@@ -84,7 +84,6 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	BlockNumber	prev_block = InvalidBlockNumber;
 	List	   *luinfo = NIL;
 	bool		more_undo;
-	int			options = 0;
 	TransactionId xid = InvalidTransactionId;
 	UndoRecInfo	*urec_info;
 
@@ -194,9 +193,6 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			urec_prevlen = uur->uur_prevlen;
 			save_urec_ptr = uur->uur_blkprev;
 
-			if (uur->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
-				options |= UNDO_ACTION_UPDATE_TPD;
-
 			/* The undo chain must continue till we reach to_urecptr */
 			if (urec_prevlen > 0 && urec_ptr != to_urecptr)
 			{
@@ -222,16 +218,12 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		if ((!more_undo && nopartial) || !UndoRecPtrIsValid(save_urec_ptr))
 		{
 			execute_undo_actions_page(luinfo, save_urec_ptr, prev_reloid,
-									  xid, prev_block, true, rellock, options);
-			/* Done with the page so reset the options. */
-			options = 0;
+									  xid, prev_block, true, rellock);
 		}
 		else
 		{
 			execute_undo_actions_page(luinfo, save_urec_ptr, prev_reloid,
-									  xid, prev_block, false, rellock, options);
-			/* Done with the page so reset the options. */
-			options = 0;
+									  xid, prev_block, false, rellock);
 		}
 
 		/* release the undo records for which action has been replayed */
@@ -261,9 +253,6 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			prev_block = uur->uur_block;
 			save_urec_ptr = uur->uur_blkprev;
 
-			if (uur->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
-				options |= UNDO_ACTION_UPDATE_TPD;
-
 			/*
 			 * Continue to process the records if this is not the last undo
 			 * record in chain.
@@ -282,8 +271,8 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	if (list_length(luinfo))
 	{
 		execute_undo_actions_page(luinfo, save_urec_ptr, prev_reloid,
-								xid, prev_block, nopartial ? true : false,
-								rellock, options);
+								  xid, prev_block, nopartial ? true : false,
+								  rellock);
 
 		/* release the undo records for which action has been replayed */
 		while (luinfo)
@@ -407,7 +396,6 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 	Page		page;
 	UndoRecInfo	*urec_info;
 	bool	actions_applied = false;
-	int		options = 0;
 
 	/*
 	 * Process and collect the undo for the block until we reach the first
@@ -443,9 +431,6 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 		luinfo = lappend(luinfo, urec_info);
 		urec_ptr = uur->uur_blkprev;
 
-		if (uur->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
-			options |= UNDO_ACTION_UPDATE_TPD;
-
 		/*
 		 * If we have exhausted the undo chain for the slot, then we are done.
 		 */
@@ -458,8 +443,7 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 													rel->rd_id, xid,
 													BufferGetBlockNumber(buffer),
 													true,
-													false,
-													options);
+													false);
 	/* Release undo records and undo elements*/
 	while (luinfo)
 	{
@@ -597,14 +581,13 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
  *				or for rollback to savepoint, we need not to lock as we already
  *				have the lock on the table. In cases like error or when
  *				rollbacking from the undo worker we need to have proper locks.
- * options	 -  options for executing undo actions.
  *
  *	returns true, if successfully applied the undo actions, otherwise, false.
  */
 static bool
 execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 						  TransactionId xid, BlockNumber blkno,
-						  bool blk_chain_complete, bool rellock, int options)
+						  bool blk_chain_complete, bool rellock)
 {
 	ListCell   *l_iter;
 	Relation	rel;
@@ -619,6 +602,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	Buffer		vmbuffer = InvalidBuffer;
 	bool		need_init = false;
 	bool		tpd_page_locked = false;
+	bool		is_tpd_map_updated = false;
 
 	/*
 	 * FIXME: If reloid is not valid then we have nothing to do. In future,
@@ -715,19 +699,24 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	}
 
 	/*
-	 * If we are going to update the TPD offset map then get the size of the
-	 * offset map and allocate the memory to fetch that outside the critical
-	 * section.  It is quite possible that the TPD entry is already pruned
-	 * by this time, in which case, we will mark the slot as frozen.
+	 * We might need to update the TPD offset map while applying undo actions,
+	 * so get the size of the TPD offset map and allocate the memory to fetch
+	 * that outside the critical section.  It is quite possible that the TPD
+	 * entry is already pruned by this time, in which case, we will mark the
+	 * slot as frozen.
+	 *
+	 * XXX It would have been better if we fetch the tpd map only when
+	 * required, but that won't be possible in all cases.  Sometimes
+	 * we will come to know only during processing particular undo record.
+	 * Now, we can process the undo records partially outside critical section
+	 * such that we know whether we need TPD map or not, but that seems to
+	 * be overkill.
 	 */
-	if ((options & UNDO_ACTION_UPDATE_TPD) != 0)
+	if (tpd_page_locked)
 	{
-		if (tpd_page_locked)
-		{
-			tpd_map_size = TPDPageGetOffsetMapSize(buffer);
-			if (tpd_map_size > 0)
-				tpd_offset_map = palloc(tpd_map_size);
-		}
+		tpd_map_size = TPDPageGetOffsetMapSize(buffer);
+		if (tpd_map_size > 0)
+			tpd_offset_map = palloc(tpd_map_size);
 	}
 
 	START_CRIT_SECTION();
@@ -872,6 +861,10 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 						TPDPageSetOffsetMapSlot(buffer, prev_trans_slot,
 												uur->uur_offset);
 
+						/* Here, we updated TPD offset map, so need to log. */
+						if (!is_tpd_map_updated)
+							is_tpd_map_updated = true;
+
 						/*
 						 * If transaction slot to which tuple point is not
 						 * same as the previous transaction slot, so that we
@@ -910,10 +903,13 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 											   NULL,
 											   false,
 											   true);
-
 						TPDPageSetOffsetMapSlot(buffer,
 												ZHEAP_PAGE_TRANS_SLOTS + 1,
 												uur->uur_offset);
+
+						/* Here, we updated TPD offset map, so need to log. */
+						if (!is_tpd_map_updated)
+							is_tpd_map_updated = true;
 
 						/*
 						 * If transaction slot to which tuple point is not
@@ -1054,8 +1050,16 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 													  NULL,
 													  false,
 													  true);
+
 								TPDPageSetOffsetMapSlot(buffer, prev_trans_slot,
 														uur->uur_offset);
+
+								/*
+								 * Here, we updated TPD offset map, so need to
+								 * log.
+								 */
+								if (!is_tpd_map_updated)
+									is_tpd_map_updated = true;
 
 								/*
 								 * If transaction slot to which tuple point is not
@@ -1133,8 +1137,16 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 													  NULL,
 													  false,
 													  true);
+
 								TPDPageSetOffsetMapSlot(buffer, prev_trans_slot,
 														uur->uur_offset);
+
+								/* Here, we updated TPD offset map, so need to
+								 * log.
+								 */
+								if (!is_tpd_map_updated)
+									is_tpd_map_updated = true;
+
 								/*
 								 * If transaction slot to which tuple point is not
 								 * same as the previous transaction slot, so that we
@@ -1177,6 +1189,12 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 								TPDPageSetOffsetMapSlot(buffer,
 														ZHEAP_PAGE_TRANS_SLOTS + 1,
 														uur->uur_offset);
+
+								/* Here, we updated TPD offset map, so need to
+								 * log.
+								 */
+								if (!is_tpd_map_updated)
+									is_tpd_map_updated = true;
 
 								if (prev_slot_xid != uur->uur_prevxid)
 								{
@@ -1297,8 +1315,14 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 			flags |= XLU_PAGE_CONTAINS_TPD_SLOT;
 		if (BufferIsValid(vmbuffer))
 			flags |= XLU_PAGE_CLEAR_VISIBILITY_MAP;
-		if (tpd_offset_map)
+		if (is_tpd_map_updated)
+		{
+			/* TPD page must be locked. */
+			Assert(tpd_page_locked);
+			/* tpd_offset_map must be non-null. */
+			Assert(tpd_offset_map);
 			flags |= XLU_CONTAINS_TPD_OFFSET_MAP;
+		}
 		if (need_init)
 			flags |= XLU_INIT_PAGE;
 
@@ -1325,11 +1349,8 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 		 * of TPD which got modified while applying the undo and only log those
 		 * information into the WAL.
 		 */
-		if (flags & XLU_CONTAINS_TPD_OFFSET_MAP)
+		if (is_tpd_map_updated)
 		{
-			/* tpd_offset_map must be non-null. */
-			Assert(tpd_offset_map);
-
 			/* Fetch the TPD offset map and write into the WAL record. */
 			TPDPageGetOffsetMap(buffer, tpd_offset_map, tpd_map_size);
 			XLogRegisterData((char *) tpd_offset_map, tpd_map_size);
@@ -1366,6 +1387,9 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 
 	END_CRIT_SECTION();
 
+	/* Free TPD offset map memory. */
+	if (tpd_offset_map)
+		pfree(tpd_offset_map);
 
 	/*
 	 * Release any remaining pin on visibility map page.
