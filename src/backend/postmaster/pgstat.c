@@ -1979,6 +1979,9 @@ pgstat_count_zheap_update(Relation rel)
 			pgstat_info->trans->nest_level != nest_level)
 			add_tabstat_xact_level(pgstat_info, nest_level);
 
+		/* increase, similar to pgstat_count_heap_update */
+		pgstat_info->trans->tuples_updated++;
+
 		/* t_tuples_hot_updated is nontransactional, so just advance it */
 		pgstat_info->t_counts.t_tuples_hot_updated++;
 	}
