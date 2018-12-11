@@ -1,18 +1,17 @@
 #-------------------------------------------------------------------------
 #
 # Makefile--
-#    Makefile for access/heap
+#    Makefile for access/table
 #
 # IDENTIFICATION
-#    src/backend/access/heap/Makefile
+#    src/backend/access/table/Makefile
 #
 #-------------------------------------------------------------------------
 
-subdir = src/backend/access/heap
+subdir = src/backend/access/table
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = heapam.o heapam_handler.o heapam_visibility.o hio.o pruneheap.o \
-	rewriteheap.o syncscan.o tuptoaster.o vacuumlazy.o visibilitymap.o
+OBJS = tableam.o tableamapi.o
 
 include $(top_srcdir)/src/backend/common.mk

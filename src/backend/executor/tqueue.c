@@ -59,6 +59,8 @@ tqueueReceiveSlot(TupleTableSlot *slot, DestReceiver *self)
 	bool		should_free;
 
 	/* Send the tuple itself. */
+	// PBORKED: this shouldn't rely on heaptuples. If we need it to be tuple
+	// formed, it should be a minimal tuple.
 	tuple = ExecFetchSlotHeapTuple(slot, true, &should_free);
 	result = shm_mq_send(tqueue->queue, tuple->t_len, tuple->t_data, false);
 

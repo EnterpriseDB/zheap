@@ -32,6 +32,7 @@
 
 #include "access/genam.h"
 #include "access/heapam.h"
+#include "access/tableam.h"
 #include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"

@@ -36,6 +36,7 @@
 #include "access/nbtree.h"
 #include "access/reloptions.h"
 #include "access/sysattr.h"
+#include "access/tableam.h"
 #include "access/tupdesc_details.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -1196,10 +1197,28 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	}
 
 	/*
-	 * if it's an index, initialize index-related information
+	 * initialize access method information
 	 */
-	if (OidIsValid(relation->rd_rel->relam))
-		RelationInitIndexAccessInfo(relation);
+	switch (relation->rd_rel->relkind)
+	{
+		case RELKIND_INDEX:
+		case RELKIND_PARTITIONED_INDEX:
+			Assert(relation->rd_rel->relam != InvalidOid);
+			RelationInitIndexAccessInfo(relation);
+			break;
+		case RELKIND_RELATION:
+		case RELKIND_TOASTVALUE:
+		case RELKIND_MATVIEW:
+		case RELKIND_PARTITIONED_TABLE:
+		case RELKIND_SEQUENCE:
+			RelationInitTableAccessMethod(relation);
+			break;
+		case RELKIND_VIEW:
+		case RELKIND_FOREIGN_TABLE:
+		default:
+			/* nothing to do in other cases */
+			break;
+	}
 
 	/* extract reloptions if any */
 	RelationParseRelOptions(relation, pg_class_tuple);
@@ -1701,6 +1720,64 @@ LookupOpclassInfo(Oid operatorClassOid,
 	return opcentry;
 }
 
+/*
+ * Fill in the TableAmRoutine for a relation
+ *
+ * relation's rd_tableamhandler must be valid already.
+ */
+static void
+InitTableAmRoutine(Relation relation)
+{
+	relation->rd_tableam = GetTableAmRoutine(relation->rd_amhandler);
+}
+
+/*
+ * Initialize table-access-method support data for a heap relation
+ */
+void
+RelationInitTableAccessMethod(Relation relation)
+{
+	HeapTuple	tuple;
+	Form_pg_am	aform;
+
+	if (relation->rd_rel->relkind == RELKIND_SEQUENCE)
+	{
+		/*
+		 * Sequences are currently accessed like heap tables, but it doesn't
+		 * seem prudent to show that in the catalog. So just overwrite it
+		 * here.
+		 */
+		relation->rd_amhandler = HEAP_TABLE_AM_HANDLER_OID;
+	}
+	else if (IsCatalogRelation(relation))
+	{
+		/*
+		 * Avoid doing a syscache lookup for catalog tables.
+		 */
+		Assert(relation->rd_rel->relam == HEAP_TABLE_AM_OID);
+		relation->rd_amhandler = HEAP_TABLE_AM_HANDLER_OID;
+	}
+	else
+	{
+		/*
+		 * Look up the table access method, save the OID of its handler
+		 * function.
+		 */
+		tuple = SearchSysCache1(AMOID,
+								ObjectIdGetDatum(relation->rd_rel->relam));
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "cache lookup failed for access method %u",
+				 relation->rd_rel->relam);
+		aform = (Form_pg_am) GETSTRUCT(tuple);
+		relation->rd_amhandler = aform->amhandler;
+		ReleaseSysCache(tuple);
+	}
+
+	/*
+	 * Now we can fetch the table AM's API struct
+	 */
+	InitTableAmRoutine(relation);
+}
 
 /*
  *		formrdesc
@@ -1787,6 +1864,7 @@ formrdesc(const char *relationName, Oid relationReltype,
 	relation->rd_rel->relallvisible = 0;
 	relation->rd_rel->relkind = RELKIND_RELATION;
 	relation->rd_rel->relnatts = (int16) natts;
+	relation->rd_rel->relam = HEAP_TABLE_AM_OID;
 
 	/*
 	 * initialize attribute tuple form
@@ -1853,6 +1931,12 @@ formrdesc(const char *relationName, Oid relationReltype,
 	 * initialize physical addressing information for the relation
 	 */
 	RelationInitPhysicalAddr(relation);
+
+	/*
+	 * initialize the table am handler
+	 */
+	relation->rd_rel->relam = HEAP_TABLE_AM_OID;
+	relation->rd_tableam = GetHeapamTableAmRoutine();
 
 	/*
 	 * initialize the rel-has-index flag, using hardwired knowledge
@@ -3089,6 +3173,7 @@ RelationBuildLocalRelation(const char *relname,
 						   Oid relnamespace,
 						   TupleDesc tupDesc,
 						   Oid relid,
+						   Oid accessmtd,
 						   Oid relfilenode,
 						   Oid reltablespace,
 						   bool shared_relation,
@@ -3268,6 +3353,15 @@ RelationBuildLocalRelation(const char *relname,
 
 	RelationInitPhysicalAddr(rel);
 
+	rel->rd_rel->relam = accessmtd;
+
+	if (relkind == RELKIND_RELATION ||
+		relkind == RELKIND_MATVIEW ||
+		relkind == RELKIND_PARTITIONED_TABLE ||
+		relkind == RELKIND_TOASTVALUE ||
+		relkind == RELKIND_SEQUENCE)
+		RelationInitTableAccessMethod(rel);
+
 	/*
 	 * Okay to insert into the relcache hash table.
 	 *
@@ -3314,31 +3408,16 @@ RelationBuildLocalRelation(const char *relname,
  * such as TRUNCATE or rebuilding an index from scratch.
  *
  * Caller must already hold exclusive lock on the relation.
- *
- * The relation is marked with relfrozenxid = freezeXid (InvalidTransactionId
- * must be passed for indexes and sequences).  This should be a lower bound on
- * the XIDs that will be put into the new relation contents.
- *
- * The new filenode's persistence is set to the given value.  This is useful
- * for the cases that are changing the relation's persistence; other callers
- * need to pass the original relpersistence value.
  */
 void
-RelationSetNewRelfilenode(Relation relation, char persistence,
-						  TransactionId freezeXid, MultiXactId minmulti)
+RelationSetNewRelfilenode(Relation relation, char persistence)
 {
 	Oid			newrelfilenode;
-	RelFileNodeBackend newrnode;
 	Relation	pg_class;
 	HeapTuple	tuple;
 	Form_pg_class classform;
-
-	/* Indexes, sequences must have Invalid frozenxid; other rels must not */
-	Assert((relation->rd_rel->relkind == RELKIND_INDEX ||
-			relation->rd_rel->relkind == RELKIND_SEQUENCE) ?
-		   freezeXid == InvalidTransactionId :
-		   TransactionIdIsNormal(freezeXid));
-	Assert(TransactionIdIsNormal(freezeXid) == MultiXactIdIsValid(minmulti));
+	MultiXactId minmulti = InvalidMultiXactId;
+	TransactionId freezeXid = InvalidTransactionId;
 
 	/* Allocate a new relfilenode */
 	newrelfilenode = GetNewRelFileNode(relation->rd_rel->reltablespace, NULL,
@@ -3357,18 +3436,6 @@ RelationSetNewRelfilenode(Relation relation, char persistence,
 	classform = (Form_pg_class) GETSTRUCT(tuple);
 
 	/*
-	 * Create storage for the main fork of the new relfilenode.
-	 *
-	 * NOTE: any conflict in relfilenode value will be caught here, if
-	 * GetNewRelFileNode messes up for any reason.
-	 */
-	newrnode.node = relation->rd_node;
-	newrnode.node.relNode = newrelfilenode;
-	newrnode.backend = relation->rd_backend;
-	RelationCreateStorage(newrnode.node, persistence);
-	smgrclosenode(newrnode);
-
-	/*
 	 * Schedule unlinking of the old storage at transaction commit.
 	 */
 	RelationDropStorage(relation);
@@ -3382,9 +3449,51 @@ RelationSetNewRelfilenode(Relation relation, char persistence,
 		RelationMapUpdateMap(RelationGetRelid(relation),
 							 newrelfilenode,
 							 relation->rd_rel->relisshared,
-							 false);
+							 true);
 	else
+	{
+		relation->rd_rel->relfilenode = newrelfilenode;
 		classform->relfilenode = newrelfilenode;
+	}
+
+	RelationInitPhysicalAddr(relation);
+
+	/*
+	 * Create storage for the main fork of the new relfilenode. If it's
+	 * table-like object, call into table AM to do so, which'll also create
+	 * the table's init fork.
+	 *
+	 * NOTE: any conflict in relfilenode value will be caught here, if
+	 * GetNewRelFileNode messes up for any reason.
+	 */
+
+	/*
+	 * Create storage for relation.
+	 */
+	switch (relation->rd_rel->relkind)
+	{
+		/* shouldn't be called for these */
+		case RELKIND_VIEW:
+		case RELKIND_COMPOSITE_TYPE:
+		case RELKIND_FOREIGN_TABLE:
+		case RELKIND_PARTITIONED_TABLE:
+		case RELKIND_PARTITIONED_INDEX:
+			elog(ERROR, "should not have storage");
+			break;
+
+		case RELKIND_INDEX:
+		case RELKIND_SEQUENCE:
+			RelationCreateStorage(relation->rd_node, persistence);
+			RelationOpenSmgr(relation);
+			break;
+
+		case RELKIND_RELATION:
+		case RELKIND_TOASTVALUE:
+		case RELKIND_MATVIEW:
+			table_set_new_filenode(relation, persistence,
+								   &freezeXid, &minmulti);
+			break;
+	}
 
 	/* These changes are safe even for a mapped relation */
 	if (relation->rd_rel->relkind != RELKIND_SEQUENCE)
@@ -3784,6 +3893,19 @@ RelationCacheInitializePhase3(void)
 		{
 			RelationBuildPartitionDesc(relation);
 			Assert(relation->rd_partdesc != NULL);
+
+			restart = true;
+		}
+
+		if (relation->rd_tableam == NULL &&
+			(relation->rd_rel->relkind == RELKIND_RELATION ||
+			 relation->rd_rel->relkind == RELKIND_MATVIEW ||
+			 relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||
+			 relation->rd_rel->relkind == RELKIND_TOASTVALUE ||
+			 relation->rd_rel->relkind == RELKIND_SEQUENCE))
+		{
+			RelationInitTableAccessMethod(relation);
+			Assert(relation->rd_tableam != NULL);
 
 			restart = true;
 		}
@@ -5562,6 +5684,14 @@ load_relcache_init_file(bool shared)
 			/* Count nailed rels to ensure we have 'em all */
 			if (rel->rd_isnailed)
 				nailed_rels++;
+
+			/* Load table AM stuff */
+			if (rel->rd_rel->relkind == RELKIND_RELATION ||
+				rel->rd_rel->relkind == RELKIND_MATVIEW ||
+				rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||
+				rel->rd_rel->relkind == RELKIND_TOASTVALUE ||
+				rel->rd_rel->relkind == RELKIND_SEQUENCE)
+				RelationInitTableAccessMethod(rel);
 
 			Assert(rel->rd_index == NULL);
 			Assert(rel->rd_indextuple == NULL);

@@ -25,6 +25,7 @@
 
 #include "access/htup_details.h"
 #include "access/nbtree.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
@@ -35,6 +36,7 @@
 #include "storage/lmgr.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
+#include "utils/tqual.h"
 
 
 PG_MODULE_MAGIC;
@@ -478,7 +480,7 @@ bt_check_every_level(Relation rel, Relation heaprel, bool readonly,
 	if (state->heapallindexed)
 	{
 		IndexInfo  *indexinfo = BuildIndexInfo(state->rel);
-		HeapScanDesc scan;
+		TableScanDesc scan;
 
 		/* Report on extra downlink checks performed in readonly case */
 		if (state->readonly)
@@ -497,7 +499,7 @@ bt_check_every_level(Relation rel, Relation heaprel, bool readonly,
 		 *
 		 * Note that IndexBuildHeapScan() calls heap_endscan() for us.
 		 */
-		scan = heap_beginscan_strat(state->heaprel, /* relation */
+		scan = table_beginscan_strat(state->heaprel, /* relation */
 									snapshot,	/* snapshot */
 									0,	/* number of keys */
 									NULL,	/* scan key */
@@ -531,8 +533,8 @@ bt_check_every_level(Relation rel, Relation heaprel, bool readonly,
 			 RelationGetRelationName(state->rel),
 			 RelationGetRelationName(state->heaprel));
 
-		IndexBuildHeapScan(state->heaprel, state->rel, indexinfo, true,
-						   bt_tuple_present_callback, (void *) state, scan);
+		table_index_build_scan(state->heaprel, state->rel, indexinfo, true,
+							   bt_tuple_present_callback, (void *) state, scan);
 
 		ereport(DEBUG1,
 				(errmsg_internal("finished verifying presence of " INT64_FORMAT " tuples from table \"%s\" with bitset %.2f%% set",

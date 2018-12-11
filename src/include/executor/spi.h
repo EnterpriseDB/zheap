@@ -25,7 +25,7 @@ typedef struct SPITupleTable
 	uint64		alloced;		/* # of alloced vals */
 	uint64		free;			/* # of free vals */
 	TupleDesc	tupdesc;		/* tuple descriptor */
-	HeapTuple  *vals;			/* tuples */
+	HeapTuple *vals;			/* tuples */
 	slist_node	next;			/* link for internal bookkeeping */
 	SubTransactionId subid;		/* subxact in which tuptable was created */
 } SPITupleTable;
@@ -122,7 +122,7 @@ extern CachedPlan *SPI_plan_get_cached_plan(SPIPlanPtr plan);
 extern HeapTuple SPI_copytuple(HeapTuple tuple);
 extern HeapTupleHeader SPI_returntuple(HeapTuple tuple, TupleDesc tupdesc);
 extern HeapTuple SPI_modifytuple(Relation rel, HeapTuple tuple, int natts,
-				int *attnum, Datum *Values, const char *Nulls);
+									int *attnum, Datum *Values, const char *Nulls);
 extern int	SPI_fnumber(TupleDesc tupdesc, const char *fname);
 extern char *SPI_fname(TupleDesc tupdesc, int fnumber);
 extern char *SPI_getvalue(HeapTuple tuple, TupleDesc tupdesc, int fnumber);

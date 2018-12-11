@@ -110,6 +110,7 @@
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
 #include "access/rewriteheap.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/tuptoaster.h"
 #include "access/xact.h"
@@ -126,13 +127,13 @@
 
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
+#include "storage/procarray.h"
 #include "storage/smgr.h"
 
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
-#include "storage/procarray.h"
 
 /*
  * State associated with a rewrite operation. This is opaque to the user
@@ -346,7 +347,7 @@ end_heap_rewrite(RewriteState state)
 	}
 
 	/*
-	 * If the rel is WAL-logged, must fsync before commit.  We use heap_sync
+	 * If the rel is WAL-logged, must fsync before commit.  We use table_sync
 	 * to ensure that the toast table gets fsync'd too.
 	 *
 	 * It's obvious that we must do this when not WAL-logging. It's less
@@ -357,7 +358,7 @@ end_heap_rewrite(RewriteState state)
 	 * wrote before the checkpoint.
 	 */
 	if (RelationNeedsWAL(state->rs_new_rel))
-		heap_sync(state->rs_new_rel);
+		table_sync(state->rs_new_rel);
 
 	logical_end_heap_rewrite(state);
 

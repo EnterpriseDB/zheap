@@ -3944,7 +3944,7 @@ apply_returning_filter(PgFdwDirectModifyState *dmstate,
 	/*
 	 * Use the trigger tuple slot as a place to store the result tuple.
 	 */
-	resultSlot = estate->es_trig_tuple_slot;
+	resultSlot = ExecTriggerGetReturnSlot(estate, dmstate->resultRel);
 	if (resultSlot->tts_tupleDescriptor != resultTupType)
 		ExecSetSlotDescriptor(resultSlot, resultTupType);
 

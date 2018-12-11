@@ -1,7 +1,6 @@
 /*-------------------------------------------------------------------------
  *
- * tqual.c
- *	  POSTGRES "time qualification" code, ie, tuple visibility rules.
+ * POSTGRES "time qualification" code, ie, tuple visibility rules.
  *
  * NOTE: all the HeapTupleSatisfies routines will update the tuple's
  * "hint" status bits if we see that the inserting or deleting transaction
@@ -56,13 +55,14 @@
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
- *	  src/backend/utils/time/tqual.c
+ *	  src/backend/access/heap/heapam_visibilty.c
  *
  *-------------------------------------------------------------------------
  */
 
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/subtrans.h"
@@ -76,11 +76,9 @@
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"
 
-
 /* Static variables representing various special snapshot semantics */
-SnapshotData SnapshotSelfData = {HeapTupleSatisfiesSelf};
-SnapshotData SnapshotAnyData = {HeapTupleSatisfiesAny};
-
+SnapshotData SnapshotSelfData = {SELF_VISIBILITY};
+SnapshotData SnapshotAnyData = {ANY_VISIBILITY};
 
 /*
  * SetHintBits()
@@ -117,6 +115,9 @@ static inline void
 SetHintBits(HeapTupleHeader tuple, Buffer buffer,
 			uint16 infomask, TransactionId xid)
 {
+	if (!BufferIsValid(buffer))
+		return;
+
 	if (TransactionIdIsValid(xid))
 	{
 		/* NB: xid must be known committed here! */
@@ -172,7 +173,7 @@ HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,
  *			(Xmax != my-transaction &&			the row was deleted by another transaction
  *			 Xmax is not committed)))			that has not been committed
  */
-bool
+static bool
 HeapTupleSatisfiesSelf(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 {
 	HeapTupleHeader tuple = htup->t_data;
@@ -342,7 +343,7 @@ HeapTupleSatisfiesSelf(HeapTuple htup, Snapshot snapshot, Buffer buffer)
  * HeapTupleSatisfiesAny
  *		Dummy "satisfies" routine: any tuple satisfies SnapshotAny.
  */
-bool
+static bool
 HeapTupleSatisfiesAny(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 {
 	return true;
@@ -362,7 +363,7 @@ HeapTupleSatisfiesAny(HeapTuple htup, Snapshot snapshot, Buffer buffer)
  * Among other things, this means you can't do UPDATEs of rows in a TOAST
  * table.
  */
-bool
+static bool
 HeapTupleSatisfiesToast(HeapTuple htup, Snapshot snapshot,
 						Buffer buffer)
 {
@@ -612,7 +613,11 @@ HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 	{
 		if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
 			return HeapTupleMayBeUpdated;
-		return HeapTupleUpdated;	/* updated by other */
+		/* updated by other */
+		if (ItemPointerEquals(&htup->t_self, &tuple->t_ctid))
+			return HeapTupleDeleted;
+		else
+			return HeapTupleUpdated;
 	}
 
 	if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
@@ -653,7 +658,12 @@ HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 			return HeapTupleBeingUpdated;
 
 		if (TransactionIdDidCommit(xmax))
-			return HeapTupleUpdated;
+		{
+			if (ItemPointerEquals(&htup->t_self, &tuple->t_ctid))
+				return HeapTupleDeleted;
+			else
+				return HeapTupleUpdated;
+		}
 
 		/*
 		 * By here, the update in the Xmax is either aborted or crashed, but
@@ -709,7 +719,12 @@ HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 
 	SetHintBits(tuple, buffer, HEAP_XMAX_COMMITTED,
 				HeapTupleHeaderGetRawXmax(tuple));
-	return HeapTupleUpdated;	/* updated by other */
+
+	/* updated by other */
+	if (ItemPointerEquals(&htup->t_self, &tuple->t_ctid))
+		return HeapTupleDeleted;
+	else
+		return HeapTupleUpdated;
 }
 
 /*
@@ -735,7 +750,7 @@ HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
  * on the insertion without aborting the whole transaction, the associated
  * token is also returned in snapshot->speculativeToken.
  */
-bool
+static bool
 HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot,
 						Buffer buffer)
 {
@@ -959,7 +974,7 @@ HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot,
  * inserting/deleting transaction was still running --- which was more cycles
  * and more contention on the PGXACT array.
  */
-bool
+static bool
 HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot,
 					   Buffer buffer)
 {
@@ -1161,9 +1176,10 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot,
  * even if we see that the deleting transaction has committed.
  */
 HTSV_Result
-HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
+HeapTupleSatisfiesVacuum(HeapTuple stup, TransactionId OldestXmin,
 						 Buffer buffer)
 {
+	HeapTuple	htup = (HeapTuple) stup;
 	HeapTupleHeader tuple = htup->t_data;
 
 	Assert(ItemPointerIsValid(&htup->t_self));
@@ -1383,18 +1399,17 @@ HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
 	return HEAPTUPLE_DEAD;
 }
 
-
 /*
  * HeapTupleSatisfiesNonVacuumable
  *
- *	True if tuple might be visible to some transaction; false if it's
- *	surely dead to everyone, ie, vacuumable.
+ *     True if tuple might be visible to some transaction; false if it's
+ *     surely dead to everyone, ie, vacuumable.
  *
- *	This is an interface to HeapTupleSatisfiesVacuum that meets the
- *	SnapshotSatisfiesFunc API, so it can be used through a Snapshot.
- *	snapshot->xmin must have been set up with the xmin horizon to use.
+ *     This is an interface to HeapTupleSatisfiesVacuum that meets the
+ *     SnapshotSatisfiesFunc API, so it can be used through a Snapshot.
+ *     snapshot->xmin must have been set up with the xmin horizon to use.
  */
-bool
+static bool
 HeapTupleSatisfiesNonVacuumable(HeapTuple htup, Snapshot snapshot,
 								Buffer buffer)
 {
@@ -1402,64 +1417,58 @@ HeapTupleSatisfiesNonVacuumable(HeapTuple htup, Snapshot snapshot,
 		!= HEAPTUPLE_DEAD;
 }
 
-
 /*
- * HeapTupleIsSurelyDead
+ * Is the tuple really only locked?  That is, is it not updated?
  *
- *	Cheaply determine whether a tuple is surely dead to all onlookers.
- *	We sometimes use this in lieu of HeapTupleSatisfiesVacuum when the
- *	tuple has just been tested by another visibility routine (usually
- *	HeapTupleSatisfiesMVCC) and, therefore, any hint bits that can be set
- *	should already be set.  We assume that if no hint bits are set, the xmin
- *	or xmax transaction is still running.  This is therefore faster than
- *	HeapTupleSatisfiesVacuum, because we don't consult PGXACT nor CLOG.
- *	It's okay to return false when in doubt, but we must return true only
- *	if the tuple is removable.
+ * It's easy to check just infomask bits if the locker is not a multi; but
+ * otherwise we need to verify that the updating transaction has not aborted.
+ *
+ * This function is here because it follows the same time qualification rules
+ * laid out at the top of this file.
  */
 bool
-HeapTupleIsSurelyDead(HeapTuple htup, TransactionId OldestXmin)
+HeapTupleHeaderIsOnlyLocked(HeapTupleHeader tuple)
 {
-	HeapTupleHeader tuple = htup->t_data;
+	TransactionId xmax;
 
-	Assert(ItemPointerIsValid(&htup->t_self));
-	Assert(htup->t_tableOid != InvalidOid);
-
-	/*
-	 * If the inserting transaction is marked invalid, then it aborted, and
-	 * the tuple is definitely dead.  If it's marked neither committed nor
-	 * invalid, then we assume it's still alive (since the presumption is that
-	 * all relevant hint bits were just set moments ago).
-	 */
-	if (!HeapTupleHeaderXminCommitted(tuple))
-		return HeapTupleHeaderXminInvalid(tuple) ? true : false;
-
-	/*
-	 * If the inserting transaction committed, but any deleting transaction
-	 * aborted, the tuple is still alive.
-	 */
+	/* if there's no valid Xmax, then there's obviously no update either */
 	if (tuple->t_infomask & HEAP_XMAX_INVALID)
+		return true;
+
+	if (tuple->t_infomask & HEAP_XMAX_LOCK_ONLY)
+		return true;
+
+	/* invalid xmax means no update */
+	if (!TransactionIdIsValid(HeapTupleHeaderGetRawXmax(tuple)))
+		return true;
+
+	/*
+	 * if HEAP_XMAX_LOCK_ONLY is not set and not a multi, then this must
+	 * necessarily have been updated
+	 */
+	if (!(tuple->t_infomask & HEAP_XMAX_IS_MULTI))
+		return false;
+
+	/* ... but if it's a multi, then perhaps the updating Xid aborted. */
+	xmax = HeapTupleGetUpdateXid(tuple);
+
+	/* not LOCKED_ONLY, so it has to have an xmax */
+	Assert(TransactionIdIsValid(xmax));
+
+	if (TransactionIdIsCurrentTransactionId(xmax))
+		return false;
+	if (TransactionIdIsInProgress(xmax))
+		return false;
+	if (TransactionIdDidCommit(xmax))
 		return false;
 
 	/*
-	 * If the XMAX is just a lock, the tuple is still alive.
+	 * not current, not in progress, not committed -- must have aborted or
+	 * crashed
 	 */
-	if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
-		return false;
-
-	/*
-	 * If the Xmax is a MultiXact, it might be dead or alive, but we cannot
-	 * know without checking pg_multixact.
-	 */
-	if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
-		return false;
-
-	/* If deleter isn't known to have committed, assume it's still running. */
-	if (!(tuple->t_infomask & HEAP_XMAX_COMMITTED))
-		return false;
-
-	/* Deleter committed, so tuple is dead if the XID is old enough. */
-	return TransactionIdPrecedes(HeapTupleHeaderGetRawXmax(tuple), OldestXmin);
+	return true;
 }
+
 
 /*
  * XidInMVCCSnapshot
@@ -1584,55 +1593,61 @@ XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot)
 }
 
 /*
- * Is the tuple really only locked?  That is, is it not updated?
+ * HeapTupleIsSurelyDead
  *
- * It's easy to check just infomask bits if the locker is not a multi; but
- * otherwise we need to verify that the updating transaction has not aborted.
- *
- * This function is here because it follows the same time qualification rules
- * laid out at the top of this file.
+ *	Cheaply determine whether a tuple is surely dead to all onlookers.
+ *	We sometimes use this in lieu of HeapTupleSatisfiesVacuum when the
+ *	tuple has just been tested by another visibility routine (usually
+ *	HeapTupleSatisfiesMVCC) and, therefore, any hint bits that can be set
+ *	should already be set.  We assume that if no hint bits are set, the xmin
+ *	or xmax transaction is still running.  This is therefore faster than
+ *	HeapTupleSatisfiesVacuum, because we don't consult PGXACT nor CLOG.
+ *	It's okay to return false when in doubt, but we must return TRUE only
+ *	if the tuple is removable.
  */
 bool
-HeapTupleHeaderIsOnlyLocked(HeapTupleHeader tuple)
+HeapTupleIsSurelyDead(HeapTuple htup, TransactionId OldestXmin)
 {
-	TransactionId xmax;
+	HeapTupleHeader tuple = htup->t_data;
 
-	/* if there's no valid Xmax, then there's obviously no update either */
+	Assert(ItemPointerIsValid(&htup->t_self));
+	Assert(htup->t_tableOid != InvalidOid);
+
+	/*
+	 * If the inserting transaction is marked invalid, then it aborted, and
+	 * the tuple is definitely dead.  If it's marked neither committed nor
+	 * invalid, then we assume it's still alive (since the presumption is that
+	 * all relevant hint bits were just set moments ago).
+	 */
+	if (!HeapTupleHeaderXminCommitted(tuple))
+		return HeapTupleHeaderXminInvalid(tuple) ? true : false;
+
+	/*
+	 * If the inserting transaction committed, but any deleting transaction
+	 * aborted, the tuple is still alive.
+	 */
 	if (tuple->t_infomask & HEAP_XMAX_INVALID)
-		return true;
-
-	if (tuple->t_infomask & HEAP_XMAX_LOCK_ONLY)
-		return true;
-
-	/* invalid xmax means no update */
-	if (!TransactionIdIsValid(HeapTupleHeaderGetRawXmax(tuple)))
-		return true;
-
-	/*
-	 * if HEAP_XMAX_LOCK_ONLY is not set and not a multi, then this must
-	 * necessarily have been updated
-	 */
-	if (!(tuple->t_infomask & HEAP_XMAX_IS_MULTI))
-		return false;
-
-	/* ... but if it's a multi, then perhaps the updating Xid aborted. */
-	xmax = HeapTupleGetUpdateXid(tuple);
-
-	/* not LOCKED_ONLY, so it has to have an xmax */
-	Assert(TransactionIdIsValid(xmax));
-
-	if (TransactionIdIsCurrentTransactionId(xmax))
-		return false;
-	if (TransactionIdIsInProgress(xmax))
-		return false;
-	if (TransactionIdDidCommit(xmax))
 		return false;
 
 	/*
-	 * not current, not in progress, not committed -- must have aborted or
-	 * crashed
+	 * If the XMAX is just a lock, the tuple is still alive.
 	 */
-	return true;
+	if (HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_infomask))
+		return false;
+
+	/*
+	 * If the Xmax is a MultiXact, it might be dead or alive, but we cannot
+	 * know without checking pg_multixact.
+	 */
+	if (tuple->t_infomask & HEAP_XMAX_IS_MULTI)
+		return false;
+
+	/* If deleter isn't known to have committed, assume it's still running. */
+	if (!(tuple->t_infomask & HEAP_XMAX_COMMITTED))
+		return false;
+
+	/* Deleter committed, so tuple is dead if the XID is old enough. */
+	return TransactionIdPrecedes(HeapTupleHeaderGetRawXmax(tuple), OldestXmin);
 }
 
 /*
@@ -1659,7 +1674,7 @@ TransactionIdInArray(TransactionId xid, TransactionId *xip, Size num)
  * dangerous to do so as the semantics of doing so during timetravel are more
  * complicated than when dealing "only" with the present.
  */
-bool
+static bool
 HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
 							   Buffer buffer)
 {
@@ -1795,4 +1810,35 @@ HeapTupleSatisfiesHistoricMVCC(HeapTuple htup, Snapshot snapshot,
 	/* xmax is between [xmin, xmax), but known not to have committed yet */
 	else
 		return true;
+}
+
+bool
+HeapTupleSatisfies(HeapTuple stup, Snapshot snapshot, Buffer buffer)
+{
+	switch (snapshot->visibility_type)
+	{
+		case MVCC_VISIBILITY:
+			return HeapTupleSatisfiesMVCC(stup, snapshot, buffer);
+			break;
+		case SELF_VISIBILITY:
+			return HeapTupleSatisfiesSelf(stup, snapshot, buffer);
+			break;
+		case ANY_VISIBILITY:
+			return HeapTupleSatisfiesAny(stup, snapshot, buffer);
+			break;
+		case TOAST_VISIBILITY:
+			return HeapTupleSatisfiesToast(stup, snapshot, buffer);
+			break;
+		case DIRTY_VISIBILITY:
+			return HeapTupleSatisfiesDirty(stup, snapshot, buffer);
+			break;
+		case HISTORIC_MVCC_VISIBILITY:
+			return HeapTupleSatisfiesHistoricMVCC(stup, snapshot, buffer);
+			break;
+		case NON_VACUUMABLE_VISIBILTY:
+			return HeapTupleSatisfiesNonVacuumable(stup, snapshot, buffer);
+			break;
+	}
+
+	return false; /* keep compiler quiet */
 }

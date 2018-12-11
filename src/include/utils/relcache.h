@@ -76,6 +76,8 @@ extern void RelationInitIndexAccessInfo(Relation relation);
 struct PublicationActions;
 extern struct PublicationActions *GetRelationPublicationActions(Relation relation);
 
+extern void RelationInitTableAccessMethod(Relation relation);
+
 /*
  * Routines to support ereport() reports of relation-related errors
  */
@@ -98,6 +100,7 @@ extern Relation RelationBuildLocalRelation(const char *relname,
 						   Oid relnamespace,
 						   TupleDesc tupDesc,
 						   Oid relid,
+						   Oid accessmtd,
 						   Oid relfilenode,
 						   Oid reltablespace,
 						   bool shared_relation,
@@ -108,8 +111,7 @@ extern Relation RelationBuildLocalRelation(const char *relname,
 /*
  * Routine to manage assignment of new relfilenode to a relation
  */
-extern void RelationSetNewRelfilenode(Relation relation, char persistence,
-						  TransactionId freezeXid, MultiXactId minmulti);
+extern void RelationSetNewRelfilenode(Relation relation, char persistence);
 
 /*
  * Routines for flushing/rebuilding relcache entries in various scenarios

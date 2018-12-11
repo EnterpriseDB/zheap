@@ -188,6 +188,7 @@
 #include "access/htup_details.h"
 #include "access/slru.h"
 #include "access/subtrans.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/twophase_rmgr.h"

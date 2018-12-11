@@ -56,7 +56,7 @@ static void system_beginsamplescan(SampleScanState *node,
 					   Datum *params,
 					   int nparams,
 					   uint32 seed);
-static BlockNumber system_nextsampleblock(SampleScanState *node);
+static BlockNumber system_nextsampleblock(SampleScanState *node, BlockNumber nblocks);
 static OffsetNumber system_nextsampletuple(SampleScanState *node,
 					   BlockNumber blockno,
 					   OffsetNumber maxoffset);
@@ -177,10 +177,9 @@ system_beginsamplescan(SampleScanState *node,
  * Select next block to sample.
  */
 static BlockNumber
-system_nextsampleblock(SampleScanState *node)
+system_nextsampleblock(SampleScanState *node, BlockNumber nblocks)
 {
 	SystemSamplerData *sampler = (SystemSamplerData *) node->tsm_state;
-	HeapScanDesc scan = node->ss.ss_currentScanDesc;
 	BlockNumber nextblock = sampler->nextblock;
 	uint32		hashinput[2];
 
@@ -199,7 +198,7 @@ system_nextsampleblock(SampleScanState *node)
 	 * Loop over block numbers until finding suitable block or reaching end of
 	 * relation.
 	 */
-	for (; nextblock < scan->rs_nblocks; nextblock++)
+	for (; nextblock < nblocks; nextblock++)
 	{
 		uint32		hash;
 
@@ -211,7 +210,7 @@ system_nextsampleblock(SampleScanState *node)
 			break;
 	}
 
-	if (nextblock < scan->rs_nblocks)
+	if (nextblock < nblocks)
 	{
 		/* Found a suitable block; remember where we should start next time */
 		sampler->nextblock = nextblock + 1;

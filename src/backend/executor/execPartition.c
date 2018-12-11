@@ -13,6 +13,7 @@
  */
 #include "postgres.h"
 
+#include "access/tableam.h"
 #include "catalog/partition.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_type.h"
@@ -899,8 +900,7 @@ ExecInitRoutingInfo(ModifyTableState *mtstate,
 		 * end of the command.
 		 */
 		partrouteinfo->pi_PartitionTupleSlot =
-			ExecInitExtraTupleSlot(estate, RelationGetDescr(partrel),
-								   &TTSOpsHeapTuple);
+			table_gimmegimmeslot(partrel, &estate->es_tupleTable);
 	}
 	else
 		partrouteinfo->pi_PartitionTupleSlot = NULL;

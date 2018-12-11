@@ -69,6 +69,7 @@
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/reloptions.h"
+#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "catalog/dependency.h"
@@ -1866,7 +1867,7 @@ get_database_list(void)
 {
 	List	   *dblist = NIL;
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tup;
 	MemoryContext resultcxt;
 
@@ -1884,9 +1885,9 @@ get_database_list(void)
 	(void) GetTransactionSnapshot();
 
 	rel = heap_open(DatabaseRelationId, AccessShareLock);
-	scan = heap_beginscan_catalog(rel, 0, NULL);
+	scan = table_beginscan_catalog(rel, 0, NULL);
 
-	while (HeapTupleIsValid(tup = heap_getnext(scan, ForwardScanDirection)))
+	while (HeapTupleIsValid(tup = heap_scan_getnext(scan, ForwardScanDirection)))
 	{
 		Form_pg_database pgdatabase = (Form_pg_database) GETSTRUCT(tup);
 		avw_dbase  *avdb;
@@ -1913,7 +1914,7 @@ get_database_list(void)
 		MemoryContextSwitchTo(oldcxt);
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	heap_close(rel, AccessShareLock);
 
 	CommitTransactionCommand();
@@ -1932,7 +1933,7 @@ do_autovacuum(void)
 {
 	Relation	classRel;
 	HeapTuple	tuple;
-	HeapScanDesc relScan;
+	TableScanDesc relScan;
 	Form_pg_database dbForm;
 	List	   *table_oids = NIL;
 	List	   *orphan_oids = NIL;
@@ -2044,13 +2045,13 @@ do_autovacuum(void)
 	 * wide tables there might be proportionally much more activity in the
 	 * TOAST table than in its parent.
 	 */
-	relScan = heap_beginscan_catalog(classRel, 0, NULL);
+	relScan = table_beginscan_catalog(classRel, 0, NULL);
 
 	/*
 	 * On the first pass, we collect main tables to vacuum, and also the main
 	 * table relid to TOAST relid mapping.
 	 */
-	while ((tuple = heap_getnext(relScan, ForwardScanDirection)) != NULL)
+	while ((tuple = heap_scan_getnext(relScan, ForwardScanDirection)) != NULL)
 	{
 		Form_pg_class classForm = (Form_pg_class) GETSTRUCT(tuple);
 		PgStat_StatTabEntry *tabentry;
@@ -2133,7 +2134,7 @@ do_autovacuum(void)
 		}
 	}
 
-	heap_endscan(relScan);
+	table_endscan(relScan);
 
 	/* second pass: check TOAST tables */
 	ScanKeyInit(&key,
@@ -2141,8 +2142,8 @@ do_autovacuum(void)
 				BTEqualStrategyNumber, F_CHAREQ,
 				CharGetDatum(RELKIND_TOASTVALUE));
 
-	relScan = heap_beginscan_catalog(classRel, 1, &key);
-	while ((tuple = heap_getnext(relScan, ForwardScanDirection)) != NULL)
+	relScan = table_beginscan_catalog(classRel, 1, &key);
+	while ((tuple = heap_scan_getnext(relScan, ForwardScanDirection)) != NULL)
 	{
 		Form_pg_class classForm = (Form_pg_class) GETSTRUCT(tuple);
 		PgStat_StatTabEntry *tabentry;
@@ -2188,7 +2189,7 @@ do_autovacuum(void)
 			table_oids = lappend_oid(table_oids, relid);
 	}
 
-	heap_endscan(relScan);
+	table_endscan(relScan);
 	heap_close(classRel, AccessShareLock);
 
 	/*

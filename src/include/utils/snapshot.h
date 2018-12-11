@@ -19,6 +19,16 @@
 #include "lib/pairingheap.h"
 #include "storage/buf.h"
 
+typedef enum tuple_visibility_type
+{
+	MVCC_VISIBILITY = 0,		/* HeapTupleSatisfiesMVCC */
+	SELF_VISIBILITY,			/* HeapTupleSatisfiesSelf */
+	ANY_VISIBILITY,				/* HeapTupleSatisfiesAny */
+	TOAST_VISIBILITY,			/* HeapTupleSatisfiesToast */
+	DIRTY_VISIBILITY,			/* HeapTupleSatisfiesDirty */
+	HISTORIC_MVCC_VISIBILITY,	/* HeapTupleSatisfiesHistoricMVCC */
+	NON_VACUUMABLE_VISIBILTY	/* HeapTupleSatisfiesNonVacuumable */
+}			tuple_visibility_type;
 
 typedef struct SnapshotData *Snapshot;
 
@@ -52,7 +62,7 @@ typedef bool (*SnapshotSatisfiesFunc) (HeapTuple htup,
  */
 typedef struct SnapshotData
 {
-	SnapshotSatisfiesFunc satisfies;	/* tuple test function */
+	tuple_visibility_type visibility_type;	/* tuple visibility test type */
 
 	/*
 	 * The remaining fields are used only for MVCC snapshots, and are normally
@@ -124,6 +134,7 @@ typedef enum
 	HeapTupleInvisible,
 	HeapTupleSelfUpdated,
 	HeapTupleUpdated,
+	HeapTupleDeleted,
 	HeapTupleBeingUpdated,
 	HeapTupleWouldBlock			/* can be returned by heap_tuple_lock */
 } HTSU_Result;

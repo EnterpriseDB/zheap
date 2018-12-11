@@ -16,6 +16,7 @@
 
 #include "access/htup_details.h"
 #include "access/multixact.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
@@ -52,7 +53,8 @@ typedef struct
 	Relation	transientrel;	/* relation to write to */
 	CommandId	output_cid;		/* cmin to insert in output tuples */
 	int			hi_options;		/* heap_insert performance options */
-	BulkInsertState bistate;	/* bulk insert state */
+	void       *bistate;		/* bulk insert state */
+	TupleTableSlot *slot;
 } DR_transientrel;
 
 static int	matview_maintenance_depth = 0;
@@ -454,6 +456,7 @@ transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	 */
 	myState->transientrel = transientrel;
 	myState->output_cid = GetCurrentCommandId(true);
+	myState->slot = table_gimmegimmeslot(transientrel, NULL);
 
 	/*
 	 * We can skip WAL-logging the insertions, unless PITR or streaming
@@ -475,24 +478,23 @@ static bool
 transientrel_receive(TupleTableSlot *slot, DestReceiver *self)
 {
 	DR_transientrel *myState = (DR_transientrel *) self;
-	HeapTuple	tuple;
 
 	/*
-	 * get the heap tuple out of the tuple table slot, making sure we have a
-	 * writable copy
+	 * Ensure input tuple is the right format for the target relation.
 	 */
-	tuple = ExecCopySlotHeapTuple(slot);
+	if (slot->tts_ops != myState->slot->tts_ops)
+	{
+		ExecCopySlot(myState->slot, slot);
+		slot = myState->slot;
+	}
 
-	heap_insert(myState->transientrel,
-				tuple,
-				myState->output_cid,
-				myState->hi_options,
-				myState->bistate);
+	table_insert(myState->transientrel,
+				 slot,
+				 myState->output_cid,
+				 myState->hi_options,
+				 myState->bistate);
 
 	/* We know this is a newly created relation, so there are no indexes */
-
-	/* Free the copied tuple. */
-	heap_freetuple(tuple);
 
 	return true;
 }
@@ -505,11 +507,12 @@ transientrel_shutdown(DestReceiver *self)
 {
 	DR_transientrel *myState = (DR_transientrel *) self;
 
+	ExecDropSingleTupleTableSlot(myState->slot);
 	FreeBulkInsertState(myState->bistate);
 
 	/* If we skipped using WAL, must heap_sync before commit */
 	if (myState->hi_options & HEAP_INSERT_SKIP_WAL)
-		heap_sync(myState->transientrel);
+		table_sync(myState->transientrel);
 
 	/* close transientrel, but keep lock until commit */
 	heap_close(myState->transientrel, NoLock);

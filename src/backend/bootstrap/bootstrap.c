@@ -18,6 +18,7 @@
 #include <signal.h>
 
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "bootstrap/bootstrap.h"
@@ -593,7 +594,7 @@ boot_openrel(char *relname)
 	int			i;
 	struct typmap **app;
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tup;
 
 	if (strlen(relname) >= NAMEDATALEN)
@@ -603,18 +604,18 @@ boot_openrel(char *relname)
 	{
 		/* We can now load the pg_type data */
 		rel = heap_open(TypeRelationId, NoLock);
-		scan = heap_beginscan_catalog(rel, 0, NULL);
+		scan = table_beginscan_catalog(rel, 0, NULL);
 		i = 0;
-		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+		while ((tup = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 			++i;
-		heap_endscan(scan);
+		table_endscan(scan);
 		app = Typ = ALLOC(struct typmap *, i + 1);
 		while (i-- > 0)
 			*app++ = ALLOC(struct typmap, 1);
 		*app = NULL;
-		scan = heap_beginscan_catalog(rel, 0, NULL);
+		scan = table_beginscan_catalog(rel, 0, NULL);
 		app = Typ;
-		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+		while ((tup = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 		{
 			(*app)->am_oid = ((Form_pg_type) GETSTRUCT(tup))->oid;
 			memcpy((char *) &(*app)->am_typ,
@@ -622,7 +623,7 @@ boot_openrel(char *relname)
 				   sizeof((*app)->am_typ));
 			app++;
 		}
-		heap_endscan(scan);
+		table_endscan(scan);
 		heap_close(rel, NoLock);
 	}
 
@@ -914,7 +915,7 @@ gettype(char *type)
 {
 	int			i;
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tup;
 	struct typmap **app;
 
@@ -938,25 +939,25 @@ gettype(char *type)
 		}
 		elog(DEBUG4, "external type: %s", type);
 		rel = heap_open(TypeRelationId, NoLock);
-		scan = heap_beginscan_catalog(rel, 0, NULL);
+		scan = table_beginscan_catalog(rel, 0, NULL);
 		i = 0;
-		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+		while ((tup = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 			++i;
-		heap_endscan(scan);
+		table_endscan(scan);
 		app = Typ = ALLOC(struct typmap *, i + 1);
 		while (i-- > 0)
 			*app++ = ALLOC(struct typmap, 1);
 		*app = NULL;
-		scan = heap_beginscan_catalog(rel, 0, NULL);
+		scan = table_beginscan_catalog(rel, 0, NULL);
 		app = Typ;
-		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+		while ((tup = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 		{
 			(*app)->am_oid = ((Form_pg_type) GETSTRUCT(tup))->oid;
 			memmove((char *) &(*app++)->am_typ,
 					(char *) GETSTRUCT(tup),
 					sizeof((*app)->am_typ));
 		}
-		heap_endscan(scan);
+		table_endscan(scan);
 		heap_close(rel, NoLock);
 		return gettype(type);
 	}

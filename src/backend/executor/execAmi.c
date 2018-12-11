@@ -544,7 +544,7 @@ static bool
 IndexSupportsBackwardScan(Oid indexid)
 {
 	bool		result;
-	HeapTuple	ht_idxrel;
+	HeapTuple ht_idxrel;
 	Form_pg_class idxrelrec;
 	IndexAmRoutine *amroutine;
 

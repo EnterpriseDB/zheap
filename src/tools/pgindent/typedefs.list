@@ -1608,8 +1608,8 @@ ParallelHashGrowth
 ParallelHashJoinBatch
 ParallelHashJoinBatchAccessor
 ParallelHashJoinState
-ParallelHeapScanDesc
-ParallelHeapScanDescData
+ParallelTableScanDesc
+ParallelTableScanDescData
 ParallelIndexScanDesc
 ParallelSlot
 ParallelState

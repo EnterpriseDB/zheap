@@ -57,6 +57,7 @@
 #include "postgres.h"
 
 #include "access/tuptoaster.h"
+#include "access/sysattr.h"
 #include "catalog/pg_type.h"
 #include "commands/sequence.h"
 #include "executor/execExpr.h"

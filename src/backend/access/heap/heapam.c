@@ -45,6 +45,7 @@
 #include "access/multixact.h"
 #include "access/parallel.h"
 #include "access/relscan.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/transam.h"
 #include "access/tuptoaster.h"
@@ -79,22 +80,6 @@
 #include "nodes/execnodes.h"
 #include "executor/executor.h"
 
-/* GUC variable */
-bool		synchronize_seqscans = true;
-
-
-static HeapScanDesc heap_beginscan_internal(Relation relation,
-						Snapshot snapshot,
-						int nkeys, ScanKey key,
-						ParallelHeapScanDesc parallel_scan,
-						bool allow_strat,
-						bool allow_sync,
-						bool allow_pagemode,
-						bool is_bitmapscan,
-						bool is_samplescan,
-						bool temp_snap);
-static void heap_parallelscan_startblock_init(HeapScanDesc scan);
-static BlockNumber heap_parallelscan_nextpage(HeapScanDesc scan);
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
 					TransactionId xid, CommandId cid, int options);
 static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
@@ -233,10 +218,10 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	 * results for a non-MVCC snapshot, the caller must hold some higher-level
 	 * lock that ensures the interesting tuple(s) won't change.)
 	 */
-	if (scan->rs_parallel != NULL)
-		scan->rs_nblocks = scan->rs_parallel->phs_nblocks;
+	if (scan->rs_scan.rs_parallel != NULL)
+		scan->rs_scan.rs_nblocks = scan->rs_scan.rs_parallel->phs_nblocks;
 	else
-		scan->rs_nblocks = RelationGetNumberOfBlocks(scan->rs_rd);
+		scan->rs_scan.rs_nblocks = RelationGetNumberOfBlocks(scan->rs_scan.rs_rd);
 
 	/*
 	 * If the table is large relative to NBuffers, use a bulk-read access
@@ -250,11 +235,11 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	 * Note that heap_parallelscan_initialize has a very similar test; if you
 	 * change this, consider changing that one, too.
 	 */
-	if (!RelationUsesLocalBuffers(scan->rs_rd) &&
-		scan->rs_nblocks > NBuffers / 4)
+	if (!RelationUsesLocalBuffers(scan->rs_scan.rs_rd) &&
+		scan->rs_scan.rs_nblocks > NBuffers / 4)
 	{
-		allow_strat = scan->rs_allow_strat;
-		allow_sync = scan->rs_allow_sync;
+		allow_strat = scan->rs_scan.rs_allow_strat;
+		allow_sync = scan->rs_scan.rs_allow_sync;
 	}
 	else
 		allow_strat = allow_sync = false;
@@ -272,10 +257,10 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 		scan->rs_strategy = NULL;
 	}
 
-	if (scan->rs_parallel != NULL)
+	if (scan->rs_scan.rs_parallel != NULL)
 	{
-		/* For parallel scan, believe whatever ParallelHeapScanDesc says. */
-		scan->rs_syncscan = scan->rs_parallel->phs_syncscan;
+		/* For parallel scan, believe whatever ParallelTableScanDesc says. */
+		scan->rs_scan.rs_syncscan = scan->rs_scan.rs_parallel->phs_syncscan;
 	}
 	else if (keep_startblock)
 	{
@@ -284,20 +269,20 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 		 * so that rewinding a cursor doesn't generate surprising results.
 		 * Reset the active syncscan setting, though.
 		 */
-		scan->rs_syncscan = (allow_sync && synchronize_seqscans);
+		scan->rs_scan.rs_syncscan = (allow_sync && synchronize_seqscans);
 	}
 	else if (allow_sync && synchronize_seqscans)
 	{
-		scan->rs_syncscan = true;
-		scan->rs_startblock = ss_get_location(scan->rs_rd, scan->rs_nblocks);
+		scan->rs_scan.rs_syncscan = true;
+		scan->rs_scan.rs_startblock = ss_get_location(scan->rs_scan.rs_rd, scan->rs_scan.rs_nblocks);
 	}
 	else
 	{
-		scan->rs_syncscan = false;
-		scan->rs_startblock = 0;
+		scan->rs_scan.rs_syncscan = false;
+		scan->rs_scan.rs_startblock = 0;
 	}
 
-	scan->rs_numblocks = InvalidBlockNumber;
+	scan->rs_scan.rs_numblocks = InvalidBlockNumber;
 	scan->rs_inited = false;
 	scan->rs_ctup.t_data = NULL;
 	ItemPointerSetInvalid(&scan->rs_ctup.t_self);
@@ -310,15 +295,15 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	 * copy the scan key, if appropriate
 	 */
 	if (key != NULL)
-		memcpy(scan->rs_key, key, scan->rs_nkeys * sizeof(ScanKeyData));
+		memcpy(scan->rs_scan.rs_key, key, scan->rs_scan.rs_nkeys * sizeof(ScanKeyData));
 
 	/*
 	 * Currently, we don't have a stats counter for bitmap heap scans (but the
 	 * underlying bitmap index scans will be counted) or sample scans (we only
 	 * update stats for tuple fetches there)
 	 */
-	if (!scan->rs_bitmapscan && !scan->rs_samplescan)
-		pgstat_count_heap_scan(scan->rs_rd);
+	if (!scan->rs_scan.rs_bitmapscan && !scan->rs_scan.rs_samplescan)
+		pgstat_count_heap_scan(scan->rs_scan.rs_rd);
 }
 
 /*
@@ -328,16 +313,19 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
  * numBlks is number of pages to scan (InvalidBlockNumber means "all")
  */
 void
-heap_setscanlimits(HeapScanDesc scan, BlockNumber startBlk, BlockNumber numBlks)
+heap_setscanlimits(TableScanDesc sscan, BlockNumber startBlk, BlockNumber numBlks)
 {
+	HeapScanDesc scan = (HeapScanDesc) sscan;
+
 	Assert(!scan->rs_inited);	/* else too late to change */
-	Assert(!scan->rs_syncscan); /* else rs_startblock is significant */
+	Assert(!scan->rs_scan.rs_syncscan); /* else rs_startblock is
+											 * significant */
 
 	/* Check startBlk is valid (but allow case of zero blocks...) */
-	Assert(startBlk == 0 || startBlk < scan->rs_nblocks);
+	Assert(startBlk == 0 || startBlk < scan->rs_scan.rs_nblocks);
 
-	scan->rs_startblock = startBlk;
-	scan->rs_numblocks = numBlks;
+	scan->rs_scan.rs_startblock = startBlk;
+	scan->rs_scan.rs_numblocks = numBlks;
 }
 
 /*
@@ -348,8 +336,9 @@ heap_setscanlimits(HeapScanDesc scan, BlockNumber startBlk, BlockNumber numBlks)
  * which tuples on the page are visible.
  */
 void
-heapgetpage(HeapScanDesc scan, BlockNumber page)
+heapgetpage(TableScanDesc sscan, BlockNumber page)
 {
+	HeapScanDesc scan = (HeapScanDesc) sscan;
 	Buffer		buffer;
 	Snapshot	snapshot;
 	Page		dp;
@@ -359,7 +348,7 @@ heapgetpage(HeapScanDesc scan, BlockNumber page)
 	ItemId		lpp;
 	bool		all_visible;
 
-	Assert(page < scan->rs_nblocks);
+	Assert(page < scan->rs_scan.rs_nblocks);
 
 	/* release previous scan buffer, if any */
 	if (BufferIsValid(scan->rs_cbuf))
@@ -376,20 +365,20 @@ heapgetpage(HeapScanDesc scan, BlockNumber page)
 	CHECK_FOR_INTERRUPTS();
 
 	/* read page using selected strategy */
-	scan->rs_cbuf = ReadBufferExtended(scan->rs_rd, MAIN_FORKNUM, page,
-									   RBM_NORMAL, scan->rs_strategy);
+	scan->rs_cbuf = ReadBufferExtended(scan->rs_scan.rs_rd, MAIN_FORKNUM, page,
+											   RBM_NORMAL, scan->rs_strategy);
 	scan->rs_cblock = page;
 
-	if (!scan->rs_pageatatime)
+	if (!scan->rs_scan.rs_pageatatime)
 		return;
 
 	buffer = scan->rs_cbuf;
-	snapshot = scan->rs_snapshot;
+	snapshot = scan->rs_scan.rs_snapshot;
 
 	/*
 	 * Prune and repair fragmentation for the whole page, if possible.
 	 */
-	heap_page_prune_opt(scan->rs_rd, buffer);
+	heap_page_prune_opt(scan->rs_scan.rs_rd, buffer);
 
 	/*
 	 * We must hold share lock on the buffer content while examining tuple
@@ -399,7 +388,7 @@ heapgetpage(HeapScanDesc scan, BlockNumber page)
 	LockBuffer(buffer, BUFFER_LOCK_SHARE);
 
 	dp = BufferGetPage(buffer);
-	TestForOldSnapshot(snapshot, scan->rs_rd, dp);
+	TestForOldSnapshot(snapshot, scan->rs_scan.rs_rd, dp);
 	lines = PageGetMaxOffsetNumber(dp);
 	ntup = 0;
 
@@ -434,7 +423,7 @@ heapgetpage(HeapScanDesc scan, BlockNumber page)
 			HeapTupleData loctup;
 			bool		valid;
 
-			loctup.t_tableOid = RelationGetRelid(scan->rs_rd);
+			loctup.t_tableOid = RelationGetRelid(scan->rs_scan.rs_rd);
 			loctup.t_data = (HeapTupleHeader) PageGetItem((Page) dp, lpp);
 			loctup.t_len = ItemIdGetLength(lpp);
 			ItemPointerSet(&(loctup.t_self), page, lineoff);
@@ -442,9 +431,9 @@ heapgetpage(HeapScanDesc scan, BlockNumber page)
 			if (all_visible)
 				valid = true;
 			else
-				valid = HeapTupleSatisfiesVisibility(&loctup, snapshot, buffer);
+				valid = HeapTupleSatisfies(&loctup, snapshot, buffer);
 
-			CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
+			CheckForSerializableConflictOut(valid, scan->rs_scan.rs_rd, &loctup,
 											buffer, snapshot);
 
 			if (valid)
@@ -488,7 +477,7 @@ heapgettup(HeapScanDesc scan,
 		   ScanKey key)
 {
 	HeapTuple	tuple = &(scan->rs_ctup);
-	Snapshot	snapshot = scan->rs_snapshot;
+	Snapshot	snapshot = scan->rs_scan.rs_snapshot;
 	bool		backward = ScanDirectionIsBackward(dir);
 	BlockNumber page;
 	bool		finished;
@@ -508,17 +497,17 @@ heapgettup(HeapScanDesc scan,
 			/*
 			 * return null immediately if relation is empty
 			 */
-			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
+			if (scan->rs_scan.rs_nblocks == 0 || scan->rs_scan.rs_numblocks == 0)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				tuple->t_data = NULL;
 				return;
 			}
-			if (scan->rs_parallel != NULL)
+			if (scan->rs_scan.rs_parallel != NULL)
 			{
-				heap_parallelscan_startblock_init(scan);
+				table_parallelscan_startblock_init(&scan->rs_scan);
 
-				page = heap_parallelscan_nextpage(scan);
+				page = table_parallelscan_nextpage(&scan->rs_scan);
 
 				/* Other processes might have already finished the scan. */
 				if (page == InvalidBlockNumber)
@@ -529,8 +518,8 @@ heapgettup(HeapScanDesc scan,
 				}
 			}
 			else
-				page = scan->rs_startblock; /* first page */
-			heapgetpage(scan, page);
+				page = scan->rs_scan.rs_startblock; /* first page */
+			heapgetpage((TableScanDesc) scan, page);
 			lineoff = FirstOffsetNumber;	/* first offnum */
 			scan->rs_inited = true;
 		}
@@ -545,7 +534,7 @@ heapgettup(HeapScanDesc scan,
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 
 		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(snapshot, scan->rs_rd, dp);
+		TestForOldSnapshot(snapshot, scan->rs_scan.rs_rd, dp);
 		lines = PageGetMaxOffsetNumber(dp);
 		/* page and lineoff now reference the physically next tid */
 
@@ -554,14 +543,14 @@ heapgettup(HeapScanDesc scan,
 	else if (backward)
 	{
 		/* backward parallel scan not supported */
-		Assert(scan->rs_parallel == NULL);
+		Assert(scan->rs_scan.rs_parallel == NULL);
 
 		if (!scan->rs_inited)
 		{
 			/*
 			 * return null immediately if relation is empty
 			 */
-			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
+			if (scan->rs_scan.rs_nblocks == 0 || scan->rs_scan.rs_numblocks == 0)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				tuple->t_data = NULL;
@@ -574,13 +563,13 @@ heapgettup(HeapScanDesc scan,
 			 * time, and much more likely that we'll just bollix things for
 			 * forward scanners.
 			 */
-			scan->rs_syncscan = false;
+			scan->rs_scan.rs_syncscan = false;
 			/* start from last page of the scan */
-			if (scan->rs_startblock > 0)
-				page = scan->rs_startblock - 1;
+			if (scan->rs_scan.rs_startblock > 0)
+				page = scan->rs_scan.rs_startblock - 1;
 			else
-				page = scan->rs_nblocks - 1;
-			heapgetpage(scan, page);
+				page = scan->rs_scan.rs_nblocks - 1;
+			heapgetpage((TableScanDesc) scan, page);
 		}
 		else
 		{
@@ -591,7 +580,7 @@ heapgettup(HeapScanDesc scan,
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 
 		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(snapshot, scan->rs_rd, dp);
+		TestForOldSnapshot(snapshot, scan->rs_scan.rs_rd, dp);
 		lines = PageGetMaxOffsetNumber(dp);
 
 		if (!scan->rs_inited)
@@ -622,11 +611,11 @@ heapgettup(HeapScanDesc scan,
 
 		page = ItemPointerGetBlockNumber(&(tuple->t_self));
 		if (page != scan->rs_cblock)
-			heapgetpage(scan, page);
+			heapgetpage((TableScanDesc) scan, page);
 
 		/* Since the tuple was previously fetched, needn't lock page here */
 		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(snapshot, scan->rs_rd, dp);
+		TestForOldSnapshot(snapshot, scan->rs_scan.rs_rd, dp);
 		lineoff = ItemPointerGetOffsetNumber(&(tuple->t_self));
 		lpp = PageGetItemId(dp, lineoff);
 		Assert(ItemIdIsNormal(lpp));
@@ -657,15 +646,13 @@ heapgettup(HeapScanDesc scan,
 				/*
 				 * if current tuple qualifies, return it.
 				 */
-				valid = HeapTupleSatisfiesVisibility(tuple,
-													 snapshot,
-													 scan->rs_cbuf);
+				valid = HeapTupleSatisfies(tuple, snapshot, scan->rs_cbuf);
 
-				CheckForSerializableConflictOut(valid, scan->rs_rd, tuple,
+				CheckForSerializableConflictOut(valid, scan->rs_scan.rs_rd, tuple,
 												scan->rs_cbuf, snapshot);
 
 				if (valid && key != NULL)
-					HeapKeyTest(tuple, RelationGetDescr(scan->rs_rd),
+					HeapKeyTest(tuple, RelationGetDescr(scan->rs_scan.rs_rd),
 								nkeys, key, valid);
 
 				if (valid)
@@ -702,24 +689,24 @@ heapgettup(HeapScanDesc scan,
 		 */
 		if (backward)
 		{
-			finished = (page == scan->rs_startblock) ||
-				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
+			finished = (page == scan->rs_scan.rs_startblock) ||
+				(scan->rs_scan.rs_numblocks != InvalidBlockNumber ? --scan->rs_scan.rs_numblocks == 0 : false);
 			if (page == 0)
-				page = scan->rs_nblocks;
+				page = scan->rs_scan.rs_nblocks;
 			page--;
 		}
-		else if (scan->rs_parallel != NULL)
+		else if (scan->rs_scan.rs_parallel != NULL)
 		{
-			page = heap_parallelscan_nextpage(scan);
+			page = table_parallelscan_nextpage(&scan->rs_scan);
 			finished = (page == InvalidBlockNumber);
 		}
 		else
 		{
 			page++;
-			if (page >= scan->rs_nblocks)
+			if (page >= scan->rs_scan.rs_nblocks)
 				page = 0;
-			finished = (page == scan->rs_startblock) ||
-				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
+			finished = (page == scan->rs_scan.rs_startblock) ||
+				(scan->rs_scan.rs_numblocks != InvalidBlockNumber ? --scan->rs_scan.rs_numblocks == 0 : false);
 
 			/*
 			 * Report our new scan position for synchronization purposes. We
@@ -733,8 +720,8 @@ heapgettup(HeapScanDesc scan,
 			 * a little bit backwards on every invocation, which is confusing.
 			 * We don't guarantee any specific ordering in general, though.
 			 */
-			if (scan->rs_syncscan)
-				ss_report_location(scan->rs_rd, page);
+			if (scan->rs_scan.rs_syncscan)
+				ss_report_location(scan->rs_scan.rs_rd, page);
 		}
 
 		/*
@@ -751,12 +738,12 @@ heapgettup(HeapScanDesc scan,
 			return;
 		}
 
-		heapgetpage(scan, page);
+		heapgetpage((TableScanDesc) scan, page);
 
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 
 		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(snapshot, scan->rs_rd, dp);
+		TestForOldSnapshot(snapshot, scan->rs_scan.rs_rd, dp);
 		lines = PageGetMaxOffsetNumber((Page) dp);
 		linesleft = lines;
 		if (backward)
@@ -812,17 +799,17 @@ heapgettup_pagemode(HeapScanDesc scan,
 			/*
 			 * return null immediately if relation is empty
 			 */
-			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
+			if (scan->rs_scan.rs_nblocks == 0 || scan->rs_scan.rs_numblocks == 0)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				tuple->t_data = NULL;
 				return;
 			}
-			if (scan->rs_parallel != NULL)
+			if (scan->rs_scan.rs_parallel != NULL)
 			{
-				heap_parallelscan_startblock_init(scan);
+				table_parallelscan_startblock_init(&scan->rs_scan);
 
-				page = heap_parallelscan_nextpage(scan);
+				page = table_parallelscan_nextpage(&scan->rs_scan);
 
 				/* Other processes might have already finished the scan. */
 				if (page == InvalidBlockNumber)
@@ -833,8 +820,8 @@ heapgettup_pagemode(HeapScanDesc scan,
 				}
 			}
 			else
-				page = scan->rs_startblock; /* first page */
-			heapgetpage(scan, page);
+				page = scan->rs_scan.rs_startblock; /* first page */
+			heapgetpage((TableScanDesc) scan, page);
 			lineindex = 0;
 			scan->rs_inited = true;
 		}
@@ -845,8 +832,9 @@ heapgettup_pagemode(HeapScanDesc scan,
 			lineindex = scan->rs_cindex + 1;
 		}
 
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
+		TestForOldSnapshot(scan->rs_scan.rs_snapshot, scan->rs_scan.rs_rd, dp);
 		lines = scan->rs_ntuples;
 		/* page and lineindex now reference the next visible tid */
 
@@ -855,14 +843,14 @@ heapgettup_pagemode(HeapScanDesc scan,
 	else if (backward)
 	{
 		/* backward parallel scan not supported */
-		Assert(scan->rs_parallel == NULL);
+		Assert(scan->rs_scan.rs_parallel == NULL);
 
 		if (!scan->rs_inited)
 		{
 			/*
 			 * return null immediately if relation is empty
 			 */
-			if (scan->rs_nblocks == 0 || scan->rs_numblocks == 0)
+			if (scan->rs_scan.rs_nblocks == 0 || scan->rs_scan.rs_numblocks == 0)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				tuple->t_data = NULL;
@@ -875,13 +863,13 @@ heapgettup_pagemode(HeapScanDesc scan,
 			 * time, and much more likely that we'll just bollix things for
 			 * forward scanners.
 			 */
-			scan->rs_syncscan = false;
+			scan->rs_scan.rs_syncscan = false;
 			/* start from last page of the scan */
-			if (scan->rs_startblock > 0)
-				page = scan->rs_startblock - 1;
+			if (scan->rs_scan.rs_startblock > 0)
+				page = scan->rs_scan.rs_startblock - 1;
 			else
-				page = scan->rs_nblocks - 1;
-			heapgetpage(scan, page);
+				page = scan->rs_scan.rs_nblocks - 1;
+			heapgetpage((TableScanDesc) scan, page);
 		}
 		else
 		{
@@ -889,8 +877,9 @@ heapgettup_pagemode(HeapScanDesc scan,
 			page = scan->rs_cblock; /* current page */
 		}
 
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
+		TestForOldSnapshot(scan->rs_scan.rs_snapshot, scan->rs_scan.rs_rd, dp);
 		lines = scan->rs_ntuples;
 
 		if (!scan->rs_inited)
@@ -920,11 +909,11 @@ heapgettup_pagemode(HeapScanDesc scan,
 
 		page = ItemPointerGetBlockNumber(&(tuple->t_self));
 		if (page != scan->rs_cblock)
-			heapgetpage(scan, page);
+			heapgetpage((TableScanDesc) scan, page);
 
 		/* Since the tuple was previously fetched, needn't lock page here */
 		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
+		TestForOldSnapshot(scan->rs_scan.rs_snapshot, scan->rs_scan.rs_rd, dp);
 		lineoff = ItemPointerGetOffsetNumber(&(tuple->t_self));
 		lpp = PageGetItemId(dp, lineoff);
 		Assert(ItemIdIsNormal(lpp));
@@ -962,17 +951,19 @@ heapgettup_pagemode(HeapScanDesc scan,
 			{
 				bool		valid;
 
-				HeapKeyTest(tuple, RelationGetDescr(scan->rs_rd),
+				HeapKeyTest(tuple, RelationGetDescr(scan->rs_scan.rs_rd),
 							nkeys, key, valid);
 				if (valid)
 				{
 					scan->rs_cindex = lineindex;
+					LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
 					return;
 				}
 			}
 			else
 			{
 				scan->rs_cindex = lineindex;
+				LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
 				return;
 			}
 
@@ -990,26 +981,32 @@ heapgettup_pagemode(HeapScanDesc scan,
 		 * if we get here, it means we've exhausted the items on this page and
 		 * it's time to move to the next.
 		 */
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+
+		/*
+		 * if we get here, it means we've exhausted the items on this page and
+		 * it's time to move to the next.
+		 */
 		if (backward)
 		{
-			finished = (page == scan->rs_startblock) ||
-				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
+			finished = (page == scan->rs_scan.rs_startblock) ||
+				(scan->rs_scan.rs_numblocks != InvalidBlockNumber ? --scan->rs_scan.rs_numblocks == 0 : false);
 			if (page == 0)
-				page = scan->rs_nblocks;
+				page = scan->rs_scan.rs_nblocks;
 			page--;
 		}
-		else if (scan->rs_parallel != NULL)
+		else if (scan->rs_scan.rs_parallel != NULL)
 		{
-			page = heap_parallelscan_nextpage(scan);
+			page = table_parallelscan_nextpage(&scan->rs_scan);
 			finished = (page == InvalidBlockNumber);
 		}
 		else
 		{
 			page++;
-			if (page >= scan->rs_nblocks)
+			if (page >= scan->rs_scan.rs_nblocks)
 				page = 0;
-			finished = (page == scan->rs_startblock) ||
-				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
+			finished = (page == scan->rs_scan.rs_startblock) ||
+				(scan->rs_scan.rs_numblocks != InvalidBlockNumber ? --scan->rs_scan.rs_numblocks == 0 : false);
 
 			/*
 			 * Report our new scan position for synchronization purposes. We
@@ -1023,8 +1020,8 @@ heapgettup_pagemode(HeapScanDesc scan,
 			 * a little bit backwards on every invocation, which is confusing.
 			 * We don't guarantee any specific ordering in general, though.
 			 */
-			if (scan->rs_syncscan)
-				ss_report_location(scan->rs_rd, page);
+			if (scan->rs_scan.rs_syncscan)
+				ss_report_location(scan->rs_scan.rs_rd, page);
 		}
 
 		/*
@@ -1041,10 +1038,11 @@ heapgettup_pagemode(HeapScanDesc scan,
 			return;
 		}
 
-		heapgetpage(scan, page);
+		heapgetpage((TableScanDesc) scan, page);
 
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);
+		TestForOldSnapshot(scan->rs_scan.rs_snapshot, scan->rs_scan.rs_rd, dp);
 		lines = scan->rs_ntuples;
 		linesleft = lines;
 		if (backward)
@@ -1387,87 +1385,16 @@ heap_openrv_extended(const RangeVar *relation, LOCKMODE lockmode,
 	return r;
 }
 
-
-/* ----------------
- *		heap_beginscan	- begin relation scan
- *
- * heap_beginscan is the "standard" case.
- *
- * heap_beginscan_catalog differs in setting up its own temporary snapshot.
- *
- * heap_beginscan_strat offers an extended API that lets the caller control
- * whether a nondefault buffer access strategy can be used, and whether
- * syncscan can be chosen (possibly resulting in the scan not starting from
- * block zero).  Both of these default to true with plain heap_beginscan.
- *
- * heap_beginscan_bm is an alternative entry point for setting up a
- * HeapScanDesc for a bitmap heap scan.  Although that scan technology is
- * really quite unlike a standard seqscan, there is just enough commonality
- * to make it worth using the same data structure.
- *
- * heap_beginscan_sampling is an alternative entry point for setting up a
- * HeapScanDesc for a TABLESAMPLE scan.  As with bitmap scans, it's worth
- * using the same data structure although the behavior is rather different.
- * In addition to the options offered by heap_beginscan_strat, this call
- * also allows control of whether page-mode visibility checking is used.
- * ----------------
- */
-HeapScanDesc
+TableScanDesc
 heap_beginscan(Relation relation, Snapshot snapshot,
-			   int nkeys, ScanKey key)
-{
-	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
-								   true, true, true, false, false, false);
-}
-
-HeapScanDesc
-heap_beginscan_catalog(Relation relation, int nkeys, ScanKey key)
-{
-	Oid			relid = RelationGetRelid(relation);
-	Snapshot	snapshot = RegisterSnapshot(GetCatalogSnapshot(relid));
-
-	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
-								   true, true, true, false, false, true);
-}
-
-HeapScanDesc
-heap_beginscan_strat(Relation relation, Snapshot snapshot,
-					 int nkeys, ScanKey key,
-					 bool allow_strat, bool allow_sync)
-{
-	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
-								   allow_strat, allow_sync, true,
-								   false, false, false);
-}
-
-HeapScanDesc
-heap_beginscan_bm(Relation relation, Snapshot snapshot,
-				  int nkeys, ScanKey key)
-{
-	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
-								   false, false, true, true, false, false);
-}
-
-HeapScanDesc
-heap_beginscan_sampling(Relation relation, Snapshot snapshot,
-						int nkeys, ScanKey key,
-						bool allow_strat, bool allow_sync, bool allow_pagemode)
-{
-	return heap_beginscan_internal(relation, snapshot, nkeys, key, NULL,
-								   allow_strat, allow_sync, allow_pagemode,
-								   false, true, false);
-}
-
-static HeapScanDesc
-heap_beginscan_internal(Relation relation, Snapshot snapshot,
-						int nkeys, ScanKey key,
-						ParallelHeapScanDesc parallel_scan,
-						bool allow_strat,
-						bool allow_sync,
-						bool allow_pagemode,
-						bool is_bitmapscan,
-						bool is_samplescan,
-						bool temp_snap)
+			   int nkeys, ScanKey key,
+			   ParallelTableScanDesc parallel_scan,
+			   bool allow_strat,
+			   bool allow_sync,
+			   bool allow_pagemode,
+			   bool is_bitmapscan,
+			   bool is_samplescan,
+			   bool temp_snap)
 {
 	HeapScanDesc scan;
 
@@ -1485,21 +1412,21 @@ heap_beginscan_internal(Relation relation, Snapshot snapshot,
 	 */
 	scan = (HeapScanDesc) palloc(sizeof(HeapScanDescData));
 
-	scan->rs_rd = relation;
-	scan->rs_snapshot = snapshot;
-	scan->rs_nkeys = nkeys;
-	scan->rs_bitmapscan = is_bitmapscan;
-	scan->rs_samplescan = is_samplescan;
+	scan->rs_scan.rs_rd = relation;
+	scan->rs_scan.rs_snapshot = snapshot;
+	scan->rs_scan.rs_nkeys = nkeys;
+	scan->rs_scan.rs_bitmapscan = is_bitmapscan;
+	scan->rs_scan.rs_samplescan = is_samplescan;
 	scan->rs_strategy = NULL;	/* set in initscan */
-	scan->rs_allow_strat = allow_strat;
-	scan->rs_allow_sync = allow_sync;
-	scan->rs_temp_snap = temp_snap;
-	scan->rs_parallel = parallel_scan;
+	scan->rs_scan.rs_allow_strat = allow_strat;
+	scan->rs_scan.rs_allow_sync = allow_sync;
+	scan->rs_scan.rs_temp_snap = temp_snap;
+	scan->rs_scan.rs_parallel = parallel_scan;
 
 	/*
 	 * we can use page-at-a-time mode if it's an MVCC-safe snapshot
 	 */
-	scan->rs_pageatatime = allow_pagemode && IsMVCCSnapshot(snapshot);
+	scan->rs_scan.rs_pageatatime = allow_pagemode && snapshot && IsMVCCSnapshot(snapshot);
 
 	/*
 	 * For a seqscan in a serializable transaction, acquire a predicate lock
@@ -1512,7 +1439,7 @@ heap_beginscan_internal(Relation relation, Snapshot snapshot,
 	 * covering the predicate. But in that case we still have to lock any
 	 * matching heap tuples.
 	 */
-	if (!is_bitmapscan)
+	if (!is_bitmapscan && snapshot)
 		PredicateLockRelation(relation, snapshot);
 
 	/* we only need to set this up once */
@@ -1523,13 +1450,13 @@ heap_beginscan_internal(Relation relation, Snapshot snapshot,
 	 * initscan() and we don't want to allocate memory again
 	 */
 	if (nkeys > 0)
-		scan->rs_key = (ScanKey) palloc(sizeof(ScanKeyData) * nkeys);
+		scan->rs_scan.rs_key = (ScanKey) palloc(sizeof(ScanKeyData) * nkeys);
 	else
-		scan->rs_key = NULL;
+		scan->rs_scan.rs_key = NULL;
 
 	initscan(scan, key, false);
 
-	return scan;
+	return (TableScanDesc) scan;
 }
 
 /* ----------------
@@ -1537,9 +1464,18 @@ heap_beginscan_internal(Relation relation, Snapshot snapshot,
  * ----------------
  */
 void
-heap_rescan(HeapScanDesc scan,
-			ScanKey key)
+heap_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
+			bool allow_strat, bool allow_sync, bool allow_pagemode)
 {
+	HeapScanDesc scan = (HeapScanDesc) sscan;
+
+	if (set_params)
+	{
+		scan->rs_scan.rs_allow_strat = allow_strat;
+		scan->rs_scan.rs_allow_sync = allow_sync;
+		scan->rs_scan.rs_pageatatime = allow_pagemode && IsMVCCSnapshot(scan->rs_scan.rs_snapshot);
+	}
+
 	/*
 	 * unpin scan buffers
 	 */
@@ -1550,27 +1486,21 @@ heap_rescan(HeapScanDesc scan,
 	 * reinitialize scan descriptor
 	 */
 	initscan(scan, key, true);
-}
 
-/* ----------------
- *		heap_rescan_set_params	- restart a relation scan after changing params
- *
- * This call allows changing the buffer strategy, syncscan, and pagemode
- * options before starting a fresh scan.  Note that although the actual use
- * of syncscan might change (effectively, enabling or disabling reporting),
- * the previously selected startblock will be kept.
- * ----------------
- */
-void
-heap_rescan_set_params(HeapScanDesc scan, ScanKey key,
-					   bool allow_strat, bool allow_sync, bool allow_pagemode)
-{
-	/* adjust parameters */
-	scan->rs_allow_strat = allow_strat;
-	scan->rs_allow_sync = allow_sync;
-	scan->rs_pageatatime = allow_pagemode && IsMVCCSnapshot(scan->rs_snapshot);
-	/* ... and rescan */
-	heap_rescan(scan, key);
+	/*
+	 * reset parallel scan, if present
+	 */
+	if (scan->rs_scan.rs_parallel != NULL)
+	{
+		ParallelTableScanDesc parallel_scan;
+
+		/*
+		 * Caller is responsible for making sure that all workers have
+		 * finished the scan before calling this.
+		 */
+		parallel_scan = scan->rs_scan.rs_parallel;
+		pg_atomic_write_u64(&parallel_scan->phs_nallocated, 0);
+	}
 }
 
 /* ----------------
@@ -1581,8 +1511,10 @@ heap_rescan_set_params(HeapScanDesc scan, ScanKey key,
  * ----------------
  */
 void
-heap_endscan(HeapScanDesc scan)
+heap_endscan(TableScanDesc sscan)
 {
+	HeapScanDesc scan = (HeapScanDesc) sscan;
+
 	/* Note: no locking manipulations needed */
 
 	/*
@@ -1594,213 +1526,18 @@ heap_endscan(HeapScanDesc scan)
 	/*
 	 * decrement relation reference count and free scan descriptor storage
 	 */
-	RelationDecrementReferenceCount(scan->rs_rd);
+	RelationDecrementReferenceCount(scan->rs_scan.rs_rd);
 
-	if (scan->rs_key)
-		pfree(scan->rs_key);
+	if (scan->rs_scan.rs_key)
+		pfree(scan->rs_scan.rs_key);
 
 	if (scan->rs_strategy != NULL)
 		FreeAccessStrategy(scan->rs_strategy);
 
-	if (scan->rs_temp_snap)
-		UnregisterSnapshot(scan->rs_snapshot);
+	if (scan->rs_scan.rs_temp_snap)
+		UnregisterSnapshot(scan->rs_scan.rs_snapshot);
 
 	pfree(scan);
-}
-
-/* ----------------
- *		heap_parallelscan_estimate - estimate storage for ParallelHeapScanDesc
- *
- *		Sadly, this doesn't reduce to a constant, because the size required
- *		to serialize the snapshot can vary.
- * ----------------
- */
-Size
-heap_parallelscan_estimate(Snapshot snapshot)
-{
-	return add_size(offsetof(ParallelHeapScanDescData, phs_snapshot_data),
-					EstimateSnapshotSpace(snapshot));
-}
-
-/* ----------------
- *		heap_parallelscan_initialize - initialize ParallelHeapScanDesc
- *
- *		Must allow as many bytes of shared memory as returned by
- *		heap_parallelscan_estimate.  Call this just once in the leader
- *		process; then, individual workers attach via heap_beginscan_parallel.
- * ----------------
- */
-void
-heap_parallelscan_initialize(ParallelHeapScanDesc target, Relation relation,
-							 Snapshot snapshot)
-{
-	target->phs_relid = RelationGetRelid(relation);
-	target->phs_nblocks = RelationGetNumberOfBlocks(relation);
-	/* compare phs_syncscan initialization to similar logic in initscan */
-	target->phs_syncscan = synchronize_seqscans &&
-		!RelationUsesLocalBuffers(relation) &&
-		target->phs_nblocks > NBuffers / 4;
-	SpinLockInit(&target->phs_mutex);
-	target->phs_startblock = InvalidBlockNumber;
-	pg_atomic_init_u64(&target->phs_nallocated, 0);
-	if (IsMVCCSnapshot(snapshot))
-	{
-		SerializeSnapshot(snapshot, target->phs_snapshot_data);
-		target->phs_snapshot_any = false;
-	}
-	else
-	{
-		Assert(snapshot == SnapshotAny);
-		target->phs_snapshot_any = true;
-	}
-}
-
-/* ----------------
- *		heap_parallelscan_reinitialize - reset a parallel scan
- *
- *		Call this in the leader process.  Caller is responsible for
- *		making sure that all workers have finished the scan beforehand.
- * ----------------
- */
-void
-heap_parallelscan_reinitialize(ParallelHeapScanDesc parallel_scan)
-{
-	pg_atomic_write_u64(&parallel_scan->phs_nallocated, 0);
-}
-
-/* ----------------
- *		heap_beginscan_parallel - join a parallel scan
- *
- *		Caller must hold a suitable lock on the correct relation.
- * ----------------
- */
-HeapScanDesc
-heap_beginscan_parallel(Relation relation, ParallelHeapScanDesc parallel_scan)
-{
-	Snapshot	snapshot;
-
-	Assert(RelationGetRelid(relation) == parallel_scan->phs_relid);
-
-	if (!parallel_scan->phs_snapshot_any)
-	{
-		/* Snapshot was serialized -- restore it */
-		snapshot = RestoreSnapshot(parallel_scan->phs_snapshot_data);
-		RegisterSnapshot(snapshot);
-	}
-	else
-	{
-		/* SnapshotAny passed by caller (not serialized) */
-		snapshot = SnapshotAny;
-	}
-
-	return heap_beginscan_internal(relation, snapshot, 0, NULL, parallel_scan,
-								   true, true, true, false, false,
-								   !parallel_scan->phs_snapshot_any);
-}
-
-/* ----------------
- *		heap_parallelscan_startblock_init - find and set the scan's startblock
- *
- *		Determine where the parallel seq scan should start.  This function may
- *		be called many times, once by each parallel worker.  We must be careful
- *		only to set the startblock once.
- * ----------------
- */
-static void
-heap_parallelscan_startblock_init(HeapScanDesc scan)
-{
-	BlockNumber sync_startpage = InvalidBlockNumber;
-	ParallelHeapScanDesc parallel_scan;
-
-	Assert(scan->rs_parallel);
-	parallel_scan = scan->rs_parallel;
-
-retry:
-	/* Grab the spinlock. */
-	SpinLockAcquire(&parallel_scan->phs_mutex);
-
-	/*
-	 * If the scan's startblock has not yet been initialized, we must do so
-	 * now.  If this is not a synchronized scan, we just start at block 0, but
-	 * if it is a synchronized scan, we must get the starting position from
-	 * the synchronized scan machinery.  We can't hold the spinlock while
-	 * doing that, though, so release the spinlock, get the information we
-	 * need, and retry.  If nobody else has initialized the scan in the
-	 * meantime, we'll fill in the value we fetched on the second time
-	 * through.
-	 */
-	if (parallel_scan->phs_startblock == InvalidBlockNumber)
-	{
-		if (!parallel_scan->phs_syncscan)
-			parallel_scan->phs_startblock = 0;
-		else if (sync_startpage != InvalidBlockNumber)
-			parallel_scan->phs_startblock = sync_startpage;
-		else
-		{
-			SpinLockRelease(&parallel_scan->phs_mutex);
-			sync_startpage = ss_get_location(scan->rs_rd, scan->rs_nblocks);
-			goto retry;
-		}
-	}
-	SpinLockRelease(&parallel_scan->phs_mutex);
-}
-
-/* ----------------
- *		heap_parallelscan_nextpage - get the next page to scan
- *
- *		Get the next page to scan.  Even if there are no pages left to scan,
- *		another backend could have grabbed a page to scan and not yet finished
- *		looking at it, so it doesn't follow that the scan is done when the
- *		first backend gets an InvalidBlockNumber return.
- * ----------------
- */
-static BlockNumber
-heap_parallelscan_nextpage(HeapScanDesc scan)
-{
-	BlockNumber page;
-	ParallelHeapScanDesc parallel_scan;
-	uint64		nallocated;
-
-	Assert(scan->rs_parallel);
-	parallel_scan = scan->rs_parallel;
-
-	/*
-	 * phs_nallocated tracks how many pages have been allocated to workers
-	 * already.  When phs_nallocated >= rs_nblocks, all blocks have been
-	 * allocated.
-	 *
-	 * Because we use an atomic fetch-and-add to fetch the current value, the
-	 * phs_nallocated counter will exceed rs_nblocks, because workers will
-	 * still increment the value, when they try to allocate the next block but
-	 * all blocks have been allocated already. The counter must be 64 bits
-	 * wide because of that, to avoid wrapping around when rs_nblocks is close
-	 * to 2^32.
-	 *
-	 * The actual page to return is calculated by adding the counter to the
-	 * starting block number, modulo nblocks.
-	 */
-	nallocated = pg_atomic_fetch_add_u64(&parallel_scan->phs_nallocated, 1);
-	if (nallocated >= scan->rs_nblocks)
-		page = InvalidBlockNumber;	/* all blocks have been allocated */
-	else
-		page = (nallocated + parallel_scan->phs_startblock) % scan->rs_nblocks;
-
-	/*
-	 * Report scan location.  Normally, we report the current page number.
-	 * When we reach the end of the scan, though, we report the starting page,
-	 * not the ending page, just so the starting positions for later scans
-	 * doesn't slew backwards.  We only report the position at the end of the
-	 * scan once, though: subsequent callers will report nothing.
-	 */
-	if (scan->rs_syncscan)
-	{
-		if (page != InvalidBlockNumber)
-			ss_report_location(scan->rs_rd, page);
-		else if (nallocated == scan->rs_nblocks)
-			ss_report_location(scan->rs_rd, parallel_scan->phs_startblock);
-	}
-
-	return page;
 }
 
 /* ----------------
@@ -1810,13 +1547,15 @@ heap_parallelscan_nextpage(HeapScanDesc scan)
  * ----------------
  */
 void
-heap_update_snapshot(HeapScanDesc scan, Snapshot snapshot)
+heap_update_snapshot(TableScanDesc sscan, Snapshot snapshot)
 {
+	HeapScanDesc scan = (HeapScanDesc) sscan;
+
 	Assert(IsMVCCSnapshot(snapshot));
 
 	RegisterSnapshot(snapshot);
-	scan->rs_snapshot = snapshot;
-	scan->rs_temp_snap = true;
+	scan->rs_scan.rs_snapshot = snapshot;
+	scan->rs_scan.rs_temp_snap = true;
 }
 
 /* ----------------
@@ -1842,19 +1581,20 @@ heap_update_snapshot(HeapScanDesc scan, Snapshot snapshot)
 #define HEAPDEBUG_3
 #endif							/* !defined(HEAPDEBUGALL) */
 
-
 HeapTuple
-heap_getnext(HeapScanDesc scan, ScanDirection direction)
+heap_getnext(TableScanDesc sscan, ScanDirection direction)
 {
+	HeapScanDesc scan = (HeapScanDesc) sscan;
+
 	/* Note: no locking manipulations needed */
 
 	HEAPDEBUG_1;				/* heap_getnext( info ) */
 
-	if (scan->rs_pageatatime)
+	if (scan->rs_scan.rs_pageatatime)
 		heapgettup_pagemode(scan, direction,
-							scan->rs_nkeys, scan->rs_key);
+							scan->rs_scan.rs_nkeys, scan->rs_scan.rs_key);
 	else
-		heapgettup(scan, direction, scan->rs_nkeys, scan->rs_key);
+		heapgettup(scan, direction, scan->rs_scan.rs_nkeys, scan->rs_scan.rs_key);
 
 	if (scan->rs_ctup.t_data == NULL)
 	{
@@ -1868,9 +1608,57 @@ heap_getnext(HeapScanDesc scan, ScanDirection direction)
 	 */
 	HEAPDEBUG_3;				/* heap_getnext returning tuple */
 
-	pgstat_count_heap_getnext(scan->rs_rd);
+	pgstat_count_heap_getnext(scan->rs_scan.rs_rd);
 
-	return &(scan->rs_ctup);
+	return &scan->rs_ctup;
+}
+
+#ifdef HEAPAMSLOTDEBUGALL
+#define HEAPAMSLOTDEBUG_1 \
+	elog(DEBUG2, "heapam_getnext([%s,nkeys=%d],dir=%d) called", \
+		 RelationGetRelationName(scan->rs_scan.rs_rd), scan->rs_scan.rs_nkeys, (int) direction)
+#define HEAPAMSLOTDEBUG_2 \
+	elog(DEBUG2, "heapam_getnext returning EOS")
+#define HEAPAMSLOTDEBUG_3 \
+	elog(DEBUG2, "heapam_getnext returning tuple")
+#else
+#define HEAPAMSLOTDEBUG_1
+#define HEAPAMSLOTDEBUG_2
+#define HEAPAMSLOTDEBUG_3
+#endif
+
+TupleTableSlot *
+heap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *slot)
+{
+	HeapScanDesc scan = (HeapScanDesc) sscan;
+
+	/* Note: no locking manipulations needed */
+
+	HEAPAMSLOTDEBUG_1;			/* heap_getnext( info ) */
+
+	if (scan->rs_scan.rs_pageatatime)
+		heapgettup_pagemode(scan, direction,
+							scan->rs_scan.rs_nkeys, scan->rs_scan.rs_key);
+	else
+		heapgettup(scan, direction, scan->rs_scan.rs_nkeys, scan->rs_scan.rs_key);
+
+	if (scan->rs_ctup.t_data == NULL)
+	{
+		HEAPAMSLOTDEBUG_2;		/* heap_getnext returning EOS */
+		ExecClearTuple(slot);
+		return NULL;
+	}
+
+	/*
+	 * if we get here it means we have a new current scan tuple, so point to
+	 * the proper return buffer and return the tuple.
+	 */
+	HEAPAMSLOTDEBUG_3;			/* heap_getnext returning tuple */
+
+	pgstat_count_heap_getnext(scan->rs_scan.rs_rd);
+
+	return ExecStoreBufferHeapTuple(&scan->rs_ctup, slot,
+									scan->rs_cbuf);
 }
 
 /*
@@ -1890,10 +1678,8 @@ heap_getnext(HeapScanDesc scan, ScanDirection direction)
  * If the tuple is found but fails the time qual check, then false is returned
  * but tuple->t_data is left pointing to the tuple.
  *
- * keep_buf determines what is done with the buffer in the false-result cases.
- * When the caller specifies keep_buf = true, we retain the pin on the buffer
- * and return it in *userbuf (so the caller must eventually unpin it); when
- * keep_buf = false, the pin is released and *userbuf is set to InvalidBuffer.
+ * In the false-result cases the buffer pin is released and *userbuf is set to
+ * InvalidBuffer.
  *
  * stats_relation is the relation to charge the heap_fetch operation against
  * for statistical purposes.  (This could be the heap rel itself, an
@@ -1913,13 +1699,12 @@ heap_getnext(HeapScanDesc scan, ScanDirection direction)
  */
 bool
 heap_fetch(Relation relation,
+		   ItemPointer tid,
 		   Snapshot snapshot,
 		   HeapTuple tuple,
 		   Buffer *userbuf,
-		   bool keep_buf,
 		   Relation stats_relation)
 {
-	ItemPointer tid = &(tuple->t_self);
 	ItemId		lp;
 	Buffer		buffer;
 	Page		page;
@@ -1946,13 +1731,8 @@ heap_fetch(Relation relation,
 	if (offnum < FirstOffsetNumber || offnum > PageGetMaxOffsetNumber(page))
 	{
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-		if (keep_buf)
-			*userbuf = buffer;
-		else
-		{
-			ReleaseBuffer(buffer);
-			*userbuf = InvalidBuffer;
-		}
+		ReleaseBuffer(buffer);
+		*userbuf = InvalidBuffer;
 		tuple->t_data = NULL;
 		return false;
 	}
@@ -1968,20 +1748,16 @@ heap_fetch(Relation relation,
 	if (!ItemIdIsNormal(lp))
 	{
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-		if (keep_buf)
-			*userbuf = buffer;
-		else
-		{
-			ReleaseBuffer(buffer);
-			*userbuf = InvalidBuffer;
-		}
+		ReleaseBuffer(buffer);
+		*userbuf = InvalidBuffer;
 		tuple->t_data = NULL;
 		return false;
 	}
 
 	/*
-	 * fill in *tuple fields
+	 * fill in tuple fields and place it in stuple
 	 */
+	ItemPointerCopy(tid, &(tuple->t_self));
 	tuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	tuple->t_len = ItemIdGetLength(lp);
 	tuple->t_tableOid = RelationGetRelid(relation);
@@ -1989,7 +1765,7 @@ heap_fetch(Relation relation,
 	/*
 	 * check time qualification of tuple, then release lock
 	 */
-	valid = HeapTupleSatisfiesVisibility(tuple, snapshot, buffer);
+	valid = HeapTupleSatisfies(tuple, snapshot, buffer);
 
 	if (valid)
 		PredicateLockTuple(relation, tuple, snapshot);
@@ -2013,14 +1789,9 @@ heap_fetch(Relation relation,
 		return true;
 	}
 
-	/* Tuple failed time qual, but maybe caller wants to see it anyway. */
-	if (keep_buf)
-		*userbuf = buffer;
-	else
-	{
-		ReleaseBuffer(buffer);
-		*userbuf = InvalidBuffer;
-	}
+	/* Tuple failed time qual */
+	ReleaseBuffer(buffer);
+	*userbuf = InvalidBuffer;
 
 	return false;
 }
@@ -2136,7 +1907,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			ItemPointerSet(&(heapTuple->t_self), BufferGetBlockNumber(buffer), offnum);
 
 			/* If it's visible per the snapshot, we must return it */
-			valid = HeapTupleSatisfiesVisibility(heapTuple, snapshot, buffer);
+			valid = HeapTupleSatisfies(heapTuple, snapshot, buffer);
 			CheckForSerializableConflictOut(valid, relation, heapTuple,
 											buffer, snapshot);
 			/* reset to original, non-redirected, tid */
@@ -2310,7 +2081,7 @@ heap_get_latest_tid(Relation relation,
 		 * Check time qualification of tuple; if visible, set it as the new
 		 * result candidate.
 		 */
-		valid = HeapTupleSatisfiesVisibility(&tp, snapshot, buffer);
+		valid = HeapTupleSatisfies(&tp, snapshot, buffer);
 		CheckForSerializableConflictOut(valid, relation, &tp, buffer, snapshot);
 		if (valid)
 			*tid = ctid;
@@ -2332,7 +2103,6 @@ heap_get_latest_tid(Relation relation,
 		UnlockReleaseBuffer(buffer);
 	}							/* end of loop */
 }
-
 
 /*
  * UpdateXmaxHintBits - update tuple hint bits after xmax transaction ends
@@ -2380,7 +2150,7 @@ GetBulkInsertState(void)
 	bistate = (BulkInsertState) palloc(sizeof(BulkInsertStateData));
 	bistate->strategy = GetAccessStrategy(BAS_BULKWRITE);
 	bistate->current_buf = InvalidBuffer;
-	return bistate;
+	return (void *)bistate;
 }
 
 /*
@@ -2694,7 +2464,7 @@ heap_prepare_insert(Relation relation, HeapTuple tup, TransactionId xid,
  * temporary context before calling this, if that's a problem.
  */
 void
-heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
+heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 				  CommandId cid, int options, BulkInsertState bistate)
 {
 	TransactionId xid = GetCurrentTransactionId();
@@ -2715,11 +2485,16 @@ heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 	saveFreeSpace = RelationGetTargetPageFreeSpace(relation,
 												   HEAP_DEFAULT_FILLFACTOR);
 
-	/* Toast and set header data in all the tuples */
+	/* Toast and set header data in all the slots */
 	heaptuples = palloc(ntuples * sizeof(HeapTuple));
 	for (i = 0; i < ntuples; i++)
-		heaptuples[i] = heap_prepare_insert(relation, tuples[i],
+	{
+		heaptuples[i] = heap_prepare_insert(relation, ExecFetchSlotHeapTuple(slots[i], true, NULL),
 											xid, cid, options);
+
+		if (slots[i]->tts_tableOid != InvalidOid)
+			heaptuples[i]->t_tableOid = slots[i]->tts_tableOid;
+	}
 
 	/*
 	 * We're about to do the actual inserts -- but check for conflict first,
@@ -2955,7 +2730,7 @@ heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 	 * probably faster to always copy than check.
 	 */
 	for (i = 0; i < ntuples; i++)
-		tuples[i]->t_self = heaptuples[i]->t_self;
+		slots[i]->tts_tid = heaptuples[i]->t_self;
 
 	pgstat_count_heap_insert(relation, ntuples);
 }
@@ -3225,7 +3000,7 @@ l1:
 	if (crosscheck != InvalidSnapshot && result == HeapTupleMayBeUpdated)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
-		if (!HeapTupleSatisfiesVisibility(&tp, crosscheck, buffer))
+		if (!HeapTupleSatisfies(&tp, crosscheck, buffer))
 			result = HeapTupleUpdated;
 	}
 
@@ -3233,6 +3008,7 @@ l1:
 	{
 		Assert(result == HeapTupleSelfUpdated ||
 			   result == HeapTupleUpdated ||
+			   result == HeapTupleDeleted ||
 			   result == HeapTupleBeingUpdated);
 		Assert(!(tp.t_data->t_infomask & HEAP_XMAX_INVALID));
 		hufd->ctid = tp.t_data->t_ctid;
@@ -3246,6 +3022,8 @@ l1:
 			UnlockTupleTuplock(relation, &(tp.t_self), LockTupleExclusive);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
+		if (result == HeapTupleUpdated && ItemPointerEquals(tid, &hufd->ctid))
+			result = HeapTupleDeleted;
 		return result;
 	}
 
@@ -3461,6 +3239,10 @@ simple_heap_delete(Relation relation, ItemPointer tid)
 
 		case HeapTupleUpdated:
 			elog(ERROR, "tuple concurrently updated");
+			break;
+
+		case HeapTupleDeleted:
+			elog(ERROR, "tuple concurrently deleted");
 			break;
 
 		default:
@@ -3860,7 +3642,7 @@ l2:
 	if (crosscheck != InvalidSnapshot && result == HeapTupleMayBeUpdated)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
-		if (!HeapTupleSatisfiesVisibility(&oldtup, crosscheck, buffer))
+		if (!HeapTupleSatisfies(&oldtup, crosscheck, buffer))
 			result = HeapTupleUpdated;
 	}
 
@@ -3868,6 +3650,7 @@ l2:
 	{
 		Assert(result == HeapTupleSelfUpdated ||
 			   result == HeapTupleUpdated ||
+			   result == HeapTupleDeleted ||
 			   result == HeapTupleBeingUpdated);
 		Assert(!(oldtup.t_data->t_infomask & HEAP_XMAX_INVALID));
 		hufd->ctid = oldtup.t_data->t_ctid;
@@ -3887,6 +3670,8 @@ l2:
 		bms_free(id_attrs);
 		bms_free(modified_attrs);
 		bms_free(interesting_attrs);
+		if (result == HeapTupleUpdated && ItemPointerEquals(otid, &hufd->ctid))
+			result = HeapTupleDeleted;
 		return result;
 	}
 
@@ -4593,6 +4378,10 @@ simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup)
 			elog(ERROR, "tuple concurrently updated");
 			break;
 
+		case HeapTupleDeleted:
+			elog(ERROR, "tuple concurrently deleted");
+			break;
+
 		default:
 			elog(ERROR, "unrecognized heap_update status: %u", result);
 			break;
@@ -4627,7 +4416,7 @@ get_mxact_status_for_lock(LockTupleMode mode, bool is_update)
  *
  * Input parameters:
  *	relation: relation containing tuple (caller must hold suitable lock)
- *	tuple->t_self: TID of tuple to lock (rest of struct need not be valid)
+ *	tid: TID of tuple to lock
  *	cid: current command ID (used for visibility test, and stored into
  *		tuple's cmax if lock is successful)
  *	mode: indicates if shared or exclusive tuple lock is desired
@@ -4645,6 +4434,7 @@ get_mxact_status_for_lock(LockTupleMode mode, bool is_update)
  *	HeapTupleInvisible: lock failed because tuple was never visible to us
  *	HeapTupleSelfUpdated: lock failed because tuple updated by self
  *	HeapTupleUpdated: lock failed because tuple updated by other xact
+ *	HeapTupleDeleted: lock failed because tuple deleted by other xact
  *	HeapTupleWouldBlock: lock couldn't be acquired and wait_policy is skip
  *
  * In the failure cases other than HeapTupleInvisible, the routine fills
@@ -4657,13 +4447,12 @@ get_mxact_status_for_lock(LockTupleMode mode, bool is_update)
  * See README.tuplock for a thorough explanation of this mechanism.
  */
 HTSU_Result
-heap_lock_tuple(Relation relation, HeapTuple tuple,
+heap_lock_tuple(Relation relation, ItemPointer tid,
 				CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 				bool follow_updates,
-				Buffer *buffer, HeapUpdateFailureData *hufd)
+				HeapTuple tuple, Buffer *buffer, HeapUpdateFailureData *hufd)
 {
 	HTSU_Result result;
-	ItemPointer tid = &(tuple->t_self);
 	ItemId		lp;
 	Page		page;
 	Buffer		vmbuffer = InvalidBuffer;
@@ -4698,6 +4487,7 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 	tuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	tuple->t_len = ItemIdGetLength(lp);
 	tuple->t_tableOid = RelationGetRelid(relation);
+	tuple->t_self = *tid;
 
 l3:
 	result = HeapTupleSatisfiesUpdate(tuple, cid, *buffer);
@@ -4713,7 +4503,7 @@ l3:
 		result = HeapTupleInvisible;
 		goto out_locked;
 	}
-	else if (result == HeapTupleBeingUpdated || result == HeapTupleUpdated)
+	else if (result == HeapTupleBeingUpdated || result == HeapTupleUpdated || result == HeapTupleDeleted)
 	{
 		TransactionId xwait;
 		uint16		infomask;
@@ -4993,7 +4783,7 @@ l3:
 		 * or we must wait for the locking transaction or multixact; so below
 		 * we ensure that we grab buffer lock after the sleep.
 		 */
-		if (require_sleep && result == HeapTupleUpdated)
+		if (require_sleep && (result == HeapTupleUpdated || result == HeapTupleDeleted))
 		{
 			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 			goto failed;
@@ -5153,6 +4943,8 @@ l3:
 			HEAP_XMAX_IS_LOCKED_ONLY(tuple->t_data->t_infomask) ||
 			HeapTupleHeaderIsOnlyLocked(tuple->t_data))
 			result = HeapTupleMayBeUpdated;
+		else if (ItemPointerEquals(&tuple->t_self, &tuple->t_data->t_ctid))
+			result = HeapTupleDeleted;
 		else
 			result = HeapTupleUpdated;
 	}
@@ -5161,7 +4953,7 @@ failed:
 	if (result != HeapTupleMayBeUpdated)
 	{
 		Assert(result == HeapTupleSelfUpdated || result == HeapTupleUpdated ||
-			   result == HeapTupleWouldBlock);
+			   result == HeapTupleWouldBlock || result == HeapTupleDeleted);
 		Assert(!(tuple->t_data->t_infomask & HEAP_XMAX_INVALID));
 		hufd->ctid = tuple->t_data->t_ctid;
 		hufd->xmax = HeapTupleHeaderGetUpdateXid(tuple->t_data);
@@ -5765,9 +5557,8 @@ heap_lock_updated_tuple_rec(Relation rel, ItemPointer tid, TransactionId xid,
 		new_infomask = 0;
 		new_xmax = InvalidTransactionId;
 		block = ItemPointerGetBlockNumber(&tupid);
-		ItemPointerCopy(&tupid, &(mytup.t_self));
 
-		if (!heap_fetch(rel, SnapshotAny, &mytup, &buf, false, NULL))
+		if (!heap_fetch(rel, &tupid, SnapshotAny, &mytup, &buf, NULL))
 		{
 			/*
 			 * if we fail to find the updated version of the tuple, it's
@@ -6050,6 +5841,10 @@ next:
 	result = HeapTupleMayBeUpdated;
 
 out_locked:
+
+	if (result == HeapTupleUpdated && ItemPointerEquals(&mytup.t_self, &mytup.t_data->t_ctid))
+		result = HeapTupleDeleted;
+
 	UnlockReleaseBuffer(buf);
 
 out_unlocked:
@@ -6228,6 +6023,10 @@ heap_abort_speculative(Relation relation, HeapTuple tuple)
 	BlockNumber block;
 	Buffer		buffer;
 
+	/*
+	 * Assert(slot->tts_speculativeToken != 0); This needs some update in
+	 * toast
+	 */
 	Assert(ItemPointerIsValid(tid));
 
 	block = ItemPointerGetBlockNumber(tid);

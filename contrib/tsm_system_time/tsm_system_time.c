@@ -66,7 +66,7 @@ static void system_time_beginsamplescan(SampleScanState *node,
 							Datum *params,
 							int nparams,
 							uint32 seed);
-static BlockNumber system_time_nextsampleblock(SampleScanState *node);
+static BlockNumber system_time_nextsampleblock(SampleScanState *node, BlockNumber nblocks);
 static OffsetNumber system_time_nextsampletuple(SampleScanState *node,
 							BlockNumber blockno,
 							OffsetNumber maxoffset);
@@ -213,10 +213,9 @@ system_time_beginsamplescan(SampleScanState *node,
  * Uses linear probing algorithm for picking next block.
  */
 static BlockNumber
-system_time_nextsampleblock(SampleScanState *node)
+system_time_nextsampleblock(SampleScanState *node, BlockNumber nblocks)
 {
 	SystemTimeSamplerData *sampler = (SystemTimeSamplerData *) node->tsm_state;
-	HeapScanDesc scan = node->ss.ss_currentScanDesc;
 	instr_time	cur_time;
 
 	/* First call within scan? */
@@ -229,14 +228,14 @@ system_time_nextsampleblock(SampleScanState *node)
 			SamplerRandomState randstate;
 
 			/* If relation is empty, there's nothing to scan */
-			if (scan->rs_nblocks == 0)
+			if (nblocks == 0)
 				return InvalidBlockNumber;
 
 			/* We only need an RNG during this setup step */
 			sampler_random_init_state(sampler->seed, randstate);
 
 			/* Compute nblocks/firstblock/step only once per query */
-			sampler->nblocks = scan->rs_nblocks;
+			sampler->nblocks = nblocks;
 
 			/* Choose random starting block within the relation */
 			/* (Actually this is the predecessor of the first block visited) */
@@ -272,7 +271,7 @@ system_time_nextsampleblock(SampleScanState *node)
 	{
 		/* Advance lb, using uint64 arithmetic to forestall overflow */
 		sampler->lb = ((uint64) sampler->lb + sampler->step) % sampler->nblocks;
-	} while (sampler->lb >= scan->rs_nblocks);
+	} while (sampler->lb >= nblocks);
 
 	return sampler->lb;
 }

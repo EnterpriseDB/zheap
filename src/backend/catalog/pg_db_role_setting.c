@@ -13,6 +13,7 @@
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_db_role_setting.h"
@@ -170,7 +171,7 @@ void
 DropSetting(Oid databaseid, Oid roleid)
 {
 	Relation	relsetting;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	ScanKeyData keys[2];
 	HeapTuple	tup;
 	int			numkeys = 0;
@@ -196,12 +197,12 @@ DropSetting(Oid databaseid, Oid roleid)
 		numkeys++;
 	}
 
-	scan = heap_beginscan_catalog(relsetting, numkeys, keys);
-	while (HeapTupleIsValid(tup = heap_getnext(scan, ForwardScanDirection)))
+	scan = table_beginscan_catalog(relsetting, numkeys, keys);
+	while (HeapTupleIsValid(tup = heap_scan_getnext(scan, ForwardScanDirection)))
 	{
 		CatalogTupleDelete(relsetting, &tup->t_self);
 	}
-	heap_endscan(scan);
+	table_endscan(scan);
 
 	heap_close(relsetting, RowExclusiveLock);
 }

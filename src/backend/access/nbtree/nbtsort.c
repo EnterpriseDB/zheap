@@ -60,6 +60,7 @@
 #include "access/nbtree.h"
 #include "access/parallel.h"
 #include "access/relscan.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -71,7 +72,7 @@
 #include "utils/rel.h"
 #include "utils/sortsupport.h"
 #include "utils/tuplesort.h"
-
+#include "utils/tqual.h"
 
 /* Magic numbers for parallel state sharing */
 #define PARALLEL_KEY_BTREE_SHARED		UINT64CONST(0xA000000000000001)
@@ -159,7 +160,7 @@ typedef struct BTShared
 	 *
 	 * See _bt_parallel_estimate_shared().
 	 */
-	ParallelHeapScanDescData heapdesc;
+	ParallelTableScanDescData paralleldesc;
 } BTShared;
 
 /*
@@ -469,9 +470,9 @@ _bt_spools_heapscan(Relation heap, Relation index, BTBuildState *buildstate,
 
 	/* Fill spool using either serial or parallel heap scan */
 	if (!buildstate->btleader)
-		reltuples = IndexBuildHeapScan(heap, index, indexInfo, true,
-									   _bt_build_callback, (void *) buildstate,
-									   NULL);
+		reltuples = table_index_build_scan(heap, index, indexInfo, true,
+										   _bt_build_callback, (void *) buildstate,
+										   NULL);
 	else
 		reltuples = _bt_parallel_heapscan(buildstate,
 										  &indexInfo->ii_BrokenHotChain);
@@ -546,7 +547,7 @@ _bt_leafbuild(BTSpool *btspool, BTSpool *btspool2)
 }
 
 /*
- * Per-tuple callback from IndexBuildHeapScan
+ * Per-tuple callback from table_index_build_scan
  */
 static void
 _bt_build_callback(Relation index,
@@ -1315,7 +1316,7 @@ _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent, int request)
 	btshared->havedead = false;
 	btshared->indtuples = 0.0;
 	btshared->brokenhotchain = false;
-	heap_parallelscan_initialize(&btshared->heapdesc, btspool->heap, snapshot);
+	table_parallelscan_initialize(&btshared->paralleldesc, btspool->heap, snapshot);
 
 	/*
 	 * Store shared tuplesort-private state, for which we reserved space.
@@ -1410,8 +1411,8 @@ _bt_parallel_estimate_shared(Snapshot snapshot)
 		return sizeof(BTShared);
 	}
 
-	return add_size(offsetof(BTShared, heapdesc) +
-					offsetof(ParallelHeapScanDescData, phs_snapshot_data),
+	return add_size(offsetof(BTShared, paralleldesc) +
+					offsetof(ParallelTableScanDescData, phs_snapshot_data),
 					EstimateSnapshotSpace(snapshot));
 }
 
@@ -1623,7 +1624,7 @@ _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 {
 	SortCoordinate coordinate;
 	BTBuildState buildstate;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	double		reltuples;
 	IndexInfo  *indexInfo;
 
@@ -1676,10 +1677,10 @@ _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 	/* Join parallel scan */
 	indexInfo = BuildIndexInfo(btspool->index);
 	indexInfo->ii_Concurrent = btshared->isconcurrent;
-	scan = heap_beginscan_parallel(btspool->heap, &btshared->heapdesc);
-	reltuples = IndexBuildHeapScan(btspool->heap, btspool->index, indexInfo,
-								   true, _bt_build_callback,
-								   (void *) &buildstate, scan);
+	scan = table_beginscan_parallel(btspool->heap, &btshared->paralleldesc);
+	reltuples = table_index_build_scan(btspool->heap, btspool->index, indexInfo,
+									   true, _bt_build_callback,
+									   (void *) &buildstate, scan);
 
 	/*
 	 * Execute this worker's part of the sort.

@@ -23,6 +23,7 @@
 #include "access/hash.h"
 #include "access/heapam.h"
 #include "access/sysattr.h"
+#include "access/tableam.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_type.h"
 #include "libpq/pqformat.h"
@@ -380,7 +381,7 @@ currtid_byreloid(PG_FUNCTION_ARGS)
 	ItemPointerCopy(tid, result);
 
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	heap_get_latest_tid(rel, snapshot, result);
+	table_get_latest_tid(rel, snapshot, result);
 	UnregisterSnapshot(snapshot);
 
 	heap_close(rel, AccessShareLock);
@@ -415,7 +416,7 @@ currtid_byrelname(PG_FUNCTION_ARGS)
 	ItemPointerCopy(tid, result);
 
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	heap_get_latest_tid(rel, snapshot, result);
+	table_get_latest_tid(rel, snapshot, result);
 	UnregisterSnapshot(snapshot);
 
 	heap_close(rel, AccessShareLock);

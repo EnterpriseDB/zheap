@@ -45,7 +45,7 @@
  */
 typedef struct GMReaderTupleBuffer
 {
-	HeapTuple  *tuple;			/* array of length MAX_TUPLE_STORE */
+	HeapTuple *tuple;		/* array of length MAX_TUPLE_STORE */
 	int			nTuples;		/* number of tuples currently stored */
 	int			readCounter;	/* index of next tuple to extract */
 	bool		done;			/* true if reader is known exhausted */
@@ -55,7 +55,7 @@ static TupleTableSlot *ExecGatherMerge(PlanState *pstate);
 static int32 heap_compare_slots(Datum a, Datum b, void *arg);
 static TupleTableSlot *gather_merge_getnext(GatherMergeState *gm_state);
 static HeapTuple gm_readnext_tuple(GatherMergeState *gm_state, int nreader,
-				  bool nowait, bool *done);
+									  bool nowait, bool *done);
 static void ExecShutdownGatherMergeWorkers(GatherMergeState *node);
 static void gather_merge_setup(GatherMergeState *gm_state);
 static void gather_merge_init(GatherMergeState *gm_state);
@@ -637,7 +637,7 @@ static bool
 gather_merge_readnext(GatherMergeState *gm_state, int reader, bool nowait)
 {
 	GMReaderTupleBuffer *tuple_buffer;
-	HeapTuple	tup;
+	HeapTuple tup;
 
 	/*
 	 * If we're being asked to generate a tuple from the leader, then we just
@@ -716,7 +716,7 @@ gm_readnext_tuple(GatherMergeState *gm_state, int nreader, bool nowait,
 				  bool *done)
 {
 	TupleQueueReader *reader;
-	HeapTuple	tup;
+	HeapTuple tup;
 
 	/* Check for async events, particularly messages from workers. */
 	CHECK_FOR_INTERRUPTS();

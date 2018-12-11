@@ -45,12 +45,15 @@ extern Relation heap_create(const char *relname,
 			Oid reltablespace,
 			Oid relid,
 			Oid relfilenode,
+			Oid accessmtd,
 			TupleDesc tupDesc,
 			char relkind,
 			char relpersistence,
 			bool shared_relation,
 			bool mapped_relation,
-			bool allow_system_table_mods);
+			bool allow_system_table_mods,
+			TransactionId *relfrozenxid,
+			MultiXactId *relminmxid);
 
 extern Oid heap_create_with_catalog(const char *relname,
 						 Oid relnamespace,
@@ -59,6 +62,7 @@ extern Oid heap_create_with_catalog(const char *relname,
 						 Oid reltypeid,
 						 Oid reloftypeid,
 						 Oid ownerid,
+						 Oid accessmtd,
 						 TupleDesc tupdesc,
 						 List *cooked_constraints,
 						 char relkind,
@@ -72,8 +76,6 @@ extern Oid heap_create_with_catalog(const char *relname,
 						 bool is_internal,
 						 Oid relrewrite,
 						 ObjectAddress *typaddress);
-
-extern void heap_create_init_fork(Relation rel);
 
 extern void heap_drop_with_catalog(Oid relid);
 

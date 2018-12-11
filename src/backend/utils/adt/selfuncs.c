@@ -104,6 +104,7 @@
 #include "access/brin.h"
 #include "access/gin.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "catalog/index.h"
 #include "catalog/pg_am.h"
@@ -5530,7 +5531,6 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 			bool		typByVal;
 			ScanKeyData scankeys[1];
 			IndexScanDesc index_scan;
-			HeapTuple	tup;
 			Datum		values[INDEX_MAX_KEYS];
 			bool		isnull[INDEX_MAX_KEYS];
 			SnapshotData SnapshotNonVacuumable;
@@ -5553,8 +5553,7 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 			indexInfo = BuildIndexInfo(indexRel);
 
 			/* some other stuff */
-			slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRel),
-											&TTSOpsHeapTuple);
+			slot = table_gimmegimmeslot(heapRel, NULL);
 			econtext->ecxt_scantuple = slot;
 			get_typlenbyval(vardata->atttype, &typLen, &typByVal);
 			InitNonVacuumableSnapshot(SnapshotNonVacuumable, RecentGlobalXmin);
@@ -5606,11 +5605,9 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 				index_rescan(index_scan, scankeys, 1, NULL, 0);
 
 				/* Fetch first tuple in sortop's direction */
-				if ((tup = index_getnext(index_scan,
-										 indexscandir)) != NULL)
+				if (index_getnext_slot(index_scan, indexscandir, slot))
 				{
-					/* Extract the index column values from the heap tuple */
-					ExecStoreHeapTuple(tup, slot, false);
+					/* Extract the index column values from the slot */
 					FormIndexDatum(indexInfo, slot, estate,
 								   values, isnull);
 
@@ -5639,11 +5636,9 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 				index_rescan(index_scan, scankeys, 1, NULL, 0);
 
 				/* Fetch first tuple in reverse direction */
-				if ((tup = index_getnext(index_scan,
-										 -indexscandir)) != NULL)
+				if (index_getnext_slot(index_scan, -indexscandir, slot))
 				{
-					/* Extract the index column values from the heap tuple */
-					ExecStoreHeapTuple(tup, slot, false);
+					/* Extract the index column values from the slot */
 					FormIndexDatum(indexInfo, slot, estate,
 								   values, isnull);
 

@@ -13,6 +13,7 @@
 #include "access/htup_details.h"
 #include "access/visibilitymap.h"
 #include "catalog/pg_type.h"
+#include "catalog/pg_am_d.h"
 #include "catalog/storage_xlog.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -564,6 +565,11 @@ collect_corrupt_items(Oid relid, bool all_visible, bool all_frozen)
 
 	/* Only some relkinds have a visibility map */
 	check_relation_relkind(rel);
+
+	if (rel->rd_rel->relam != HEAP_TABLE_AM_OID)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("only heap AM is supported")));
+
 
 	nblocks = RelationGetNumberOfBlocks(rel);
 

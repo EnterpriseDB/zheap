@@ -453,6 +453,7 @@ tts_heap_store_tuple(TupleTableSlot *slot, HeapTuple tuple, bool shouldFree)
 	hslot->tuple = tuple;
 	hslot->off = 0;
 	slot->tts_flags &= ~TTS_FLAG_EMPTY;
+	slot->tts_tid = tuple->t_self;
 
 	if (shouldFree)
 		slot->tts_flags |= TTS_FLAG_SHOULDFREE;
@@ -717,20 +718,31 @@ tts_buffer_heap_materialize(TupleTableSlot *slot)
 	 * associated with it, unless it's materialized (which would've returned
 	 * above).
 	 */
+	// PBORKED: restore
+#if 0
 	Assert(bslot->base.tuple);
+#endif
 
 	oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
-	bslot->base.tuple = heap_copytuple(bslot->base.tuple);
+#if 1
+	if (!bslot->base.tuple)
+	{
+		bslot->base.tuple = heap_form_tuple(slot->tts_tupleDescriptor,
+											slot->tts_values,
+											slot->tts_isnull);
+	}
+#endif
+	else
+	{
+		bslot->base.tuple = heap_copytuple(bslot->base.tuple);
+	}
 	MemoryContextSwitchTo(oldContext);
 
-	/*
-	 * A heap tuple stored in a BufferHeapTupleTableSlot should have a buffer
-	 * associated with it, unless it's materialized.
-	 */
-	Assert(BufferIsValid(bslot->buffer));
-	if (likely(BufferIsValid(bslot->buffer)))
+	if (BufferIsValid(bslot->buffer))
+	{
 		ReleaseBuffer(bslot->buffer);
-	bslot->buffer = InvalidBuffer;
+		bslot->buffer = InvalidBuffer;
+	}
 
 	/*
 	 * Have to deform from scratch, otherwise tts_values[] entries could point
@@ -764,6 +776,10 @@ tts_buffer_heap_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 	}
 	else
 	{
+		// PBORKED: shouldn't be required
+		if (!bsrcslot->base.tuple)
+			tts_buffer_heap_materialize(srcslot);
+
 		tts_buffer_heap_store_tuple(dstslot, bsrcslot->base.tuple, bsrcslot->buffer);
 		/*
 		 * Need to materialize because the HeapTupleData portion of the tuple
@@ -858,6 +874,7 @@ tts_buffer_heap_store_tuple(TupleTableSlot *slot, HeapTuple tuple, Buffer buffer
 	slot->tts_nvalid = 0;
 	bslot->base.tuple = tuple;
 	bslot->base.off = 0;
+	slot->tts_tid = tuple->t_self;
 
 	/*
 	 * If tuple is on a disk page, keep the page pinned as long as we hold a
@@ -873,7 +890,9 @@ tts_buffer_heap_store_tuple(TupleTableSlot *slot, HeapTuple tuple, Buffer buffer
 		if (BufferIsValid(bslot->buffer))
 			ReleaseBuffer(bslot->buffer);
 		bslot->buffer = buffer;
-		IncrBufferRefCount(buffer);
+		// PBORKED: Should always be valid
+		if (BufferIsValid(buffer))
+			IncrBufferRefCount(buffer);
 	}
 }
 
@@ -1211,6 +1230,56 @@ MakeSingleTupleTableSlot(TupleDesc tupdesc,
 	return slot;
 }
 
+// FIXME this definitely does not belong here.
+/* --------------------------------
+ *     ExecSlotCompare
+ *
+ *     This is a slot comparision function to find out
+ *     whether both the slots are same or not?
+ * --------------------------------
+ */
+bool
+ExecSlotCompare(TupleTableSlot *slot1, TupleTableSlot *slot2)
+{
+	int         attrnum;
+
+	Assert(slot1->tts_tupleDescriptor->natts == slot2->tts_tupleDescriptor->natts);
+
+	slot_getallattrs(slot1);
+	slot_getallattrs(slot2);
+
+	/* Check equality of the attributes. */
+	for (attrnum = 0; attrnum < slot1->tts_tupleDescriptor->natts; attrnum++)
+	{
+		Form_pg_attribute att;
+		TypeCacheEntry *typentry;
+
+		/*
+		 * If one value is NULL and other is not, then they are certainly not
+		 * equal
+		 */
+		if (slot1->tts_isnull[attrnum] != slot2->tts_isnull[attrnum])
+			return false;
+
+		att = TupleDescAttr(slot1->tts_tupleDescriptor, attrnum);
+
+		typentry = lookup_type_cache(att->atttypid, TYPECACHE_EQ_OPR_FINFO);
+		if (!OidIsValid(typentry->eq_opr_finfo.fn_oid))
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_FUNCTION),
+					 errmsg("could not identify an equality operator for type %s",
+							format_type_be(att->atttypid))));
+
+		if (!DatumGetBool(FunctionCall2(&typentry->eq_opr_finfo,
+										slot1->tts_values[attrnum],
+										slot2->tts_values[attrnum])))
+			return false;
+	}
+
+	return true;
+}
+
+
 /* --------------------------------
  *		ExecDropSingleTupleTableSlot
  *
@@ -1328,9 +1397,15 @@ ExecStoreHeapTuple(HeapTuple tuple,
 	Assert(slot != NULL);
 	Assert(slot->tts_tupleDescriptor != NULL);
 
-	if (unlikely(!TTS_IS_HEAPTUPLE(slot)))
+	// PBORKED: should onlyneed heaptuples here.
+	if (TTS_IS_BUFFERTUPLE(slot))
+		tts_buffer_heap_store_tuple(slot, tuple, InvalidBuffer);
+	else if (TTS_IS_HEAPTUPLE(slot))
+		tts_heap_store_tuple(slot, tuple, shouldFree);
+	else
 		elog(ERROR, "trying to store a heap tuple into wrong type of slot");
-	tts_heap_store_tuple(slot, tuple, shouldFree);
+
+	slot->tts_tableOid = tuple->t_tableOid;
 
 	return slot;
 }
@@ -1370,6 +1445,8 @@ ExecStoreBufferHeapTuple(HeapTuple tuple,
 	if (unlikely(!TTS_IS_BUFFERTUPLE(slot)))
 		elog(ERROR, "trying to store an on-disk heap tuple into wrong type of slot");
 	tts_buffer_heap_store_tuple(slot, tuple, buffer);
+
+	slot->tts_tableOid = tuple->t_tableOid;
 
 	return slot;
 }

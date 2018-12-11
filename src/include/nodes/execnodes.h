@@ -525,7 +525,7 @@ typedef struct EState
 
 	/* Stuff used for firing triggers: */
 	List	   *es_trig_target_relations;	/* trigger-only ResultRelInfos */
-	TupleTableSlot *es_trig_tuple_slot; /* for trigger output tuples */
+	TupleTableSlot *es_trig_return_slot; /* for trigger output tuples */
 	TupleTableSlot *es_trig_oldtup_slot;	/* for TriggerEnabled */
 	TupleTableSlot *es_trig_newtup_slot;	/* for TriggerEnabled */
 
@@ -568,7 +568,7 @@ typedef struct EState
 	 * remember if the tuple has been returned already.  Arrays are of size
 	 * es_range_table_size and are indexed by scan node scanrelid - 1.
 	 */
-	HeapTuple  *es_epqTuple;	/* array of EPQ substitute tuples */
+	TupleTableSlot **es_epqTupleSlot;	/* array of EPQ substitute tuples */
 	bool	   *es_epqTupleSet; /* true if EPQ tuple is provided */
 	bool	   *es_epqScanDone; /* true if EPQ tuple has been fetched */
 
@@ -1268,7 +1268,7 @@ typedef struct ScanState
 {
 	PlanState	ps;				/* its first field is NodeTag */
 	Relation	ss_currentRelation;
-	HeapScanDesc ss_currentScanDesc;
+	TableScanDesc ss_currentScanDesc;
 	TupleTableSlot *ss_ScanTupleSlot;
 } ScanState;
 
@@ -1298,6 +1298,9 @@ typedef struct SampleScanState
 	bool		use_pagemode;	/* use page-at-a-time visibility checking? */
 	bool		begun;			/* false means need to call BeginSampleScan */
 	uint32		seed;			/* random seed */
+	int64		donetuples;		/* number of tuples already returned */
+	bool		haveblock;		/* has a block for sampling been determined */
+	bool		done;			/* exhausted all tuples? */
 } SampleScanState;
 
 /*
@@ -1526,6 +1529,7 @@ typedef struct BitmapHeapScanState
 	Buffer		pvmbuffer;
 	long		exact_pages;
 	long		lossy_pages;
+	int			return_empty_tuples;
 	TBMIterator *prefetch_iterator;
 	int			prefetch_pages;
 	int			prefetch_target;
@@ -2256,7 +2260,7 @@ typedef struct LockRowsState
 	PlanState	ps;				/* its first field is NodeTag */
 	List	   *lr_arowMarks;	/* List of ExecAuxRowMarks */
 	EPQState	lr_epqstate;	/* for evaluating EvalPlanQual rechecks */
-	HeapTuple  *lr_curtuples;	/* locked tuples (one entry per RT entry) */
+	TupleTableSlot **lr_curtuples; /* locked tuples (one entry per RT entry) */
 	int			lr_ntables;		/* length of lr_curtuples[] array */
 } LockRowsState;
 

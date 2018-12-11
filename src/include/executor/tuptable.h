@@ -15,6 +15,7 @@
 #define TUPTABLE_H
 
 #include "access/htup.h"
+#include "access/sysattr.h"
 #include "access/tupdesc.h"
 #include "storage/buf.h"
 
@@ -125,6 +126,10 @@ typedef struct TupleTableSlot
 #define FIELDNO_TUPLETABLESLOT_ISNULL 6
 	bool	   *tts_isnull;		/* current per-attribute isnull flags */
 	MemoryContext tts_mcxt;		/* slot itself is in this context */
+
+	ItemPointerData tts_tid;    /* XXX describe */
+	Oid     tts_tableOid;   /* XXX describe */
+
 } TupleTableSlot;
 
 /* routines for a TupleTableSlot implementation */
@@ -238,6 +243,7 @@ typedef struct VirtualTupleTableSlot
 	char	   *data;		/* data for materialized slots */
 } VirtualTupleTableSlot;
 
+#include <access/htup_details.h>
 typedef struct HeapTupleTableSlot
 {
 	TupleTableSlot base;
@@ -246,6 +252,7 @@ typedef struct HeapTupleTableSlot
 	HeapTuple	tuple;		/* physical tuple */
 #define FIELDNO_HEAPTUPLETABLESLOT_OFF 2
 	uint32		off;		/* saved state for slot_deform_heap_tuple */
+	HeapTupleData tupdata;
 } HeapTupleTableSlot;
 
 /* heap tuple residing in a buffer */
@@ -323,6 +330,9 @@ extern void slot_getmissingattrs(TupleTableSlot *slot, int startAttNum,
 extern void slot_getsomeattrs_int(TupleTableSlot *slot, int attnum);
 
 
+// FIXME: remove
+extern bool ExecSlotCompare(TupleTableSlot *slot1, TupleTableSlot *slot2);
+
 #ifndef FRONTEND
 
 /*
@@ -394,6 +404,12 @@ static inline Datum
 slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 {
 	AssertArg(attnum < 0);		/* caller error */
+
+	if (attnum == TableOidAttributeNumber)
+	{
+		*isnull = false;
+		return slot->tts_tableOid;
+	}
 
 	/* Fetch the system attribute from the underlying tuple. */
 	return slot->tts_ops->getsysattr(slot, attnum, isnull);

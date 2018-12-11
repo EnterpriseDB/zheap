@@ -20,7 +20,6 @@
 #include "storage/relfilenode.h"
 #include "utils/relcache.h"
 #include "utils/snapmgr.h"
-#include "utils/tqual.h"
 
 typedef void *Block;
 
@@ -268,8 +267,8 @@ TestForOldSnapshot(Snapshot snapshot, Relation relation, Page page)
 
 	if (old_snapshot_threshold >= 0
 		&& (snapshot) != NULL
-		&& ((snapshot)->satisfies == HeapTupleSatisfiesMVCC
-			|| (snapshot)->satisfies == HeapTupleSatisfiesToast)
+		&& ((snapshot)->visibility_type == MVCC_VISIBILITY
+			|| (snapshot)->visibility_type == TOAST_VISIBILITY)
 		&& !XLogRecPtrIsInvalid((snapshot)->lsn)
 		&& PageGetLSN(page) > (snapshot)->lsn)
 		TestForOldSnapshot_impl(snapshot, relation);

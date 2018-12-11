@@ -20,6 +20,7 @@
 #include "access/multixact.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/tupconvert.h"
 #include "access/xact.h"
@@ -467,8 +468,7 @@ static void ATExecEnableRowSecurity(Relation rel);
 static void ATExecDisableRowSecurity(Relation rel);
 static void ATExecForceNoForceRowSecurity(Relation rel, bool force_rls);
 
-static void copy_relation_data(SMgrRelation rel, SMgrRelation dst,
-				   ForkNumber forkNum, char relpersistence);
+static void index_copy_data(Relation rel, RelFileNode newrnode);
 static const char *storage_name(char c);
 
 static void RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid,
@@ -537,6 +537,8 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	Oid			ofTypeId;
 	ObjectAddress address;
 	LOCKMODE	parentLockmode;
+	const char *accessMethod = NULL;
+	Oid			accessMethodId = InvalidOid;
 
 	/*
 	 * Truncate relname to appropriate length (probably a waste of time, as
@@ -778,6 +780,35 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	}
 
 	/*
+	 * If the statement hasn't specified an access method, but we're defining
+	 * a type of relation that needs one, use the default.
+	 */
+	if (stmt->accessMethod != NULL)
+		accessMethod = stmt->accessMethod;
+	else if (relkind == RELKIND_RELATION ||
+			 relkind == RELKIND_TOASTVALUE ||
+			 relkind == RELKIND_MATVIEW ||
+			 relkind == RELKIND_PARTITIONED_TABLE)
+		accessMethod = default_table_access_method;
+
+	/*
+	 * look up the access method, verify it can handle the requested features
+	 */
+	if (accessMethod != NULL)
+	{
+		HeapTuple	tuple;
+
+		tuple = SearchSysCache1(AMNAME, PointerGetDatum(accessMethod));
+		if (!HeapTupleIsValid(tuple))
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_OBJECT),
+						 errmsg("table access method \"%s\" does not exist",
+								 accessMethod)));
+		accessMethodId = ((Form_pg_am) GETSTRUCT(tuple))->oid;
+		ReleaseSysCache(tuple);
+	}
+
+	/*
 	 * Create the relation.  Inherited defaults and constraints are passed in
 	 * for immediate handling --- since they don't need parsing, they can be
 	 * stored immediately.
@@ -789,6 +820,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 										  InvalidOid,
 										  ofTypeId,
 										  ownerId,
+										  accessMethodId,
 										  descriptor,
 										  list_concat(cookedDefaults,
 													  old_constraints),
@@ -1643,7 +1675,6 @@ ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
 		{
 			Oid			heap_relid;
 			Oid			toast_relid;
-			MultiXactId minmulti;
 
 			/*
 			 * This effectively deletes all rows in the table, and may be done
@@ -1653,8 +1684,6 @@ ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
 			 */
 			CheckTableForSerializableConflictIn(rel);
 
-			minmulti = GetOldestMultiXactId();
-
 			/*
 			 * Need the full transaction-safe pushups.
 			 *
@@ -1662,10 +1691,7 @@ ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
 			 * as the relfilenode value. The old storage file is scheduled for
 			 * deletion at commit.
 			 */
-			RelationSetNewRelfilenode(rel, rel->rd_rel->relpersistence,
-									  RecentXmin, minmulti);
-			if (rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED)
-				heap_create_init_fork(rel);
+			RelationSetNewRelfilenode(rel, rel->rd_rel->relpersistence);
 
 			heap_relid = RelationGetRelid(rel);
 
@@ -1677,12 +1703,8 @@ ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
 			{
 				Relation	toastrel = relation_open(toast_relid,
 													 AccessExclusiveLock);
-
 				RelationSetNewRelfilenode(toastrel,
-										  toastrel->rd_rel->relpersistence,
-										  RecentXmin, minmulti);
-				if (toastrel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED)
-					heap_create_init_fork(toastrel);
+										  toastrel->rd_rel->relpersistence);
 				heap_close(toastrel, NoLock);
 			}
 
@@ -4579,7 +4601,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	ListCell   *l;
 	EState	   *estate;
 	CommandId	mycid;
-	BulkInsertState bistate;
+	void       *bistate;
 	int			hi_options;
 	ExprState  *partqualstate = NULL;
 
@@ -4683,12 +4705,9 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	if (newrel || needscan)
 	{
 		ExprContext *econtext;
-		Datum	   *values;
-		bool	   *isnull;
 		TupleTableSlot *oldslot;
 		TupleTableSlot *newslot;
-		HeapScanDesc scan;
-		HeapTuple	tuple;
+		TableScanDesc scan;
 		MemoryContext oldCxt;
 		List	   *dropped_attrs = NIL;
 		ListCell   *lc;
@@ -4720,15 +4739,16 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		 * tuples are the same, the tupDescs might not be (consider ADD COLUMN
 		 * without a default).
 		 */
-		oldslot = MakeSingleTupleTableSlot(oldTupDesc, &TTSOpsHeapTuple);
-		newslot = MakeSingleTupleTableSlot(newTupDesc, &TTSOpsHeapTuple);
+		// PBORKED: Explain about using oldTupDesc when not rewriting
+		oldslot = MakeSingleTupleTableSlot(tab->rewrite > 0 ? oldTupDesc : newTupDesc,
+										   table_slot_callbacks(oldrel));
+		newslot = MakeSingleTupleTableSlot(newTupDesc,
+										   table_slot_callbacks(newrel ? newrel : oldrel));
 
-		/* Preallocate values/isnull arrays */
-		i = Max(newTupDesc->natts, oldTupDesc->natts);
-		values = (Datum *) palloc(i * sizeof(Datum));
-		isnull = (bool *) palloc(i * sizeof(bool));
-		memset(values, 0, i * sizeof(Datum));
-		memset(isnull, true, i * sizeof(bool));
+		memset(newslot->tts_values, 0,
+			   sizeof(Datum) * newTupDesc->natts);
+		memset(newslot->tts_isnull, 0,
+			   sizeof(bool) * newTupDesc->natts);
 
 		/*
 		 * Any attributes that are dropped according to the new tuple
@@ -4746,7 +4766,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		 * checking all the constraints.
 		 */
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
-		scan = heap_beginscan(oldrel, snapshot, 0, NULL);
+		scan = table_beginscan(oldrel, snapshot, 0, NULL);
 
 		/*
 		 * Switch to per-tuple memory context and reset it for each tuple
@@ -4754,55 +4774,69 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		 */
 		oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
-		while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+		while (table_scan_getnextslot(scan, ForwardScanDirection, oldslot))
 		{
+			TupleTableSlot *insertslot;
+
 			if (tab->rewrite > 0)
 			{
 				/* Extract data from old tuple */
-				heap_deform_tuple(tuple, oldTupDesc, values, isnull);
+				slot_getallattrs(oldslot);
+				ExecClearTuple(newslot);
+
+				/* copy attributes */
+				memcpy(newslot->tts_values, oldslot->tts_values,
+					   sizeof(Datum) * oldslot->tts_nvalid);
+				memcpy(newslot->tts_isnull, oldslot->tts_isnull,
+					   sizeof(bool) * oldslot->tts_nvalid);
 
 				/* Set dropped attributes to null in new tuple */
 				foreach(lc, dropped_attrs)
-					isnull[lfirst_int(lc)] = true;
+					newslot->tts_isnull[lfirst_int(lc)] = true;
 
 				/*
 				 * Process supplied expressions to replace selected columns.
 				 * Expression inputs come from the old tuple.
 				 */
-				ExecStoreHeapTuple(tuple, oldslot, false);
 				econtext->ecxt_scantuple = oldslot;
 
 				foreach(l, tab->newvals)
 				{
 					NewColumnValue *ex = lfirst(l);
 
-					values[ex->attnum - 1] = ExecEvalExpr(ex->exprstate,
-														  econtext,
-														  &isnull[ex->attnum - 1]);
+					newslot->tts_values[ex->attnum - 1]
+						= ExecEvalExpr(ex->exprstate,
+									   econtext,
+									   &newslot->tts_isnull[ex->attnum - 1]);
 				}
 
-				/*
-				 * Form the new tuple. Note that we don't explicitly pfree it,
-				 * since the per-tuple memory context will be reset shortly.
-				 */
-				tuple = heap_form_tuple(newTupDesc, values, isnull);
+				ExecStoreVirtualTuple(newslot);
 
 				/*
 				 * Constraints might reference the tableoid column, so
 				 * initialize t_tableOid before evaluating them.
 				 */
-				tuple->t_tableOid = RelationGetRelid(oldrel);
+				newslot->tts_tableOid = RelationGetRelid(oldrel);
+				insertslot = newslot;
+			}
+			else
+			{
+				/*
+				 * If there's no rewrite, old and new table are guaranteed to
+				 * have the same AM, so we can just use the old slot to
+				 * verify new constraints etc.
+				 */
+				insertslot = oldslot;
 			}
 
 			/* Now check any constraints on the possibly-changed tuple */
-			ExecStoreHeapTuple(tuple, newslot, false);
-			econtext->ecxt_scantuple = newslot;
+			econtext->ecxt_scantuple = insertslot;
 
 			foreach(l, notnull_attrs)
 			{
 				int			attn = lfirst_int(l);
 
-				if (heap_attisnull(tuple, attn + 1, newTupDesc))
+				if (slot_attisnull(insertslot, attn + 1))
 				{
 					Form_pg_attribute attr = TupleDescAttr(newTupDesc, attn);
 
@@ -4851,7 +4885,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 
 			/* Write the tuple out to the new relation */
 			if (newrel)
-				heap_insert(newrel, tuple, mycid, hi_options, bistate);
+				table_insert(newrel, insertslot, mycid, hi_options, bistate);
 
 			ResetExprContext(econtext);
 
@@ -4859,7 +4893,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		}
 
 		MemoryContextSwitchTo(oldCxt);
-		heap_endscan(scan);
+		table_endscan(scan);
 		UnregisterSnapshot(snapshot);
 
 		ExecDropSingleTupleTableSlot(oldslot);
@@ -4873,9 +4907,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	{
 		FreeBulkInsertState(bistate);
 
-		/* If we skipped writing WAL, then we need to sync the heap. */
-		if (hi_options & HEAP_INSERT_SKIP_WAL)
-			heap_sync(newrel);
+		table_finish_bulk_insert(newrel, hi_options);
 
 		heap_close(newrel, NoLock);
 	}
@@ -5254,7 +5286,7 @@ find_typed_table_dependencies(Oid typeOid, const char *typeName, DropBehavior be
 {
 	Relation	classRel;
 	ScanKeyData key[1];
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tuple;
 	List	   *result = NIL;
 
@@ -5265,9 +5297,9 @@ find_typed_table_dependencies(Oid typeOid, const char *typeName, DropBehavior be
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(typeOid));
 
-	scan = heap_beginscan_catalog(classRel, 1, key);
+	scan = table_beginscan_catalog(classRel, 1, key);
 
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while ((tuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		Form_pg_class classform = (Form_pg_class) GETSTRUCT(tuple);
 
@@ -5281,7 +5313,7 @@ find_typed_table_dependencies(Oid typeOid, const char *typeName, DropBehavior be
 			result = lappend_oid(result, classform->oid);
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	heap_close(classRel, AccessShareLock);
 
 	return result;
@@ -8379,9 +8411,7 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
 	char	   *conbin;
 	Expr	   *origexpr;
 	ExprState  *exprstate;
-	TupleDesc	tupdesc;
-	HeapScanDesc scan;
-	HeapTuple	tuple;
+	TableScanDesc scan;
 	ExprContext *econtext;
 	MemoryContext oldcxt;
 	TupleTableSlot *slot;
@@ -8416,12 +8446,11 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
 	exprstate = ExecPrepareExpr(origexpr, estate);
 
 	econtext = GetPerTupleExprContext(estate);
-	tupdesc = RelationGetDescr(rel);
-	slot = MakeSingleTupleTableSlot(tupdesc, &TTSOpsHeapTuple);
+	slot = table_gimmegimmeslot(rel, NULL);
 	econtext->ecxt_scantuple = slot;
 
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = heap_beginscan(rel, snapshot, 0, NULL);
+	scan = table_beginscan(rel, snapshot, 0, NULL);
 
 	/*
 	 * Switch to per-tuple memory context and reset it for each tuple
@@ -8429,10 +8458,8 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
 	 */
 	oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
-		ExecStoreHeapTuple(tuple, slot, false);
-
 		if (!ExecCheck(exprstate, econtext))
 			ereport(ERROR,
 					(errcode(ERRCODE_CHECK_VIOLATION),
@@ -8444,7 +8471,7 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
 	}
 
 	MemoryContextSwitchTo(oldcxt);
-	heap_endscan(scan);
+	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
 	ExecDropSingleTupleTableSlot(slot);
 	FreeExecutorState(estate);
@@ -8463,8 +8490,8 @@ validateForeignKeyConstraint(char *conname,
 							 Oid pkindOid,
 							 Oid constraintOid)
 {
-	HeapScanDesc scan;
-	HeapTuple	tuple;
+	TableScanDesc scan;
+	TupleTableSlot *slot;
 	Trigger		trig;
 	Snapshot	snapshot;
 
@@ -8499,9 +8526,10 @@ validateForeignKeyConstraint(char *conname,
 	 * ereport(ERROR) and that's that.
 	 */
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = heap_beginscan(rel, snapshot, 0, NULL);
+	scan = table_beginscan(rel, snapshot, 0, NULL);
+	slot = table_gimmegimmeslot(rel, NULL);
 
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		FunctionCallInfoData fcinfo;
 		TriggerData trigdata;
@@ -8519,19 +8547,19 @@ validateForeignKeyConstraint(char *conname,
 		trigdata.type = T_TriggerData;
 		trigdata.tg_event = TRIGGER_EVENT_INSERT | TRIGGER_EVENT_ROW;
 		trigdata.tg_relation = rel;
-		trigdata.tg_trigtuple = tuple;
+		trigdata.tg_trigtuple = ExecFetchSlotHeapTuple(slot, true, NULL);
+		trigdata.tg_trigslot = slot;
 		trigdata.tg_newtuple = NULL;
 		trigdata.tg_trigger = &trig;
-		trigdata.tg_trigtuplebuf = scan->rs_cbuf;
-		trigdata.tg_newtuplebuf = InvalidBuffer;
 
 		fcinfo.context = (Node *) &trigdata;
 
 		RI_FKey_check_ins(&fcinfo);
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
+	ExecDropSingleTupleTableSlot(slot);
 }
 
 static void
@@ -10827,11 +10855,9 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 	Oid			reltoastrelid;
 	Oid			newrelfilenode;
 	RelFileNode newrnode;
-	SMgrRelation dstrel;
 	Relation	pg_class;
 	HeapTuple	tuple;
 	Form_pg_class rd_rel;
-	ForkNumber	forkNum;
 	List	   *reltoastidxids = NIL;
 	ListCell   *lc;
 
@@ -10916,46 +10942,20 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 	newrnode = rel->rd_node;
 	newrnode.relNode = newrelfilenode;
 	newrnode.spcNode = newTableSpace;
-	dstrel = smgropen(newrnode, rel->rd_backend);
 
-	RelationOpenSmgr(rel);
-
-	/*
-	 * Create and copy all forks of the relation, and schedule unlinking of
-	 * old physical files.
-	 *
-	 * NOTE: any conflict in relfilenode value will be caught in
-	 * RelationCreateStorage().
-	 */
-	RelationCreateStorage(newrnode, rel->rd_rel->relpersistence);
-
-	/* copy main fork */
-	copy_relation_data(rel->rd_smgr, dstrel, MAIN_FORKNUM,
-					   rel->rd_rel->relpersistence);
-
-	/* copy those extra forks that exist */
-	for (forkNum = MAIN_FORKNUM + 1; forkNum <= MAX_FORKNUM; forkNum++)
+	/* hand off to AM to actually create the new filenode and copy the data */
+	if (rel->rd_rel->relkind == RELKIND_INDEX)
 	{
-		if (smgrexists(rel->rd_smgr, forkNum))
-		{
-			smgrcreate(dstrel, forkNum, false);
-
-			/*
-			 * WAL log creation if the relation is persistent, or this is the
-			 * init fork of an unlogged relation.
-			 */
-			if (rel->rd_rel->relpersistence == RELPERSISTENCE_PERMANENT ||
-				(rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED &&
-				 forkNum == INIT_FORKNUM))
-				log_smgrcreate(&newrnode, forkNum);
-			copy_relation_data(rel->rd_smgr, dstrel, forkNum,
-							   rel->rd_rel->relpersistence);
-		}
+		index_copy_data(rel, newrnode);
 	}
-
-	/* drop old relation, and close new one */
-	RelationDropStorage(rel);
-	smgrclose(dstrel);
+	else
+	{
+		Assert(rel->rd_rel->relkind == RELKIND_RELATION ||
+			   rel->rd_rel->relkind == RELKIND_MATVIEW ||
+			   rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||
+			   rel->rd_rel->relkind == RELKIND_TOASTVALUE);
+		table_relation_copy_data(rel, newrnode);
+	}
 
 	/* update the pg_class row */
 	rd_rel->reltablespace = (newTableSpace == MyDatabaseTableSpace) ? InvalidOid : newTableSpace;
@@ -11063,7 +11063,7 @@ AlterTableMoveAll(AlterTableMoveAllStmt *stmt)
 	ListCell   *l;
 	ScanKeyData key[1];
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tuple;
 	Oid			orig_tablespaceoid;
 	Oid			new_tablespaceoid;
@@ -11128,8 +11128,8 @@ AlterTableMoveAll(AlterTableMoveAllStmt *stmt)
 				ObjectIdGetDatum(orig_tablespaceoid));
 
 	rel = heap_open(RelationRelationId, AccessShareLock);
-	scan = heap_beginscan_catalog(rel, 1, key);
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	scan = table_beginscan_catalog(rel, 1, key);
+	while ((tuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		Form_pg_class relForm = (Form_pg_class) GETSTRUCT(tuple);
 		Oid			relOid = relForm->oid;
@@ -11187,7 +11187,7 @@ AlterTableMoveAll(AlterTableMoveAllStmt *stmt)
 		relations = lappend_oid(relations, relOid);
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	heap_close(rel, AccessShareLock);
 
 	if (relations == NIL)
@@ -11217,90 +11217,52 @@ AlterTableMoveAll(AlterTableMoveAllStmt *stmt)
 	return new_tablespaceoid;
 }
 
-/*
- * Copy data, block by block
- */
 static void
-copy_relation_data(SMgrRelation src, SMgrRelation dst,
-				   ForkNumber forkNum, char relpersistence)
+index_copy_data(Relation rel, RelFileNode newrnode)
 {
-	PGAlignedBlock buf;
-	Page		page;
-	bool		use_wal;
-	bool		copying_initfork;
-	BlockNumber nblocks;
-	BlockNumber blkno;
+	SMgrRelation dstrel;
 
-	page = (Page) buf.data;
+	dstrel = smgropen(newrnode, rel->rd_backend);
+	RelationOpenSmgr(rel);
 
 	/*
-	 * The init fork for an unlogged relation in many respects has to be
-	 * treated the same as normal relation, changes need to be WAL logged and
-	 * it needs to be synced to disk.
+	 * Create and copy all forks of the relation, and schedule unlinking of
+	 * old physical files.
+	 *
+	 * NOTE: any conflict in relfilenode value will be caught in
+	 * RelationCreateStorage().
 	 */
-	copying_initfork = relpersistence == RELPERSISTENCE_UNLOGGED &&
-		forkNum == INIT_FORKNUM;
+	RelationCreateStorage(newrnode, rel->rd_rel->relpersistence);
 
-	/*
-	 * We need to log the copied data in WAL iff WAL archiving/streaming is
-	 * enabled AND it's a permanent relation.
-	 */
-	use_wal = XLogIsNeeded() &&
-		(relpersistence == RELPERSISTENCE_PERMANENT || copying_initfork);
+	/* copy main fork */
+	RelationCopyStorage(rel->rd_smgr, dstrel, MAIN_FORKNUM,
+						rel->rd_rel->relpersistence);
 
-	nblocks = smgrnblocks(src, forkNum);
-
-	for (blkno = 0; blkno < nblocks; blkno++)
+	/* copy those extra forks that exist */
+	for (ForkNumber forkNum = MAIN_FORKNUM + 1;
+		 forkNum <= MAX_FORKNUM; forkNum++)
 	{
-		/* If we got a cancel signal during the copy of the data, quit */
-		CHECK_FOR_INTERRUPTS();
+		if (smgrexists(rel->rd_smgr, forkNum))
+		{
+			smgrcreate(dstrel, forkNum, false);
 
-		smgrread(src, forkNum, blkno, buf.data);
-
-		if (!PageIsVerified(page, blkno))
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("invalid page in block %u of relation %s",
-							blkno,
-							relpathbackend(src->smgr_rnode.node,
-										   src->smgr_rnode.backend,
-										   forkNum))));
-
-		/*
-		 * WAL-log the copied page. Unfortunately we don't know what kind of a
-		 * page this is, so we have to log the full page including any unused
-		 * space.
-		 */
-		if (use_wal)
-			log_newpage(&dst->smgr_rnode.node, forkNum, blkno, page, false);
-
-		PageSetChecksumInplace(page, blkno);
-
-		/*
-		 * Now write the page.  We say isTemp = true even if it's not a temp
-		 * rel, because there's no need for smgr to schedule an fsync for this
-		 * write; we'll do it ourselves below.
-		 */
-		smgrextend(dst, forkNum, blkno, buf.data, true);
+			/*
+			 * WAL log creation if the relation is persistent, or this is the
+			 * init fork of an unlogged relation.
+			 */
+			if (rel->rd_rel->relpersistence == RELPERSISTENCE_PERMANENT ||
+				(rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED &&
+				 forkNum == INIT_FORKNUM))
+				log_smgrcreate(&newrnode, forkNum);
+			RelationCopyStorage(rel->rd_smgr, dstrel, forkNum,
+								rel->rd_rel->relpersistence);
+		}
 	}
 
-	/*
-	 * If the rel is WAL-logged, must fsync before commit.  We use heap_sync
-	 * to ensure that the toast table gets fsync'd too.  (For a temp or
-	 * unlogged rel we don't care since the data will be gone after a crash
-	 * anyway.)
-	 *
-	 * It's obvious that we must do this when not WAL-logging the copy. It's
-	 * less obvious that we have to do it even if we did WAL-log the copied
-	 * pages. The reason is that since we're copying outside shared buffers, a
-	 * CHECKPOINT occurring during the copy has no way to flush the previously
-	 * written data to disk (indeed it won't know the new rel even exists).  A
-	 * crash later on would replay WAL from the checkpoint, therefore it
-	 * wouldn't replay our earlier WAL entries. If we do not fsync those pages
-	 * here, they might still not be on disk when the crash occurs.
-	 */
-	if (relpersistence == RELPERSISTENCE_PERMANENT || copying_initfork)
-		smgrimmedsync(dst, forkNum);
+
+	/* drop old relation, and close new one */
+	RelationDropStorage(rel);
+	smgrclose(dstrel);
 }
 
 /*

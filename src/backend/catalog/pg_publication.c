@@ -21,6 +21,7 @@
 #include "access/hash.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/xact.h"
 
 #include "catalog/catalog.h"
@@ -329,7 +330,7 @@ GetAllTablesPublicationRelations(void)
 {
 	Relation	classRel;
 	ScanKeyData key[1];
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tuple;
 	List	   *result = NIL;
 
@@ -340,9 +341,9 @@ GetAllTablesPublicationRelations(void)
 				BTEqualStrategyNumber, F_CHAREQ,
 				CharGetDatum(RELKIND_RELATION));
 
-	scan = heap_beginscan_catalog(classRel, 1, key);
+	scan = table_beginscan_catalog(classRel, 1, key);
 
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while ((tuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		Form_pg_class relForm = (Form_pg_class) GETSTRUCT(tuple);
 		Oid			relid = relForm->oid;
@@ -351,7 +352,7 @@ GetAllTablesPublicationRelations(void)
 			result = lappend_oid(result, relid);
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	heap_close(classRel, AccessShareLock);
 
 	return result;

@@ -27,6 +27,7 @@
 #include "pgstat.h"
 #include "funcapi.h"
 
+#include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 
@@ -210,11 +211,6 @@ create_estate_for_relation(LogicalRepRelMapEntry *rel)
 	estate->es_result_relation_info = resultRelInfo;
 
 	estate->es_output_cid = GetCurrentCommandId(true);
-
-	/* Triggers might need a slot */
-	if (resultRelInfo->ri_TrigDesc)
-		estate->es_trig_tuple_slot = ExecInitExtraTupleSlot(estate, NULL,
-															&TTSOpsVirtual);
 
 	/* Prepare to catch AFTER triggers. */
 	AfterTriggerBeginQuery();
@@ -718,10 +714,8 @@ apply_handle_update(StringInfo s)
 	estate = create_estate_for_relation(rel);
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
-										&TTSOpsHeapTuple);
-	localslot = ExecInitExtraTupleSlot(estate,
-									   RelationGetDescr(rel->localrel),
-									   &TTSOpsHeapTuple);
+										&TTSOpsVirtual);
+	localslot = table_gimmegimmeslot(rel->localrel, &estate->es_tupleTable);
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1);
 
 	PushActiveSnapshot(GetTransactionSnapshot());
@@ -839,9 +833,7 @@ apply_handle_delete(StringInfo s)
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
 										&TTSOpsVirtual);
-	localslot = ExecInitExtraTupleSlot(estate,
-									   RelationGetDescr(rel->localrel),
-									   &TTSOpsHeapTuple);
+	localslot = table_gimmegimmeslot(rel->localrel, &estate->es_tupleTable);
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1);
 
 	PushActiveSnapshot(GetTransactionSnapshot());

@@ -13,6 +13,8 @@
  */
 #include "postgres.h"
 
+#include "access/tableam.h"
+#include "access/relscan.h"
 #include "catalog/index.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
@@ -69,6 +71,9 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 
 	/*
 	 * Get the new data that was inserted/updated.
+	 *
+	 * PBORKED: should use slot API, otherwise we'll not work correctly
+	 * for zheap et al.
 	 */
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
 		new_row = trigdata->tg_trigtuple;
@@ -82,6 +87,8 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 						funcname)));
 		new_row = NULL;			/* keep compiler quiet */
 	}
+
+	slot = table_gimmegimmeslot(trigdata->tg_relation, NULL);
 
 	/*
 	 * If the new_row is now dead (ie, inserted and then deleted within our
@@ -102,12 +109,20 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	 * removed.
 	 */
 	tmptid = new_row->t_self;
-	if (!heap_hot_search(&tmptid, trigdata->tg_relation, SnapshotSelf, NULL))
 	{
-		/*
-		 * All rows in the HOT chain are dead, so skip the check.
-		 */
-		return PointerGetDatum(NULL);
+		IndexFetchTableData *scan = table_begin_index_fetch_table(trigdata->tg_relation);
+		bool call_again = false;
+
+		if (!table_fetch_follow(scan, &tmptid, SnapshotSelf, slot, &call_again, NULL))
+		{
+			/*
+			 * All rows referenced by the index are dead, so skip the check.
+			 */
+			ExecDropSingleTupleTableSlot(slot);
+			table_end_index_fetch_table(scan);
+			return PointerGetDatum(NULL);
+		}
+		table_end_index_fetch_table(scan);
 	}
 
 	/*
@@ -118,14 +133,6 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	indexRel = index_open(trigdata->tg_trigger->tgconstrindid,
 						  RowExclusiveLock);
 	indexInfo = BuildIndexInfo(indexRel);
-
-	/*
-	 * The heap tuple must be put into a slot for FormIndexDatum.
-	 */
-	slot = MakeSingleTupleTableSlot(RelationGetDescr(trigdata->tg_relation),
-									&TTSOpsHeapTuple);
-
-	ExecStoreHeapTuple(new_row, slot, false);
 
 	/*
 	 * Typically the index won't have expressions, but if it does we need an

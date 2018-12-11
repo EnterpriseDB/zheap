@@ -988,23 +988,25 @@ GetForeignRowMarkType(RangeTblEntry *rte,
 
     <para>
 <programlisting>
-HeapTuple
+TupleTableSlot *
 RefetchForeignRow(EState *estate,
                   ExecRowMark *erm,
                   Datum rowid,
+                  TupleTableSlot *slot,
                   bool *updated);
 </programlisting>
 
-     Re-fetch one tuple from the foreign table, after locking it if required.
+     Re-fetch one tuple slot from the foreign table, after locking it if required.
      <literal>estate</literal> is global execution state for the query.
      <literal>erm</literal> is the <structname>ExecRowMark</structname> struct describing
      the target foreign table and the row lock type (if any) to acquire.
      <literal>rowid</literal> identifies the tuple to be fetched.
-     <literal>updated</literal> is an output parameter.
+     <literal>slot</literal> contains nothing useful upon call, but can be used to
+     hold the returned tuple. <literal>updated</literal> is an output parameter.
     </para>
 
     <para>
-     This function should return a palloc'ed copy of the fetched tuple,
+     This function should return a slot containing the fetched tuple
      or <literal>NULL</literal> if the row lock couldn't be obtained.  The row lock
      type to acquire is defined by <literal>erm-&gt;markType</literal>, which is the
      value previously returned by <function>GetForeignRowMarkType</function>.

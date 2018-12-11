@@ -20,6 +20,7 @@
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
@@ -822,7 +823,7 @@ objectsInSchemaToOids(ObjectType objtype, List *nspnames)
 					ScanKeyData key[2];
 					int			keycount;
 					Relation	rel;
-					HeapScanDesc scan;
+					TableScanDesc scan;
 					HeapTuple	tuple;
 
 					keycount = 0;
@@ -844,16 +845,16 @@ objectsInSchemaToOids(ObjectType objtype, List *nspnames)
 									CharGetDatum(PROKIND_PROCEDURE));
 
 					rel = heap_open(ProcedureRelationId, AccessShareLock);
-					scan = heap_beginscan_catalog(rel, keycount, key);
+					scan = table_beginscan_catalog(rel, keycount, key);
 
-					while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+					while ((tuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 					{
 						Oid		oid = ((Form_pg_proc) GETSTRUCT(tuple))->oid;
 
 						objects = lappend_oid(objects, oid);
 					}
 
-					heap_endscan(scan);
+					table_endscan(scan);
 					heap_close(rel, AccessShareLock);
 				}
 				break;
@@ -878,7 +879,7 @@ getRelationsInNamespace(Oid namespaceId, char relkind)
 	List	   *relations = NIL;
 	ScanKeyData key[2];
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tuple;
 
 	ScanKeyInit(&key[0],
@@ -891,16 +892,16 @@ getRelationsInNamespace(Oid namespaceId, char relkind)
 				CharGetDatum(relkind));
 
 	rel = heap_open(RelationRelationId, AccessShareLock);
-	scan = heap_beginscan_catalog(rel, 2, key);
+	scan = table_beginscan_catalog(rel, 2, key);
 
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	while ((tuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		Oid		oid  = ((Form_pg_class) GETSTRUCT(tuple))->oid;
 
 		relations = lappend_oid(relations, oid);
 	}
 
-	heap_endscan(scan);
+	table_endscan(scan);
 	heap_close(rel, AccessShareLock);
 
 	return relations;

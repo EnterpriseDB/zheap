@@ -376,7 +376,7 @@ static void
 SnapBuildFreeSnapshot(Snapshot snap)
 {
 	/* make sure we don't get passed an external snapshot */
-	Assert(snap->satisfies == HeapTupleSatisfiesHistoricMVCC);
+	Assert(snap->visibility_type == HISTORIC_MVCC_VISIBILITY);
 
 	/* make sure nobody modified our snapshot */
 	Assert(snap->curcid == FirstCommandId);
@@ -434,7 +434,7 @@ void
 SnapBuildSnapDecRefcount(Snapshot snap)
 {
 	/* make sure we don't get passed an external snapshot */
-	Assert(snap->satisfies == HeapTupleSatisfiesHistoricMVCC);
+	Assert(snap->visibility_type == HISTORIC_MVCC_VISIBILITY);
 
 	/* make sure nobody modified our snapshot */
 	Assert(snap->curcid == FirstCommandId);
@@ -476,7 +476,7 @@ SnapBuildBuildSnapshot(SnapBuild *builder)
 
 	snapshot = MemoryContextAllocZero(builder->context, ssize);
 
-	snapshot->satisfies = HeapTupleSatisfiesHistoricMVCC;
+	snapshot->visibility_type = HISTORIC_MVCC_VISIBILITY;
 
 	/*
 	 * We misuse the original meaning of SnapshotData's xip and subxip fields

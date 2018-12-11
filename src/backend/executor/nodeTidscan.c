@@ -22,6 +22,7 @@
  */
 #include "postgres.h"
 
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "catalog/pg_type.h"
 #include "executor/execdebug.h"
@@ -306,9 +307,7 @@ TidNext(TidScanState *node)
 	ScanDirection direction;
 	Snapshot	snapshot;
 	Relation	heapRelation;
-	HeapTuple	tuple;
 	TupleTableSlot *slot;
-	Buffer		buffer = InvalidBuffer;
 	ItemPointerData *tidList;
 	int			numTids;
 	bool		bBackward;
@@ -330,12 +329,6 @@ TidNext(TidScanState *node)
 
 	tidList = node->tss_TidList;
 	numTids = node->tss_NumTids;
-
-	/*
-	 * We use node->tss_htup as the tuple pointer; note this can't just be a
-	 * local variable here, as the scan tuple slot will keep a pointer to it.
-	 */
-	tuple = &(node->tss_htup);
 
 	/*
 	 * Initialize or advance scan position, depending on direction.
@@ -364,7 +357,7 @@ TidNext(TidScanState *node)
 
 	while (node->tss_TidPtr >= 0 && node->tss_TidPtr < numTids)
 	{
-		tuple->t_self = tidList[node->tss_TidPtr];
+		ItemPointerData tid = tidList[node->tss_TidPtr];
 
 		/*
 		 * For WHERE CURRENT OF, the tuple retrieved from the cursor might
@@ -372,28 +365,11 @@ TidNext(TidScanState *node)
 		 * current according to our snapshot.
 		 */
 		if (node->tss_isCurrentOf)
-			heap_get_latest_tid(heapRelation, snapshot, &tuple->t_self);
+			table_get_latest_tid(heapRelation, snapshot, &tid);
 
-		if (heap_fetch(heapRelation, snapshot, tuple, &buffer, false, NULL))
-		{
-			/*
-			 * Store the scanned tuple in the scan tuple slot of the scan
-			 * state.  Eventually we will only do this and not return a tuple.
-			 */
-			ExecStoreBufferHeapTuple(tuple, /* tuple to store */
-									 slot,	/* slot to store in */
-									 buffer);	/* buffer associated with
-												 * tuple */
-
-			/*
-			 * At this point we have an extra pin on the buffer, because
-			 * ExecStoreHeapTuple incremented the pin count. Drop our local
-			 * pin.
-			 */
-			ReleaseBuffer(buffer);
-
+		if (table_fetch_row_version(heapRelation, &tid, snapshot, slot, NULL))
 			return slot;
-		}
+
 		/* Bad TID or failed snapshot qual; try next */
 		if (bBackward)
 			node->tss_TidPtr--;
@@ -544,7 +520,7 @@ ExecInitTidScan(TidScan *node, EState *estate, int eflags)
 	 */
 	ExecInitScanTupleSlot(estate, &tidstate->ss,
 						  RelationGetDescr(currentRelation),
-						  &TTSOpsBufferHeapTuple);
+						  table_slot_callbacks(currentRelation));
 
 	/*
 	 * Initialize result type and projection.

@@ -209,6 +209,9 @@ Boot_CreateStmt:
 
 					if ($4)
 					{
+						TransactionId relfrozenxid;
+						MultiXactId relminmxid;
+
 						if (boot_reldesc)
 						{
 							elog(DEBUG4, "create bootstrap: warning, open relation exists, closing first");
@@ -220,12 +223,15 @@ Boot_CreateStmt:
 												   shared_relation ? GLOBALTABLESPACE_OID : 0,
 												   $3,
 												   InvalidOid,
+												   HEAP_TABLE_AM_OID,
 												   tupdesc,
 												   RELKIND_RELATION,
 												   RELPERSISTENCE_PERMANENT,
 												   shared_relation,
 												   mapped_relation,
-												   true);
+												   true,
+												   &relfrozenxid,
+												   &relminmxid);
 						elog(DEBUG4, "bootstrap relation created");
 					}
 					else
@@ -239,6 +245,7 @@ Boot_CreateStmt:
 													  $6,
 													  InvalidOid,
 													  BOOTSTRAP_SUPERUSERID,
+													  HEAP_TABLE_AM_OID,
 													  tupdesc,
 													  NIL,
 													  RELKIND_RELATION,

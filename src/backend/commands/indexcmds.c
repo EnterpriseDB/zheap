@@ -18,6 +18,7 @@
 #include "access/amapi.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
@@ -2337,7 +2338,7 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 {
 	Oid			objectOid;
 	Relation	relationRelation;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	ScanKeyData scan_keys[1];
 	HeapTuple	tuple;
 	MemoryContext private_context;
@@ -2411,8 +2412,8 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 	 * rels will be processed indirectly by reindex_relation).
 	 */
 	relationRelation = heap_open(RelationRelationId, AccessShareLock);
-	scan = heap_beginscan_catalog(relationRelation, num_keys, scan_keys);
-	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
+	scan = table_beginscan_catalog(relationRelation, num_keys, scan_keys);
+	while ((tuple = heap_scan_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		Form_pg_class classtuple = (Form_pg_class) GETSTRUCT(tuple);
 		Oid			relid = classtuple->oid;
@@ -2470,7 +2471,7 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 
 		MemoryContextSwitchTo(old);
 	}
-	heap_endscan(scan);
+	table_endscan(scan);
 	heap_close(relationRelation, AccessShareLock);
 
 	/* Now reindex each rel in a separate transaction */
