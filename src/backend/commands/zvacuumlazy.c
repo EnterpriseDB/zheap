@@ -10,6 +10,10 @@
  * pass.  The undo is written, so that if there is any error while cleaning
  * indexes, we can rollback the operation and mark the entries in as dead.
  *
+ * The vacuum progress checker also uses only two phases - the vacuuming heap
+ * and the vacuuming index. The scanning heap phase is not used because it is
+ * not a seperate pass in zheap but a part of the first pass.
+ *
  * The other important aspect that is ensured in this system is that we don't
  * item ids that are marked as unused to be reused till the transaction that
  * has marked them unused is committed.
@@ -37,6 +41,7 @@
 #include "access/zheapam_xlog.h"
 #include "access/zheaputils.h"
 #include "commands/dbcommands.h"
+#include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -121,6 +126,9 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 	 */
 	if (ZHeapPageHasTPDSlot((PageHeader) page))
 		TPDPageLock(onerel, buffer);
+
+	/* Report the number of blocks vacuumed. */
+	pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_VACUUMED, blkno - 1);
 
 	START_CRIT_SECTION();
 
@@ -307,6 +315,9 @@ reacquire_slot:
 	if (trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS &&
 		ZHeapPageHasTPDSlot((PageHeader) page))
 		TPDPageLock(onerel, buffer);
+
+	/* Report the number of blocks vacuumed. */
+	pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_VACUUMED, blkno - 1);
 
 	START_CRIT_SECTION();
 
@@ -556,6 +567,13 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 	bool		skipping_blocks;
 	Buffer		vmbuffer = InvalidBuffer;
 	TransactionId visibility_cutoff_xid = InvalidTransactionId;
+	const int	initprog_index[] = {
+		PROGRESS_VACUUM_PHASE,
+		PROGRESS_VACUUM_TOTAL_HEAP_BLKS,
+		PROGRESS_VACUUM_MAX_DEAD_TUPLES
+	};
+	int64		initprog_val[3];
+
 
 	pg_rusage_init(&ru0);
 
@@ -586,6 +604,17 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 	vacrelstats->latestRemovedXid = InvalidTransactionId;
 
 	lazy_space_zalloc(vacrelstats, nblocks);
+
+	/*
+	 * Report that we are vacuuming heap and advertise the total number of
+	 * blocks and max dead tuples. The metapage is also considered in nblocks,
+	 * subtract by one to get total pages.
+	 */
+	initprog_val[0] = PROGRESS_VACUUM_PHASE_VACUUM_HEAP;
+	initprog_val[1] = nblocks - 1;
+	initprog_val[2] = vacrelstats->max_dead_tuples;
+	pgstat_progress_update_multi_param(3, initprog_index, initprog_val);
+
 	next_unskippable_block = ZHEAP_METAPAGE + 1;
 	if (!aggressive)
 	{
@@ -624,6 +653,9 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 		bool		all_visible_according_to_vm = false;
 		bool		all_visible;
 		bool		has_dead_tuples;
+
+		/* Report the number of blocks scanned. */
+		pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_SCANNED, blkno - 1);
 
 		if (blkno == next_unskippable_block)
 		{
@@ -687,6 +719,10 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 				vmbuffer = InvalidBuffer;
 			}
 
+			/* Report that we are now vacuuming indexes. */
+			pgstat_progress_update_param(PROGRESS_VACUUM_PHASE,
+										 PROGRESS_VACUUM_PHASE_VACUUM_INDEX);
+
 			/*
 			 * Remove index entries.  Unlike, heap we don't need to log special
 			 * cleanup info which includes latest latestRemovedXid for standby.
@@ -698,6 +734,10 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 								  &indstats[i],
 								  vacrelstats,
 								  vac_strategy);
+
+			pgstat_progress_update_param(PROGRESS_VACUUM_NUM_INDEX_VACUUMS,
+										 vacrelstats->num_index_scans + 1);
+
 			/*
 			 * XXX - The cutoff xid used here is the highest xmin of all the heap
 			 * pages scanned.  This can lead to more query cancellations on
@@ -724,6 +764,10 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 			 */
 			FreeSpaceMapVacuumRange(onerel, next_fsm_block_to_vacuum, blkno);
 			next_fsm_block_to_vacuum = blkno;
+
+			/* Report that we are once again vacuuming the heap. */
+			pgstat_progress_update_param(PROGRESS_VACUUM_PHASE,
+										 PROGRESS_VACUUM_PHASE_VACUUM_HEAP);
 		}
 
 		/*
@@ -1047,6 +1091,10 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 			RecordPageWithFreeSpace(onerel, blkno, freespace);
 	}
 
+	/* Report that everything is scanned and vacuumed. */
+	pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_SCANNED, blkno - 1);
+	pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_VACUUMED, blkno - 1);
+
 	/* save stats for use later */
 	vacrelstats->tuples_deleted = tups_vacuumed;
 	vacrelstats->new_dead_tuples = nkeep;
@@ -1071,6 +1119,10 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 
 	if (vacrelstats->num_dead_tuples > 0)
 	{
+		/* Report that we are now vacuuming indexes. */
+		pgstat_progress_update_param(PROGRESS_VACUUM_PHASE,
+									 PROGRESS_VACUUM_PHASE_VACUUM_INDEX);
+
 		/*
 		 * Remove index entries.  Unlike, heap we don't need to log special
 		 * cleanup info which includes latest latestRemovedXid for standby.
@@ -1082,6 +1134,9 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 							  &indstats[i],
 							  vacrelstats,
 							  vac_strategy);
+
+		pgstat_progress_update_param(PROGRESS_VACUUM_NUM_INDEX_VACUUMS,
+									 vacrelstats->num_index_scans + 1);
 
 		/*
 		 * XXX - The cutoff xid used here is the highest xmin of all the heap
@@ -1110,6 +1165,10 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 	 */
 	if (blkno > next_fsm_block_to_vacuum)
 		FreeSpaceMapVacuumRange(onerel, next_fsm_block_to_vacuum, blkno);
+
+	/* Report that we're cleaning up. */
+	pgstat_progress_update_param(PROGRESS_VACUUM_PHASE,
+								 PROGRESS_VACUUM_PHASE_INDEX_CLEANUP);
 
 	/* Do post-vacuum cleanup and statistics update for each index */
 	for (i = 0; i < nindexes; i++)
@@ -1184,6 +1243,9 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 	else
 		elevel = DEBUG2;
 
+	pgstat_progress_start_command(PROGRESS_COMMAND_VACUUM,
+								  RelationGetRelid(onerel));
+
 	vac_strategy = bstrategy;
 
 	/*
@@ -1225,6 +1287,10 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 	 */
 	if (should_attempt_truncation(vacrelstats))
 		lazy_truncate_heap(onerel, vacrelstats, vac_strategy);
+
+	/* Report that we are now doing final cleanup. */
+	pgstat_progress_update_param(PROGRESS_VACUUM_PHASE,
+								 PROGRESS_VACUUM_PHASE_FINAL_CLEANUP);
 
 	/*
 	 * Update statistics in pg_class.
@@ -1272,6 +1338,8 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 						 onerel->rd_rel->relisshared,
 						 new_live_tuples,
 						 vacrelstats->new_dead_tuples);
+
+	pgstat_progress_end_command();
 
 	/* and log the action if appropriate */
 	if (IsAutoVacuumWorkerProcess() && params->log_min_duration >= 0)
