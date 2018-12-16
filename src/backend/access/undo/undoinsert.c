@@ -793,10 +793,11 @@ InsertPreparedUndo(void)
 		}
 
 		/*
-		 * if starting from a new page then consider block header size in
-		 * prevlen calculation.
+		 * If the previous record is on the previous page, then add the header
+		 * size to the recorded prevlen, so that readers don't have to
+		 * consider that.
 		 */
-		else if (starting_byte == UndoLogBlockHeaderSize)
+		else if (uur->uur_prevlen > starting_byte - UndoLogBlockHeaderSize)
 			uur->uur_prevlen += UndoLogBlockHeaderSize;
 
 		undo_len = 0;
