@@ -46,6 +46,13 @@ undoaction_desc(StringInfo buf, XLogReaderState *record)
 		appendStringInfo(buf, "urec_ptr %lu trans_slot_id %u",
 						 xlrec->urec_ptr, xlrec->trans_slot_id);
 	}
+	else if (info == XLOG_UNDO_APPLY_PROGRESS)
+	{
+		xl_undoapply_progress *xlrec = (xl_undoapply_progress *) rec;
+
+		appendStringInfo(buf, "urec_ptr %lu progress %u",
+						 xlrec->urec_ptr, xlrec->progress);
+	}
 }
 
 const char *
@@ -60,6 +67,9 @@ undoaction_identify(uint8 info)
 			break;
 		case XLOG_UNDO_RESET_SLOT:
 			id = "UNDO RESET SLOT";
+			break;
+		case XLOG_UNDO_APPLY_PROGRESS:
+			id = "UNDO_APPLY_PROGRESS";
 			break;
 	}
 
