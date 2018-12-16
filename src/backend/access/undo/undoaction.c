@@ -213,7 +213,10 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			return;
 		}
 
-		xid = uur->uur_xid;
+		/* We don't expect the transaction ID to change from record to record. */
+		if (xid == InvalidTransactionId)
+			xid = uur->uur_xid;
+		Assert(xid == uur->uur_xid);
 
 		/* Collect the undo records that belong to the same page. */
 		if (!OidIsValid(prev_reloid) ||
