@@ -40,7 +40,8 @@ typedef bool (*SatisfyUndoRecordCallback) (UnpackedUndoRecord *urec,
  * If in recovery, 'xid' refers to the transaction id stored in WAL.
  */
 extern UndoRecPtr PrepareUndoInsert(UnpackedUndoRecord *, TransactionId xid,
-				  UndoPersistence, xl_undolog_meta *);
+				  UndoPersistence, XLogReaderState *xlog_record,
+				  xl_undolog_meta *);
 
 /*
  * Insert a previously-prepared undo record.  This will write the actual undo
@@ -49,6 +50,8 @@ extern UndoRecPtr PrepareUndoInsert(UnpackedUndoRecord *, TransactionId xid,
  * after entering a critical section; it should never fail.
  */
 extern void InsertPreparedUndo(void);
+extern void RegisterUndoLogBuffers(uint8 first_block_id);
+extern void UndoLogBuffersSetLSN(XLogRecPtr recptr);
 
 /*
  * Unlock and release undo buffers.  This step performed after exiting any
@@ -92,7 +95,7 @@ extern void UndoRecordSetPrevUndoLen(uint16 len);
  */
 extern void UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
 				   TransactionId xid, UndoPersistence upersistence,
-				   xl_undolog_meta *undometa);
+				   XLogReaderState *xlog_record, xl_undolog_meta *undometa);
 
 /*
  * return the previous undo record pointer.
@@ -101,7 +104,8 @@ extern UndoRecPtr UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen);
 
 extern void UndoRecordOnUndoLogChange(UndoPersistence persistence);
 
-extern void PrepareUpdateUndoActionProgress(UndoRecPtr urecptr, int progress);
+extern void PrepareUpdateUndoActionProgress(XLogReaderState *xlog_record,
+											UndoRecPtr urecptr, int progress);
 extern void UndoRecordUpdateTransInfo(void);
 
 /* Reset globals related to undo buffers */

@@ -206,7 +206,7 @@ undo_xlog_apply_progress(XLogReaderState *record)
 	xl_undoapply_progress	*xlrec = (xl_undoapply_progress *) XLogRecGetData(record);
 
 	/* Update the progress in the transaction header. */
-	PrepareUpdateUndoActionProgress(xlrec->urec_ptr, xlrec->progress);
+	PrepareUpdateUndoActionProgress(record, xlrec->urec_ptr, xlrec->progress);
 	UndoRecordUpdateTransInfo();
 	UnlockReleaseUndoBuffers();
 }

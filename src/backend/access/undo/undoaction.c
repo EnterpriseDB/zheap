@@ -338,7 +338,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			 * Prepare and update the progress of the undo action apply in the
 			 * transaction header.
 			 */
-			PrepareUpdateUndoActionProgress(to_urecptr, 1);
+			PrepareUpdateUndoActionProgress(NULL, to_urecptr, 1);
 
 			START_CRIT_SECTION();
 
@@ -359,6 +359,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 				XLogBeginInsert();
 				XLogRegisterData((char *) &xlrec, sizeof(xlrec));
 
+				RegisterUndoLogBuffers(2);
 				(void) XLogInsert(RM_UNDOACTION_ID, XLOG_UNDO_APPLY_PROGRESS);
 			}
 

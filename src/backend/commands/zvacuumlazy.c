@@ -297,6 +297,7 @@ reacquire_slot:
 	urecptr = PrepareUndoInsert(&undorecord,
 								InvalidTransactionId,
 								UndoPersistenceForRelation(onerel),
+								NULL,
 								&undometa);
 
 	/*
@@ -402,6 +403,7 @@ prepare_xlog:
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
 		XLogRegisterData((char *) &xl_rec, SizeOfZHeapUnused);
+		RegisterUndoLogBuffers(2);
 
 		XLogRegisterData((char *) unused, uncnt * sizeof(OffsetNumber));
 		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
@@ -416,6 +418,7 @@ prepare_xlog:
 		PageSetLSN(page, recptr);
 		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			TPDPageSetLSN(page, recptr);
+		UndoLogBuffersSetLSN(recptr);
 	}
 
 	END_CRIT_SECTION();

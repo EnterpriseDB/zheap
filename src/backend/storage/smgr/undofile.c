@@ -114,7 +114,10 @@ undofile_close(SMgrRelation reln, ForkNumber forknum)
 void
 undofile_create(SMgrRelation reln, ForkNumber forknum, bool isRedo)
 {
-	elog(ERROR, "undofile_create is not supported");
+	/*
+	 * File creation is managed by undolog.c, but xlogutils.c likes to call
+	 * this just in case.  Ignore.
+	 */
 }
 
 bool
@@ -261,8 +264,11 @@ undofile_writeback(SMgrRelation reln, ForkNumber forknum,
 BlockNumber
 undofile_nblocks(SMgrRelation reln, ForkNumber forknum)
 {
-	elog(ERROR, "undofile_nblocks is not supported");
-	return 0;
+	/*
+	 * xlogutils.c likes to call this to decide whether to read or extend; for
+	 * now we lie and say the relation is big as possible.
+	 */
+	return UndoLogMaxSize / BLCKSZ;
 }
 
 void
