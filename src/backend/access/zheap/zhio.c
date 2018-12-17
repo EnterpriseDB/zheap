@@ -25,6 +25,8 @@
 #include "storage/lmgr.h"
 #include "storage/smgr.h"
 
+static bool CheckBufferHasTPDPage(Buffer buffer);
+
 /*
  * RelationGetBufferForZTuple
  *
@@ -150,6 +152,7 @@ loop:
 			buffer = ReadBufferBI(relation, targetBlock, bistate);
 			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+			tpdPage = CheckBufferHasTPDPage(buffer);
 		}
 		else if (otherBlock == targetBlock)
 		{
@@ -157,6 +160,7 @@ loop:
 			buffer = otherBuffer;
 			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+			tpdPage = CheckBufferHasTPDPage(buffer);
 		}
 		else if (otherBlock < targetBlock)
 		{
@@ -165,6 +169,7 @@ loop:
 			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+			tpdPage = CheckBufferHasTPDPage(buffer);
 		}
 		else
 		{
@@ -172,20 +177,19 @@ loop:
 			buffer = ReadBuffer(relation, targetBlock);
 			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-			LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
-		}
+			tpdPage = CheckBufferHasTPDPage(buffer);
 
-		if (PageGetSpecialSize(BufferGetPage(buffer)) == MAXALIGN(sizeof(TPDPageOpaqueData)))
-		{
-			tpdPage = true;
-			page = BufferGetPage(buffer);
-
-			/* If the tpd page is empty, then we can use it as an empty zheap page. */
-			if (PageIsEmpty(page))
+			/*
+			 * Not a zheap page, exit and extend the relation.  We can continue
+			 * and try getting another page from FSM, but not sure if we can
+			 * succeed as we might again get same page.
+			 */
+			if (tpdPage)
 			{
-				ZheapInitPage(page, BufferGetPageSize(buffer));
-				tpdPage = false;
+				UnlockReleaseBuffer(buffer);
+				break;
 			}
+			LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
 		}
 
 		if (!tpdPage)
@@ -400,4 +404,30 @@ recheck:
 	RelationSetTargetBlock(relation, BufferGetBlockNumber(buffer));
 
 	return buffer;
+}
+
+/*
+ * CheckBufferHasTPDPage - Check if buffer has TPD page.
+ *
+ * Returns true, if the buffer has a TPD page, otherwise, false.
+ */
+static bool
+CheckBufferHasTPDPage(Buffer buffer)
+{
+	bool	tpdPage = false;
+	Page	page = BufferGetPage(buffer);
+
+	if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+	{
+		tpdPage = true;
+
+		/* Empty tpd page can be use as a zheap page. */
+		if (PageIsEmpty(page))
+		{
+			ZheapInitPage(page, BufferGetPageSize(buffer));
+			tpdPage = false;
+		}
+	}
+
+	return tpdPage;
 }
