@@ -612,6 +612,14 @@ resize:
 		goto resize;
 	}
 
+	/* Copy undometa before advancing the insert location. */
+	if (undometa)
+	{
+		undometa->meta = log->meta;
+		undometa->logno = log->logno;
+		undometa->xid = log->xid;
+	}
+
 	/* Update the previous transaction's start undo record, if required. */
 	if (need_xact_hdr || log_switched)
 	{
@@ -625,14 +633,6 @@ resize:
 		/* Store the current transaction's start undorecptr in the undo log. */
 		UndoLogSetLastXactStartPoint(urecptr);
 		update_prev_header = false;
-	}
-
-	/* Copy undometa before advancing the insert location. */
-	if (undometa)
-	{
-		undometa->meta = log->meta;
-		undometa->logno = log->logno;
-		undometa->xid = log->xid;
 	}
 
 	/*
