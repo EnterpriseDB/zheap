@@ -10882,7 +10882,7 @@ zheap_multi_insert(Relation relation, ZHeapTuple *tuples, int ntuples,
 		Buffer	vmbuffer = InvalidBuffer;
 		bool	all_visible_cleared = false;
 		int		nthispage = 0;
-		int		trans_slot_id;
+		int		trans_slot_id = InvalidXactSlotId;
 		int		ucnt = 0;
 		UndoRecPtr	urecptr = InvalidUndoRecPtr,
 								prev_urecptr = InvalidUndoRecPtr;
