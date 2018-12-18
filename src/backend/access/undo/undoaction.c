@@ -86,6 +86,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	bool		more_undo;
 	TransactionId xid = InvalidTransactionId;
 	UndoRecInfo	*urec_info;
+	bool		has_truncated = false;
 
 	Assert(from_urecptr != InvalidUndoRecPtr);
 	/*
@@ -148,7 +149,48 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		 *
 		 * Note: reloid remains InvalidOid for a discarded record.
 		 */
-		if (!OidIsValid(reloid))
+
+		if (OidIsValid(reloid))
+		{
+			Relation	rel;
+
+			if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(reloid)))
+				reloid = InvalidOid;
+			else
+			{
+				/*
+				 * If the action is executed by backend as a result of rollback,
+				 * we must already have an appropriate lock on relation.
+				 */
+				if (rellock)
+					rel = heap_open(reloid, RowExclusiveLock);
+				else
+					rel = heap_open(reloid, NoLock);
+
+				if (RelationGetNumberOfBlocks(rel) <= uur->uur_block)
+				{
+					/*
+					 * This is possible if the underlying relation is truncated
+					 * just before taking the relation lock above.
+					 */
+					has_truncated = true;
+				}
+
+				heap_close(rel, NoLock);
+			}
+		}
+
+		/*
+		 * FIXME:  Currently, we are ignoring the undo for the truncated table
+		 * but this is not the best way to handle the undo for the
+		 * truncated table, we might need to try to apply the undo actions
+		 * for the truncated table i.e. we might call execute undo action
+		 * in later stages where we can apply the undo action if the
+		 * truncate is done in the same transaction and the transaction is
+		 * rolledback.  We might want to do it differently once we fix
+		 * the similar problem in 'cleaning up the orphan files' patch.
+		 */
+		if (!OidIsValid(reloid) || has_truncated)
 		{
 			/* release the undo records for which action has been replayed */
 			while (luinfo)
