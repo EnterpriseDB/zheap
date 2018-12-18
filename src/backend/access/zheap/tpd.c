@@ -1359,10 +1359,18 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 			tpd_buf = tpd_buffers[buf_idx].buf;
 			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 			LockBuffer(tpd_buf, BUFFER_LOCK_EXCLUSIVE);
+			targetBlock = BufferGetBlockNumber(tpd_buf);
 
 			if (needLock)
 				UnlockRelationForExtension(relation, ExclusiveLock);
 		}
+
+		/*
+		 * Once we've allocated a TPD page, we should update the FSM with the
+		 * available freespace which is zero in this case. This restricts other
+		 * backends from getting the same page from FSM.
+		 */
+		RecordPageWithFreeSpace(relation, targetBlock, 0);
 
 		/*
 		 * Lock the last tpd page in list, so that we can append new page to
