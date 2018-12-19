@@ -195,6 +195,10 @@ extern void simple_heap_update(Relation relation, ItemPointer otid,
 extern void heap_sync(Relation relation);
 extern void heap_update_snapshot(TableScanDesc scan, Snapshot snapshot);
 
+extern TransactionId heap_compute_xid_horizon_for_tuples(Relation rel,
+														 ItemPointerData *items,
+														 int nitems);
+
 /* in heap/pruneheap.c */
 extern void heap_page_prune_opt(Relation relation, Buffer buffer);
 extern int heap_page_prune(Relation relation, Buffer buffer,

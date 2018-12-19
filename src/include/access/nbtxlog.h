@@ -123,6 +123,7 @@ typedef struct xl_btree_split
  */
 typedef struct xl_btree_delete
 {
+	TransactionId latestRemovedXid;
 	RelFileNode hnode;			/* RelFileNode of the heap the index currently
 								 * points at */
 	int			nitems;

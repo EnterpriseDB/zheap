@@ -7358,6 +7358,134 @@ HeapTupleHeaderAdvanceLatestRemovedXid(HeapTupleHeader tuple,
 }
 
 /*
+ * Get the latestRemovedXid from the heap pages pointed at by the index
+ * tuples being deleted.
+ *
+ * This puts the work for calculating latestRemovedXid into the recovery path
+ * rather than the primary path.
+ *
+ * It's possible that this generates a fair amount of I/O, since an index
+ * block may have hundreds of tuples being deleted. To amortize that cost to
+ * some degree, this uses prefetching and combines repeat accesses to the same
+ * block.
+ */
+TransactionId
+heap_compute_xid_horizon_for_tuples(Relation rel,
+									ItemPointerData *tids,
+									int nitems)
+{
+	TransactionId latestRemovedXid = InvalidTransactionId;
+	BlockNumber hblkno;
+	Buffer		buf = InvalidBuffer;
+	Page		hpage;
+
+	/*
+	 * Sort to avoid repeated lookups for the same page, and to make it more
+	 * likely to access items in an efficient order. In particular this
+	 * ensures thaf if there are multiple pointers to the same page, they all
+	 * get processed looking up and locking the page just once.
+	 */
+	qsort((void *) tids, nitems, sizeof(ItemPointerData),
+		  (int (*) (const void *, const void *)) ItemPointerCompare);
+
+	/* prefetch all pages */
+#ifdef USE_PREFETCH
+	hblkno = InvalidBlockNumber;
+	for (int i = 0; i < nitems; i++)
+	{
+		ItemPointer htid = &tids[i];
+
+		if (hblkno == InvalidBlockNumber ||
+			ItemPointerGetBlockNumber(htid) != hblkno)
+		{
+			hblkno = ItemPointerGetBlockNumber(htid);
+
+			PrefetchBuffer(rel, MAIN_FORKNUM, hblkno);
+		}
+	}
+#endif
+
+	/* Iterate over all tids, and check their horizon */
+	hblkno = InvalidBlockNumber;
+	for (int i = 0; i < nitems; i++)
+	{
+		ItemPointer htid = &tids[i];
+		ItemId hitemid;
+		OffsetNumber hoffnum;
+
+		/*
+		 * Read heap buffer, but avoid refetching if it's the same block as
+		 * required for the last tid.
+		 */
+		if (hblkno == InvalidBlockNumber ||
+			ItemPointerGetBlockNumber(htid) != hblkno)
+		{
+			/* release old buffer */
+			if (BufferIsValid(buf))
+			{
+				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+				ReleaseBuffer(buf);
+			}
+
+			hblkno = ItemPointerGetBlockNumber(htid);
+
+			buf = ReadBuffer(rel, hblkno);
+			hpage = BufferGetPage(buf);
+
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+		}
+
+		hoffnum = ItemPointerGetOffsetNumber(htid);
+		hitemid = PageGetItemId(hpage, hoffnum);
+
+		/*
+		 * Follow any redirections until we find something useful.
+		 */
+		while (ItemIdIsRedirected(hitemid))
+		{
+			hoffnum = ItemIdGetRedirect(hitemid);
+			hitemid = PageGetItemId(hpage, hoffnum);
+			CHECK_FOR_INTERRUPTS();
+		}
+
+		/*
+		 * If the heap item has storage, then read the header and use that to
+		 * set latestRemovedXid.
+		 *
+		 * Some LP_DEAD items may not be accessible, so we ignore them.
+		 */
+		if (ItemIdHasStorage(hitemid))
+		{
+			HeapTupleHeader htuphdr;
+
+			htuphdr = (HeapTupleHeader) PageGetItem(hpage, hitemid);
+
+			HeapTupleHeaderAdvanceLatestRemovedXid(htuphdr, &latestRemovedXid);
+		}
+		else if (ItemIdIsDead(hitemid))
+		{
+			/*
+			 * Conjecture: if hitemid is dead then it had xids before the xids
+			 * marked on LP_NORMAL items. So we just ignore this item and move
+			 * onto the next, for the purposes of calculating
+			 * latestRemovedxids.
+			 */
+		}
+		else
+			Assert(!ItemIdIsUsed(hitemid));
+
+	}
+
+	if (BufferIsValid(buf))
+	{
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		ReleaseBuffer(buf);
+	}
+
+	return latestRemovedXid;
+}
+
+/*
  * Perform XLogInsert to register a heap cleanup info message. These
  * messages are sent once per VACUUM and are required because
  * of the phasing of removal operations during a lazy VACUUM.
