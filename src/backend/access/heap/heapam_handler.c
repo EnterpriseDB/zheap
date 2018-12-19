@@ -2345,6 +2345,8 @@ static const TableAmRoutine heapam_methods = {
 	.reset_index_fetch = heapam_reset_index_fetch,
 	.end_index_fetch = heapam_end_index_fetch,
 
+	.compute_xid_horizon_for_tuples = heap_compute_xid_horizon_for_tuples,
+
 	.index_build_range_scan = IndexBuildHeapRangeScan,
 
 	.index_validate_scan = validate_index_heapscan

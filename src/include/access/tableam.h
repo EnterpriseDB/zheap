@@ -187,6 +187,15 @@ typedef struct TableAmRoutine
 	void (*end_index_fetch)(struct IndexFetchTableData* data);
 
 	/*
+	 * Compute the newest xid among the tuples pointed to by items. This is
+	 * used to compute what snapshots to conflict with when replaying WAL
+	 * records for page-level index vacuums.
+	 */
+	TransactionId (*compute_xid_horizon_for_tuples)(Relation rel,
+													ItemPointerData *items,
+													int nitems);
+
+	/*
 	 * Planner related functions.
 	 */
 	void (*relation_estimate_size)(Relation rel, int32 *attr_widths,
@@ -502,6 +511,14 @@ static inline void
 table_end_index_fetch_table(struct IndexFetchTableData* scan)
 {
 	scan->rel->rd_tableam->end_index_fetch(scan);
+}
+
+static inline TransactionId
+table_compute_xid_horizon_for_tuples(Relation rel,
+									 ItemPointerData *items,
+									 int nitems)
+{
+	return rel->rd_tableam->compute_xid_horizon_for_tuples(rel, items, nitems);
 }
 
 /*

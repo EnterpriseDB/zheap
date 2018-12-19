@@ -301,7 +301,7 @@ index_compute_xid_horizon_for_tuples(Relation irel,
 
 	/* determine the actual xid horizon */
 	latestRemovedXid =
-		heap_compute_xid_horizon_for_tuples(hrel, htids, nitems);
+		table_compute_xid_horizon_for_tuples(hrel, htids, nitems);
 
 	pfree(htids);
 
