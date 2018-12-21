@@ -216,18 +216,15 @@ RelationAddExtraBlocks(Relation relation, BulkInsertState bistate)
 				 BufferGetBlockNumber(buffer),
 				 RelationGetRelationName(relation));
 
-		PageInit(page, BufferGetPageSize(buffer), 0);
-
 		/*
-		 * We mark all the new buffers dirty, but do nothing to write them
-		 * out; they'll probably get used soon, and even if they are not, a
-		 * crash will leave an okay all-zeroes page on disk.
+		 * Add the page to the FSM without initializing. If we were to
+		 * initialize here the page would potentially get flushed out to disk
+		 * before we add any useful content. There's no guarantee that that'd
+		 * happen however, so we need to deal with unitialized pages anyway,
+		 * thus let's avoid the potential for unnecessary writes.
 		 */
-		MarkBufferDirty(buffer);
-
-		/* we'll need this info below */
 		blockNum = BufferGetBlockNumber(buffer);
-		freespace = PageGetHeapFreeSpace(page);
+		freespace = BufferGetPageSize(buffer) - SizeOfPageHeaderData;
 
 		UnlockReleaseBuffer(buffer);
 
@@ -479,6 +476,18 @@ loop:
 		 * we're done.
 		 */
 		page = BufferGetPage(buffer);
+
+		/*
+		 * Initialize page, it'll be used soon.  We could avoid dirtying the
+		 * buffer here, and rely on the caller to do so whenever it puts a
+		 * tuple onto the page, but there seems not much benefit in doing so.
+		 */
+		if (PageIsNew(page))
+		{
+			PageInit(page, BufferGetPageSize(buffer), 0);
+			MarkBufferDirty(buffer);
+		}
+
 		pageFreeSpace = PageGetHeapFreeSpace(page);
 		if (len + saveFreeSpace <= pageFreeSpace)
 		{
