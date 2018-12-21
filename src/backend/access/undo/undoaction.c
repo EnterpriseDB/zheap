@@ -582,7 +582,6 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
 	*/
 	relhasindex = RelationGetForm(rel)->relhasindex;
 	lp = PageGetItemId(page, off);
-	Assert(ItemIdIsNormal(lp));
 	if (relhasindex)
 	{
 		ItemIdSetDead(lp);
@@ -780,6 +779,26 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					int			i,
 								nline;
 					ItemId		lp;
+					uint32 		specToken = 0;
+
+					/* Copy the entire tuple from undo. */
+					lp = PageGetItemId(page, uur->uur_offset);
+
+					/*
+					 * If a dead item is found, ensure that it is from
+					 * specualtive abort case only.
+					 */
+					if (ItemIdIsDead(lp))
+					{
+						/* Fetch if this is a speculative insert case */
+						specToken = *(uint32 *)uur->uur_payload.data;
+
+						if (specToken)
+						{
+							ItemIdSetDead(lp);
+							break;
+						}
+					}
 
 					undo_action_insert(rel, page, uur->uur_offset, xid);
 

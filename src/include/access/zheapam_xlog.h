@@ -297,6 +297,7 @@ typedef struct xl_zheap_confirm
 {
 	OffsetNumber offnum;		/* confirmed tuple's offset on page */
 	uint8		 flags;
+	uint8		 trans_slot_id;
 } xl_zheap_confirm;
 
 #define SizeOfZHeapConfirm	(offsetof(xl_zheap_confirm, flags) + sizeof(uint8))

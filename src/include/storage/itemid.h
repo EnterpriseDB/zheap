@@ -212,6 +212,29 @@ void ItemIdSetUnusedExtended(ItemId itemId, int trans_slot)
 	itemId->lp_off = (itemId->lp_off & ~XACT_SLOT) | trans_slot << XACT_SLOT_MASK;
 	itemId->lp_len = 0;
 }
+/*
+ * ItemIdSetDeadExtended
+ *		Set the item identifier to be DEAD, with transaction slot
+ *		information.  The most significant 8 bits in offset are used to store
+ *		transaction slot information.  Such an item doesn't have any storage.
+ *		We do this to identify this happened in speculative abort case.
+ *		Beware of multiple evaluations of itemId!
+ */
+
+static inline
+void ItemIdSetDeadExtended(ItemId itemId, int trans_slot)
+{
+	/*
+	 * The slots that belongs to TPD entry always point to last slot on the
+	 * page.
+	 */
+	if (trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
+		trans_slot = ZHEAP_PAGE_TRANS_SLOTS;
+	itemId->lp_flags = LP_DEAD;
+	itemId->lp_off = (itemId->lp_off & ~VISIBILTY_MASK) | ITEMID_XACT_PENDING;
+	itemId->lp_off = (itemId->lp_off & ~XACT_SLOT) | trans_slot << XACT_SLOT_MASK;
+	itemId->lp_len = 0;
+}
 
 /*
  * ItemIdSetDeleted

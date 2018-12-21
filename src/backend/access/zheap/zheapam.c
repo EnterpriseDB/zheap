@@ -65,6 +65,7 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
+#include "storage/itemid.h"
 #include "utils/datum.h"
 #include "utils/expandeddatum.h"
 #include "utils/inval.h"
@@ -6224,6 +6225,7 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 	Buffer		buffer;
 	OffsetNumber	offnum;
 	int			out_slot_no PG_USED_FOR_ASSERTS_ONLY;
+	int			trans_slot_id;
 
 	Assert(ItemPointerIsValid(tid));
 
@@ -6239,13 +6241,14 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 
 	zhtuphdr = (ZHeapTupleHeader) PageGetItem(page, lp);
 
+	trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtuphdr);
 	/*
 	 * Sanity check that the tuple really is a speculatively inserted tuple,
 	 * inserted by us.
 	 */
 	out_slot_no = GetTransactionSlotInfo(buffer,
 										 offnum,
-										 ZHeapTupleHeaderGetXactSlot(zhtuphdr),
+										 trans_slot_id,
 										 NULL,
 										 &current_tup_xid,
 										 NULL,
@@ -6265,11 +6268,13 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 	START_CRIT_SECTION();
 
 	/*
-	 * The tuple will become DEAD immediately.  Flag that this page is a
-	 * candidate for pruning.  The action here is exactly same as what we do
-	 * for rolling back insert.
+	 * The tuple will become DEAD immediately.  However, we mark it dead
+	 * differently by keeping the trans_slot, to identify this is done
+	 * during speculative abort only.  Flag that this page is a candidate
+	 * for pruning.  The action here is exactly same as what we do for
+	 * rolling back insert.
 	 */
-	ItemIdSetDead(lp);
+	ItemIdSetDeadExtended(lp, trans_slot_id);
 	ZPageSetPrunable(page, xid);
 
 	MarkBufferDirty(buffer);
@@ -6287,6 +6292,7 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 
 		xlrec.offnum = ItemPointerGetOffsetNumber(&tuple->t_self);
 		xlrec.flags = XLZ_SPEC_INSERT_FAILED;
+		xlrec.trans_slot_id = trans_slot_id;
 
 		XLogBeginInsert();
 
