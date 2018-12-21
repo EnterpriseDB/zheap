@@ -86,15 +86,19 @@ extern void SetTPDLocation(Buffer heapbuffer, Buffer tpdbuffer, uint16 offset);
 extern void ClearTPDLocation(Buffer heapbuf);
 extern void TPDInitPage(Page page, Size pageSize);
 extern bool TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy);
+extern void ReleaseLastTPDBufferByTPDBlock(BlockNumber tpdblk);
 extern int TPDAllocateAndReserveTransSlot(Relation relation, Buffer buf,
-								OffsetNumber offnum, UndoRecPtr *urec_ptr);
+						OffsetNumber offnum, UndoRecPtr *urec_ptr,
+						bool extend_if_required);
 extern TransInfo *TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 						   OffsetNumber offnum, bool keepTPDBufLock,
 						   bool checkOffset, int *num_map_entries,
 						   int *num_trans_slots, int *tpd_buf_id,
 						   bool *tpd_e_pruned, bool *alloc_bigger_map);
 extern int TPDPageReserveTransSlot(Relation relation, Buffer heapbuf,
-						OffsetNumber offset, UndoRecPtr *urec_ptr, bool *lock_reacquired);
+						OffsetNumber offset, UndoRecPtr *urec_ptr,
+						bool *lock_reacquired,
+						bool always_extend);
 extern int TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 					   uint32 epoch, TransactionId xid, UndoRecPtr *urec_ptr,
 					   bool keepTPDBufLock, bool checkOffset);

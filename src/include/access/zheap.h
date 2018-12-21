@@ -100,7 +100,18 @@ extern void zheap_finish_speculative(Relation relation, ZHeapTuple tuple);
 extern void zheap_abort_speculative(Relation relation, ZHeapTuple tuple);
 extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
 									  OffsetNumber offset, uint32 epoch,
-									  TransactionId xid, UndoRecPtr *urec_ptr,
+									  TransactionId xid, UndoRecPtr *ureptr,
+									  bool *lock_reacquired,
+									  bool extend_if_required);
+extern void MultiPageReserveTransSlot(Relation relation,
+									  Buffer oldbuf, Buffer newbuf,
+									  OffsetNumber oldbuf_offnum,
+									  OffsetNumber newbuf_offnum,
+									  uint32 epoch, TransactionId xid,
+									  UndoRecPtr * oldbuf_prev_urecptr,
+									  UndoRecPtr * newbuf_prev_urecptr,
+									  int *oldbuf_trans_slot_id,
+									  int *newbuf_trans_slot_id,
 									  bool *lock_reacquired);
 extern int PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
 									TransactionId xid, UndoRecPtr *urec_ptr,

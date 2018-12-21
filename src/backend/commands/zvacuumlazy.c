@@ -257,7 +257,8 @@ reacquire_slot:
 											   epoch,
 											   xid,
 											   &prev_urecptr,
-											   &lock_reacquired);
+											   &lock_reacquired,
+											   false);
 	if (lock_reacquired)
 		goto reacquire_slot;
 

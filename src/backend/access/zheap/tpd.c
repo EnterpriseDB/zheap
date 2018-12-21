@@ -93,7 +93,7 @@ static void TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf,
 						Buffer pagebuf, Buffer old_tpd_buf,
 						OffsetNumber old_off_num, char *tpd_entry,
 						Size size_tpd_entry, bool add_new_tpd_page,
-						bool delete_old_entry);
+						bool delete_old_entry, bool always_extend);
 static bool TPDBufferAlreadyRegistered(Buffer tpd_buf);
 static void ReleaseLastTPDBuffer(Buffer buf);
 static void LogAndClearTPDLocation(Relation relation, Buffer heapbuf,
@@ -381,7 +381,7 @@ static void
 ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 			   OffsetNumber offnum, int buf_idx, int old_num_map_entries,
 			   int old_num_slots, int *reserved_slot_no, UndoRecPtr *urecptr,
-			   bool *tpd_e_pruned)
+			   bool *tpd_e_pruned, bool always_extend)
 {
 	TPDEntryHeaderData	old_tpd_e_header, tpd_e_header;
 	ZHeapPageOpaque		zopaque;
@@ -691,7 +691,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 		TPDAllocatePageAndAddEntry(relation, metabuf, heapbuf, old_tpd_buf,
 								   tpdItemOff, tpd_entry, new_size_tpd_entry,
 								   allocate_new_tpd_page,
-								   allocate_new_tpd_page);
+								   allocate_new_tpd_page, always_extend);
 	}
 
 	/* Release the meta buffer. */
@@ -1252,12 +1252,18 @@ TPDEntryUpdate(Relation relation, Buffer tpd_buf, uint16 tpd_e_offset,
  * However, if anytime, we change our startegy such that after acquiring
  * metapage lock, we try to acquire lock on any existing page, then we might
  * need to reconsider our locking order.
+ *
+ * always_extend, this parameter indicates whether we can use FSM to get the
+ * new TPD page or not.  This is required to avoid some deadlock hazards by
+ * the callers, basically they don't want to lock any tpd page with lower
+ * number, when they already have lock on some other tpd page.
  */
 static void
 TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 						   Buffer old_tpd_buf, OffsetNumber old_off_num,
 						   char *tpd_entry, Size size_tpd_entry,
-						   bool add_new_tpd_page, bool delete_old_entry)
+						   bool add_new_tpd_page, bool delete_old_entry,
+						   bool always_extend)
 {
 	ZHeapMetaPage	metapage = NULL;
 	TPDPageOpaque	tpdopaque, last_tpdopaque;
@@ -1286,61 +1292,66 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 		Assert(!delete_old_entry || BufferIsValid(old_tpd_buf));
 		Assert(delete_old_entry || !BufferIsValid(old_tpd_buf));
 
-		/* Before extending the relation, check the FSM for free page. */
-		targetBlock = GetPageWithFreeSpace(relation, len);
-
-		while (targetBlock != InvalidBlockNumber)
+		/* Always extend when asked to do so. */
+		if (!always_extend)
 		{
-			Page	page;
-			Size	pageFreeSpace;
+			/* Before extending the relation, check the FSM for free page. */
+			targetBlock = GetPageWithFreeSpace(relation, len);
 
-			tpd_buf = ReadBuffer(relation, targetBlock);
-
-			/*
-			 * We need to take the lock on meta page before new page to avoid
-			 * deadlocks.  See comments atop of function.
-			 */
-			LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-
-			/*
-			 *  It's possible that FSM returns a zheap page on which the current
-			 *  backend already holds a lock in exclusive mode. Hence, try using
-			 *  conditional lock. If it can't get the lock immediately, extend
-			 *  the relation and allocate a new TPD block.
-			 */
-			if (ConditionalLockBuffer(tpd_buf))
+			while (targetBlock != InvalidBlockNumber)
 			{
-				page = BufferGetPage(tpd_buf);
+				Page page;
+				Size pageFreeSpace;
 
-				if (PageIsEmpty(page))
-				{
-					GetTPDBuffer(relation, targetBlock, tpd_buf,
-								 TPD_BUF_FIND_OR_KNOWN_ENTER, &already_exists);
-					break;
-				}
-
-				LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
-
-				if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
-					pageFreeSpace = PageGetTPDFreeSpace(page);
-				else
-					pageFreeSpace = PageGetZHeapFreeSpace(page);
+				tpd_buf = ReadBuffer(relation, targetBlock);
 
 				/*
-				 * Update FSM as to condition of this page, and ask for another page
-				 * to try.
+				 * We need to take the lock on meta page before new page to
+				 * avoid deadlocks.  See comments atop of function.
 				 */
-				targetBlock = RecordAndGetPageWithFreeSpace(relation,
-															targetBlock,
-															pageFreeSpace,
-															len);
-				UnlockReleaseBuffer(tpd_buf);
-			}
-			else
-			{
-				LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
-				ReleaseBuffer(tpd_buf);
-				targetBlock = InvalidBlockNumber;
+				LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+
+				/* It's possible that FSM returns a zheap page on which the
+				 * current backend already holds a lock in exclusive mode.
+				 * Hence, try using conditional lock. If it can't get the lock
+				 * immediately, extend the relation and allocate a new TPD
+				 * block.
+				 */
+				if (ConditionalLockBuffer(tpd_buf))
+				{
+					page = BufferGetPage(tpd_buf);
+
+					if (PageIsEmpty(page))
+					{
+						GetTPDBuffer(relation, targetBlock, tpd_buf,
+									 TPD_BUF_FIND_OR_KNOWN_ENTER,
+									 &already_exists);
+						break;
+					}
+
+					LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
+
+					if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+						pageFreeSpace = PageGetTPDFreeSpace(page);
+					else
+						pageFreeSpace = PageGetZHeapFreeSpace(page);
+
+					/*
+					 * Update FSM as to condition of this page, and ask for
+					 * another page to try.
+					 */
+					targetBlock = RecordAndGetPageWithFreeSpace(relation,
+																targetBlock,
+																pageFreeSpace,
+																len);
+					UnlockReleaseBuffer(tpd_buf);
+				}
+				else
+				{
+					LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
+					ReleaseBuffer(tpd_buf);
+					targetBlock = InvalidBlockNumber;
+				}
 			}
 		}
 
@@ -1601,7 +1612,8 @@ recheck_meta:
  */
 int
 TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
-							   OffsetNumber offnum, UndoRecPtr *urec_ptr)
+							   OffsetNumber offnum, UndoRecPtr *urec_ptr,
+							   bool always_extend)
 {
 	ZHeapMetaPage	metapage;
 	Buffer	metabuf;
@@ -1704,7 +1716,7 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 
 	TPDAllocatePageAndAddEntry(relation, metabuf, pagebuf, tpd_buf,
 							   InvalidOffsetNumber, tpd_entry, size_tpd_entry,
-							   update_meta, false);
+							   update_meta, false, always_extend);
 
 	ReleaseBuffer(metabuf);
 
@@ -1924,6 +1936,29 @@ failed_and_buf_not_locked:
 }
 
 /*
+ * ReleaseLastTPDBufferByTPDBlock - Release last TPD buffer.
+ *
+ * tpdblk - block number of TPD buffer.
+ */
+void ReleaseLastTPDBufferByTPDBlock(BlockNumber tpdblk)
+{
+	bool	already_exists = true;
+	int		buf_idx;
+	Buffer	tpd_buf;
+
+	/* Get the corresponding TPD buffer corresponding to tpd block. */
+	buf_idx = GetTPDBuffer(NULL, tpdblk, InvalidBuffer, TPD_BUF_FIND,
+						   &already_exists);
+
+	/* We should have TPD buffer lock. */
+	Assert(already_exists);
+	tpd_buf = tpd_buffers[buf_idx].buf;
+
+	/* Release the last TPD buffer. */
+	ReleaseLastTPDBuffer(tpd_buf);
+}
+
+/*
  * TPDPageReserveTransSlot - Reserve the available transaction in current TPD
  *		entry if any, otherwise, return InvalidXactSlotId.
  *
@@ -1935,7 +1970,8 @@ failed_and_buf_not_locked:
  */
 int
 TPDPageReserveTransSlot(Relation relation, Buffer buf, OffsetNumber offnum,
-						UndoRecPtr *urec_ptr, bool *lock_reacquired)
+						UndoRecPtr *urec_ptr, bool *lock_reacquired,
+						bool always_extend)
 {
 	TransInfo	*trans_slots;
 	int		slot_no;
@@ -2019,7 +2055,7 @@ extend_entry_if_required:
 	{
 		ExtendTPDEntry(relation, buf, trans_slots, offnum, buf_idx,
 					   num_map_entries, num_slots, &result_slot_no, urec_ptr,
-					   &tpd_e_pruned);
+					   &tpd_e_pruned, always_extend);
 	}
 
 	/* be tidy */
@@ -2109,7 +2145,7 @@ TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 	{
 		ExtendTPDEntry(relation, heapbuf, trans_slots, offnum, buf_idx,
 					   num_map_entries, num_slots, &result_slot_no, urec_ptr,
-					   &tpd_e_pruned);
+					   &tpd_e_pruned, false);
 	}
 
 	/* be tidy */

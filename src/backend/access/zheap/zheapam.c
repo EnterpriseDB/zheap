@@ -87,7 +87,7 @@ typedef enum LockOper
 } LockOper;
 
 extern bool synchronize_seqscans;
-
+static int GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf);
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
 									   int options);
 static bool ZHeapProjIndexIsUnchanged(Relation relation, ZHeapTuple oldtup,
@@ -831,7 +831,8 @@ reacquire_buffer:
 												   epoch,
 												   xid,
 												   &prev_urecptr,
-												   &lock_reacquired);
+												   &lock_reacquired,
+												   false);
 		if (lock_reacquired)
 		{
 			UnlockReleaseBuffer(buffer);
@@ -1756,7 +1757,7 @@ zheap_tuple_updated:
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer,
 											   PageGetMaxOffsetNumber(page),
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired);
+											   &lock_reacquired, false);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
 
@@ -2901,7 +2902,7 @@ zheap_tuple_updated:
 	 */
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer, max_offset,
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired);
+											   &lock_reacquired, false);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
 
@@ -2985,7 +2986,6 @@ zheap_tuple_updated:
 	{
 		uint16	lock_old_infomask;
 		BlockNumber	oldblk, newblk;
-		int     slot_id;
 
 		/*
 		 * To prevent concurrent sessions from updating the tuple, we have to
@@ -3257,7 +3257,8 @@ reacquire_buffer:
 														   epoch,
 														   xid,
 														   &new_prev_urecptr,
-														   &lock_reacquired);
+														   &lock_reacquired,
+														   false);
 			/*
 			 * We should get the same slot what we reserved previously because
 			 * our transaction information should already be there.  But, there
@@ -3270,68 +3271,28 @@ reacquire_buffer:
 
 			trans_slot_id = new_trans_slot_id;
 		}
-		else if (oldblk < newblk)
-		{
-			slot_id = PageReserveTransactionSlot(relation,
-												 buffer,
-												 old_offnum,
-												 epoch,
-												 xid,
-												 &prev_urecptr,
-												 &lock_reacquired);
-			Assert((slot_id == trans_slot_id) ||
-					(ZHeapPageHasTPDSlot((PageHeader)page) &&
-					 slot_id == trans_slot_id + 1));
-
-			trans_slot_id = slot_id;
-
-			/* reserve the transaction slot on a new page */
-			new_trans_slot_id = PageReserveTransactionSlot(relation,
-														   newbuf,
-														   max_offset + 1,
-														   epoch,
-														   xid,
-														   &new_prev_urecptr,
-														   &lock_reacquired);
-		}
 		else
-		{
-			/* reserve the transaction slot on a new page */
-			new_trans_slot_id = PageReserveTransactionSlot(relation,
-														   newbuf,
-														   max_offset + 1,
-														   epoch,
-														   xid,
-														   &new_prev_urecptr,
-														   &lock_reacquired);
+			MultiPageReserveTransSlot(relation,
+									  buffer, newbuf,
+									  old_offnum, max_offset,
+									  epoch, xid,
+									  &prev_urecptr, &new_prev_urecptr,
+									  &trans_slot_id, &new_trans_slot_id,
+									  &lock_reacquired);
 
-			/* reserve the transaction slot on a old page */
-			slot_id = PageReserveTransactionSlot(relation,
-												 buffer,
-												 old_offnum,
-												 epoch,
-												 xid,
-												 &prev_urecptr,
-												 &lock_reacquired);
-			Assert((slot_id == trans_slot_id) ||
-					(ZHeapPageHasTPDSlot((PageHeader)page) &&
-					 slot_id == trans_slot_id + 1));
-			trans_slot_id = slot_id;
-		}
-
-		if (lock_reacquired)
-			goto reacquire_buffer;
-
-		if (new_trans_slot_id == InvalidXactSlotId)
+		if (lock_reacquired || (new_trans_slot_id == InvalidXactSlotId))
 		{
 			/* release the new buffer and lock on old buffer */
 			UnlockReleaseBuffer(newbuf);
 			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 			UnlockReleaseTPDBuffers();
 
-			pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
-			pg_usleep(10000L);	/* 10 ms */
-			pgstat_report_wait_end();
+			if (new_trans_slot_id == InvalidXactSlotId)
+			{
+				pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
+				pg_usleep(10000L);	/* 10 ms */
+				pgstat_report_wait_end();
+			}
 
 			goto reacquire_buffer;
 		}
@@ -5038,7 +4999,7 @@ failed:
 	trans_slot_id = PageReserveTransactionSlot(relation, *buffer,
 											   PageGetMaxOffsetNumber(page),
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired);
+											   &lock_reacquired, false);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
 
@@ -5543,7 +5504,7 @@ lock_tuple:
 		 * that by releasing the buffer lock.
 		 */
 		trans_slot_id = PageReserveTransactionSlot(rel, buf, offnum, epoch, xid,
-											&prev_urecptr, &lock_reacquired);
+											&prev_urecptr, &lock_reacquired, false);
 		if (lock_reacquired)
 			goto lock_tuple;
 
@@ -7133,6 +7094,202 @@ PageGetTransactionSlotInfo(Buffer buf, int slot_no, uint32 *epoch,
 }
 
 /*
+ *  MultiPageReserveTransSlot - Reserve the transaction slots on old and
+ *		new buffer.
+ *
+ * Here, we need to ensure that we always first reserve slot in the page
+ * which has corresponding lower numbered TPD page to avoid deadlocks
+ * caused by locking ordering of TPD pages.
+ */
+void
+MultiPageReserveTransSlot(Relation relation,
+						  Buffer oldbuf, Buffer newbuf,
+						  OffsetNumber oldbuf_offnum,
+						  OffsetNumber newbuf_offnum,
+						  uint32 epoch, TransactionId xid,
+						  UndoRecPtr *oldbuf_prev_urecptr,
+						  UndoRecPtr *newbuf_prev_urecptr,
+						  int *oldbuf_trans_slot_id,
+						  int *newbuf_trans_slot_id,
+						  bool *lock_reacquired)
+{
+	Page		oldbuf_page, newbuf_page;
+	bool		always_extend;
+	bool		has_oldbuf_tpd, has_newbuf_tpd;
+	bool		is_tpdblk_order_changed;
+	int			slot_id;
+	BlockNumber	oldbuf_tpd_blk = InvalidBlockNumber,
+				newbuf_tpd_blk = InvalidBlockNumber;
+
+retry_tpd_lock :
+
+	/* Initialize flags with default values. */
+	always_extend = false;
+	is_tpdblk_order_changed = false;
+
+	/* Get corresponding pages from old and new buffers. */
+	oldbuf_page = BufferGetPage(oldbuf);
+	newbuf_page = BufferGetPage(newbuf);
+
+	/* Checking that buffer has TPD page. */
+	has_oldbuf_tpd = ZHeapPageHasTPDSlot((PageHeader) oldbuf_page);
+	has_newbuf_tpd = ZHeapPageHasTPDSlot((PageHeader) newbuf_page);
+
+	/* If TPD exists, then get corresponding TPD block numbers. */
+	if (has_oldbuf_tpd)
+		oldbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(oldbuf);
+	if (has_newbuf_tpd)
+		newbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(newbuf);
+
+	/*
+	 * If both the buffers has TPD entry, then reserve the transaction slot in
+	 * increasing order of corresponding TPD blocks to avoid deadlock.
+	 */
+	if (has_oldbuf_tpd && has_newbuf_tpd)
+	{
+		if (oldbuf_tpd_blk > newbuf_tpd_blk)
+			is_tpdblk_order_changed = true;
+	}
+
+	/* Now reserve the slots in both the pages. */
+	if (!is_tpdblk_order_changed)
+	{
+		/* Verify the transaction slot for old buffer. */
+		slot_id = PageReserveTransactionSlot(relation,
+											 oldbuf,
+											 oldbuf_offnum,
+											 epoch,
+											 xid,
+											 oldbuf_prev_urecptr,
+											 lock_reacquired,
+											 false);
+
+		/* Try again if the buffer lock is released and reacquired. */
+		if (*lock_reacquired)
+			return;
+
+		/*
+		 * If old buffer has TPD page, then TPD block of old buffer should not
+		 * change. Because already we have reserved a slot for old buffer.
+		 */
+		Assert((has_oldbuf_tpd &&
+				(oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf))) ||
+			   !has_oldbuf_tpd);
+
+		/*
+		 * If reserved transaction slot for old buffer is from TPD page, then
+		 * for new buffer, we should not allow to use FSM TPD page, instead we
+		 * will extend to get new TPD buffer with higher block number to avoid
+		 * deadlock.
+		 */
+		if (slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+			always_extend = true;
+
+		/* Reserve the transaction slot for new buffer. */
+		*newbuf_trans_slot_id = PageReserveTransactionSlot(relation,
+														   newbuf,
+														   newbuf_offnum + 1,
+														   epoch,
+														   xid,
+														   newbuf_prev_urecptr,
+														   lock_reacquired,
+														   always_extend);
+	}
+	else
+	{
+		/* Reserve the transaction slot for new buffer. */
+		*newbuf_trans_slot_id = PageReserveTransactionSlot(relation,
+														   newbuf,
+														   newbuf_offnum + 1,
+														   epoch,
+														   xid,
+														   newbuf_prev_urecptr,
+														   lock_reacquired,
+														   false);
+
+		/* Try again if the buffer lock is released and reacquired. */
+		if (*lock_reacquired)
+			return;
+
+		/*
+		 * If reserved transaction slot for new buffer is from TPD page, then
+		 * we should check block number of TPD page.  Because, it is quite
+		 * possible that if we don't have space in the current TPD page, we
+		 * may get a new TPD page from FSM or by extending the relation that
+		 * may have greater block number as compared to old buffer TPD block.
+		 */
+		if (*newbuf_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+		{
+			/* Get TPD block of new buffer. */
+			newbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(newbuf);
+
+			/*
+			 * If TPD block of new buffer gets changed and becomes greater than
+			 * old buffer TPD block, then we should release TPD buffer lock of
+			 * new buffer and try again to avoid deadlock.
+			 *
+			 * For new buffer, there is no guarantee that we will get same TPD
+			 * block after releasing TPD buffer lock, because vacuum can free
+			 * that page, so always try again to reserve slot.
+			 */
+			if (newbuf_tpd_blk > oldbuf_tpd_blk)
+			{
+				/* Release lock to avoid deadlock. */
+				ReleaseLastTPDBufferByTPDBlock(newbuf_tpd_blk);
+				goto retry_tpd_lock;
+			}
+		}
+
+		/* Get the transaction slot for old buffer. */
+		slot_id = PageReserveTransactionSlot(relation,
+											 oldbuf,
+											 oldbuf_offnum,
+											 epoch,
+											 xid,
+											 oldbuf_prev_urecptr,
+											 lock_reacquired,
+											 false);
+
+		/*
+		 * TPD block of old buffer must not change as we already have a
+		 * reserved slot in the old buffer and for in-progress transactions,
+		 * TPD block can't be pruned.
+		 */
+		Assert(oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf));
+	}
+
+	/*
+	 * We should definetly get the slot for old page as we have reserved it
+	 * previously, but it is possible that it might have moved to TPD in
+	 * which case it's value will be previous_slot_number + 1.
+	 */
+	Assert((slot_id == *oldbuf_trans_slot_id) ||
+		   (ZHeapPageHasTPDSlot((PageHeader) oldbuf_page) &&
+			slot_id == (*oldbuf_trans_slot_id) + 1));
+
+	*oldbuf_trans_slot_id = slot_id;
+}
+
+/*
+ * GetTPDBlockNumberFromHeapBuffer - Return block number of TPD page.
+ *
+ * buffer - heap buffer.
+ */
+static int
+GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf)
+{
+	Page			page = BufferGetPage(heapbuf);
+	ZHeapPageOpaque	zopaque;
+	TransInfo		last_trans_slot_info;
+
+	/* The last slot in page has the address of the required TPD entry. */
+	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
+
+	return last_trans_slot_info.xid_epoch;
+}
+
+/*
  * PageReserveTransactionSlot - Reserve the transaction slot in page.
  *
  *	This function returns transaction slot number if either the page already
@@ -7146,7 +7303,8 @@ PageGetTransactionSlotInfo(Buffer buf, int slot_no, uint32 *epoch,
 int
 PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 						   uint32 epoch, TransactionId xid,
-						   UndoRecPtr *urec_ptr, bool *lock_reacquired)
+						   UndoRecPtr *urec_ptr, bool *lock_reacquired,
+						   bool always_extend)
 {
 	ZHeapPageOpaque	opaque;
 	Page	page;
@@ -7282,7 +7440,8 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 		int tpd_e_slot;
 
 		tpd_e_slot = TPDPageReserveTransSlot(relation, buf, offset,
-											 urec_ptr, lock_reacquired);
+											 urec_ptr, lock_reacquired,
+											 always_extend);
 
 		if (tpd_e_slot != InvalidXactSlotId)
 			return tpd_e_slot;
@@ -7296,7 +7455,8 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 	else
 	{
 		slot_no = TPDAllocateAndReserveTransSlot(relation, buf, offset,
-												 urec_ptr);
+												 urec_ptr,
+												 always_extend);
 		if (slot_no != InvalidXactSlotId)
 			return slot_no;
 	}
@@ -10952,7 +11112,8 @@ reacquire_buffer:
 													   epoch,
 													   xid,
 													   &prev_urecptr,
-													   &lock_reacquired);
+													   &lock_reacquired,
+													   false);
 			if (lock_reacquired)
 				goto reacquire_buffer;
 
