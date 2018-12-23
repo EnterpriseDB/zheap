@@ -49,8 +49,8 @@ typedef struct UndoRecordHeader
 
 	/*
 	 * Transaction id that has modified the tuple present in this undo record.
-	 * If this is older then RecentGlobalXmin, then we can consider the tuple
-	 * in this undo record as visible.
+	 * If this is older than oldestXidWithEpochHavingUndo, then we can consider
+	 * the tuple in this undo record as visible.
 	 */
 	TransactionId urec_prevxid;
 
@@ -72,6 +72,9 @@ typedef struct UndoRecordHeader
  *
  * If UREC_INFO_BLOCK is set, an UndoRecordBlock structure follows.
  *
+ * If UREC_INFO_TRANSACTION is set, an UndoRecordTransaction structure
+ * follows.
+ *
  * If UREC_INFO_PAYLOAD is set, an UndoRecordPayload structure follows.
  *
  * When (as will often be the case) multiple structures are present, they
@@ -86,8 +89,7 @@ typedef struct UndoRecordHeader
 #define UREC_INFO_PAYLOAD_CONTAINS_SUBXACT	0x20
 /*
  * Additional information about a relation to which this record pertains,
- * namely the tablespace OID and fork number.  If the tablespace OID is
- * DEFAULTTABLESPACE_OID and the fork number is MAIN_FORKNUM, this structure
+ * namely the fork number.  If the fork number is MAIN_FORKNUM, this structure
  * can (and should) be omitted.
  */
 typedef struct UndoRecordRelationDetails
@@ -118,7 +120,12 @@ typedef struct UndoRecordBlock
  */
 typedef struct UndoRecordTransaction
 {
-	uint32		urec_progress;	/* undo applying progress. */
+	/*
+	 * This indicates undo action apply progress, 0 means not started, 1 means
+	 * completed.  In future, it can also be used to show the progress of how
+	 * much undo has been applied so far with some formula.
+	 */
+	uint32		urec_progress;
 	uint32		urec_xidepoch;	/* epoch of the current transaction */
 	Oid			urec_dbid;		/* database id */
 	uint64		urec_next;		/* urec pointer of the next transaction */
@@ -127,9 +134,6 @@ typedef struct UndoRecordTransaction
 #define SizeOfUrecNext (sizeof(UndoRecPtr))
 #define SizeOfUndoRecordTransaction \
 	(offsetof(UndoRecordTransaction, urec_next) + SizeOfUrecNext)
-
-#define urec_next_pos \
-	(SizeOfUndoRecordTransaction - SizeOfUrecNext)
 
 /*
  * Information about the amount of payload data and tuple data present
@@ -154,7 +158,8 @@ typedef struct UndoRecordPayload
  *
  * When creating an undo record from an UnpackedUndoRecord, caller should
  * set uur_info to 0.  It will be initialized by the first call to
- * UndoRecordExpectedSize or InsertUndoRecord.
+ * UndoRecordSetInfo or InsertUndoRecord.  We do set it in
+ * UndoRecordAllocate for transaction specific header information.
  *
  * When an undo record is decoded into an UnpackedUndoRecord, all fields
  * will be initialized, but those for which no information is available
@@ -178,57 +183,17 @@ typedef struct UnpackedUndoRecord
 	uint64		uur_next;		/* urec pointer of the next transaction */
 	Oid			uur_dbid;		/* database id */
 
-	/*
-	 * undo action apply progress 0 = not started, 1 = completed. In future it
-	 * can also be used to show the progress of how much undo has been applied
-	 * so far with some formulae but currently only 0 and 1 is used.
-	 */
+	/* undo applying progress, see detail comment in UndoRecordTransaction*/
 	uint32		uur_progress;
 	StringInfoData uur_payload; /* payload bytes */
 	StringInfoData uur_tuple;	/* tuple bytes */
 } UnpackedUndoRecord;
 
-/*
- * Set uur_info for an UnpackedUndoRecord appropriately based on which
- * other fields are set.
- */
+
 extern void UndoRecordSetInfo(UnpackedUndoRecord *uur);
-
-/*
- * Compute the number of bytes of storage that will be required to insert
- * an undo record.  Sets uur->uur_info as a side effect.
- */
 extern Size UndoRecordExpectedSize(UnpackedUndoRecord *uur);
-
-/*
- * To insert an undo record, call InsertUndoRecord() repeatedly until it
- * returns true.  For the first call, the given page should be the one which
- * the caller has determined to contain the current insertion point,
- * starting_byte should be the byte offset within that page which corresponds
- * to the current insertion point, and *already_written should be 0.  The
- * return value will be true if the entire record is successfully written
- * into that page, and false if not.  In either case, *already_written will
- * be updated to the number of bytes written by all InsertUndoRecord calls
- * for this record to date.  If this function is called again to continue
- * writing the record, the previous value for *already_written should be
- * passed again, and starting_byte should be passed as sizeof(PageHeaderData)
- * (since the record will continue immediately following the page header).
- *
- * This function sets uur->uur_info as a side effect.
- */
 extern bool InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 				 int starting_byte, int *already_written, bool header_only);
-
-/*
- * Call UnpackUndoRecord() one or more times to unpack an undo record.  For
- * the first call, starting_byte should be set to the beginning of the undo
- * record within the specified page, and *already_decoded should be set to 0;
- * the function will update it based on the number of bytes decoded.  The
- * return value is true if the entire record was unpacked and false if the
- * record continues on the next page.  In the latter case, the function
- * should be called again with the next page, passing starting_byte as the
- * sizeof(PageHeaderData).
- */
 extern bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page,
 				 int starting_byte, int *already_decoded, bool header_only);
 

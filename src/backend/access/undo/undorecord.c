@@ -58,18 +58,28 @@ UndoRecordExpectedSize(UnpackedUndoRecord *uur)
 }
 
 /*
- * Insert as much of an undo record as will fit in the given page.
- * starting_byte is the byte within the give page at which to begin
- * writing, while *already_written is the number of bytes written to
- * previous pages.  Returns true if the remainder of the record was
- * written and false if more bytes remain to be written; in either
- * case, *already_written is set to the number of bytes written thus
- * far.
+ * To insert an undo record, call InsertUndoRecord() repeatedly until it
+ * returns true.
  *
- * This function assumes that if *already_written is non-zero on entry,
- * the same UnpackedUndoRecord is passed each time.  It also assumes
- * that UnpackUndoRecord is not called between successive calls to
- * InsertUndoRecord for the same UnpackedUndoRecord.
+ * Insert as much of an undo record as will fit in the given page.
+ * starting_byte is the byte within the give page at which to begin writing,
+ * while *already_written is the number of bytes written to previous pages.
+ *
+ * Returns true if the remainder of the record was written and false if more
+ * bytes remain to be written; in either case, *already_written is set to the
+ * number of bytes written thus far.
+ *
+ * This function assumes that if *already_written is non-zero on entry, the
+ * same UnpackedUndoRecord is passed each time.  It also assumes that
+ * UnpackUndoRecord is not called between successive calls to InsertUndoRecord
+ * for the same UnpackedUndoRecord.
+ *
+ * If this function is called again to continue writing the record, the
+ * previous value for *already_written should be passed again, and
+ * starting_byte should be passed as sizeof(PageHeaderData) (since the record
+ * will continue immediately following the page header).
+ *
+ * This function sets uur->uur_info as a side effect.
  */
 bool
 InsertUndoRecord(UnpackedUndoRecord *uur, Page page,

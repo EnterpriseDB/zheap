@@ -11,35 +11,38 @@
  * NOTES:
  * Undo record layout:
  *
- *  Undo record are stored in sequential order in the undo log.  And, each
- *  transaction's first undo record a.k.a. transaction header points to the next
- *  transaction's start header.  Transaction headers are linked so that the
- *  discard worker can read undo log transaction by transaction and avoid
- *  reading each undo record.
+ * Undo records are stored in sequential order in the undo log.  Each undo
+ * record consists of a variable length header, tuple data, and payload
+ * information.  The first undo record of each transaction contains a
+ * transaction header that points to the next transaction's start header.
+ * This allows us to discard the entire transaction's log at one-shot rather
+ * than record-by-record.  The callers are not aware of transaction header,
+ * this is entirely maintained and used by undo record layer.   See
+ * undorecord.h for detailed information about undo record header.
  *
  * Handling multi log:
  *
- *  It is possible that the undo record of a transaction can be spread across
- *  multiple undo log.  And, we need some special handling while inserting the
- *  undo for discard and rollback to work sanely.
+ * It is possible that the undo record of a transaction can be spread across
+ * multiple undo log.  And, we need some special handling while inserting the
+ * undo for discard and rollback to work sanely.
  *
- *  If the undorecord goes to next log then we insert a transaction header for
- *  the first record in the new log and update the transaction header with this
- *  new log's location. This will allow us to connect transactions across logs
- *  when the same transaction span across log (for this we keep track of the
- *  previous logno in undo log meta) which is required to find the latest undo
- *  record pointer of the aborted transaction for executing the undo actions
- *  before discard. If the next log get processed first in that case we
- *  don't need to trace back the actual start pointer of the transaction,
- *  in such case we can only execute the undo actions from the current log
- *  because the undo pointer in the slot will be rewound and that will be enough
- *  to avoid executing same actions.  However, there is possibility that after
- *  executing the undo actions the undo pointer got discarded, now in later
- *  stage while processing the previous log it might try to fetch the undo
- *  record in the discarded log while chasing the transaction header chain.
- *  To avoid this situation we first check if the next_urec of the transaction
- *  is already discarded then no need to access that and start executing from
- *  the last undo record in the current log.
+ * If the undorecord goes to next log then we insert a transaction header for
+ * the first record in the new log and update the transaction header with this
+ * new log's location. This will allow us to connect transactions across logs
+ * when the same transaction span across log (for this we keep track of the
+ * previous logno in undo log meta) which is required to find the latest undo
+ * record pointer of the aborted transaction for executing the undo actions
+ * before discard. If the next log get processed first in that case we
+ * don't need to trace back the actual start pointer of the transaction,
+ * in such case we can only execute the undo actions from the current log
+ * because the undo pointer in the slot will be rewound and that will be enough
+ * to avoid executing same actions.  However, there is possibility that after
+ * executing the undo actions the undo pointer got discarded, now in later
+ * stage while processing the previous log it might try to fetch the undo
+ * record in the discarded log while chasing the transaction header chain.
+ * To avoid this situation we first check if the next_urec of the transaction
+ * is already discarded then no need to access that and start executing from
+ * the last undo record in the current log.
  *
  *  We only connect to next log if the same transaction spread to next log
  *  otherwise don't.
@@ -540,9 +543,12 @@ resize:
 
 		/*
 		 * Prepare the transacion header for the first undo record of
-		 * transaction. XXX there is also an option that instead of adding the
+		 * transaction.
+		 *
+		 * XXX There is also an option that instead of adding the
 		 * information to this record we can prepare a new record which only
-		 * contain transaction informations.
+		 * contain transaction informations, but we can't see any clear
+		 * advantage of the same.
 		 */
 		if (need_xact_hdr && i == 0)
 		{
@@ -819,28 +825,6 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, TransactionId xid,
 	return urecptr;
 }
 
-void
-RegisterUndoLogBuffers(uint8 first_block_id)
-{
-	int		idx;
-	int		flags;
-
-	for (idx = 0; idx < buffer_idx; idx++)
-	{
-		flags = undo_buffer[idx].zero ? REGBUF_WILL_INIT : 0;
-		XLogRegisterBuffer(first_block_id + idx, undo_buffer[idx].buf, flags);
-	}
-}
-
-void
-UndoLogBuffersSetLSN(XLogRecPtr recptr)
-{
-	int		idx;
-
-	for (idx = 0; idx < buffer_idx; idx++)
-		PageSetLSN(BufferGetPage(undo_buffer[idx].buf), recptr);
-}
-
 /*
  * Insert a previously-prepared undo record.  This will write the actual undo
  * record into the buffers already pinned and locked in PreparedUndoInsert,
@@ -968,57 +952,6 @@ InsertPreparedUndo(void)
 		 */
 		SetCurrentUndoLocation(urp);
 	}
-}
-
-/*
- * Reset the global variables related to undo buffers. This is required at the
- * transaction abort and while releasing the undo buffers.
- */
-void
-ResetUndoBuffers(void)
-{
-	int			i;
-
-	for (i = 0; i < buffer_idx; i++)
-	{
-		undo_buffer[i].blk = InvalidBlockNumber;
-		undo_buffer[i].buf = InvalidBuffer;
-	}
-
-	xact_urec_info.urecptr = InvalidUndoRecPtr;
-
-	/* Reset the prepared index. */
-	prepare_idx = 0;
-	buffer_idx = 0;
-	prepared_urec_ptr = InvalidUndoRecPtr;
-
-	/*
-	 * max_prepared_undo limit is changed so free the allocated memory and
-	 * reset all the variable back to their default value.
-	 */
-	if (max_prepared_undo > MAX_PREPARED_UNDO)
-	{
-		pfree(undo_buffer);
-		pfree(prepared_undo);
-		undo_buffer = def_buffers;
-		prepared_undo = def_prepared;
-		max_prepared_undo = MAX_PREPARED_UNDO;
-	}
-}
-
-/*
- * Unlock and release the undo buffers.  This step must be performed after
- * exiting any critical section where we have perfomed undo actions.
- */
-void
-UnlockReleaseUndoBuffers(void)
-{
-	int			i;
-
-	for (i = 0; i < buffer_idx; i++)
-		UnlockReleaseBuffer(undo_buffer[i].buf);
-
-	ResetUndoBuffers();
 }
 
 /*
@@ -1155,6 +1088,10 @@ ResetUndoRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode *rnode,
  *
  * callback function decides whether particular undo record satisfies the
  * condition of caller.
+ *
+ * Returns the required undo record if found, otherwise, return NULL which
+ * means either the record is already discarded or there is no such record
+ * in the undo chain.
  */
 UnpackedUndoRecord *
 UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
@@ -1284,6 +1221,85 @@ UndoRecordRelease(UnpackedUndoRecord *urec)
 	}
 
 	pfree(urec);
+}
+
+/*
+ * RegisterUndoLogBuffers - Register the undo buffers.
+ */
+void
+RegisterUndoLogBuffers(uint8 first_block_id)
+{
+	int			idx;
+	int			flags;
+
+	for (idx = 0; idx < buffer_idx; idx++)
+	{
+		flags = undo_buffer[idx].zero ? REGBUF_WILL_INIT : 0;
+		XLogRegisterBuffer(first_block_id + idx, undo_buffer[idx].buf, flags);
+	}
+}
+
+/*
+ * UndoLogBuffersSetLSN - Set LSN on undo page.
+*/
+void
+UndoLogBuffersSetLSN(XLogRecPtr recptr)
+{
+	int			idx;
+
+	for (idx = 0; idx < buffer_idx; idx++)
+		PageSetLSN(BufferGetPage(undo_buffer[idx].buf), recptr);
+}
+
+/*
+ * Reset the global variables related to undo buffers. This is required at the
+ * transaction abort and while releasing the undo buffers.
+ */
+void
+ResetUndoBuffers(void)
+{
+	int			i;
+
+	for (i = 0; i < buffer_idx; i++)
+	{
+		undo_buffer[i].blk = InvalidBlockNumber;
+		undo_buffer[i].buf = InvalidBuffer;
+	}
+
+	xact_urec_info.urecptr = InvalidUndoRecPtr;
+
+	/* Reset the prepared index. */
+	prepare_idx = 0;
+	buffer_idx = 0;
+	prepared_urec_ptr = InvalidUndoRecPtr;
+
+	/*
+	 * max_prepared_undo limit is changed so free the allocated memory and
+	 * reset all the variable back to their default value.
+	 */
+	if (max_prepared_undo > MAX_PREPARED_UNDO)
+	{
+		pfree(undo_buffer);
+		pfree(prepared_undo);
+		undo_buffer = def_buffers;
+		prepared_undo = def_prepared;
+		max_prepared_undo = MAX_PREPARED_UNDO;
+	}
+}
+
+/*
+ * Unlock and release the undo buffers.  This step must be performed after
+ * exiting any critical section where we have perfomed undo actions.
+ */
+void
+UnlockReleaseUndoBuffers(void)
+{
+	int			i;
+
+	for (i = 0; i < buffer_idx; i++)
+		UnlockReleaseBuffer(undo_buffer[i].buf);
+
+	ResetUndoBuffers();
 }
 
 /*
