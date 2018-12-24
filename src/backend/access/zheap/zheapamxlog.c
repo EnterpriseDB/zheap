@@ -1837,7 +1837,7 @@ zheap_xlog_clean(XLogReaderState *record)
 			 */
 			tmppage = PageGetTempPageCopy(BufferGetPage(buffer));
 			ZPageRepairFragmentation(buffer, tmppage, *target_offnum,
-									 *space_required, true, &pruned);
+									 *space_required, true, &pruned, false);
 
 			/*
 			 * Pruning must be successful at redo time, otherwise the page
@@ -1940,6 +1940,7 @@ zheap_xlog_unused(XLogReaderState *record)
 	RelFileNode rnode;
 	BlockNumber blkno;
 	XLogRedoAction action;
+	bool		unused_set = false;
 
 	xlundohdr = (xl_undo_header *) XLogRecGetData(record);
 	xlrec = (xl_zheap_unused *) ((char *) xlundohdr + SizeOfUndoHeader);
@@ -2008,6 +2009,13 @@ zheap_xlog_unused(XLogReaderState *record)
 
 			itemid = PageGetItemId(page, unused[i]);
 			ItemIdSetUnusedExtended(itemid, xlrec->trans_slot_id);
+
+			/*
+			 * The flag is used to prevent re-evaluation of itemId,
+			 * clearing the set transaction slot information by
+			 * ZPageRepairFragmentation.
+			 */
+			unused_set = true;
 		}
 
 		PageSetUNDO(undorecord, buffer, xlrec->trans_slot_id, false, xid_epoch,
@@ -2025,7 +2033,7 @@ zheap_xlog_unused(XLogReaderState *record)
 			 */
 			tmppage = PageGetTempPageCopy(BufferGetPage(buffer));
 			ZPageRepairFragmentation(buffer, tmppage, InvalidOffsetNumber,
-									 0, true, &pruned);
+									 0, true, &pruned, unused_set);
 
 			/*
 			 * Pruning must be successful at redo time, otherwise the page

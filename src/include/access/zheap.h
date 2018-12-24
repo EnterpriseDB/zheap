@@ -160,7 +160,8 @@ extern XLogRecPtr log_zheap_clean(Relation reln, Buffer buffer,
 								  OffsetNumber *nowunused, int nunused,
 								  TransactionId latestRemovedXid, bool pruned);
 extern void ZPageRepairFragmentation(Buffer buffer, Page tmppage, OffsetNumber target_offnum,
-							Size space_required, bool NoTPDBufLock, bool *pruned);
+							Size space_required, bool NoTPDBufLock, bool *pruned,
+							bool unused_set);
 extern void compactify_ztuples(itemIdSort itemidbase, int nitems, Page page,
 							Page tmppage);
 

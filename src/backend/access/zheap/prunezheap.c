@@ -319,7 +319,7 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 		 * whether it has free pointers.
 		 */
 		ZPageRepairFragmentation(buffer, tmppage, target_offnum,
-								 space_required, false, &has_pruned);
+								 space_required, false, &has_pruned , false);
 
 		/*
 		 * Update the page's pd_prune_xid field to either zero, or the lowest
@@ -740,11 +740,15 @@ compactify_ztuples(itemIdSort itemidbase, int nitems, Page page, Page tmppage)
  * the page is repaired.  Now, we can always traverse the undo chain to find
  * the size of largest tuple in the chain, but we don't do that for now as it
  * can take time especially if there are many such tuples on the page.
+ *
+ * The unused_set boolean argument is used to prevent re-evaluation of
+ * itemId when it is already set with transaction slot information in the
+ * caller function.
  */
 void
 ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 						 OffsetNumber target_offnum, Size space_required,
-						 bool NoTPDBufLock, bool *pruned)
+						 bool NoTPDBufLock, bool *pruned, bool unused_set)
 {
 	Page		page = BufferGetPage(buffer);
 	Offset		pd_lower = ((PageHeader)page)->pd_lower;
@@ -897,12 +901,15 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 														false);
 					/*
 					 * It is quite possible that the item is showing some
-					 * valid transaction slot, but actual slot has been frozen.
-					 * This can happen when the slot belongs to TPD entry and
-					 * the corresponding TPD entry is pruned.
+					 * valid transaction slot, but actual slot has been
+					 * frozen. This can happen when the slot belongs to TPD
+					 * entry and the corresponding TPD entry is pruned. If
+					 * unused_set is true, it means that itemIds are already
+					 * set unused with transaction slot information by the
+					 * caller and we should not clear it.
 					 */
-					if (trans_slot != ZHTUP_SLOT_FROZEN &&
-						!TransactionIdDidCommit(xid))
+					if ((trans_slot != ZHTUP_SLOT_FROZEN &&
+						!TransactionIdDidCommit(xid)) || unused_set)
 						continue;
 				}
 			}

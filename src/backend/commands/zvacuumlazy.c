@@ -148,7 +148,7 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 	}
 
 	ZPageRepairFragmentation(buffer, tmppage, InvalidOffsetNumber, 0, false,
-							 &pruned);
+							 &pruned, false);
 
 	/*
 	 * Mark buffer dirty before we write WAL.
@@ -363,7 +363,7 @@ reacquire_slot:
 	}
 
 	ZPageRepairFragmentation(buffer, tmppage, InvalidOffsetNumber, 0, false,
-							 &pruned);
+							 &pruned, true);
 
 	/*
 	 * Mark buffer dirty before we write WAL.
