@@ -225,13 +225,13 @@ select * from rtest_v1;
 
 -- updates in a mergejoin
 update rtest_v1 set b = rtest_t2.b from rtest_t2 where rtest_v1.a = rtest_t2.a;
-select * from rtest_v1;
+select * from rtest_v1 order by a, b;
 insert into rtest_v1 select * from rtest_t3;
-select * from rtest_v1;
+select * from rtest_v1 order by a, b;
 update rtest_t1 set a = a + 10 where b > 30;
-select * from rtest_v1;
+select * from rtest_v1 order by a, b;
 update rtest_v1 set a = rtest_t3.a + 20 from rtest_t3 where rtest_v1.b = rtest_t3.b;
-select * from rtest_v1;
+select * from rtest_v1 order by a, b;
 
 --
 -- Test for constraint updates/deletes

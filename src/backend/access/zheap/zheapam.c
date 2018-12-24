@@ -832,7 +832,8 @@ reacquire_buffer:
 												   xid,
 												   &prev_urecptr,
 												   &lock_reacquired,
-												   false);
+												   false,
+												   NULL);
 		if (lock_reacquired)
 		{
 			UnlockReleaseBuffer(buffer);
@@ -1775,7 +1776,8 @@ zheap_tuple_updated:
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer,
 											   PageGetMaxOffsetNumber(page),
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired, false);
+											   &lock_reacquired, false,
+											   NULL);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
 
@@ -2201,6 +2203,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	xl_undolog_meta	undometa;
 	uint8		vm_status;
 	uint8		vm_status_new = 0;
+	bool		slot_reused_or_TPD_slot = false;
 
 	Assert(ItemPointerIsValid(otid));
 
@@ -2934,7 +2937,8 @@ zheap_tuple_updated:
 	 */
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer, max_offset,
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired, false);
+											   &lock_reacquired, false,
+											   &slot_reused_or_TPD_slot);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
 
@@ -2981,6 +2985,23 @@ zheap_tuple_updated:
 	oldtup.t_len = ItemIdGetLength(lp);
 
 	/*
+	 * If we've reused a slot or allocated a slot in TPD page, we've some
+	 * contention on the page. Hence, we perform non-inplace updates to other
+	 * buffer to distribute the tuple across pages. But, we should have a hard
+	 * limit for the optimization, else the number of blocks will be increasing.
+	 */
+	if(slot_reused_or_TPD_slot)
+	{
+		BlockNumber nblocks = RelationGetNumberOfBlocks(relation);
+		if (nblocks <= NUM_BLOCKS_FOR_NON_INPLACE_UPDATES)
+		{
+			use_inplace_update = false;
+		}
+		else
+			slot_reused_or_TPD_slot = false;
+	}
+
+	/*
 	 * If the slot is marked as frozen, the latest modifier of the tuple must be
 	 * frozen.
 	 */
@@ -3014,7 +3035,8 @@ zheap_tuple_updated:
 	 * updated tuple doesn't fit on current page or the toaster needs
 	 * to be activated
 	 */
-	if ((!use_inplace_update && newtupsize > pagefree) || need_toast)
+	Assert(!slot_reused_or_TPD_slot || !use_inplace_update);
+	if (slot_reused_or_TPD_slot || (!use_inplace_update && newtupsize > pagefree) || need_toast)
 	{
 		uint16	lock_old_infomask;
 		BlockNumber	oldblk, newblk;
@@ -3242,8 +3264,9 @@ reacquire_buffer:
 			vmbuffer_new = InvalidBuffer;
 		}
 
-		if (newtupsize > pagefree)
+		if (slot_reused_or_TPD_slot || newtupsize > pagefree)
 		{
+			Assert(!use_inplace_update);
 			newbuf = RelationGetBufferForZTuple(relation, zheaptup->t_len,
 												buffer, 0, NULL,
 												&vmbuffer_new, &vmbuffer);
@@ -3290,7 +3313,8 @@ reacquire_buffer:
 														   xid,
 														   &new_prev_urecptr,
 														   &lock_reacquired,
-														   false);
+														   false,
+														   NULL);
 			/*
 			 * We should get the same slot what we reserved previously because
 			 * our transaction information should already be there.  But, there
@@ -3824,7 +3848,18 @@ reacquire_buffer:
 	 * decide whether to trigger autovacuum.
 	 */
 	if (!use_inplace_update)
-		pgstat_count_heap_update(relation, false);
+	{
+		/*
+		 * If we've performed non-inplace update because of slot_reused_or_TPD_slot
+		 * optimization, we shouldn't increase the update stats. Else, it'll trigger
+		 * autovacuum unnecessarily. But, we want to autoanalyze the table peridically.
+		 * Hence, we increase the insert count.
+		 */
+		if (!slot_reused_or_TPD_slot)
+			pgstat_count_heap_update(relation, false);
+		else
+			pgstat_count_heap_insert(relation, 1);
+	}
 	else
 		pgstat_count_zheap_update(relation);
 
@@ -5050,7 +5085,7 @@ failed:
 	trans_slot_id = PageReserveTransactionSlot(relation, *buffer,
 											   PageGetMaxOffsetNumber(page),
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired, false);
+											   &lock_reacquired, false, NULL);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
 
@@ -5555,7 +5590,7 @@ lock_tuple:
 		 * that by releasing the buffer lock.
 		 */
 		trans_slot_id = PageReserveTransactionSlot(rel, buf, offnum, epoch, xid,
-											&prev_urecptr, &lock_reacquired, false);
+											&prev_urecptr, &lock_reacquired, false, NULL);
 		if (lock_reacquired)
 			goto lock_tuple;
 
@@ -7213,7 +7248,8 @@ retry_tpd_lock :
 											 xid,
 											 oldbuf_prev_urecptr,
 											 lock_reacquired,
-											 false);
+											 false,
+											 NULL);
 
 		/* Try again if the buffer lock is released and reacquired. */
 		if (*lock_reacquired)
@@ -7244,7 +7280,8 @@ retry_tpd_lock :
 														   xid,
 														   newbuf_prev_urecptr,
 														   lock_reacquired,
-														   always_extend);
+														   always_extend,
+														   NULL);
 	}
 	else
 	{
@@ -7256,7 +7293,8 @@ retry_tpd_lock :
 														   xid,
 														   newbuf_prev_urecptr,
 														   lock_reacquired,
-														   false);
+														   false,
+														   NULL);
 
 		/* Try again if the buffer lock is released and reacquired. */
 		if (*lock_reacquired)
@@ -7299,7 +7337,8 @@ retry_tpd_lock :
 											 xid,
 											 oldbuf_prev_urecptr,
 											 lock_reacquired,
-											 false);
+											 false,
+											 NULL);
 
 		/*
 		 * TPD block of old buffer must not change as we already have a
@@ -7350,12 +7389,16 @@ GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf)
  *
  *  Note that we always return array location of slot plus one as zeroth slot
  *  number is reserved for frozen slot number (ZHTUP_SLOT_FROZEN).
+ *
+ *  If we've reserved a transaction slot of a committed but not all-visible
+ *  transaction or a transaction slot from a TPD page, we set slot_reused_or_TPD_slot
++ *  as true, false otherwise.
  */
 int
 PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 						   uint32 epoch, TransactionId xid,
 						   UndoRecPtr *urec_ptr, bool *lock_reacquired,
-						   bool always_extend)
+						   bool always_extend, bool *slot_reused_or_TPD_slot)
 {
 	ZHeapPageOpaque	opaque;
 	Page	page;
@@ -7434,7 +7477,9 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 		tpd_e_slot = TPDPageGetSlotIfExists(relation, buf, offset, epoch,
 											xid, urec_ptr, true, true);
 		if (tpd_e_slot != InvalidXactSlotId)
+		{
 			return tpd_e_slot;
+		}
 	}
 
 
@@ -7469,6 +7514,8 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 			if (opaque->transinfo[slot_no].xid == InvalidTransactionId)
 			{
 				*urec_ptr = opaque->transinfo[slot_no].urec_ptr;
+				if(slot_reused_or_TPD_slot && *urec_ptr != InvalidUndoRecPtr)
+					*slot_reused_or_TPD_slot = true;
 				return (slot_no + 1);
 			}
 		}
@@ -7509,7 +7556,11 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 												 urec_ptr,
 												 always_extend);
 		if (slot_no != InvalidXactSlotId)
+		{
+			if(slot_reused_or_TPD_slot)
+				*slot_reused_or_TPD_slot = true;
 			return slot_no;
+		}
 	}
 
 	/* no transaction slot available */
@@ -11164,7 +11215,8 @@ reacquire_buffer:
 													   xid,
 													   &prev_urecptr,
 													   &lock_reacquired,
-													   false);
+													   false,
+													   NULL);
 			if (lock_reacquired)
 				goto reacquire_buffer;
 

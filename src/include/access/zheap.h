@@ -24,6 +24,13 @@
 #include "utils/snapshot.h"
 
 /*
+ * During updates, if we've reused a slot or allocated a slot in TPD page,
+ * we've some contention on the page. Hence, we perform non-inplace updates to
+ * other buffer to distribute tuple across pages. But, we should have a hard
+ * limit for the optimization, else the number of blocks will be increasing.
+ */
+#define		NUM_BLOCKS_FOR_NON_INPLACE_UPDATES 200
+/*
  * Additional bits used from page header for zheap specific pages.
  * See PageHeaderData.  We have considered to store these special flags
  * in zheap specific pages, but the pages have different structures for
@@ -102,7 +109,8 @@ extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
 									  OffsetNumber offset, uint32 epoch,
 									  TransactionId xid, UndoRecPtr *ureptr,
 									  bool *lock_reacquired,
-									  bool extend_if_required);
+									  bool extend_if_required,
+									  bool *slot_reused_or_TPD_slot);
 extern void MultiPageReserveTransSlot(Relation relation,
 									  Buffer oldbuf, Buffer newbuf,
 									  OffsetNumber oldbuf_offnum,

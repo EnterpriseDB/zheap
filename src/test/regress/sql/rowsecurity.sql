@@ -616,7 +616,10 @@ UPDATE only t1 SET b = b || '_updt' WHERE f_leak(b);
 -- returning clause with system column
 UPDATE only t1 SET b = b WHERE f_leak(b) RETURNING oid, *, t1;
 UPDATE t1 SET b = b WHERE f_leak(b) RETURNING *;
-UPDATE t1 SET b = b WHERE f_leak(b) RETURNING oid, *, t1;
+WITH updated as (
+UPDATE t1 SET b = b WHERE f_leak(b)
+RETURNING oid, *, t1)
+SELECT * FROM updated ORDER BY 1;
 
 -- updates with from clause
 EXPLAIN (COSTS OFF) UPDATE t2 SET b=t2.b FROM t3
