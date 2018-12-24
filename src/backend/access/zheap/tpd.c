@@ -523,11 +523,14 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 
 	/*
 	 * Call TPDPagePrune to ensure that it will create a space adjacent to
-	 * current offset for the new (bigger) TPD entry, if possible.
+	 * current offset for the new (bigger) TPD entry, if possible.  Note that,
+	 * we set can_free as false. When we free a TPD page, we've to take lock
+	 * on previous block. It's possible that we already have a lock on the same
+	 * (non-inplace update on other buffer). In that case, we'll wait on ourselves.
 	 */
 	entries_removed = TPDPagePrune(relation, old_tpd_buf, NULL, tpdItemOff,
 								   (new_size_tpd_entry - old_size_tpd_entry),
-								   true, &update_tpd_inplace, &tpd_pruned);
+								   false, &update_tpd_inplace, &tpd_pruned);
 	/*
 	 * If the item got pruned, then clear the TPD slot from the page and
 	 * return.  The entry can be pruned by ourselves or by anyone else
