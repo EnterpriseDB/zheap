@@ -3282,8 +3282,14 @@ reacquire_buffer:
 
 		if (lock_reacquired || (new_trans_slot_id == InvalidXactSlotId))
 		{
-			/* release the new buffer and lock on old buffer */
-			UnlockReleaseBuffer(newbuf);
+			/*
+			 * If non in-place update is happening on two different buffers,
+			 * then release the new buffer, and release the lock on old buffer.
+			 * Else, only release the lock on old buffer.
+			 */
+			if (buffer != newbuf)
+				UnlockReleaseBuffer(newbuf);
+
 			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 			UnlockReleaseTPDBuffers();
 
