@@ -79,11 +79,11 @@ SELECT * FROM itest2;
 
 UPDATE itest1 SET a = 101 WHERE a = 1;
 UPDATE itest1 SET a = DEFAULT WHERE a = 2;
-SELECT * FROM itest1;
+SELECT * FROM itest1 ORDER BY 1;
 
 UPDATE itest2 SET a = 101 WHERE a = 1;
 UPDATE itest2 SET a = DEFAULT WHERE a = 2;
-SELECT * FROM itest2;
+SELECT * FROM itest2 ORDER BY 1;
 
 
 -- COPY tests

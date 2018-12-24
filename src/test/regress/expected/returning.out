@@ -90,11 +90,11 @@ UPDATE foo SET f3 = f3*2
   1 | test | 84 | 123456
 (1 row)
 
-SELECT * FROM foo;
+SELECT * FROM foo ORDER BY 1;
  f1 |  f2  | f3 
 ----+------+----
-  2 | more | 42
   1 | test | 84
+  2 | more | 42
 (2 rows)
 
 DELETE FROM foo

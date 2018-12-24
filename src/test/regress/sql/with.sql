@@ -735,7 +735,7 @@ SELECT * FROM t
 UNION ALL
 SELECT * FROM t2;
 
-SELECT * FROM y;
+SELECT * FROM y ORDER BY 1;
 
 -- unconditional DO INSTEAD rule
 CREATE RULE y_rule AS ON DELETE TO y DO INSTEAD
@@ -746,7 +746,7 @@ WITH t AS (
 )
 SELECT * FROM t;
 
-SELECT * FROM y;
+SELECT * FROM y ORDER BY 1;
 
 DROP RULE y_rule ON y;
 
@@ -784,7 +784,7 @@ WITH RECURSIVE t(a) AS (
 )
 SELECT * FROM t2 JOIN y USING (a) ORDER BY a;
 
-SELECT * FROM y;
+SELECT * FROM y ORDER BY 1;
 
 -- data-modifying WITH in a modifying statement
 WITH t AS (
@@ -972,17 +972,17 @@ INSERT INTO child2 VALUES ( 23, 'c21' ),( 24, 'c22' );
 WITH rcte AS ( SELECT sum(id) AS totalid FROM parent )
 UPDATE parent SET id = id + totalid FROM rcte;
 
-SELECT * FROM parent;
+SELECT * FROM parent ORDER BY 1;
 
 WITH wcte AS ( INSERT INTO child1 VALUES ( 42, 'new' ) RETURNING id AS newid )
 UPDATE parent SET id = id + newid FROM wcte;
 
-SELECT * FROM parent;
+SELECT * FROM parent ORDER BY 1;
 
 WITH rcte AS ( SELECT max(id) AS maxid FROM parent )
 DELETE FROM parent USING rcte WHERE id = maxid;
 
-SELECT * FROM parent;
+SELECT * FROM parent ORDER BY 1;
 
 WITH wcte AS ( INSERT INTO child2 VALUES ( 42, 'new2' ) RETURNING id AS newid )
 DELETE FROM parent USING wcte WHERE id = newid;

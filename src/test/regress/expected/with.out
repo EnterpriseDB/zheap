@@ -1576,7 +1576,7 @@ SELECT * FROM t2;
  10
 (16 rows)
 
-SELECT * FROM y;
+SELECT * FROM y ORDER BY 1;
  a  
 ----
   0
@@ -1586,14 +1586,14 @@ SELECT * FROM y;
   4
   5
   6
- 11
   7
- 12
   8
- 13
   9
- 14
  10
+ 11
+ 12
+ 13
+ 14
  15
 (16 rows)
 
@@ -1609,7 +1609,7 @@ SELECT * FROM t;
  42
 (1 row)
 
-SELECT * FROM y;
+SELECT * FROM y ORDER BY 1;
  a  
 ----
   0
@@ -1619,14 +1619,14 @@ SELECT * FROM y;
   4
   5
   6
- 11
   7
- 12
   8
- 13
   9
- 14
  10
+ 11
+ 12
+ 13
+ 14
  15
  42
 (17 rows)
@@ -1691,31 +1691,31 @@ SELECT * FROM t2 JOIN y USING (a) ORDER BY a;
  4
 (5 rows)
 
-SELECT * FROM y;
+SELECT * FROM y ORDER BY 1;
  a  
 ----
   0
+  0
+  1
   1
   2
+  2
   3
+  3
+  4
   4
   5
   6
- 11
   7
- 12
   8
- 13
   9
- 14
  10
+ 11
+ 12
+ 13
+ 14
  15
  42
-  0
-  1
-  2
-  3
-  4
 (22 rows)
 
 -- data-modifying WITH in a modifying statement
@@ -2130,7 +2130,7 @@ INSERT INTO child1 VALUES ( 11, 'c11' ),( 12, 'c12' );
 INSERT INTO child2 VALUES ( 23, 'c21' ),( 24, 'c22' );
 WITH rcte AS ( SELECT sum(id) AS totalid FROM parent )
 UPDATE parent SET id = id + totalid FROM rcte;
-SELECT * FROM parent;
+SELECT * FROM parent ORDER BY 1;
  id | val 
 ----+-----
  72 | p1
@@ -2142,11 +2142,11 @@ SELECT * FROM parent;
 
 WITH wcte AS ( INSERT INTO child1 VALUES ( 42, 'new' ) RETURNING id AS newid )
 UPDATE parent SET id = id + newid FROM wcte;
-SELECT * FROM parent;
+SELECT * FROM parent ORDER BY 1;
  id  | val 
 -----+-----
- 114 | p1
   42 | new
+ 114 | p1
  124 | c11
  125 | c12
  136 | c21
@@ -2155,11 +2155,11 @@ SELECT * FROM parent;
 
 WITH rcte AS ( SELECT max(id) AS maxid FROM parent )
 DELETE FROM parent USING rcte WHERE id = maxid;
-SELECT * FROM parent;
+SELECT * FROM parent ORDER BY 1;
  id  | val 
 -----+-----
- 114 | p1
   42 | new
+ 114 | p1
  124 | c11
  125 | c12
  136 | c21
