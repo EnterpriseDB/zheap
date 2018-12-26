@@ -294,6 +294,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			prev_fork = uur->uur_fork;
 			prev_block = uur->uur_block;
 			save_urec_ptr = uur->uur_blkprev;
+			prev_blkprev = uur->uur_blkprev;
 
 			/*
 			 * Continue to process the records if this is not the last undo
