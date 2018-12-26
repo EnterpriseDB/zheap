@@ -1853,6 +1853,11 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
 		goto failed;
 	}
+	if (tpdItemOff > PageGetMaxOffsetNumber(tpdpage))
+	{
+		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+		goto failed;
+	}
 
 	itemId = PageGetItemId(tpdpage, tpdItemOff);
 
@@ -2293,6 +2298,8 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 		goto slot_is_frozen;
 	if (PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData)))
 		goto slot_is_frozen;
+	if (tpdItemOff > PageGetMaxOffsetNumber(tpdpage))
+		goto slot_is_frozen;
 
 	itemId = PageGetItemId(tpdpage, tpdItemOff);
 
@@ -2588,6 +2595,8 @@ GetTPDEntryData(Buffer heapbuf, int *num_entries, int *entry_size,
 	if (PageIsEmpty(tpdpage))
 		return NULL;
 	if (PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData)))
+		return NULL;
+	if (tpdItemOff > PageGetMaxOffsetNumber(tpdpage))
 		return NULL;
 
 	itemId = PageGetItemId(tpdpage, tpdItemOff);
@@ -2947,6 +2956,7 @@ TPDPageLock(Relation relation, Buffer heapbuf)
 				lastblock;
 	int		buf_idx;
 	bool	already_exists;
+	OffsetNumber	tpdItemOff;
 
 	phdr = (PageHeader) heappage;
 
@@ -2958,6 +2968,7 @@ TPDPageLock(Relation relation, Buffer heapbuf)
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
 	tpdblk = last_trans_slot_info.xid_epoch;
+	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
 
 	lastblock = RelationGetNumberOfBlocks(relation);
 
@@ -2990,6 +3001,11 @@ TPDPageLock(Relation relation, Buffer heapbuf)
 		goto failed;
 	}
 	else if (PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData)))
+	{
+		ReleaseLastTPDBuffer(tpd_buf);
+		goto failed;
+	}
+	else if (tpdItemOff > PageGetMaxOffsetNumber(tpdpage))
 	{
 		ReleaseLastTPDBuffer(tpd_buf);
 		goto failed;
