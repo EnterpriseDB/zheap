@@ -205,7 +205,7 @@ spgbuildempty(Relation index)
 	 * writes did not go through shared buffers and therefore a concurrent
 	 * checkpoint may have moved the redo pointer past our xlog record.
 	 */
-	smgrimmedsync(index->rd_smgr, INIT_FORKNUM);
+	smgrimmedsync(index->rd_smgr, INIT_FORKNUM, InvalidSegmentNumber);
 }
 
 /*

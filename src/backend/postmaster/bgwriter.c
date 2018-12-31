@@ -44,6 +44,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgwriter.h"
+#include "postmaster/checkpointer.h"
 #include "storage/bufmgr.h"
 #include "storage/buf_internals.h"
 #include "storage/condition_variable.h"

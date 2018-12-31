@@ -18,6 +18,15 @@
 #include "storage/block.h"
 #include "storage/relfilenode.h"
 
+/*
+ * The type used to identify segment numbers.  Generally, segments are an
+ * internal detail of individual storage manager implementations, but since
+ * they appear in various places to allow them to be passed between processes,
+ * it seemed worthwhile to have a typename.
+ */
+typedef uint32 SegmentNumber;
+
+#define InvalidSegmentNumber ((SegmentNumber) 0xFFFFFFFF)
 
 /*
  * smgr.c maintains a table of SMgrRelation objects, which are essentially
@@ -105,10 +114,9 @@ extern void smgrwriteback(SMgrRelation reln, ForkNumber forknum,
 extern BlockNumber smgrnblocks(SMgrRelation reln, ForkNumber forknum);
 extern void smgrtruncate(SMgrRelation reln, ForkNumber forknum,
 			 BlockNumber nblocks);
-extern void smgrimmedsync(SMgrRelation reln, ForkNumber forknum);
-extern void smgrpreckpt(void);
-extern void smgrsync(void);
-extern void smgrpostckpt(void);
+extern bool smgrimmedsync(SMgrRelation reln, ForkNumber forknum,
+						  SegmentNumber segno);
+
 extern void AtEOXact_SMgr(void);
 
 
@@ -133,16 +141,9 @@ extern void mdwriteback(SMgrRelation reln, ForkNumber forknum,
 extern BlockNumber mdnblocks(SMgrRelation reln, ForkNumber forknum);
 extern void mdtruncate(SMgrRelation reln, ForkNumber forknum,
 		   BlockNumber nblocks);
-extern void mdimmedsync(SMgrRelation reln, ForkNumber forknum);
-extern void mdpreckpt(void);
-extern void mdsync(void);
-extern void mdpostckpt(void);
+extern bool mdimmedsync(SMgrRelation reln, ForkNumber forknum,
+						SegmentNumber segno);
 
-extern void SetForwardFsyncRequests(void);
-extern void RememberFsyncRequest(RelFileNode rnode, ForkNumber forknum,
-					 BlockNumber segno);
-extern void ForgetRelationFsyncRequests(RelFileNode rnode, ForkNumber forknum);
-extern void ForgetDatabaseFsyncRequests(Oid dbid);
 extern void DropRelationFiles(RelFileNode *delrels, int ndelrels, bool isRedo);
 
 #endif							/* SMGR_H */

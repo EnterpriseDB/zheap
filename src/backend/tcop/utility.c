@@ -59,7 +59,7 @@
 #include "commands/view.h"
 #include "miscadmin.h"
 #include "parser/parse_utilcmd.h"
-#include "postmaster/bgwriter.h"
+#include "postmaster/checkpointer.h"
 #include "rewrite/rewriteDefine.h"
 #include "rewrite/rewriteRemove.h"
 #include "storage/fd.h"

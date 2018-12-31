@@ -47,6 +47,8 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgwriter.h"
+#include "postmaster/checkpointer.h"
+#include "postmaster/postmaster.h"
 #include "replication/syncrep.h"
 #include "storage/bufmgr.h"
 #include "storage/condition_variable.h"
@@ -56,6 +58,7 @@
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "storage/smgr.h"
+#include "storage/smgrsync.h"
 #include "storage/spin.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
@@ -108,10 +111,10 @@
  */
 typedef struct
 {
-	RelFileNode rnode;
+	int			type;
+	RelFileNode	rnode;
 	ForkNumber	forknum;
-	BlockNumber segno;			/* see md.c for special values */
-	/* might add a real request-type field later; not needed yet */
+	SegmentNumber segno;
 } CheckpointerRequest;
 
 typedef struct
@@ -1077,9 +1080,7 @@ RequestCheckpoint(int flags)
  * RelFileNodeBackend.
  *
  * segno specifies which segment (not block!) of the relation needs to be
- * fsync'd.  (Since the valid range is much less than BlockNumber, we can
- * use high values for special flags; that's all internal to md.c, which
- * see for details.)
+ * fsync'd.
  *
  * To avoid holding the lock for longer than necessary, we normally write
  * to the requests[] queue without checking for duplicates.  The checkpointer
@@ -1092,13 +1093,14 @@ RequestCheckpoint(int flags)
  * let the backend know by returning false.
  */
 bool
-ForwardFsyncRequest(RelFileNode rnode, ForkNumber forknum, BlockNumber segno)
+ForwardFsyncRequest(int type, RelFileNode rnode, ForkNumber forknum,
+					SegmentNumber segno)
 {
 	CheckpointerRequest *request;
 	bool		too_full;
 
 	if (!IsUnderPostmaster)
-		return false;			/* probably shouldn't even get here */
+		elog(ERROR, "ForwardFsyncRequest must not be called in single user mode");
 
 	if (AmCheckpointerProcess())
 		elog(ERROR, "ForwardFsyncRequest must not be called in checkpointer");
@@ -1130,6 +1132,7 @@ ForwardFsyncRequest(RelFileNode rnode, ForkNumber forknum, BlockNumber segno)
 
 	/* OK, insert request */
 	request = &CheckpointerShmem->requests[CheckpointerShmem->num_requests++];
+	request->type = type;
 	request->rnode = rnode;
 	request->forknum = forknum;
 	request->segno = segno;
@@ -1314,7 +1317,8 @@ AbsorbFsyncRequests(void)
 	LWLockRelease(CheckpointerCommLock);
 
 	for (request = requests; n > 0; request++, n--)
-		RememberFsyncRequest(request->rnode, request->forknum, request->segno);
+		RememberFsyncRequest(request->type, request->rnode, request->forknum,
+							 request->segno);
 
 	END_CRIT_SECTION();
 

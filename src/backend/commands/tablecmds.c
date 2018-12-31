@@ -11300,7 +11300,7 @@ copy_relation_data(SMgrRelation src, SMgrRelation dst,
 	 * here, they might still not be on disk when the crash occurs.
 	 */
 	if (relpersistence == RELPERSISTENCE_PERMANENT || copying_initfork)
-		smgrimmedsync(dst, forkNum);
+		smgrimmedsync(dst, forkNum, InvalidSegmentNumber);
 }
 
 /*

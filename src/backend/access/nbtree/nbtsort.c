@@ -1207,7 +1207,7 @@ _bt_load(BTWriteState *wstate, BTSpool *btspool, BTSpool *btspool2)
 	if (RelationNeedsWAL(wstate->index))
 	{
 		RelationOpenSmgr(wstate->index);
-		smgrimmedsync(wstate->index->rd_smgr, MAIN_FORKNUM);
+		smgrimmedsync(wstate->index->rd_smgr, MAIN_FORKNUM, InvalidBlockNumber);
 	}
 }
 

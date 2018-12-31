@@ -21,6 +21,7 @@
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/smgr.h"
+#include "storage/smgrsync.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 
@@ -58,10 +59,8 @@ typedef struct f_smgr
 	BlockNumber (*smgr_nblocks) (SMgrRelation reln, ForkNumber forknum);
 	void		(*smgr_truncate) (SMgrRelation reln, ForkNumber forknum,
 								  BlockNumber nblocks);
-	void		(*smgr_immedsync) (SMgrRelation reln, ForkNumber forknum);
-	void		(*smgr_pre_ckpt) (void);	/* may be NULL */
-	void		(*smgr_sync) (void);	/* may be NULL */
-	void		(*smgr_post_ckpt) (void);	/* may be NULL */
+	bool		(*smgr_immedsync) (SMgrRelation reln, ForkNumber forknum,
+								   SegmentNumber segno);
 } f_smgr;
 
 
@@ -81,10 +80,7 @@ static const f_smgr smgrsw[] = {
 		.smgr_writeback = mdwriteback,
 		.smgr_nblocks = mdnblocks,
 		.smgr_truncate = mdtruncate,
-		.smgr_immedsync = mdimmedsync,
-		.smgr_pre_ckpt = mdpreckpt,
-		.smgr_sync = mdsync,
-		.smgr_post_ckpt = mdpostckpt
+		.smgr_immedsync = mdimmedsync
 	}
 };
 
@@ -104,6 +100,14 @@ static void smgrshutdown(int code, Datum arg);
 static void add_to_unowned_list(SMgrRelation reln);
 static void remove_from_unowned_list(SMgrRelation reln);
 
+/*
+ * For now there is only one implementation.
+ */
+static inline int
+which_for_relfilenode(RelFileNode rnode)
+{
+	return 0;	/* we only have md.c at present */
+}
 
 /*
  *	smgrinit(), smgrshutdown() -- Initialize or shut down storage
@@ -117,6 +121,8 @@ void
 smgrinit(void)
 {
 	int			i;
+
+	smgrsync_init();
 
 	for (i = 0; i < NSmgr; i++)
 	{
@@ -185,7 +191,7 @@ smgropen(RelFileNode rnode, BackendId backend)
 		reln->smgr_targblock = InvalidBlockNumber;
 		reln->smgr_fsm_nblocks = InvalidBlockNumber;
 		reln->smgr_vm_nblocks = InvalidBlockNumber;
-		reln->smgr_which = 0;	/* we only have md.c at present */
+		reln->smgr_which = which_for_relfilenode(rnode);
 
 		/* mark it not open */
 		for (forknum = 0; forknum <= MAX_FORKNUM; forknum++)
@@ -726,17 +732,20 @@ smgrtruncate(SMgrRelation reln, ForkNumber forknum, BlockNumber nblocks)
  *	smgrimmedsync() -- Force the specified relation to stable storage.
  *
  *		Synchronously force all previous writes to the specified relation
- *		down to disk.
+ *		down to disk.  If segnum is >= 0, only applies to data in
+ *		one segment file.
  *
- *		This is useful for building completely new relations (eg, new
- *		indexes).  Instead of incrementally WAL-logging the index build
- *		steps, we can just write completed index pages to disk with smgrwrite
- *		or smgrextend, and then fsync the completed index file before
- *		committing the transaction.  (This is sufficient for purposes of
- *		crash recovery, since it effectively duplicates forcing a checkpoint
- *		for the completed index.  But it is *not* sufficient if one wishes
- *		to use the WAL log for PITR or replication purposes: in that case
- *		we have to make WAL entries as well.)
+ *		Used for checkpointing dirty files.
+ *
+ *		This can also be used for building completely new relations (eg, new
+ *		indexes).  Instead of incrementally WAL-logging the index build steps,
+ *		we can just write completed index pages to disk with smgrwrite or
+ *		smgrextend, and then fsync the completed index file before committing
+ *		the transaction.  (This is sufficient for purposes of crash recovery,
+ *		since it effectively duplicates forcing a checkpoint for the completed
+ *		index.  But it is *not* sufficient if one wishes to use the WAL log
+ *		for PITR or replication purposes: in that case we have to make WAL
+ *		entries as well.)
  *
  *		The preceding writes should specify skipFsync = true to avoid
  *		duplicative fsyncs.
@@ -744,57 +753,14 @@ smgrtruncate(SMgrRelation reln, ForkNumber forknum, BlockNumber nblocks)
  *		Note that you need to do FlushRelationBuffers() first if there is
  *		any possibility that there are dirty buffers for the relation;
  *		otherwise the sync is not very meaningful.
+ *
+ *		Fail to fsync raises an error, but non-existence of a requested
+ *		segment is reported with a false return value.
  */
-void
-smgrimmedsync(SMgrRelation reln, ForkNumber forknum)
+bool
+smgrimmedsync(SMgrRelation reln, ForkNumber forknum, SegmentNumber segno)
 {
-	smgrsw[reln->smgr_which].smgr_immedsync(reln, forknum);
-}
-
-
-/*
- *	smgrpreckpt() -- Prepare for checkpoint.
- */
-void
-smgrpreckpt(void)
-{
-	int			i;
-
-	for (i = 0; i < NSmgr; i++)
-	{
-		if (smgrsw[i].smgr_pre_ckpt)
-			smgrsw[i].smgr_pre_ckpt();
-	}
-}
-
-/*
- *	smgrsync() -- Sync files to disk during checkpoint.
- */
-void
-smgrsync(void)
-{
-	int			i;
-
-	for (i = 0; i < NSmgr; i++)
-	{
-		if (smgrsw[i].smgr_sync)
-			smgrsw[i].smgr_sync();
-	}
-}
-
-/*
- *	smgrpostckpt() -- Post-checkpoint cleanup.
- */
-void
-smgrpostckpt(void)
-{
-	int			i;
-
-	for (i = 0; i < NSmgr; i++)
-	{
-		if (smgrsw[i].smgr_post_ckpt)
-			smgrsw[i].smgr_post_ckpt();
-	}
+	return smgrsw[reln->smgr_which].smgr_immedsync(reln, forknum, segno);
 }
 
 /*

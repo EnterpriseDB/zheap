@@ -1405,7 +1405,7 @@ heap_create_init_fork(Relation rel)
 	RelationOpenSmgr(rel);
 	smgrcreate(rel->rd_smgr, INIT_FORKNUM, false);
 	log_smgrcreate(&rel->rd_smgr->smgr_rnode.node, INIT_FORKNUM);
-	smgrimmedsync(rel->rd_smgr, INIT_FORKNUM);
+	smgrimmedsync(rel->rd_smgr, INIT_FORKNUM, InvalidSegmentNumber);
 }
 
 /*
