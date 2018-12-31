@@ -1622,12 +1622,30 @@ check_tup_satisfies_update:
 												xwait_trans_slot,
 												xwait);
 
-				/*
-				 * For aborted updates, we must allow to reverify the tuple in
-				 * case it's values got changed.
-				 */
-				if (!isCommitted && has_update)
-					goto check_tup_satisfies_update;
+				if (!isCommitted)
+				{
+					TransactionId	current_tup_xid;
+
+					/*
+					 * For aborted updates, we must allow to reverify the tuple
+					 * in case it's values got changed.
+					 */
+					if (has_update)
+						goto check_tup_satisfies_update;
+
+					/*
+					 * While executing the undo action we have released the
+					 * buffer lock.  So if the tuple infomask got changed
+					 * while applying the undo action then we must reverify
+					 * the tuple.
+					 */
+					ZHeapTupleGetTransInfo(&zheaptup, buffer, NULL, NULL,
+										   &current_tup_xid, NULL, NULL,
+										   false);
+					if (xid_infomask_changed(zheaptup.t_data->t_infomask, infomask) ||
+						!TransactionIdEquals(current_tup_xid, xwait))
+						goto check_tup_satisfies_update;
+				}
 
 				if (!has_update)
 					can_continue = true;
@@ -2720,12 +2738,26 @@ check_tup_satisfies_update:
 				zheap_exec_pending_rollback(relation, buffer,
 											xwait_trans_slot, xwait);
 
-			/*
-			 * For aborted updates, we must allow to reverify the tuple in
-			 * case it's values got changed.
-			 */
-			if (!isCommitted && has_update)
-				goto check_tup_satisfies_update;
+			if (!isCommitted)
+			{
+				/*
+				 * For aborted updates, we must allow to reverify the tuple in
+				 * case it's values got changed.
+				 */
+				if (has_update)
+					goto check_tup_satisfies_update;
+
+				/*
+				 * While executing the undo action we have released the buffer
+				 * lock.  So if the tuple infomask got changed while applying
+				 * the undo action then we must reverify the tuple.
+				 */
+				ZHeapTupleGetTransInfo(&oldtup, buffer, NULL, NULL,
+								   &current_tup_xid, NULL, NULL, false);
+				if (xid_infomask_changed(oldtup.t_data->t_infomask, infomask) ||
+					!TransactionIdEquals(current_tup_xid, xwait))
+					goto check_tup_satisfies_update;
+			}
 
 			if (!has_update)
 				can_continue = true;
@@ -4846,6 +4878,8 @@ check_tup_satisfies_update:
 
 		if (TransactionIdIsValid(xwait) && TransactionIdDidAbort(xwait))
 		{
+			TransactionId   current_tup_xid;
+
 			/*
 			 * For aborted transaction, if the undo actions are not applied
 			 * yet, then apply them before modifying the page.
@@ -4860,6 +4894,17 @@ check_tup_satisfies_update:
 			 */
 			if (!ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask))
 				goto check_tup_satisfies_update;
+
+			/*
+			 * While executing the undo action we have released the buffer
+			 * lock.  So if the tuple infomask got changed while applying
+			 * the undo action then we must reverify the tuple.
+			 */
+			ZHeapTupleGetTransInfo(&zhtup, *buffer, NULL, NULL,
+								   &current_tup_xid, NULL, NULL, false);
+			if (xid_infomask_changed(zhtup.t_data->t_infomask, infomask) ||
+				!TransactionIdEquals(current_tup_xid, xwait))
+				goto check_tup_satisfies_update;		
 		}
 
 		/*
