@@ -162,7 +162,14 @@ zheap_xlog_insert(XLogReaderState *record)
 		data = XLogRecGetBlockData(record, 0, &datalen);
 
 		newlen = datalen - SizeOfZHeapHeader;
-		Assert(datalen > SizeOfZHeapHeader && newlen <= MaxZHeapTupleSize);
+
+		/*
+		 * For zheap, in case of "SELECT INTO" statement, length of data will
+		 * be equal to the zheap header size, but in heap, it will be always
+		 * greater than heap header size, because in heap, we have one byte
+		 * alignment in case of zero byte data length.
+		 */
+		Assert(datalen >= SizeOfZHeapHeader && newlen <= MaxZHeapTupleSize);
 		memcpy((char *) &xlhdr, data, SizeOfZHeapHeader);
 		data += SizeOfZHeapHeader;
 
