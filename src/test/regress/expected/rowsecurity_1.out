@@ -279,17 +279,17 @@ EXPLAIN (COSTS OFF) SELECT * FROM document WHERE f_leak(dtitle);
 (5 rows)
 
 EXPLAIN (COSTS OFF) SELECT * FROM document NATURAL JOIN category WHERE f_leak(dtitle);
-                        QUERY PLAN                         
------------------------------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Hash Join
-   Hash Cond: (category.cid = document.cid)
+   Hash Cond: (document.cid = category.cid)
    InitPlan 1 (returns $0)
      ->  Index Scan using uaccount_pkey on uaccount
            Index Cond: (pguser = CURRENT_USER)
-   ->  Seq Scan on category
+   ->  Seq Scan on document
+         Filter: ((dlevel <= $0) AND f_leak(dtitle))
    ->  Hash
-         ->  Seq Scan on document
-               Filter: ((dlevel <= $0) AND f_leak(dtitle))
+         ->  Seq Scan on category
 (9 rows)
 
 -- viewpoint from regress_rls_dave

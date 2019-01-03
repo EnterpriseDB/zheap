@@ -10,7 +10,7 @@ for i in range(0, 10):
         plpy.rollback()
 $$;
 CALL transaction_test1();
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
  0 | 
@@ -31,7 +31,7 @@ for i in range(0, 10):
     else:
         plpy.rollback()
 $$;
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
  0 | 
@@ -57,7 +57,7 @@ $$;
 SELECT transaction_test2();
 ERROR:  invalid transaction termination
 CONTEXT:  PL/Python function "transaction_test2"
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
 (0 rows)
@@ -75,7 +75,7 @@ CONTEXT:  Traceback (most recent call last):
   PL/Python function "transaction_test3", line 2, in <module>
     plpy.execute("CALL transaction_test1()")
 PL/Python function "transaction_test3"
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
 (0 rows)
@@ -111,7 +111,7 @@ for row in plpy.cursor("SELECT * FROM test2 ORDER BY x"):
     plpy.execute("INSERT INTO test1 (a) VALUES (%s)" % row['x'])
     plpy.commit()
 $$;
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
  0 | 
@@ -139,11 +139,11 @@ CONTEXT:  Traceback (most recent call last):
   PL/Python anonymous code block, line 3, in <module>
     plpy.execute("INSERT INTO test1 (a) VALUES (12/(%s-2))" % row['x'])
 PL/Python anonymous code block
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
   a  | b 
 -----+---
-  -6 | 
  -12 | 
+  -6 | 
 (2 rows)
 
 SELECT * FROM pg_cursors;
@@ -158,7 +158,7 @@ for row in plpy.cursor("SELECT * FROM test2 ORDER BY x"):
     plpy.execute("INSERT INTO test1 (a) VALUES (%s)" % row['x'])
     plpy.rollback()
 $$;
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
 (0 rows)
@@ -178,7 +178,7 @@ for row in plpy.cursor("SELECT * FROM test2 ORDER BY x"):
     else:
         plpy.rollback()
 $$;
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
  0 | 

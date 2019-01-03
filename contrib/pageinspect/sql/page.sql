@@ -35,18 +35,18 @@ DROP TABLE test1;
 
 -- check that using any of these functions with a partitioned table or index
 -- would fail
-create table test_partitioned (a int) partition by range (a);
+create table test_partitioned (a int) partition by range (a) USING heap;
 create index test_partitioned_index on test_partitioned (a);
 select get_raw_page('test_partitioned', 0); -- error about partitioned table
 select get_raw_page('test_partitioned_index', 0); -- error about partitioned index
 
 -- a regular table which is a member of a partition set should work though
-create table test_part1 partition of test_partitioned for values from ( 1 ) to (100);
+create table test_part1 partition of test_partitioned for values from ( 1 ) to (100) USING heap;
 select get_raw_page('test_part1', 0); -- get farther and error about empty table
 drop table test_partitioned;
 
 -- check null bitmap alignment for table whose number of attributes is multiple of 8
-create table test8 (f1 int, f2 int, f3 int, f4 int, f5 int, f6 int, f7 int, f8 int);
+create table test8 (f1 int, f2 int, f3 int, f4 int, f5 int, f6 int, f7 int, f8 int) USING heap;
 insert into test8(f1, f8) values (x'7f00007f'::int, 0);
 select t_bits, t_data from heap_page_items(get_raw_page('test8', 0));
 select tuple_data_split('test8'::regclass, t_data, t_infomask, t_infomask2, t_bits)

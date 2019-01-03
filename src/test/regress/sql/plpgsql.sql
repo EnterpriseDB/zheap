@@ -1481,7 +1481,7 @@ create function test_found()
   end;' language plpgsql;
 
 select test_found();
-select * from found_test_tbl;
+select * from found_test_tbl order by a;
 
 --
 -- Test set-returning functions for PL/pgSQL
@@ -1497,7 +1497,7 @@ BEGIN
 	RETURN;
 END;' language plpgsql;
 
-select * from test_table_func_rec();
+select * from test_table_func_rec() order by a;
 
 create function test_table_func_row() returns setof found_test_tbl as '
 DECLARE
@@ -1509,7 +1509,7 @@ BEGIN
 	RETURN;
 END;' language plpgsql;
 
-select * from test_table_func_row();
+select * from test_table_func_row() order by a;
 
 create function test_ret_set_scalar(int,int) returns setof int as '
 DECLARE

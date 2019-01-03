@@ -16,7 +16,7 @@ $$;
 
 CALL transaction_test1();
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 TRUNCATE test1;
@@ -34,7 +34,7 @@ foreach my $i (0..9) {
 }
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 TRUNCATE test1;
@@ -56,7 +56,7 @@ $$;
 
 SELECT transaction_test2();
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 -- also not allowed if procedure is called from a function
@@ -69,7 +69,7 @@ $$;
 
 SELECT transaction_test3();
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 -- DO block inside function
@@ -98,7 +98,7 @@ while (defined($row = spi_fetchrow($sth))) {
 }
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 -- check that this doesn't leak a holdable portal
 SELECT * FROM pg_cursors;
@@ -116,7 +116,7 @@ while (defined($row = spi_fetchrow($sth))) {
 }
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 SELECT * FROM pg_cursors;
 
@@ -133,7 +133,7 @@ while (defined($row = spi_fetchrow($sth))) {
 }
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 SELECT * FROM pg_cursors;
 
@@ -154,7 +154,7 @@ while (defined($row = spi_fetchrow($sth))) {
 }
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 SELECT * FROM pg_cursors;
 
