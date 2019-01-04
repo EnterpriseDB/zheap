@@ -142,6 +142,11 @@ Item
 </row>
 
 <row>
+ <entry><filename>pg_undo</filename></entry>
+ <entry>Subdirectory containing undo log meta-data files</entry>
+</row>
+
+<row>
  <entry><filename>pg_wal</filename></entry>
  <entry>Subdirectory containing WAL (Write Ahead Log) files</entry>
 </row>
@@ -690,6 +695,63 @@ fork.  The initialization fork is an empty table or index of the appropriate
 type.  When an unlogged table must be reset to empty due to a crash, the
 initialization fork is copied over the main fork, and any other forks are
 erased (they will be recreated automatically as needed).
+</para>
+
+</sect1>
+
+<sect1 id="undo-logs">
+
+<title>Undo Logs</title>
+
+<indexterm>
+ <primary>Undo Logs</primary>
+</indexterm>
+
+<para>
+Undo logs provide a place for access methods to store data that can be
+used to perform necessary cleanup operations after a transaction
+abort.  The data will be retained after a transaction abort until the
+access method successfully performs the required cleanup operations.
+After a transaction commit, undo data will be retained until the
+transaction is all-visible.  This makes it possible for access
+methods to use undo data to implement MVCC.  Since it most cases undo
+data is discarded very quickly, the undo system has been optimized to
+minimize writes to disk and to reuse existing files efficiently.
+</para>
+
+<para>
+Undo data exists in a 64-bit address space divided into 2^34 undo
+logs, each with a theoretical capacity of 1TB.  The first time a
+backend writes undo, it attaches to an existing undo log whose
+capacity is not yet exhausted and which is not currently being used by
+any other backend; or if no suitable undo log already exists, it
+creates a new one.  To avoid wasting space, each undo log is further
+divided into 1MB segment files, so that segments which are no longer
+needed can be removed (possibly recycling the underlying file by
+renaming it) and segments which are not yet needed do not need to be
+physically created on disk.  An undo segment file has a name like
+<filename>000004.0001200000</filename>, where
+<filename>000004</filename> is the undo log number and
+<filename>0001200000</filename> is the offset of the first byte
+held in the file.
+</para>
+
+<para>
+Each undo log exists in a certain tablespace and stores data for a certain
+persistence level.  Undo logs are global in the sense that they can hold undo
+data for any database.
+Undo files backing undo logs in the default tablespace are stored under
+<varname>PGDATA</varname><filename>/base/undo</filename>, and for other
+tablespaces under <filename>undo</filename> in the appropriate tablespace
+directory.  The system view <xref linkend="pg-stat-undo-logs-view"/> can be
+used to see the cluster's current list of undo logs along with their
+tablespaces and persistence levels.
+</para>
+
+<para>
+Undo log files contain standard page headers as described in the next section,
+but the format of the rest of the page is determined by the undo-aware
+access method that reads and writes it.
 </para>
 
 </sect1>
