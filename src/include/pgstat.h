@@ -624,6 +624,11 @@ typedef struct PgStat_StatTabEntry
 	PgStat_Counter tuples_inserted;
 	PgStat_Counter tuples_updated;
 	PgStat_Counter tuples_deleted;
+
+	/*
+	 * Counter tuples_hot_updated stores number of hot updates for heap table
+	 * and the number of inplace updates for zheap table.
+	 */
 	PgStat_Counter tuples_hot_updated;
 
 	PgStat_Counter n_live_tuples;
@@ -767,7 +772,9 @@ typedef enum
 	WAIT_EVENT_SYSLOGGER_MAIN,
 	WAIT_EVENT_WAL_RECEIVER_MAIN,
 	WAIT_EVENT_WAL_SENDER_MAIN,
-	WAIT_EVENT_WAL_WRITER_MAIN
+	WAIT_EVENT_WAL_WRITER_MAIN,
+	WAIT_EVENT_UNDO_DISCARD_WORKER_MAIN,
+	WAIT_EVENT_UNDO_LAUNCHER_MAIN
 } WaitEventActivity;
 
 /* ----------
@@ -916,6 +923,10 @@ typedef enum
 	WAIT_EVENT_UNDO_CHECKPOINT_READ,
 	WAIT_EVENT_UNDO_CHECKPOINT_SYNC,
 	WAIT_EVENT_UNDO_CHECKPOINT_WRITE,
+	WAIT_EVENT_UNDO_FILE_READ,
+	WAIT_EVENT_UNDO_FILE_WRITE,
+	WAIT_EVENT_UNDO_FILE_FLUSH,
+	WAIT_EVENT_UNDO_FILE_SYNC,
 	WAIT_EVENT_WALSENDER_TIMELINE_HISTORY_READ,
 	WAIT_EVENT_WAL_BOOTSTRAP_SYNC,
 	WAIT_EVENT_WAL_BOOTSTRAP_WRITE,
@@ -1320,6 +1331,7 @@ pgstat_report_wait_end(void)
 
 extern void pgstat_count_heap_insert(Relation rel, PgStat_Counter n);
 extern void pgstat_count_heap_update(Relation rel, bool hot);
+extern void pgstat_count_zheap_update(Relation rel);
 extern void pgstat_count_heap_delete(Relation rel);
 extern void pgstat_count_truncate(Relation rel);
 extern void pgstat_update_heap_dead_tuples(Relation rel, int delta);

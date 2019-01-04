@@ -41,7 +41,6 @@
 #include "pg_trace.h"
 
 
-
 /*
  * On Windows, we have to interpret EACCES as possibly meaning the same as
  * ENOENT, because if a file is unlinked-but-not-yet-gone on that platform,
