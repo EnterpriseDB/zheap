@@ -1919,6 +1919,17 @@ pg_stat_sys_tables| SELECT pg_stat_all_tables.relid,
     pg_stat_all_tables.autoanalyze_count
    FROM pg_stat_all_tables
   WHERE ((pg_stat_all_tables.schemaname = ANY (ARRAY['pg_catalog'::name, 'information_schema'::name])) OR (pg_stat_all_tables.schemaname ~ '^pg_toast'::text));
+pg_stat_undo_logs| SELECT pg_stat_get_undo_logs.logno,
+    pg_stat_get_undo_logs.persistence,
+    pg_stat_get_undo_logs.tablespace,
+    pg_stat_get_undo_logs.discard,
+    pg_stat_get_undo_logs.insert,
+    pg_stat_get_undo_logs."end",
+    pg_stat_get_undo_logs.xid,
+    pg_stat_get_undo_logs.pid,
+    pg_stat_get_undo_logs.prev_logno,
+    pg_stat_get_undo_logs.status
+   FROM pg_stat_get_undo_logs() pg_stat_get_undo_logs(logno, persistence, tablespace, discard, insert, "end", xid, pid, prev_logno, status);
 pg_stat_user_functions| SELECT p.oid AS funcid,
     n.nspname AS schemaname,
     p.proname AS funcname,

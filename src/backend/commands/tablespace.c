@@ -54,6 +54,7 @@
 #include "access/reloptions.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "access/undolog.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -486,6 +487,20 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 	 * is running concurrently.
 	 */
 	LWLockAcquire(TablespaceCreateLock, LW_EXCLUSIVE);
+
+	/*
+	 * Drop the undo logs in this tablespace.  This will fail (without
+	 * dropping anything) if there are undo logs that we can't afford to drop
+	 * because they contain non-discarded data or a transaction is in
+	 * progress.  Since we hold TablespaceCreateLock, no other session will be
+	 * able to attach to an undo log in this tablespace (or any tablespace
+	 * except default) concurrently.
+	 */
+	if (!DropUndoLogsInTablespace(tablespaceoid))
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("tablespace \"%s\" cannot be dropped because it contains non-empty undo logs",
+						tablespacename)));
 
 	/*
 	 * Try to remove the physical infrastructure.
@@ -1486,6 +1501,14 @@ tblspc_redo(XLogReaderState *record)
 	else if (info == XLOG_TBLSPC_DROP)
 	{
 		xl_tblspc_drop_rec *xlrec = (xl_tblspc_drop_rec *) XLogRecGetData(record);
+
+		/* This shouldn't be able to fail in recovery. */
+		LWLockAcquire(TablespaceCreateLock, LW_EXCLUSIVE);
+		if (!DropUndoLogsInTablespace(xlrec->ts_id))
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("tablespace cannot be dropped because it contains non-empty undo logs")));
+		LWLockRelease(TablespaceCreateLock);
 
 		/*
 		 * If we issued a WAL record for a drop tablespace it implies that
