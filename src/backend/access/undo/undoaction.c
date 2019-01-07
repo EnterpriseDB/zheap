@@ -1148,17 +1148,21 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 																false);
 
 							/*
-							 * For a non multi locker case, the slot in undo (and
-							 * hence on tuple) must be either a frozen slot or the
-							 * previous slot. Generally, we always set the multi-locker
-							 * bit on the tuple whenever the tuple slot is not frozen.
-							 * But, if the tuple is inserted/modified by the same
-							 * transaction that later takes a lock on it, we keep the
-							 * transaction slot as it is.
+							 * For a non multi locker case, the slot in undo
+							 * (hence on tuple) must be either a frozen slot or
+							 * the previous slot. It is quite possible that
+							 * previous slot may moved in TPD. Generally, we
+							 * always set the multi-locker bit on the tuple
+							 * whenever the tuple slot is not frozen. But, if
+							 * the tuple is inserted/modified by the same
+							 * transaction that later takes a lock on it, we
+							 * keep the transaction slot as it is.
 							 * See compute_new_xid_infomask for details.
 							 */
 							Assert(trans_slot == ZHTUP_SLOT_FROZEN ||
-								   trans_slot == prev_trans_slot);
+								   trans_slot == prev_trans_slot ||
+								   (ZHeapPageHasTPDSlot((PageHeader) page) &&
+									trans_slot == prev_trans_slot + 1));
 						}
 						else
 						{
