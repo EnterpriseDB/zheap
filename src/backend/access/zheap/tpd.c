@@ -1979,7 +1979,7 @@ void ReleaseLastTPDBufferByTPDBlock(BlockNumber tpdblk)
 int
 TPDPageReserveTransSlot(Relation relation, Buffer buf, OffsetNumber offnum,
 						UndoRecPtr *urec_ptr, bool *lock_reacquired,
-						bool always_extend)
+						bool always_extend, bool use_aborted_slot)
 {
 	TransInfo	*trans_slots;
 	int		slot_no;
@@ -2013,7 +2013,7 @@ TPDPageReserveTransSlot(Relation relation, Buffer buf, OffsetNumber offnum,
 
 	/* no transaction slot available, try to reuse some existing slot */
 	if (num_slots > 0 &&
-		PageFreezeTransSlots(relation, buf, lock_reacquired, trans_slots, num_slots))
+		PageFreezeTransSlots(relation, buf, lock_reacquired, trans_slots, num_slots, use_aborted_slot))
 	{
 		pfree(trans_slots);
 
