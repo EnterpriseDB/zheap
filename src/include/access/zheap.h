@@ -110,7 +110,8 @@ extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
 									  OffsetNumber offset, uint32 epoch,
 									  TransactionId xid, UndoRecPtr *ureptr,
 									  bool *lock_reacquired,
-									  bool extend_if_required);
+									  bool extend_if_required,
+									  bool use_aborted_slot);
 extern void MultiPageReserveTransSlot(Relation relation,
 									  Buffer oldbuf, Buffer newbuf,
 									  OffsetNumber oldbuf_offnum,
@@ -219,7 +220,7 @@ extern void zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots
 											  bool isFrozen, bool TPDSlot);
 extern bool PageFreezeTransSlots(Relation relation, Buffer buf,
 								 bool *lock_reacquired, TransInfo *transinfo,
-								 int num_slots);
+								 int num_slots, bool use_aborted_slot);
 extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 									int *completed_slots,
 									OffsetNumber *offset_completed_slots,
