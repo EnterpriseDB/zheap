@@ -104,9 +104,17 @@ DiscardWorkerMain(Datum main_arg)
 	while (!got_SIGTERM)
 	{
 		int			rc;
+
 		TransactionId OldestXmin, oldestXidHavingUndo;
 
-		OldestXmin = GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT);
+		/*
+		 * It is okay to ignore vacuum transaction here, as we can discard
+		 * the undo of the vacuuming transaction if the transaction is
+		 * committed.  We don't need to hold its undo for the visibility
+		 * purpose.
+		 */
+		OldestXmin = GetOldestXmin(NULL, PROCARRAY_AUTOVACUUM_FLAG |
+										 PROCARRAY_VACUUM_FLAG);
 
 		oldestXidHavingUndo = GetXidFromEpochXid(
 				pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
