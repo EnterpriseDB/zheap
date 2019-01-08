@@ -873,7 +873,8 @@ reacquire_buffer:
 												   xid,
 												   &prev_urecptr,
 												   &lock_reacquired,
-												   false);
+												   false,
+												   true);
 		if (lock_reacquired)
 		{
 			UnlockReleaseBuffer(buffer);
@@ -1787,7 +1788,7 @@ zheap_tuple_updated:
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer,
 											   PageGetMaxOffsetNumber(page),
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired, false);
+											   &lock_reacquired, false, true);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
 
@@ -2921,7 +2922,7 @@ zheap_tuple_updated:
 	 */
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer, max_offset,
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired, false);
+											   &lock_reacquired, false, true);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
 
@@ -3277,7 +3278,8 @@ reacquire_buffer:
 														   xid,
 														   &new_prev_urecptr,
 														   &lock_reacquired,
-														   false);
+														   false,
+														   true);
 			/*
 			 * We should get the same slot what we reserved previously because
 			 * our transaction information should already be there.  But, there
@@ -5044,7 +5046,7 @@ failed:
 	trans_slot_id = PageReserveTransactionSlot(relation, *buffer,
 											   PageGetMaxOffsetNumber(page),
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired, false);
+											   &lock_reacquired, false, true);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
 
@@ -5549,8 +5551,10 @@ lock_tuple:
 		 * operation.  It will be costly to wait for getting the slot, but we do
 		 * that by releasing the buffer lock.
 		 */
-		trans_slot_id = PageReserveTransactionSlot(rel, buf, offnum, epoch, xid,
-											&prev_urecptr, &lock_reacquired, false);
+		trans_slot_id = PageReserveTransactionSlot(rel, buf, offnum, epoch,
+												   xid, &prev_urecptr,
+												   &lock_reacquired, false,
+												   true);
 		if (lock_reacquired)
 			goto lock_tuple;
 
@@ -7080,12 +7084,14 @@ MultiPageReserveTransSlot(Relation relation,
 	int			slot_id;
 	BlockNumber	oldbuf_tpd_blk = InvalidBlockNumber,
 				newbuf_tpd_blk = InvalidBlockNumber;
+	bool		use_aborted_slot;
 
 retry_tpd_lock :
 
 	/* Initialize flags with default values. */
 	always_extend = false;
 	is_tpdblk_order_changed = false;
+	use_aborted_slot = true;
 
 	/* Get corresponding pages from old and new buffers. */
 	oldbuf_page = BufferGetPage(oldbuf);
@@ -7111,6 +7117,20 @@ retry_tpd_lock :
 			is_tpdblk_order_changed = true;
 	}
 
+	/*
+	 * To avoid deadlock risks, we can't reuse aborted transaction slots
+	 * while reserving transaction slot on new buffer block in case the
+	 * new block is smaller than old block.  This is because while reusing
+	 * the aborted transaction's slot we need to release the lock on page,
+	 * apply the undo actions and then reacquire the lock.  When we try
+	 * try to reacquire the lock on smaller block, it will break our rule
+	 * "lock lower number block first".  We don't need to bother about oldbuf
+	 * as by now we already have reserved slot on old buffer, here, we will
+	 * just get our previously reserved slot.
+	 */
+	if (BufferGetBlockNumber(newbuf) < BufferGetBlockNumber(oldbuf))
+		use_aborted_slot = false;
+
 	/* Now reserve the slots in both the pages. */
 	if (!is_tpdblk_order_changed)
 	{
@@ -7122,7 +7142,8 @@ retry_tpd_lock :
 											 xid,
 											 oldbuf_prev_urecptr,
 											 lock_reacquired,
-											 false);
+											 false,
+											 true);
 
 		/* Try again if the buffer lock is released and reacquired. */
 		if (*lock_reacquired)
@@ -7153,7 +7174,8 @@ retry_tpd_lock :
 														   xid,
 														   newbuf_prev_urecptr,
 														   lock_reacquired,
-														   always_extend);
+														   always_extend,
+														   use_aborted_slot);
 	}
 	else
 	{
@@ -7165,7 +7187,8 @@ retry_tpd_lock :
 														   xid,
 														   newbuf_prev_urecptr,
 														   lock_reacquired,
-														   false);
+														   false,
+														   use_aborted_slot);
 
 		/* Try again if the buffer lock is released and reacquired. */
 		if (*lock_reacquired)
@@ -7208,7 +7231,8 @@ retry_tpd_lock :
 											 xid,
 											 oldbuf_prev_urecptr,
 											 lock_reacquired,
-											 false);
+											 false,
+											 true);
 
 		/*
 		 * TPD block of old buffer must not change as we already have a
@@ -7264,7 +7288,7 @@ int
 PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 						   uint32 epoch, TransactionId xid,
 						   UndoRecPtr *urec_ptr, bool *lock_reacquired,
-						   bool always_extend)
+						   bool always_extend, bool use_aborted_slot)
 {
 	ZHeapPageOpaque	opaque;
 	Page	page;
@@ -7354,7 +7378,8 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 	}
 
 	/* no transaction slot available, try to reuse some existing slot */
-	if (PageFreezeTransSlots(relation, buf, lock_reacquired, NULL, 0))
+	if (PageFreezeTransSlots(relation, buf, lock_reacquired, NULL, 0,
+							 use_aborted_slot))
 	{
 		/*
 		 * If the lock is reacquired inside, then we allow callers to reverify
@@ -7401,7 +7426,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 
 		tpd_e_slot = TPDPageReserveTransSlot(relation, buf, offset,
 											 urec_ptr, lock_reacquired,
-											 always_extend);
+											 always_extend, use_aborted_slot);
 
 		if (tpd_e_slot != InvalidXactSlotId)
 			return tpd_e_slot;
@@ -7692,6 +7717,9 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
  *	In either case, we should be able to detect the visibility of tuple based
  *	on the latest locker information.
  *
+ *	use_aborted_slot indicates whether we can reuse the slot of aborted
+ *  transaction or not.
+ *
  *	This function assumes that the caller already has Exclusive lock on the
  *	buffer.
  *
@@ -7700,7 +7728,8 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
  */
 bool
 PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
-					 TransInfo *transinfo, int num_slots)
+					 TransInfo *transinfo, int num_slots,
+					 bool use_aborted_slot)
 {
 	uint64	oldestXidWithEpochHavingUndo;
 	int		slot_no;
@@ -7972,7 +8001,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		result = true;
 		goto cleanup;
 	}
-	else if (nAbortedXactSlots)
+	else if (nAbortedXactSlots && use_aborted_slot)
 	{
 		int		i;
 		int		slot_no;
@@ -7995,11 +8024,21 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 
 		/*
+		 * XXX We release the TPD buffers here even when we are operating on
+		 * heap page slots as we might need to require them during the
+		 * processing of undo actions.  We can optimize it by passing some
+		 * flag, but that seems over complication as we anyway need to release
+		 * and reaquire the lock on TPD buffers after processing the undo
+		 * actions.
+		 *
+		 * It is okay to release all the TPD buffers here as the callers will
+		 * anyway reacquire the lock heap and tpd buffers again.
+		 *
 		 * Instead of just unlocking the TPD buffer like heap buffer its ok to
 		 * unlock and release, because next time while trying to reserve the
 		 * slot if we get the slot in TPD then anyway we will pin it again.
 		 */
-		if (TPDSlot)
+		if (TPDSlot || ZHeapPageHasTPDSlot((PageHeader) page))
 			UnlockReleaseTPDBuffers();
 
 		for (i = 0; i < nAbortedXactSlots; i++)
@@ -8012,6 +8051,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 												  xid[i],
 												  slot_no);
 		}
+
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 		*lock_reacquired = true;
 		pfree(urecptr);
@@ -11293,7 +11333,8 @@ reacquire_buffer:
 													   xid,
 													   &prev_urecptr,
 													   &lock_reacquired,
-													   false);
+													   false,
+													   true);
 			if (lock_reacquired)
 				goto reacquire_buffer;
 

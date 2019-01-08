@@ -259,7 +259,8 @@ reacquire_slot:
 											   xid,
 											   &prev_urecptr,
 											   &lock_reacquired,
-											   false);
+											   false,
+											   true);
 	if (lock_reacquired)
 		goto reacquire_slot;
 
