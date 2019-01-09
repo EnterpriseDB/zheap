@@ -203,15 +203,6 @@ typedef struct UndoLogMetaData
 	UndoLogOffset discard;			/* oldest data needed (tail) */
 	UndoLogOffset last_xact_start;	/* last transactions start undo offset */
 
-	/*
-	 * If the same transaction is split over two undo logs then it stored the
-	 * previous log number, see file header comments of undorecord.c for its
-	 * usage.
-	 *
-	 * Fixme: See if we can find other way to handle it instead of keeping
-	 * previous log number.
-	 */
-	UndoLogNumber prevlogno;		/* Previous undo log number */
 	bool	is_first_rec;
 
 	/*
@@ -327,6 +318,8 @@ void UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);
 extern void undolog_redo(XLogReaderState *record);
 /* Discard the undo logs for temp tables */
 extern void TempUndoDiscard(UndoLogNumber);
+extern UndoRecPtr UndoLogStateGetAndClearPrevLogXactUrp(void);
+extern UndoLogNumber UndoLogAmAttachedTo(UndoPersistence persistence);
 extern Oid UndoLogStateGetDatabaseId(void);
 
 #endif
