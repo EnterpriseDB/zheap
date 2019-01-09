@@ -56,6 +56,7 @@
 #include "access/xlog.h"
 #include "access/undorecord.h"
 #include "access/undoinsert.h"
+#include "access/undolog_xlog.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
@@ -82,10 +83,20 @@
 #define MAX_PREPARED_UNDO 2
 
 /*
- * Consider buffers needed for updating previous transaction's
- * starting undo record. Hence increased by 1.
+ * This defines the max number of previous xact info we need to update.
+ * Usually it's 1 for updating next link of previous transaction's header
+ * if we are starting a new transaction. But, in some cases where the same
+ * transaction is spilled to the next log that time we update our own
+ * transaction's header in previous undo log as well as the header of the
+ * previous transaction in the new log.
  */
-#define MAX_UNDO_BUFFERS       (MAX_PREPARED_UNDO + 1) * MAX_BUFFER_PER_UNDO
+#define MAX_XACT_UNDO_INFO	2
+
+/*
+ * Consider buffers needed for updating previous transaction's
+ * starting undo record as well.
+ */
+#define MAX_UNDO_BUFFERS       (MAX_PREPARED_UNDO + MAX_XACT_UNDO_INFO) * MAX_BUFFER_PER_UNDO
 
 /*
  * Previous top transaction id which inserted the undo.  Whenever a new main
@@ -121,7 +132,6 @@ static PreparedUndoSpace def_prepared[MAX_PREPARED_UNDO];
 static int	prepare_idx;
 static int	max_prepared_undo = MAX_PREPARED_UNDO;
 static UndoRecPtr prepared_urec_ptr = InvalidUndoRecPtr;
-static bool update_prev_header = false;
 
 /*
  * By default prepared_undo and undo_buffer points to the static memory.
@@ -147,15 +157,15 @@ typedef struct XactUndoRecordInfo
 	UnpackedUndoRecord uur;		/* undo record header */
 } XactUndoRecordInfo;
 
-static XactUndoRecordInfo xact_urec_info;
+static XactUndoRecordInfo xact_urec_info[MAX_XACT_UNDO_INFO];
+static int	xact_urec_info_idx;
 
 /* Prototypes for static functions. */
 static UnpackedUndoRecord *UndoGetOneRecord(UnpackedUndoRecord *urec,
 				 UndoRecPtr urp, RelFileNode rnode,
 				 UndoPersistence persistence);
 static void UndoRecordPrepareTransInfo(XLogReaderState *xlog_record,
-						   UndoRecPtr urecptr,
-						   bool log_switched);
+						   UndoRecPtr urecptr, UndoRecPtr xact_urp);
 static int UndoGetBufferSlot(RelFileNode rnode, BlockNumber blk,
 				  ReadBufferMode rbm,
 				  UndoPersistence persistence,
@@ -211,13 +221,11 @@ UndoRecordIsValid(UndoLogControl * log, UndoRecPtr urp)
  */
 static void
 UndoRecordPrepareTransInfo(XLogReaderState *xlog_record, UndoRecPtr urecptr,
-						   bool log_switched)
+						   UndoRecPtr xact_urp)
 {
-	UndoRecPtr	xact_urp;
 	Buffer		buffer = InvalidBuffer;
 	BlockNumber cur_blk;
 	RelFileNode rnode;
-	UndoLogNumber logno = UndoRecPtrGetLogNo(urecptr);
 	UndoLogControl *log;
 	Page		page;
 	int			already_decoded = 0;
@@ -225,38 +233,20 @@ UndoRecordPrepareTransInfo(XLogReaderState *xlog_record, UndoRecPtr urecptr,
 	int			bufidx;
 	int			index = 0;
 
-	log = UndoLogGet(logno);
+	/*
+	 * The absence of previous transaction's undo indicate that this backend
+	 * is preparing its first undo in which case we have nothing to update.
+	 */
+	if (!UndoRecPtrIsValid(xact_urp))
+		return;
 
-	if (log_switched)
-	{
-		Assert(log->meta.prevlogno != InvalidUndoLogNumber);
-		log = UndoLogGet(log->meta.prevlogno);
-	}
+	log = UndoLogGet(UndoRecPtrGetLogNo(xact_urp));
 
 	/*
 	 * Temporary undo logs are discarded on transaction commit so we don't
 	 * need to do anything.
 	 */
 	if (log->meta.persistence == UNDO_TEMP)
-		return;
-
-	/*
-	 * We can read the previous transaction's location without locking,
-	 * because only the backend attached to the log can write to it (or we're
-	 * in recovery).
-	 */
-	Assert(AmAttachedToUndoLog(log) || InRecovery || log_switched);
-
-	if (log->meta.last_xact_start == 0)
-		xact_urp = InvalidUndoRecPtr;
-	else
-		xact_urp = MakeUndoRecPtr(log->logno, log->meta.last_xact_start);
-
-	/*
-	 * The absence of previous transaction's undo indicate that this backend
-	 * is preparing its first undo in which case we have nothing to update.
-	 */
-	if (!UndoRecPtrIsValid(xact_urp))
 		return;
 
 	/*
@@ -290,12 +280,12 @@ UndoRecordPrepareTransInfo(XLogReaderState *xlog_record, UndoRecPtr urecptr,
 								   log->meta.persistence,
 								   xlog_record);
 
-		xact_urec_info.idx_undo_buffers[index++] = bufidx;
+		xact_urec_info[xact_urec_info_idx].idx_undo_buffers[index++] = bufidx;
 		buffer = undo_buffer[bufidx].buf;
 		page = BufferGetPage(buffer);
 
-		if (UnpackUndoRecord(&xact_urec_info.uur, page, starting_byte,
-							 &already_decoded, true))
+		if (UnpackUndoRecord(&xact_urec_info[xact_urec_info_idx].uur, page,
+							 starting_byte, &already_decoded, true))
 			break;
 
 		/* Could not fetch the complete header so go to the next block. */
@@ -303,8 +293,9 @@ UndoRecordPrepareTransInfo(XLogReaderState *xlog_record, UndoRecPtr urecptr,
 		cur_blk++;
 	}
 
-	xact_urec_info.uur.uur_next = urecptr;
-	xact_urec_info.urecptr = xact_urp;
+	xact_urec_info[xact_urec_info_idx].uur.uur_next = urecptr;
+	xact_urec_info[xact_urec_info_idx].urecptr = xact_urp;
+	xact_urec_info_idx++;
 	LWLockRelease(&log->discard_lock);
 }
 
@@ -342,11 +333,11 @@ PrepareUpdateUndoActionProgress(XLogReaderState *xlog_record,
 								   log->meta.persistence,
 								   xlog_record);
 
-		xact_urec_info.idx_undo_buffers[index++] = bufidx;
+		xact_urec_info[xact_urec_info_idx].idx_undo_buffers[index++] = bufidx;
 		buffer = undo_buffer[bufidx].buf;
 		page = BufferGetPage(buffer);
 
-		if (UnpackUndoRecord(&xact_urec_info.uur, page, starting_byte,
+		if (UnpackUndoRecord(&xact_urec_info[xact_urec_info_idx].uur, page, starting_byte,
 							 &already_decoded, true))
 			break;
 
@@ -354,8 +345,9 @@ PrepareUpdateUndoActionProgress(XLogReaderState *xlog_record,
 		cur_blk++;
 	}
 
-	xact_urec_info.urecptr = urecptr;
-	xact_urec_info.uur.uur_progress = progress;
+	xact_urec_info[xact_urec_info_idx].urecptr = urecptr;
+	xact_urec_info[xact_urec_info_idx].uur.uur_progress = progress;
+	xact_urec_info_idx++;
 }
 
 /*
@@ -365,18 +357,18 @@ PrepareUpdateUndoActionProgress(XLogReaderState *xlog_record,
  * This will just overwrite the undo header not the data.
  */
 void
-UndoRecordUpdateTransInfo(void)
+UndoRecordUpdateTransInfo(int idx)
 {
-	UndoLogNumber logno = UndoRecPtrGetLogNo(xact_urec_info.urecptr);
+	UndoLogNumber logno = UndoRecPtrGetLogNo(xact_urec_info[idx].urecptr);
 	Page		page;
 	int			starting_byte;
 	int			already_written = 0;
-	int			idx = 0;
+	int			i = 0;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	UndoLogControl *log;
 
 	log = UndoLogGet(logno);
-	urec_ptr = xact_urec_info.urecptr;
+	urec_ptr = xact_urec_info[idx].urecptr;
 
 	/*
 	 * Acquire the discard lock before accessing the undo record so that
@@ -398,12 +390,12 @@ UndoRecordUpdateTransInfo(void)
 		Buffer		buffer;
 		int			buf_idx;
 
-		buf_idx = xact_urec_info.idx_undo_buffers[idx];
+		buf_idx = xact_urec_info[idx].idx_undo_buffers[i];
 		buffer = undo_buffer[buf_idx].buf;
 		page = BufferGetPage(buffer);
 
 		/* Overwrite the previously written undo. */
-		if (InsertUndoRecord(&xact_urec_info.uur, page, starting_byte, &already_written, true))
+		if (InsertUndoRecord(&xact_urec_info[idx].uur, page, starting_byte, &already_written, true))
 		{
 			MarkBufferDirty(buffer);
 			break;
@@ -411,7 +403,7 @@ UndoRecordUpdateTransInfo(void)
 
 		MarkBufferDirty(buffer);
 		starting_byte = UndoLogBlockHeaderSize;
-		idx++;
+		i++;
 
 		Assert(idx < MAX_BUFFER_PER_UNDO);
 	} while (true);
@@ -522,6 +514,8 @@ UndoRecordAllocate(UnpackedUndoRecord *undorecords, int nrecords,
 	UndoLogControl *log;
 	UndoRecordSize size;
 	UndoRecPtr	urecptr;
+	UndoRecPtr	prevlogurp = InvalidUndoRecPtr;
+	UndoLogNumber	prevlogno = InvalidUndoLogNumber;
 	bool		need_xact_hdr = false;
 	bool		log_switched = false;
 	int			i;
@@ -557,6 +551,21 @@ resize:
 			urec->uur_xidepoch = GetEpochForXid(txid);
 			urec->uur_progress = 0;
 
+			if (log_switched)
+			{
+				/*
+				 * If undo log is switched then during rollback we can not
+				 * go to the previous undo record of the transaction by prevlen
+				 * so we store the previous undo record pointer in the
+				 * transaction header.
+				 */
+				log = UndoLogGet(prevlogno);
+				urec->uur_prevurp = MakeUndoRecPtr(prevlogno,
+										log->meta.insert - log->meta.prevlen);
+			}
+			else
+				urec->uur_prevurp = InvalidUndoRecPtr;
+
 			/* During recovery, get the database id from the undo log state. */
 			if (InRecovery)
 				urec->uur_dbid = UndoLogStateGetDatabaseId();
@@ -576,6 +585,7 @@ resize:
 			urec->uur_xidepoch = 0;
 			urec->uur_dbid = 0;
 			urec->uur_progress = 0;
+			urec->uur_prevurp = InvalidUndoRecPtr;
 		}
 
 		/* Calculate the size of the undo record based on the info required. */
@@ -583,10 +593,41 @@ resize:
 		size += UndoRecordExpectedSize(urec);
 	}
 
+	/*
+	 * Check whether the undo log got switched while we are in a transaction.
+	 */
 	if (InRecovery)
+	{
+		/*
+		 * During recovery we can directly identify by checking the prevlogurp from
+		 * the MyUndoLogState which is stored in it by WAL and we immediately reset
+		 * it.
+		 */
+		prevlogurp = UndoLogStateGetAndClearPrevLogXactUrp();
 		urecptr = UndoLogAllocateInRecovery(txid, size, upersistence);
+		if (UndoRecPtrIsValid(prevlogurp))
+		{
+			prevlogno = UndoRecPtrGetLogNo(prevlogurp);
+			log_switched = true;
+		}
+	}
 	else
+	{
+		/*
+		 * Just check the current log which we are attached to, and if this
+		 * got switched after the allocation then the undo log got switched.
+		 */
+		prevlogno = UndoLogAmAttachedTo(upersistence);
 		urecptr = UndoLogAllocate(size, upersistence);
+		if (!need_xact_hdr &&
+			prevlogno != InvalidUndoLogNumber &&
+			prevlogno != UndoRecPtrGetLogNo(urecptr))
+		{
+			log = UndoLogGet(prevlogno);
+			prevlogurp = MakeUndoRecPtr(prevlogno, log->meta.last_xact_start);
+			log_switched = true;
+		}
+	}
 
 	log = UndoLogGet(UndoRecPtrGetLogNo(urecptr));
 
@@ -596,23 +637,14 @@ resize:
 	Assert(AmAttachedToUndoLog(log) || InRecovery);
 
 	/*
-	 * We can consider the log as switched if this is the first record of the
-	 * log and not the first record of the transaction i.e. same transaction
-	 * continued from the previous log.
-	 */
-	if ((UndoRecPtrGetOffset(urecptr) == UndoLogBlockHeaderSize) &&
-		log->meta.prevlogno != InvalidUndoLogNumber)
-		log_switched = true;
-
-	/*
 	 * If we've rewound all the way back to the start of the transaction by
 	 * rolling back the first subtransaction (which we can't detect until
-	 * after we've allocated some space), we'll need a new transaction header.
-	 * If we weren't already generating one, then do it now.
+	 * after we've allocated some space) or the undo log got switched,
+	 * we'll need a new transaction header. If we weren't already generating
+	 * one, then do it now.
 	 */
 	if (!need_xact_hdr &&
-		(log->meta.insert == log->meta.last_xact_start ||
-		 UndoRecPtrGetOffset(urecptr) == UndoLogBlockHeaderSize))
+		(log->meta.insert == log->meta.last_xact_start || log_switched))
 	{
 		need_xact_hdr = true;
 		urec->uur_info = 0;		/* force recomputation of info bits */
@@ -627,19 +659,27 @@ resize:
 		undometa->xid = log->xid;
 	}
 
-	/* Update the previous transaction's start undo record, if required. */
 	if (need_xact_hdr || log_switched)
 	{
+		/*
+		 * If the undo log is switched then we need to update our own
+		 * transaction header in the previous log as well as the previous
+		 * transaction's header in the new log.  Read detail comments
+		 * for multi-log handling atop this file.
+		 */
+		if (log_switched)
+			UndoRecordPrepareTransInfo(xlog_record, urecptr, prevlogurp);
+
 		/* Don't update our own start header. */
 		if (log->meta.last_xact_start != log->meta.insert)
-			UndoRecordPrepareTransInfo(xlog_record, urecptr, log_switched);
+			UndoRecordPrepareTransInfo(xlog_record, urecptr,
+						MakeUndoRecPtr(log->logno, log->meta.last_xact_start));
 
 		/* Remember the current transaction's xid. */
 		prev_txid[upersistence] = txid;
 
 		/* Store the current transaction's start undorecptr in the undo log. */
 		UndoLogSetLastXactStartPoint(urecptr);
-		update_prev_header = false;
 	}
 
 	/*
@@ -664,6 +704,17 @@ resize:
 	}
 
 	UndoLogAdvance(urecptr, size, upersistence);
+
+	/*
+	 * WAL log, for log switch.  This is required to identify the
+	 * log switch during recovery.
+	 */
+	if (!InRecovery && log_switched && upersistence == UNDO_PERMANENT)
+	{
+		XLogBeginInsert();
+		XLogRegisterData((char *) &prevlogurp, sizeof(UndoRecPtr));
+		XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_SWITCH);
+	}
 
 	return urecptr;
 }
@@ -874,20 +925,10 @@ InsertPreparedUndo(void)
 		uur->uur_prevlen = log->meta.prevlen;
 
 		/*
-		 * If starting a new log then there is no prevlen to store except when
-		 * the same transaction is continuing from the previous undo log read
-		 * detailed comment atop this file.
+		 * If starting a new log then there is no prevlen to store.
 		 */
 		if (offset == UndoLogBlockHeaderSize)
-		{
-			if (log->meta.prevlogno != InvalidUndoLogNumber)
-			{
-				UndoLogControl *prevlog = UndoLogGet(log->meta.prevlogno);
-				uur->uur_prevlen = prevlog->meta.prevlen;
-			}
-			else
 				uur->uur_prevlen = 0;
-		}
 
 		/*
 		 * if starting from a new page then consider block header size in
@@ -941,18 +982,21 @@ InsertPreparedUndo(void)
 		UndoLogSetPrevLen(UndoRecPtrGetLogNo(urp), undo_len);
 
 		/*
-		 * Link the transactions in the same log so that we can discard all
-		 * the transaction's undo log in one-shot.
-		 */
-		if (UndoRecPtrIsValid(xact_urec_info.urecptr))
-			UndoRecordUpdateTransInfo();
-
-		/*
 		 * Set the current undo location for a transaction.  This is required
 		 * to perform rollback during abort of transaction.
 		 */
 		SetCurrentUndoLocation(urp);
 	}
+
+	/* Update previous transaction header. */
+	if (xact_urec_info_idx > 0)
+	{
+		int i = 0;
+
+		for (i = 0; i < xact_urec_info_idx; i++)
+			UndoRecordUpdateTransInfo(i);
+	}
+
 }
 
 /*
@@ -1167,36 +1211,26 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 /*
  * Return the previous undo record pointer.
  *
- * This API can switch to the previous log if the current log is exhausted,
- * so the caller shouldn't use it where that is not expected.
+ * If prevurp is valid undo record pointer then it will directly
+ * return that assuming the caller has detected the undo log got
+ * switched during the transaction and prevurp is a valid previous
+ * undo record pointer of the transaction in the previous undo log.
+ * Otherwise this will calculate the previous undo record pointer
+ * by using current urp and the prevlen.
  */
 UndoRecPtr
-UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen)
+UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen, UndoRecPtr prevurp)
 {
-	UndoLogNumber logno = UndoRecPtrGetLogNo(urp);
-	UndoLogOffset offset = UndoRecPtrGetOffset(urp);
-
-	/*
-	 * We have reached to the first undo record of this undo log, so fetch the
-	 * previous undo record of the transaction from the previous log.
-	 */
-	if (offset == UndoLogBlockHeaderSize)
+	if (UndoRecPtrIsValid(prevurp))
+		return prevurp;
+	else
 	{
-		UndoLogControl *prevlog,
-				   *log;
+		UndoLogNumber logno = UndoRecPtrGetLogNo(urp);
+		UndoLogOffset offset = UndoRecPtrGetOffset(urp);
 
-		log = UndoLogGet(logno);
-
-		Assert(log->meta.prevlogno != InvalidUndoLogNumber);
-
-		/* Fetch the previous log control. */
-		prevlog = UndoLogGet(log->meta.prevlogno);
-		logno = log->meta.prevlogno;
-		offset = prevlog->meta.insert;
+		/* calculate the previous undo record pointer */
+		return MakeUndoRecPtr(logno, offset - prevlen);
 	}
-
-	/* calculate the previous undo record pointer */
-	return MakeUndoRecPtr(logno, offset - prevlen);
 }
 
 /*
@@ -1267,11 +1301,13 @@ ResetUndoBuffers(void)
 		undo_buffer[i].buf = InvalidBuffer;
 	}
 
-	xact_urec_info.urecptr = InvalidUndoRecPtr;
+	for (i = 0; i < xact_urec_info_idx; i++)
+		xact_urec_info[i].urecptr = InvalidUndoRecPtr;
 
 	/* Reset the prepared index. */
 	prepare_idx = 0;
 	buffer_idx = 0;
+	xact_urec_info_idx = 0;
 	prepared_urec_ptr = InvalidUndoRecPtr;
 
 	/*

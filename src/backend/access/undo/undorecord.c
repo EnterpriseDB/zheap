@@ -114,6 +114,7 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		work_txn.urec_next = uur->uur_next;
 		work_txn.urec_xidepoch = uur->uur_xidepoch;
 		work_txn.urec_progress = uur->uur_progress;
+		work_txn.urec_prevurp = uur->uur_prevurp;
 		work_txn.urec_dbid = uur->uur_dbid;
 		work_payload.urec_payload_len = uur->uur_payload.len;
 		work_payload.urec_tuple_len = uur->uur_tuple.len;
@@ -137,6 +138,7 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		Assert(work_blk.urec_offset == uur->uur_offset);
 		Assert(work_txn.urec_next == uur->uur_next);
 		Assert(work_txn.urec_progress == uur->uur_progress);
+		Assert(work_txn.urec_prevurp == uur->uur_prevurp);
 		Assert(work_txn.urec_dbid == uur->uur_dbid);
 		Assert(work_payload.urec_payload_len == uur->uur_payload.len);
 		Assert(work_payload.urec_tuple_len == uur->uur_tuple.len);
@@ -327,6 +329,7 @@ UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 		uur->uur_next = work_txn.urec_next;
 		uur->uur_xidepoch = work_txn.urec_xidepoch;
 		uur->uur_progress = work_txn.urec_progress;
+		uur->uur_prevurp = work_txn.urec_prevurp;
 		uur->uur_dbid = work_txn.urec_dbid;
 	}
 
