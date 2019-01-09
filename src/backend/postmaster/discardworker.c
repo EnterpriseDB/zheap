@@ -113,8 +113,8 @@ DiscardWorkerMain(Datum main_arg)
 		 * committed.  We don't need to hold its undo for the visibility
 		 * purpose.
 		 */
-		OldestXmin = GetOldestXmin(NULL, PROCARRAY_AUTOVACUUM_FLAG |
-										 PROCARRAY_VACUUM_FLAG);
+		OldestXmin = GetOldestXmin(NULL, PROCARRAY_FLAGS_AUTOVACUUM |
+										 PROCARRAY_FLAGS_VACUUM);
 
 		oldestXidHavingUndo = GetXidFromEpochXid(
 				pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
