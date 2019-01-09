@@ -3,7 +3,7 @@
  * undorecord.c
  *	  encode and decode undo records
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/undo/undorecord.c
@@ -78,8 +78,6 @@ UndoRecordExpectedSize(UnpackedUndoRecord *uur)
  * previous value for *already_written should be passed again, and
  * starting_byte should be passed as sizeof(PageHeaderData) (since the record
  * will continue immediately following the page header).
- *
- * This function sets uur->uur_info as a side effect.
  */
 bool
 InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
@@ -111,11 +109,11 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		work_blk.urec_blkprev = uur->uur_blkprev;
 		work_blk.urec_block = uur->uur_block;
 		work_blk.urec_offset = uur->uur_offset;
-		work_txn.urec_next = uur->uur_next;
-		work_txn.urec_xidepoch = uur->uur_xidepoch;
 		work_txn.urec_progress = uur->uur_progress;
-		work_txn.urec_prevurp = uur->uur_prevurp;
+		work_txn.urec_xidepoch = uur->uur_xidepoch;
 		work_txn.urec_dbid = uur->uur_dbid;
+		work_txn.urec_prevurp = uur->uur_prevurp;
+		work_txn.urec_next = uur->uur_next;
 		work_payload.urec_payload_len = uur->uur_payload.len;
 		work_payload.urec_tuple_len = uur->uur_tuple.len;
 	}
@@ -136,10 +134,11 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		Assert(work_blk.urec_blkprev == uur->uur_blkprev);
 		Assert(work_blk.urec_block == uur->uur_block);
 		Assert(work_blk.urec_offset == uur->uur_offset);
-		Assert(work_txn.urec_next == uur->uur_next);
 		Assert(work_txn.urec_progress == uur->uur_progress);
-		Assert(work_txn.urec_prevurp == uur->uur_prevurp);
+		Assert(work_txn.urec_xidepoch == uur->uur_xidepoch);
 		Assert(work_txn.urec_dbid == uur->uur_dbid);
+		Assert(work_txn.urec_prevurp == uur->uur_prevurp);
+		Assert(work_txn.urec_next == uur->uur_next);
 		Assert(work_payload.urec_payload_len == uur->uur_payload.len);
 		Assert(work_payload.urec_tuple_len == uur->uur_tuple.len);
 	}
@@ -216,10 +215,10 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
  * 'my_bytes_written' is a pointer to the count of previous-written bytes
  * from this and following structures in this undo record; that is, any
  * bytes that are part of previous structures in the record have already
- * been subtracted out.  We must update it for the bytes we write.
+ * been subtracted out.
  *
  * 'total_bytes_written' points to the count of all previously-written bytes,
- * and must likewise be updated for the bytes we write.
+ * and must it must be updated for the bytes we write.
  *
  * The return value is false if we ran out of space before writing all
  * the bytes, and otherwise true.
@@ -326,11 +325,12 @@ UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 						   &my_bytes_decoded, already_decoded, false))
 			return false;
 
-		uur->uur_next = work_txn.urec_next;
-		uur->uur_xidepoch = work_txn.urec_xidepoch;
 		uur->uur_progress = work_txn.urec_progress;
-		uur->uur_prevurp = work_txn.urec_prevurp;
+		uur->uur_xidepoch = work_txn.urec_xidepoch;
 		uur->uur_dbid = work_txn.urec_dbid;
+		uur->uur_prevurp = work_txn.urec_prevurp;
+		uur->uur_next = work_txn.urec_next;
+
 	}
 
 	if (header_only)
@@ -401,7 +401,7 @@ UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
  * 'my_bytes_read' is a pointer to the count of previous-read bytes
  * from this and following structures in this undo record; that is, any
  * bytes that are part of previous structures in the record have already
- * been subtracted out.  We must update it for the bytes we read.
+ * been subtracted out.
  *
  * 'total_bytes_read' points to the count of all previously-read bytes,
  * and must likewise be updated for the bytes we read.
