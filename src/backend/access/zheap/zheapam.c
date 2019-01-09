@@ -8378,7 +8378,7 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, int *trans_slot,
 		xid = InvalidTransactionId;
 		FetchTransInfoFromUndo(zhtup, &epoch, &xid, &cid, &urec_ptr, false);
 	}
-	else if (ZHeapTupleHasMultiLockers(tuple->t_infomask))
+	else if (!ItemIdIsDeleted(lp) && ZHeapTupleHasMultiLockers(tuple->t_infomask))
 	{
 		/*
 		 * When we take a lock on the tuple, we never set locker's slot on the
