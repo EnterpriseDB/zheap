@@ -3,7 +3,7 @@
  * undorecord.h
  *	  encode and decode undo records
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/undorecord.h
@@ -49,8 +49,8 @@ typedef struct UndoRecordHeader
 
 	/*
 	 * Transaction id that has modified the tuple present in this undo record.
-	 * If this is older than oldestXidWithEpochHavingUndo, then we can consider
-	 * the tuple in this undo record as visible.
+	 * If this is older than oldestXidWithEpochHavingUndo, then we can
+	 * consider the tuple in this undo record as visible.
 	 */
 	TransactionId urec_prevxid;
 
@@ -106,7 +106,7 @@ typedef struct UndoRecordRelationDetails
  */
 typedef struct UndoRecordBlock
 {
-	uint64		urec_blkprev;	/* byte offset of previous undo for block */
+	UndoRecPtr	urec_blkprev;	/* byte offset of previous undo for block */
 	BlockNumber urec_block;		/* block number */
 	OffsetNumber urec_offset;	/* offset number */
 } UndoRecordBlock;
@@ -130,13 +130,13 @@ typedef struct UndoRecordTransaction
 	Oid			urec_dbid;		/* database id */
 
 	/*
-	 * Transaction previous undo record pointer when transaction split across
-	 * undo log.  The first undo record in the new log will stores the previous
-	 * undo record pointer in the previous log as we can not calculate that
-	 * directly using prevlen during rollback.
+	 * Transaction's previous undo record pointer when a transaction spans
+	 * across undo logs.  The first undo record in the new log stores the
+	 * previous undo record pointer in the previous log as we can't calculate
+	 * that directly using prevlen during rollback.
 	 */
-	uint64		urec_prevurp;
-	uint64		urec_next;		/* urec pointer of the next transaction */
+	UndoRecPtr	urec_prevurp;
+	UndoRecPtr	urec_next;		/* urec pointer of the next transaction */
 } UndoRecordTransaction;
 
 #define SizeOfUrecNext (sizeof(UndoRecPtr))
@@ -183,16 +183,17 @@ typedef struct UnpackedUndoRecord
 	TransactionId uur_xid;		/* transaction id */
 	CommandId	uur_cid;		/* command id */
 	ForkNumber	uur_fork;		/* fork number */
-	uint64		uur_blkprev;	/* byte offset of previous undo for block */
+	UndoRecPtr	uur_blkprev;	/* byte offset of previous undo for block */
 	BlockNumber uur_block;		/* block number */
 	OffsetNumber uur_offset;	/* offset number */
 	Buffer		uur_buffer;		/* buffer in which undo record data points */
 	uint32		uur_xidepoch;	/* epoch of the inserting transaction. */
-	uint64		uur_prevurp;
-	uint64		uur_next;		/* urec pointer of the next transaction */
+	UndoRecPtr	uur_prevurp;	/* urec pointer to the previous record in
+								 * the different log */
+	UndoRecPtr	uur_next;		/* urec pointer of the next transaction */
 	Oid			uur_dbid;		/* database id */
 
-	/* undo applying progress, see detail comment in UndoRecordTransaction*/
+	/* undo applying progress, see detail comment in UndoRecordTransaction */
 	uint32		uur_progress;
 	StringInfoData uur_payload; /* payload bytes */
 	StringInfoData uur_tuple;	/* tuple bytes */
