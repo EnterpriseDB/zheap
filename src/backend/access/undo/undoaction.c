@@ -131,6 +131,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 	{
 		Oid			reloid = InvalidOid;
 		uint16		urec_prevlen;
+		UndoRecPtr	urec_prevurp;
 
 		more_undo = true;
 
@@ -234,12 +235,15 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 
 			luinfo = lappend(luinfo, urec_info);
 			urec_prevlen = uur->uur_prevlen;
+			urec_prevurp = uur->uur_prevurp;
 			save_urec_ptr = uur->uur_blkprev;
 
 			/* The undo chain must continue till we reach to_urecptr */
-			if (urec_prevlen > 0 && urec_ptr != to_urecptr)
+			if (urec_ptr != to_urecptr &&
+				(urec_prevlen > 0 || UndoRecPtrIsValid(urec_prevurp)))
 			{
-				urec_ptr = UndoGetPrevUndoRecptr(urec_ptr, urec_prevlen);
+				urec_ptr = UndoGetPrevUndoRecptr(urec_ptr, urec_prevlen,
+												 urec_prevurp);
 				prev_blkprev = uur->uur_blkprev;
 				continue;
 			}
@@ -302,8 +306,10 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			 * record in chain.
 			 */
 			urec_prevlen = uur->uur_prevlen;
-			if (urec_prevlen > 0 && urec_ptr != to_urecptr)
-				urec_ptr = UndoGetPrevUndoRecptr(urec_ptr, urec_prevlen);
+			urec_prevurp = uur->uur_prevurp;
+			if (urec_ptr != to_urecptr &&
+				(urec_prevlen > 0 || UndoRecPtrIsValid(urec_prevurp)))
+				urec_ptr = UndoGetPrevUndoRecptr(urec_ptr, urec_prevlen, urec_prevurp);
 			else
 				break;
 		}
@@ -387,7 +393,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			START_CRIT_SECTION();
 
 			/* Update the progress in the transaction header. */
-			UndoRecordUpdateTransInfo();
+			UndoRecordUpdateTransInfo(0);
 
 			/* WAL log the undo apply progress. */
 			{

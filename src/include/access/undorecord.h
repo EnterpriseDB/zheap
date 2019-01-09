@@ -128,6 +128,14 @@ typedef struct UndoRecordTransaction
 	uint32		urec_progress;
 	uint32		urec_xidepoch;	/* epoch of the current transaction */
 	Oid			urec_dbid;		/* database id */
+
+	/*
+	 * Transaction previous undo record pointer when transaction split across
+	 * undo log.  The first undo record in the new log will stores the previous
+	 * undo record pointer in the previous log as we can not calculate that
+	 * directly using prevlen during rollback.
+	 */
+	uint64		urec_prevurp;
 	uint64		urec_next;		/* urec pointer of the next transaction */
 } UndoRecordTransaction;
 
@@ -180,6 +188,7 @@ typedef struct UnpackedUndoRecord
 	OffsetNumber uur_offset;	/* offset number */
 	Buffer		uur_buffer;		/* buffer in which undo record data points */
 	uint32		uur_xidepoch;	/* epoch of the inserting transaction. */
+	uint64		uur_prevurp;
 	uint64		uur_next;		/* urec pointer of the next transaction */
 	Oid			uur_dbid;		/* database id */
 

@@ -70,6 +70,12 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 		appendStringInfo(buf, "logno %u insert " UndoLogOffsetFormat " prevlen %d",
 						 xlrec->logno, xlrec->insert, xlrec->prevlen);
 	}
+	else if (info == XLOG_UNDOLOG_SWITCH)
+	{
+		UndoRecPtr prevlogurp = *(UndoRecPtr *) rec;
+
+		appendStringInfo(buf, "previous log urp " UndoRecPtrFormat, prevlogurp);
+	}
 
 }
 
@@ -97,6 +103,9 @@ undolog_identify(uint8 info)
 			break;
 		case XLOG_UNDOLOG_REWIND:
 			id = "REWIND";
+			break;
+		case XLOG_UNDOLOG_SWITCH:
+			id = "SWITCH";
 			break;
 	}
 

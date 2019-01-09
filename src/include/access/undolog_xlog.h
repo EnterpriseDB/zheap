@@ -24,6 +24,7 @@
 #define XLOG_UNDOLOG_DISCARD	0x30
 #define XLOG_UNDOLOG_REWIND		0x40
 #define XLOG_UNDOLOG_META		0x50
+#define XLOG_UNDOLOG_SWITCH		0x60
 
 /* Create a new undo log. */
 typedef struct xl_undolog_create

@@ -158,6 +158,14 @@ struct
 
 	/* Current dbid.  Used during recovery. */
 	Oid				dbid;
+
+	/*
+	 * Transaction's start header undo record pointer in the previous
+	 * undo log when transaction spills across multiple undo log.  This
+	 * is used for identifying the log switch during recovery and updating
+	 * the transaction header in the previous log.
+	 */
+	UndoRecPtr	prevlogurp;
 } MyUndoLogState;
 
 /* GUC variables */
@@ -724,7 +732,6 @@ UndoLogAllocate(size_t size, UndoPersistence persistence)
 {
 	UndoLogControl *log = MyUndoLogState.logs[persistence];
 	UndoLogOffset new_insert;
-	UndoLogNumber prevlogno = InvalidUndoLogNumber;
 	TransactionId logxid;
 
 	/*
@@ -748,7 +755,6 @@ UndoLogAllocate(size_t size, UndoPersistence persistence)
 		if (need_to_unlock)
 			LWLockRelease(TablespaceCreateLock);
 		log = MyUndoLogState.logs[persistence];
-		log->meta.prevlogno = prevlogno;
 		MyUndoLogState.need_to_choose_tablespace = false;
 	}
 
@@ -817,16 +823,6 @@ UndoLogAllocate(size_t size, UndoPersistence persistence)
 	{
 		if (new_insert > UndoLogMaxSize)
 		{
-			/* This undo log is entirely full.  Get a new one. */
-			if (logxid == GetTopTransactionId())
-			{
-				/*
-				 * If the same transaction is split over two undo logs then
-				 * store the previous log number in new log.  See detailed
-				 * comments in undorecord.c file header.
-				 */
-				prevlogno = log->logno;
-			}
 			log = NULL;
 			detach_current_undo_log(persistence, true);
 			goto retry;
@@ -2478,6 +2474,19 @@ undolog_xlog_attach(XLogReaderState *record)
 }
 
 /*
+ * replay the undo-log switch wal.  Store the transaction's undo record
+ * pointer of the previous log in MyUndoLogState temporarily, which will
+ * be reset after reading first time.
+ */
+static void
+undolog_xlog_switch(XLogReaderState *record)
+{
+	UndoRecPtr prevlogurp = *((UndoRecPtr *) XLogRecGetData(record));
+
+	MyUndoLogState.prevlogurp = prevlogurp;
+}
+
+/*
  * replay undo log meta-data image
  */
 static void
@@ -2679,6 +2688,9 @@ undolog_redo(XLogReaderState *record)
 		case XLOG_UNDOLOG_META:
 			undolog_xlog_meta(record);
 			break;
+		case XLOG_UNDOLOG_SWITCH:
+			undolog_xlog_switch(record);
+			break;
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);
 	}
@@ -2708,4 +2720,34 @@ UndoLogStateGetDatabaseId()
 {
 	Assert(InRecovery);
 	return MyUndoLogState.dbid;
+}
+
+/*
+ * Get transaction start header in the previous log
+ *
+ * This should be only called during recovery.  The value of prevlogurp
+ * is restored in MyUndoLogState while replying the UNDOLOG_XLOG_SWITCH
+ * wal and it will be cleared in this function.
+ */
+UndoRecPtr
+UndoLogStateGetAndClearPrevLogXactUrp()
+{
+	UndoRecPtr	prevlogurp;
+
+	Assert(InRecovery);
+	prevlogurp = MyUndoLogState.prevlogurp;
+	MyUndoLogState.prevlogurp = InvalidUndoRecPtr;
+
+	return prevlogurp;
+}
+
+/*
+ * Get the undo log number my backend is attached to
+ */
+UndoLogNumber
+UndoLogAmAttachedTo(UndoPersistence persistence)
+{
+	if (MyUndoLogState.logs[persistence] == NULL)
+		return InvalidUndoLogNumber;
+	return MyUndoLogState.logs[persistence]->logno;
 }

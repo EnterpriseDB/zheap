@@ -388,7 +388,7 @@ FetchLatestUndoPtrForXid(UndoRecPtr urecptr, UnpackedUndoRecord *uur_start,
 				continue;
 			}
 
-			from_urecptr = UndoGetPrevUndoRecptr(next_insert, prevlen);
+			from_urecptr = UndoGetPrevUndoRecptr(next_insert, prevlen, InvalidUndoRecPtr);
 			break;
 		}
 		else if ((UndoRecPtrGetLogNo(next_urecptr) != log->logno) &&
@@ -403,7 +403,7 @@ FetchLatestUndoPtrForXid(UndoRecPtr urecptr, UnpackedUndoRecord *uur_start,
 			next_insert = UndoLogGetNextInsertPtr(log->logno, uur->uur_xid);
 
 			Assert(UndoRecPtrIsValid(next_insert));
-			from_urecptr = UndoGetPrevUndoRecptr(next_insert, prevlen);
+			from_urecptr = UndoGetPrevUndoRecptr(next_insert, prevlen, InvalidUndoRecPtr);
 			break;
 		}
 		else
@@ -422,7 +422,7 @@ FetchLatestUndoPtrForXid(UndoRecPtr urecptr, UnpackedUndoRecord *uur_start,
 			if (UndoRecPtrGetLogNo(next_urecptr) == log->logno)
 			{
 				from_urecptr =
-					UndoGetPrevUndoRecptr(next_urecptr, next_uur->uur_prevlen);
+					UndoGetPrevUndoRecptr(next_urecptr, next_uur->uur_prevlen, InvalidUndoRecPtr);
 				UndoRecordRelease(next_uur);
 				break;
 			}
