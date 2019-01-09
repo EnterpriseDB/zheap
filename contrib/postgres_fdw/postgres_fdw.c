@@ -3554,8 +3554,7 @@ store_returning_result(PgFdwModifyState *fmstate,
 											fmstate->retrieved_attrs,
 											NULL,
 											fmstate->temp_cxt);
-		/* tuple will be deleted when it is cleared from the slot */
-		ExecStoreHeapTuple(newtup, slot, true);
+		ExecForceStoreHeapTuple(newtup, slot);
 	}
 	PG_CATCH();
 	{
