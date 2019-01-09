@@ -431,13 +431,6 @@ static HeapTuple make_tuple_from_result_row(PGresult *res,
 						   List *retrieved_attrs,
 						   ForeignScanState *fsstate,
 						   MemoryContext temp_context);
-static ZHeapTuple make_ztuple_from_result_row(PGresult *res,
-						   int row,
-						   Relation rel,
-						   AttInMetadata *attinmeta,
-						   List *retrieved_attrs,
-						   ForeignScanState *fsstate,
-						   MemoryContext temp_context);
 static void conversion_error_callback(void *arg);
 static bool foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 				JoinType jointype, RelOptInfo *outerrel, RelOptInfo *innerrel,
@@ -3553,33 +3546,16 @@ store_returning_result(PgFdwModifyState *fmstate,
 {
 	PG_TRY();
 	{
+		HeapTuple	newtup;
 
-		if (TTS_IS_ZHEAP(slot))
-		{
-			ZHeapTuple   newtup;
-
-			newtup = make_ztuple_from_result_row(res, 0,
-												fmstate->rel,
-												fmstate->attinmeta,
-												fmstate->retrieved_attrs,
-												NULL,
-												fmstate->temp_cxt);
-
-			ExecStoreZTuple(newtup, slot, InvalidBuffer, true);
-		}
-		else
-		{
-			HeapTuple	newtup;
-
-			newtup = make_tuple_from_result_row(res, 0,
-												fmstate->rel,
-												fmstate->attinmeta,
-												fmstate->retrieved_attrs,
-												NULL,
-												fmstate->temp_cxt);
-			/* tuple will be deleted when it is cleared from the slot */
-			ExecStoreHeapTuple(newtup, slot, true);
-		}
+		newtup = make_tuple_from_result_row(res, 0,
+											fmstate->rel,
+											fmstate->attinmeta,
+											fmstate->retrieved_attrs,
+											NULL,
+											fmstate->temp_cxt);
+		/* tuple will be deleted when it is cleared from the slot */
+		ExecStoreHeapTuple(newtup, slot, true);
 	}
 	PG_CATCH();
 	{
@@ -5603,142 +5579,6 @@ add_foreign_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 
 	/* Add generated path into grouped_rel by add_path(). */
 	add_path(grouped_rel, (Path *) grouppath);
-}
-
-/*
- * Create a ztuple from the specified row of the PGresult.
- *
- * rel is the local representation of the foreign table, attinmeta is
- * conversion data for the rel's tupdesc, and retrieved_attrs is an
- * integer list of the table column numbers present in the PGresult.
- * temp_context is a working context that can be reset after each tuple.
- */
-static ZHeapTuple
-make_ztuple_from_result_row(PGresult *res,
-						   int row,
-						   Relation rel,
-						   AttInMetadata *attinmeta,
-						   List *retrieved_attrs,
-						   ForeignScanState *fsstate,
-						   MemoryContext temp_context)
-{
-	ZHeapTuple	ztuple;
-	TupleDesc	tupdesc;
-	Datum	   *values;
-	bool	   *nulls;
-	ItemPointer ctid = NULL;
-	ConversionLocation errpos;
-	ErrorContextCallback errcallback;
-	MemoryContext oldcontext;
-	ListCell   *lc;
-	int			j;
-
-	Assert(row < PQntuples(res));
-
-	/*
-	 * Do the following work in a temp context that we reset after each tuple.
-	 * This cleans up not only the data we have direct access to, but any
-	 * cruft the I/O functions might leak.
-	 */
-	oldcontext = MemoryContextSwitchTo(temp_context);
-
-	if (rel)
-		tupdesc = RelationGetDescr(rel);
-	else
-	{
-		Assert(fsstate);
-		tupdesc = fsstate->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
-	}
-
-	values = (Datum *) palloc0(tupdesc->natts * sizeof(Datum));
-	nulls = (bool *) palloc(tupdesc->natts * sizeof(bool));
-	/* Initialize to nulls for any columns not present in result */
-	memset(nulls, true, tupdesc->natts * sizeof(bool));
-
-	/*
-	 * Set up and install callback to report where conversion error occurs.
-	 */
-	errpos.rel = rel;
-	errpos.cur_attno = 0;
-	errpos.fsstate = fsstate;
-	errcallback.callback = conversion_error_callback;
-	errcallback.arg = (void *) &errpos;
-	errcallback.previous = error_context_stack;
-	error_context_stack = &errcallback;
-
-	/*
-	 * i indexes columns in the relation, j indexes columns in the PGresult.
-	 */
-	j = 0;
-	foreach(lc, retrieved_attrs)
-	{
-		int			i = lfirst_int(lc);
-		char	   *valstr;
-
-		/* fetch next column's textual value */
-		if (PQgetisnull(res, row, j))
-			valstr = NULL;
-		else
-			valstr = PQgetvalue(res, row, j);
-
-		/*
-		 * convert value to internal representation
-		 *
-		 * Note: we ignore system columns other than ctid and oid in result
-		 */
-		errpos.cur_attno = i;
-		if (i > 0)
-		{
-			/* ordinary column */
-			Assert(i <= tupdesc->natts);
-			nulls[i - 1] = (valstr == NULL);
-			/* Apply the input function even to nulls, to support domains */
-			values[i - 1] = InputFunctionCall(&attinmeta->attinfuncs[i - 1],
-											  valstr,
-											  attinmeta->attioparams[i - 1],
-											  attinmeta->atttypmods[i - 1]);
-		}
-		else if (i == SelfItemPointerAttributeNumber)
-		{
-			/* ctid */
-			if (valstr != NULL)
-			{
-				Datum		datum;
-
-				datum = DirectFunctionCall1(tidin, CStringGetDatum(valstr));
-				ctid = (ItemPointer) DatumGetPointer(datum);
-			}
-		}
-		errpos.cur_attno = 0;
-
-		j++;
-	}
-
-	/* Uninstall error context callback. */
-	error_context_stack = errcallback.previous;
-
-	/*
-	 * Check we got the expected number of columns.  Note: j == 0 and
-	 * PQnfields == 1 is expected, since deparse emits a NULL if no columns.
-	 */
-	if (j > 0 && j != PQnfields(res))
-		elog(ERROR, "remote query result does not match the foreign table");
-
-	/*
-	 * Build the result tuple in caller's memory context.
-	 */
-	MemoryContextSwitchTo(oldcontext);
-
-	ztuple = zheap_form_tuple(tupdesc, values, nulls);
-
-	/* If we have a CTID to return, install it in t_self. */
-	if (ctid)
-		ztuple->t_self = *ctid;
-
-	/* Clean up */
-	MemoryContextReset(temp_context);
-
-	return ztuple;
 }
 
 /*
