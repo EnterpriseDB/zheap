@@ -3,7 +3,7 @@
  * undoinsert.c
  *	  entry points for inserting undo records
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/undo/undoinsert.c
@@ -20,32 +20,39 @@
  * this is entirely maintained and used by undo record layer.   See
  * undorecord.h for detailed information about undo record header.
  *
- * Handling multi log:
+ * Multiple logs:
  *
- * It is possible that the undo record of a transaction can be spread across
- * multiple undo log.  And, we need some special handling while inserting the
- * undo for discard and rollback to work sanely.
+ * It is possible that the undo records for a transaction spans across
+ * multiple undo logs.  We need some special handling while inserting them to
+ * ensure that discard and rollbacks can work sanely.
  *
- * If the undorecord goes to next log then we insert a transaction header for
- * the first record in the new log and update the transaction header with this
- * new log's location. This will allow us to connect transactions across logs
- * when the same transaction span across log (for this we keep track of the
- * previous logno in undo log meta) which is required to find the latest undo
- * record pointer of the aborted transaction for executing the undo actions
- * before discard. If the next log get processed first in that case we
- * don't need to trace back the actual start pointer of the transaction,
- * in such case we can only execute the undo actions from the current log
- * because the undo pointer in the slot will be rewound and that will be enough
- * to avoid executing same actions.  However, there is possibility that after
- * executing the undo actions the undo pointer got discarded, now in later
- * stage while processing the previous log it might try to fetch the undo
- * record in the discarded log while chasing the transaction header chain.
- * To avoid this situation we first check if the next_urec of the transaction
- * is already discarded then no need to access that and start executing from
+ * When the undorecord for a transaction gets inserted in the next log then we
+ * insert a transaction header for the first record in the new log and update
+ * the transaction header with this new logs location.  We will also keep
+ * a back pointer to the last undo record of previous log in the first record
+ * of new log, so that we can traverse the previous record during rollback.
+ * Incase, this is not the first record in new log (aka new log already
+ * contains some other transactions data), we also update that transactions
+ * next start header with this new undo records location.  This will allow us
+ * to connect transaction's undo records across logs when the same transaction
+ * span across log.
+ *
+ * There is some difference in the way the rollbacks work when the undo for
+ * same transaction spans across multiple logs depending on which log is
+ * processed first by the discard worker.  If it processes the first log which
+ * contains the transactions first record, then it can get the last record
+ * of that transaction even if it is in different log and then processes all
+ * the undo records from last to first.  OTOH, if the next log get processed
+ * first, we don't need to trace back the actual start pointer of the
+ * transaction, rather we only execute the undo actions from the current log
+ * and avoid re-executing them next time.  There is a possibility that after
+ * executing the undo actions, the undo got discarded, now in later stage while
+ * processing the previous log, it might try to fetch the undo record in the
+ * discarded log while chasing the transaction header chain which can cause
+ * trouble.  We avoid this situation by first checking if the next_urec of
+ * the transaction is already discarded and if so, we start executing from
  * the last undo record in the current log.
  *
- *  We only connect to next log if the same transaction spread to next log
- *  otherwise don't.
  *-------------------------------------------------------------------------
  */
 
@@ -83,12 +90,12 @@
 #define MAX_PREPARED_UNDO 2
 
 /*
- * This defines the max number of previous xact info we need to update.
+ * This defines the max number of previous xact infos we need to update.
  * Usually it's 1 for updating next link of previous transaction's header
- * if we are starting a new transaction. But, in some cases where the same
- * transaction is spilled to the next log that time we update our own
- * transaction's header in previous undo log as well as the header of the
- * previous transaction in the new log.
+ * if we are starting a new transaction.  But, in some cases where the same
+ * transaction is spilled to the next log, we update our own transaction's
+ * header in previous undo log as well as the header of the previous
+ * transaction in the new log.
  */
 #define MAX_XACT_UNDO_INFO	2
 
@@ -103,15 +110,15 @@
  * transaction try to prepare an undo record we will check if its txid not the
  * same as prev_txid then we will insert the start undo record.
  */
-static TransactionId	prev_txid[UndoPersistenceLevels] = { 0 };
+static TransactionId prev_txid[UndoPersistenceLevels] = {0};
 
 /* Undo block number to buffer mapping. */
 typedef struct UndoBuffers
 {
-	UndoLogNumber	logno;			/* Undo log number */
-	BlockNumber		blk;			/* block number */
-	Buffer			buf;			/* buffer allocated for the block */
-	bool			zero;			/* new block full of zeroes */
+	UndoLogNumber logno;		/* Undo log number */
+	BlockNumber blk;			/* block number */
+	Buffer		buf;			/* buffer allocated for the block */
+	bool		zero;			/* new block full of zeroes */
 } UndoBuffers;
 
 static UndoBuffers def_buffers[MAX_UNDO_BUFFERS];
@@ -516,7 +523,7 @@ UndoRecordAllocate(UnpackedUndoRecord *undorecords, int nrecords,
 	UndoRecPtr	urecptr;
 	TransactionId txid = XidFromFullTransactionId(fxid);
 	UndoRecPtr	prevlogurp = InvalidUndoRecPtr;
-	UndoLogNumber	prevlogno = InvalidUndoLogNumber;
+	UndoLogNumber prevlogno = InvalidUndoLogNumber;
 	bool		need_xact_hdr = false;
 	bool		log_switched = false;
 	int			i;
@@ -541,10 +548,10 @@ resize:
 		 * Prepare the transacion header for the first undo record of
 		 * transaction.
 		 *
-		 * XXX There is also an option that instead of adding the
-		 * information to this record we can prepare a new record which only
-		 * contain transaction informations, but we can't see any clear
-		 * advantage of the same.
+		 * XXX There is also an option that instead of adding the information
+		 * to this record we can prepare a new record which only contain
+		 * transaction informations, but we can't see any clear advantage of
+		 * the same.
 		 */
 		if (need_xact_hdr && i == 0)
 		{
@@ -560,9 +567,10 @@ resize:
 				 * so we store the previous undo record pointer in the
 				 * transaction header.
 				 */
+				Assert(UndoRecPtrIsValid(prevlogno));
 				log = UndoLogGet(prevlogno);
 				urec->uur_prevurp = MakeUndoRecPtr(prevlogno,
-										log->meta.insert - log->meta.prevlen);
+												   log->meta.insert - log->meta.prevlen);
 			}
 			else
 				urec->uur_prevurp = InvalidUndoRecPtr;
@@ -600,9 +608,10 @@ resize:
 	if (InRecovery)
 	{
 		/*
-		 * During recovery we can directly identify by checking the prevlogurp from
-		 * the MyUndoLogState which is stored in it by WAL and we immediately reset
-		 * it.
+		 * During recovery we can identify the log switch by checking the
+		 * prevlogurp from the MyUndoLogState.  The WAL replay action for log
+		 * switch would have set the value and we need to clear it after
+		 * retrieving the latest value.
 		 */
 		prevlogurp = UndoLogStateGetAndClearPrevLogXactUrp();
 		urecptr = UndoLogAllocateInRecovery(txid, size, upersistence);
@@ -615,8 +624,9 @@ resize:
 	else
 	{
 		/*
-		 * Just check the current log which we are attached to, and if this
-		 * got switched after the allocation then the undo log got switched.
+		 * Check whether the current log is switched after allocation.  We can
+		 * determine that by simply checking to which log we are attached
+		 * before and after allocation.
 		 */
 		prevlogno = UndoLogAmAttachedTo(upersistence);
 		urecptr = UndoLogAllocate(size, upersistence);
@@ -640,9 +650,9 @@ resize:
 	/*
 	 * If we've rewound all the way back to the start of the transaction by
 	 * rolling back the first subtransaction (which we can't detect until
-	 * after we've allocated some space) or the undo log got switched,
-	 * we'll need a new transaction header. If we weren't already generating
-	 * one, then do it now.
+	 * after we've allocated some space) or the undo log got switched, we'll
+	 * need a new transaction header. If we weren't already generating one,
+	 * then do it now.
 	 */
 	if (!need_xact_hdr &&
 		(log->meta.insert == log->meta.last_xact_start || log_switched))
@@ -660,13 +670,14 @@ resize:
 		undometa->xid = log->xid;
 	}
 
+	/* Update the previous transaction's start undo record, if required. */
 	if (need_xact_hdr || log_switched)
 	{
 		/*
 		 * If the undo log is switched then we need to update our own
 		 * transaction header in the previous log as well as the previous
-		 * transaction's header in the new log.  Read detail comments
-		 * for multi-log handling atop this file.
+		 * transaction's header in the new log.  Read detail comments for
+		 * multi-log handling atop this file.
 		 */
 		if (log_switched)
 			UndoRecordPrepareTransInfo(xlog_record, urecptr, prevlogurp);
@@ -707,8 +718,8 @@ resize:
 	UndoLogAdvance(urecptr, size, upersistence);
 
 	/*
-	 * WAL log, for log switch.  This is required to identify the
-	 * log switch during recovery.
+	 * Write WAL for log switch.  This is required to identify the log switch
+	 * during recovery.
 	 */
 	if (!InRecovery && log_switched && upersistence == UNDO_PERMANENT)
 	{
@@ -931,7 +942,7 @@ InsertPreparedUndo(void)
 		 * If starting a new log then there is no prevlen to store.
 		 */
 		if (offset == UndoLogBlockHeaderSize)
-				uur->uur_prevlen = 0;
+			uur->uur_prevlen = 0;
 
 		/*
 		 * if starting from a new page then consider block header size in
@@ -991,10 +1002,10 @@ InsertPreparedUndo(void)
 		SetCurrentUndoLocation(urp);
 	}
 
-	/* Update previous transaction header. */
+	/* Update previously prepared transaction headers. */
 	if (xact_urec_info_idx > 0)
 	{
-		int i = 0;
+		int			i = 0;
 
 		for (i = 0; i < xact_urec_info_idx; i++)
 			UndoRecordUpdateTransInfo(i);
@@ -1214,10 +1225,8 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 /*
  * Return the previous undo record pointer.
  *
- * If prevurp is valid undo record pointer then it will directly
- * return that assuming the caller has detected the undo log got
- * switched during the transaction and prevurp is a valid previous
- * undo record pointer of the transaction in the previous undo log.
+ * A valid value of prevurp indicates that the previous undo record
+ * pointer is in some other log and caller can directly use that.
  * Otherwise this will calculate the previous undo record pointer
  * by using current urp and the prevlen.
  */
