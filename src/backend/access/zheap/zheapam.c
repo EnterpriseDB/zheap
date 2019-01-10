@@ -1845,11 +1845,20 @@ zheap_tuple_updated:
 
 	temp_infomask = zheaptup.t_data->t_infomask;
 
+	/*
+	 * If all the members were lockers and are all gone, we can do away
+	 * with the MULTI_LOCKERS bit.
+	 */
+	if (ZHeapTupleHasMultiLockers(temp_infomask) &&
+		!any_multi_locker_member_alive)
+		temp_infomask &= ~ZHEAP_MULTI_LOCKERS;
+
 	/* Compute the new xid and infomask to store into the tuple. */
 	compute_new_xid_infomask(&zheaptup, buffer, tup_xid, tup_trans_slot_id,
 							 temp_infomask, xid, trans_slot_id,
 							 single_locker_xid, LockTupleExclusive, ForUpdate,
 							 &new_infomask, &new_trans_slot_id);
+
 	/*
 	 * There must not be any stronger locker than the current operation,
 	 * otherwise it would have waited for it to finish.
@@ -1959,15 +1968,6 @@ zheap_tuple_updated:
 								BufferGetBlockNumber(buffer), &vmbuffer);
 
 	START_CRIT_SECTION();
-
-	/*
-	 * If all the members were lockers and are all gone, we can do away
-	 * with the MULTI_LOCKERS bit.
-	 */
-
-	if (ZHeapTupleHasMultiLockers(zheaptup.t_data->t_infomask) &&
-		!any_multi_locker_member_alive)
-		zheaptup.t_data->t_infomask &= ~ZHEAP_MULTI_LOCKERS;
 
 	if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) ||
 		(vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
@@ -3071,6 +3071,14 @@ zheap_tuple_updated:
 
 		temp_infomask = oldtup.t_data->t_infomask;
 
+		/*
+		 * If all the members were lockers and are all gone, we can do away
+		 * with the MULTI_LOCKERS bit.
+		 */
+		if (ZHeapTupleHasMultiLockers(temp_infomask) &&
+			!any_multi_locker_member_alive)
+			temp_infomask &= ~ZHEAP_MULTI_LOCKERS;
+
 		/* Compute the new xid and infomask to store into the tuple. */
 		compute_new_xid_infomask(&oldtup, buffer, save_tup_xid,
 								 tup_trans_slot_id, temp_infomask,
@@ -3084,15 +3092,6 @@ zheap_tuple_updated:
 			undorecord.uur_type = UNDO_XID_LOCK_FOR_UPDATE;
 
 		START_CRIT_SECTION();
-
-		/*
-		 * If all the members were lockers and are all gone, we can do away
-		 * with the MULTI_LOCKERS bit.
-		 */
-
-		if (ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask) &&
-			!any_multi_locker_member_alive)
-			oldtup.t_data->t_infomask &= ~ZHEAP_MULTI_LOCKERS;
 
 		InsertPreparedUndo();
 
@@ -3530,11 +3529,22 @@ reacquire_buffer:
 
 	}
 
+	temp_infomask = oldtup.t_data->t_infomask;
+
 	/*
 	 * We can't rely on any_multi_locker_member_alive to clear the multi locker
 	 * bit, if the the lock on the buffer is released inbetween.
 	 */
-	temp_infomask = oldtup.t_data->t_infomask;
+	if (buffer == newbuf)
+	{
+		/*
+		 * If all the members were lockers and are all gone, we can do away
+		 * with the MULTI_LOCKERS bit.
+		 */
+		if (ZHeapTupleHasMultiLockers(temp_infomask) &&
+			!any_multi_locker_member_alive)
+			temp_infomask &= ~ZHEAP_MULTI_LOCKERS;
+	}
 
 	/* Compute the new xid and infomask to store into the tuple. */
 	compute_new_xid_infomask(&oldtup, buffer, save_tup_xid, tup_trans_slot_id,
@@ -3601,17 +3611,6 @@ reacquire_buffer:
 	XLogEnsureRecordSpace(8, 0);
 
 	START_CRIT_SECTION();
-
-	if (buffer == newbuf)
-	{
-		/*
-		 * If all the members were lockers and are all gone, we can do away
-		 * with the MULTI_LOCKERS bit.
-		 */
-		if (ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask) &&
-			!any_multi_locker_member_alive)
-			oldtup.t_data->t_infomask &= ~ZHEAP_MULTI_LOCKERS;
-	}
 
 	if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) ||
 		(vm_status & VISIBILITYMAP_POTENTIAL_ALL_VISIBLE))
@@ -5665,7 +5664,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	UndoRecPtr	urecptr;
 	UnpackedUndoRecord	undorecord;
 	int			new_trans_slot_id;
-	uint16		  old_infomask, temp_infomask;
+	uint16		  old_infomask;
 	uint16		  new_infomask = 0;
 	Page		  page;
 	xl_undolog_meta undometa;
@@ -5676,14 +5675,17 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	/* Compute the new xid and infomask to store into the tuple. */
 	old_infomask = zhtup->t_data->t_infomask;
 
-	temp_infomask = old_infomask;
+	/*
+	 * If all the members were lockers and are all gone, we can do away
+	 * with the MULTI_LOCKERS bit.
+	 */
 	if (ZHeapTupleHasMultiLockers(old_infomask) && clear_multi_locker)
 		old_infomask &= ~ZHEAP_MULTI_LOCKERS;
+
 	compute_new_xid_infomask(zhtup, buf, tup_xid, tup_trans_slot_id,
-							 temp_infomask, xid, trans_slot_id,
+							 old_infomask, xid, trans_slot_id,
 							 single_locker_xid, mode, lockopr,
 							 &new_infomask, &new_trans_slot_id);
-
 
 	/* Acquire subtransaction lock, if current transaction is a subtransaction. */
 	if (IsSubTransaction())
