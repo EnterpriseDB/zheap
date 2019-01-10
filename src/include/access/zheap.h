@@ -25,6 +25,14 @@
 #include "utils/snapshot.h"
 
 /*
+ * Threshold for the number of blocks till which non-inplace updates due to
+ * reuse of transaction slot or use of TPD slots are allowed.  The performance
+ * testing on various sizes of tables indicate that threshold of 200 is good
+ * enough to keep the contention on transaction slots under control.
+ */
+#define		NUM_BLOCKS_FOR_NON_INPLACE_UPDATES 200
+
+/*
  * Additional bits used from page header for zheap specific pages.
  * See PageHeaderData.  We have considered to store these special flags
  * in zheap specific pages, but the pages have different structures for
@@ -111,7 +119,8 @@ extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
 									  TransactionId xid, UndoRecPtr *ureptr,
 									  bool *lock_reacquired,
 									  bool extend_if_required,
-									  bool use_aborted_slot);
+									  bool use_aborted_slot,
+									  bool *slot_reused_or_TPD_slot);
 extern void MultiPageReserveTransSlot(Relation relation,
 									  Buffer oldbuf, Buffer newbuf,
 									  OffsetNumber oldbuf_offnum,
