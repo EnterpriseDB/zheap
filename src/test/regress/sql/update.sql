@@ -97,7 +97,7 @@ UPDATE update_test t
 UPDATE update_test t
   SET (a, b) = (SELECT b, a FROM update_test s WHERE s.a = t.a)
   WHERE CURRENT_USER = SESSION_USER;
-SELECT a, b, char_length(c) FROM update_test;
+SELECT a, b, char_length(c) FROM update_test ORDER BY a, b;
 
 -- Test ON CONFLICT DO UPDATE
 INSERT INTO upsert_test VALUES(1, 'Boo');

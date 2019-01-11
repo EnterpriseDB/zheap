@@ -38,7 +38,7 @@ SELECT * FROM FKTABLE;
 UPDATE PKTABLE SET ptest1=1 WHERE ptest1=2;
 
 -- Check FKTABLE for update of matched row
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2;
 
 DROP TABLE FKTABLE;
 DROP TABLE PKTABLE;
@@ -83,25 +83,25 @@ SELECT * FROM FKTABLE;
 DELETE FROM PKTABLE WHERE ptest1=1 and ptest2=2;
 
 -- Check FKTABLE for removal of matched row
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
 
 -- Delete another row from PK TABLE
 DELETE FROM PKTABLE WHERE ptest1=5 and ptest2=10;
 
 -- Check FKTABLE (should be no change)
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
 
 -- Update a row from PK TABLE
 UPDATE PKTABLE SET ptest1=1 WHERE ptest1=2;
 
 -- Check FKTABLE for update of matched row
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
 
 -- Try altering the column type where foreign keys are involved
 ALTER TABLE PKTABLE ALTER COLUMN ptest1 TYPE bigint;
 ALTER TABLE FKTABLE ALTER COLUMN ftest1 TYPE bigint;
 SELECT * FROM PKTABLE;
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
 
 DROP TABLE PKTABLE CASCADE;
 DROP TABLE FKTABLE;
@@ -144,19 +144,19 @@ SELECT * FROM FKTABLE;
 DELETE FROM PKTABLE WHERE ptest1=1 and ptest2=2;
 
 -- Check FKTABLE to check for removal
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
 
 -- Delete another row from PK TABLE
 DELETE FROM PKTABLE WHERE ptest1=5 and ptest2=10;
 
 -- Check FKTABLE (should be no change)
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
 
 -- Update a row from PK TABLE
 UPDATE PKTABLE SET ptest1=1 WHERE ptest1=2;
 
 -- Check FKTABLE for update of matched row
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
 
 -- this should fail for lack of CASCADE
 DROP TABLE PKTABLE;
@@ -292,14 +292,14 @@ UPDATE PKTABLE set ptest2=5 where ptest2=2;
 UPDATE PKTABLE set ptest1=1 WHERE ptest2=3;
 
 -- Show PKTABLE and FKTABLE
-SELECT * from PKTABLE;
-SELECT * from FKTABLE;
+SELECT * from PKTABLE ORDER BY ptest1, ptest2, ptest3;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3;
 
 -- Try to delete something that should cascade
 DELETE FROM PKTABLE where ptest1=1 and ptest2=5 and ptest3=3;
 
 -- Show PKTABLE and FKTABLE
-SELECT * from PKTABLE;
+SELECT * from PKTABLE ORDER BY ptest1, ptest2, ptest3;
 SELECT * from FKTABLE;
 
 -- Try to delete something that should not have a cascade
@@ -346,21 +346,21 @@ UPDATE PKTABLE set ptest2=2 WHERE ptest2=3 and ptest1=1;
 
 -- Show PKTABLE and FKTABLE
 SELECT * from PKTABLE;
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
 
 -- Try to delete something that should set default
 DELETE FROM PKTABLE where ptest1=2 and ptest2=3 and ptest3=4;
 
 -- Show PKTABLE and FKTABLE
 SELECT * from PKTABLE;
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
 
 -- Try to delete something that should not set default
 DELETE FROM PKTABLE where ptest2=5;
 
 -- Show PKTABLE and FKTABLE
 SELECT * from PKTABLE;
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
 
 DROP TABLE FKTABLE;
 DROP TABLE PKTABLE;
@@ -405,21 +405,21 @@ UPDATE PKTABLE set ptest2=2 WHERE ptest2=3 and ptest1=1;
 
 -- Show PKTABLE and FKTABLE
 SELECT * from PKTABLE;
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
 
 -- Try to delete something that should set null
 DELETE FROM PKTABLE where ptest1=2 and ptest2=3 and ptest3=4;
 
 -- Show PKTABLE and FKTABLE
 SELECT * from PKTABLE;
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
 
 -- Try to delete something that should not set null
 DELETE FROM PKTABLE where ptest2=-1 and ptest3=5;
 
 -- Show PKTABLE and FKTABLE
 SELECT * from PKTABLE;
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
 
 DROP TABLE FKTABLE;
 DROP TABLE PKTABLE;
@@ -944,9 +944,9 @@ SELECT * FROM tasks;
 -- could fail with only 2 changes to make, if row was already updated
 BEGIN;
 UPDATE tasks set id=id WHERE id=2;
-SELECT * FROM tasks;
+SELECT * FROM tasks ORDER BY id;
 DELETE FROM users WHERE id = 2;
-SELECT * FROM tasks;
+SELECT * FROM tasks ORDER BY id;
 COMMIT;
 
 --
