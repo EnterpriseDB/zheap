@@ -46,12 +46,12 @@ SELECT * FROM FKTABLE;
 -- Update a row from PK TABLE
 UPDATE PKTABLE SET ptest1=1 WHERE ptest1=2;
 -- Check FKTABLE for update of matched row
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2;
  ftest1 | ftest2 
 --------+--------
+      1 |      3
       3 |      4
         |      1
-      1 |      3
 (3 rows)
 
 DROP TABLE FKTABLE;
@@ -107,7 +107,7 @@ SELECT * FROM FKTABLE;
 -- Delete a row from PK TABLE
 DELETE FROM PKTABLE WHERE ptest1=1 and ptest2=2;
 -- Check FKTABLE for removal of matched row
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
  ftest1 | ftest2 | ftest3 
 --------+--------+--------
       1 |      3 |      5
@@ -120,7 +120,7 @@ SELECT * FROM FKTABLE;
 -- Delete another row from PK TABLE
 DELETE FROM PKTABLE WHERE ptest1=5 and ptest2=10;
 -- Check FKTABLE (should be no change)
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
  ftest1 | ftest2 | ftest3 
 --------+--------+--------
       1 |      3 |      5
@@ -133,7 +133,7 @@ SELECT * FROM FKTABLE;
 -- Update a row from PK TABLE
 UPDATE PKTABLE SET ptest1=1 WHERE ptest1=2;
 -- Check FKTABLE for update of matched row
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
  ftest1 | ftest2 | ftest3 
 --------+--------+--------
       1 |      3 |      5
@@ -161,14 +161,14 @@ SELECT * FROM PKTABLE;
       1 |      4 | Test2
 (4 rows)
 
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
  ftest1 | ftest2 | ftest3 
 --------+--------+--------
+      1 |      3 |      5
       3 |      6 |     12
         |        |      0
         |        |      4
         |        |      8
-      1 |      3 |      5
 (5 rows)
 
 DROP TABLE PKTABLE CASCADE;
@@ -222,40 +222,40 @@ SELECT * FROM FKTABLE;
 -- Delete a row from PK TABLE
 DELETE FROM PKTABLE WHERE ptest1=1 and ptest2=2;
 -- Check FKTABLE to check for removal
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
  ftest1 | ftest2 | ftest3 
 --------+--------+--------
+     -1 |     -2 |      4
       1 |      3 |      5
       2 |      4 |      8
       3 |      6 |     12
         |        |      0
-     -1 |     -2 |      4
 (5 rows)
 
 -- Delete another row from PK TABLE
 DELETE FROM PKTABLE WHERE ptest1=5 and ptest2=10;
 -- Check FKTABLE (should be no change)
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
  ftest1 | ftest2 | ftest3 
 --------+--------+--------
+     -1 |     -2 |      4
       1 |      3 |      5
       2 |      4 |      8
       3 |      6 |     12
         |        |      0
-     -1 |     -2 |      4
 (5 rows)
 
 -- Update a row from PK TABLE
 UPDATE PKTABLE SET ptest1=1 WHERE ptest1=2;
 -- Check FKTABLE for update of matched row
-SELECT * FROM FKTABLE;
+SELECT * FROM FKTABLE ORDER BY ftest1, ftest2, ftest3;
  ftest1 | ftest2 | ftest3 
 --------+--------+--------
+     -1 |     -2 |      4
+     -1 |     -2 |      8
       1 |      3 |      5
       3 |      6 |     12
         |        |      0
-     -1 |     -2 |      4
-     -1 |     -2 |      8
 (5 rows)
 
 -- this should fail for lack of CASCADE
@@ -477,34 +477,34 @@ UPDATE PKTABLE set ptest2=5 where ptest2=2;
 -- Try to update something that should not cascade
 UPDATE PKTABLE set ptest1=1 WHERE ptest2=3;
 -- Show PKTABLE and FKTABLE
-SELECT * from PKTABLE;
+SELECT * from PKTABLE ORDER BY ptest1, ptest2, ptest3;
  ptest1 | ptest2 | ptest3 | ptest4 
 --------+--------+--------+--------
-      2 |      4 |      5 | test4
-      1 |      5 |      3 | test1
       1 |      3 |      3 | test2
       1 |      3 |      4 | test3
+      1 |      5 |      3 | test1
+      2 |      4 |      5 | test4
 (4 rows)
 
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3;
  ftest1 | ftest2 | ftest3 | ftest4 
 --------+--------+--------+--------
-        |      2 |      3 |      2
+      1 |      5 |      3 |      1
       2 |        |      3 |      3
+        |      2 |      3 |      2
         |      2 |      7 |      4
         |      3 |      4 |      5
-      1 |      5 |      3 |      1
 (5 rows)
 
 -- Try to delete something that should cascade
 DELETE FROM PKTABLE where ptest1=1 and ptest2=5 and ptest3=3;
 -- Show PKTABLE and FKTABLE
-SELECT * from PKTABLE;
+SELECT * from PKTABLE ORDER BY ptest1, ptest2, ptest3;
  ptest1 | ptest2 | ptest3 | ptest4 
 --------+--------+--------+--------
-      2 |      4 |      5 | test4
       1 |      3 |      3 | test2
       1 |      3 |      4 | test3
+      2 |      4 |      5 | test4
 (3 rows)
 
 SELECT * from FKTABLE;
@@ -584,12 +584,12 @@ SELECT * from PKTABLE;
       1 |      2 |      3 | test2
 (4 rows)
 
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
  ftest1 | ftest2 | ftest3 | ftest4 
 --------+--------+--------+--------
       2 |      3 |      4 |      1
-        |      2 |      3 |      2
       2 |        |      3 |      3
+        |      2 |      3 |      2
         |      2 |      7 |      4
         |      3 |      4 |      5
         |        |        |      1
@@ -606,15 +606,15 @@ SELECT * from PKTABLE;
       1 |      2 |      3 | test2
 (3 rows)
 
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
  ftest1 | ftest2 | ftest3 | ftest4 
 --------+--------+--------+--------
-        |      2 |      3 |      2
+      0 |        |        |      1
       2 |        |      3 |      3
+        |      2 |      3 |      2
         |      2 |      7 |      4
         |      3 |      4 |      5
         |        |        |      1
-      0 |        |        |      1
 (6 rows)
 
 -- Try to delete something that should not set default
@@ -627,15 +627,15 @@ SELECT * from PKTABLE;
       1 |      2 |      3 | test2
 (2 rows)
 
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
  ftest1 | ftest2 | ftest3 | ftest4 
 --------+--------+--------+--------
-        |      2 |      3 |      2
+      0 |        |        |      1
       2 |        |      3 |      3
+        |      2 |      3 |      2
         |      2 |      7 |      4
         |      3 |      4 |      5
         |        |        |      1
-      0 |        |        |      1
 (6 rows)
 
 DROP TABLE FKTABLE;
@@ -696,16 +696,16 @@ SELECT * from PKTABLE;
       1 |      2 |      3 | test2
 (5 rows)
 
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
  ftest1 | ftest2 | ftest3 | ftest4 
 --------+--------+--------+--------
+      0 |     -1 |     -2 |      1
+      0 |     -1 |     -2 |      1
       2 |      3 |      4 |      1
-        |      2 |      3 |      2
       2 |        |      3 |      3
+        |      2 |      3 |      2
         |      2 |      7 |      4
         |      3 |      4 |      5
-      0 |     -1 |     -2 |      1
-      0 |     -1 |     -2 |      1
 (7 rows)
 
 -- Try to delete something that should set null
@@ -720,15 +720,15 @@ SELECT * from PKTABLE;
       1 |      2 |      3 | test2
 (4 rows)
 
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
  ftest1 | ftest2 | ftest3 | ftest4 
 --------+--------+--------+--------
-        |      2 |      3 |      2
+      0 |     -1 |     -2 |      1
+      0 |     -1 |     -2 |      1
       2 |        |      3 |      3
+        |      2 |      3 |      2
         |      2 |      7 |      4
         |      3 |      4 |      5
-      0 |     -1 |     -2 |      1
-      0 |     -1 |     -2 |      1
         |        |        |      1
 (7 rows)
 
@@ -743,15 +743,15 @@ SELECT * from PKTABLE;
       1 |      2 |      3 | test2
 (3 rows)
 
-SELECT * from FKTABLE;
+SELECT * from FKTABLE ORDER BY ftest1, ftest2, ftest3, ftest4;
  ftest1 | ftest2 | ftest3 | ftest4 
 --------+--------+--------+--------
-        |      2 |      3 |      2
+      0 |     -1 |     -2 |      1
+      0 |     -1 |     -2 |      1
       2 |        |      3 |      3
+        |      2 |      3 |      2
         |      2 |      7 |      4
         |      3 |      4 |      5
-      0 |     -1 |     -2 |      1
-      0 |     -1 |     -2 |      1
         |        |        |      1
 (7 rows)
 
@@ -1292,21 +1292,21 @@ SELECT * FROM tasks;
 -- could fail with only 2 changes to make, if row was already updated
 BEGIN;
 UPDATE tasks set id=id WHERE id=2;
-SELECT * FROM tasks;
+SELECT * FROM tasks ORDER BY id;
  id | owner | worker | checked_by 
 ----+-------+--------+------------
   1 |     1 |        |           
-  3 |       |        |           
   2 |     2 |      2 |           
+  3 |       |        |           
 (3 rows)
 
 DELETE FROM users WHERE id = 2;
-SELECT * FROM tasks;
+SELECT * FROM tasks ORDER BY id;
  id | owner | worker | checked_by 
 ----+-------+--------+------------
   1 |     1 |        |           
-  3 |       |        |           
   2 |       |        |           
+  3 |       |        |           
 (3 rows)
 
 COMMIT;
