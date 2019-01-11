@@ -37,6 +37,19 @@ typedef struct ZMultiLockMember
 	LockTupleMode mode;
 } ZMultiLockMember;
 
+ /*
+  * Possible lock modes for a tuple.
+  */
+typedef enum LockOper
+{
+	/* SELECT FOR 'KEY SHARE/SHARE/NO KEY UPDATE/UPDATE' */
+	LockOnly,
+	/* Via EvalPlanQual where after locking we will update it */
+	LockForUpdate,
+	/* Update/Delete */
+	ForUpdate
+} LockOper;
+
 /*
  * Heap tuple header.  To avoid wasting space, the fields should be
  * laid out in such a way as to avoid structure padding.

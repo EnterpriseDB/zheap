@@ -633,28 +633,11 @@ ZGetMultiLockInfo(uint16 old_infomask, TransactionId tup_xid,
 				  int tup_trans_slot, TransactionId add_to_xid,
 				  uint16 *new_infomask, int *new_trans_slot,
 				  LockTupleMode *mode, bool *old_tuple_has_update,
-				  bool is_update)
+				  LockOper lockoper)
 {
 	LockTupleMode old_mode;
 
 	old_mode = get_old_lock_mode(old_infomask);
-
-	/* We want to propagate the updaters information for lockers only. */
-	if (!is_update && IsZHeapTupleModified(old_infomask) &&
-		!ZHEAP_XID_IS_LOCKED_ONLY(old_infomask))
-	{
-		*old_tuple_has_update = true;
-
-		if (ZHeapTupleIsInPlaceUpdated(old_infomask))
-		{
-			*new_infomask |= ZHEAP_INPLACE_UPDATED;
-		}
-		else
-		{
-			Assert(ZHeapTupleIsUpdated(old_infomask));
-			*new_infomask |= ZHEAP_UPDATED;
-		}
-	}
 
 	if (tup_xid == add_to_xid)
 	{
@@ -679,8 +662,31 @@ ZGetMultiLockInfo(uint16 old_infomask, TransactionId tup_xid,
 		}
 
 		/* For lockers, we want to store the updater's transaction slot. */
-		if (!is_update)
+		if (lockoper != ForUpdate)
 			*new_trans_slot = tup_trans_slot;
+	}
+
+	/*
+	 * We want to propagate the updaters information for lockers only provided
+	 * the tuple is already locked by others (aka it has its multi-locker bit
+	 * set).
+	 */
+	if (lockoper != ForUpdate &&
+		ZHeapTupleHasMultiLockers(*new_infomask) &&
+		IsZHeapTupleModified(old_infomask) &&
+		!ZHEAP_XID_IS_LOCKED_ONLY(old_infomask))
+	{
+		*old_tuple_has_update = true;
+
+		if (ZHeapTupleIsInPlaceUpdated(old_infomask))
+		{
+			*new_infomask |= ZHEAP_INPLACE_UPDATED;
+		}
+		else
+		{
+			Assert(ZHeapTupleIsUpdated(old_infomask));
+			*new_infomask |= ZHEAP_UPDATED;
+		}
 	}
 }
 
