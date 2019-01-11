@@ -2017,14 +2017,14 @@ zheap_xlog_unused(XLogReaderState *record)
 
 			itemid = PageGetItemId(page, unused[i]);
 			ItemIdSetUnusedExtended(itemid, xlrec->trans_slot_id);
-
-			/*
-			 * The flag is used to prevent re-evaluation of itemId,
-			 * clearing the set transaction slot information by
-			 * ZPageRepairFragmentation.
-			 */
-			unused_set = true;
 		}
+
+		/*
+		 * The flag is used to prevent re-evaluation of itemId, clearing the
+		 * set transaction slot information by ZPageRepairFragmentation.
+		 */
+		if (uncnt > 0)
+			unused_set = true;
 
 		PageSetUNDO(undorecord, buffer, xlrec->trans_slot_id, false, xid_epoch,
 					xid, urecptr, NULL, 0);
