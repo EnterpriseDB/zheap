@@ -565,6 +565,21 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			needs_data = false;
 		else if ((regbuf->flags & REGBUF_KEEP_DATA) != 0)
 			needs_data = true;
+		else if ((regbuf->flags & REGBUF_KEEP_DATA_AFTER_CP) != 0)
+		{
+			XLogRecPtr	page_lsn = PageGetLSN(regbuf->page);
+
+			needs_data = (page_lsn <= RedoRecPtr);
+			if (!needs_data)
+			{
+				/*
+				 * XLogInsertRecord() will detect if our view of the latest
+				 * checkpoint's RedoRecPtr is out of date.
+				 */
+				if (*fpw_lsn == InvalidXLogRecPtr || page_lsn < *fpw_lsn)
+					*fpw_lsn = page_lsn;
+			}
+		}
 		else
 			needs_data = !needs_backup;
 

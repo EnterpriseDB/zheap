@@ -37,6 +37,8 @@
 									 * will be skipped) */
 #define REGBUF_KEEP_DATA	0x10	/* include data even if a full-page image
 									 * is taken */
+#define REGBUF_KEEP_DATA_AFTER_CP 0x20 /* include data on the first
+										* modification after a checkpoint */
 
 /* prototypes for public functions in xloginsert.c: */
 extern void XLogBeginInsert(void);
