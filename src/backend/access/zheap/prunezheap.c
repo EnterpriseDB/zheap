@@ -886,7 +886,16 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 			 */
 			if (ItemIdHasPendingXact(lp))
 			{
-				int		trans_slot = ItemIdGetTransactionSlot(lp);
+				int		trans_slot;
+
+				/*
+				 * If unused_set is true, it means that itemIds are already set
+				 * unused with transaction slot information by the caller and
+				 * we should not clear it.
+				 */
+				if (unused_set)
+					continue;
+				trans_slot = ItemIdGetTransactionSlot(lp);
 
 				/*
 				 * Here, we are relying on the transaction information in
@@ -904,13 +913,10 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 					 * It is quite possible that the item is showing some
 					 * valid transaction slot, but actual slot has been
 					 * frozen. This can happen when the slot belongs to TPD
-					 * entry and the corresponding TPD entry is pruned. If
-					 * unused_set is true, it means that itemIds are already
-					 * set unused with transaction slot information by the
-					 * caller and we should not clear it.
+					 * entry and the corresponding TPD entry is pruned.
 					 */
-					if ((trans_slot != ZHTUP_SLOT_FROZEN &&
-						!TransactionIdDidCommit(xid)) || unused_set)
+					if (trans_slot != ZHTUP_SLOT_FROZEN &&
+						!TransactionIdDidCommit(xid))
 						continue;
 				}
 			}
