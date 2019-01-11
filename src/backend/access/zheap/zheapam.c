@@ -84,19 +84,6 @@
 extern BlockNumber ss_get_location(Relation rel, BlockNumber relnblocks);
 extern void ss_report_location(Relation rel, BlockNumber location);
 
- /*
-  * Possible lock modes for a tuple.
-  */
-typedef enum LockOper
-{
-	/* SELECT FOR 'KEY SHARE/SHARE/NO KEY UPDATE/UPDATE' */
-	LockOnly,
-	/* Via EvalPlanQual where after locking we will update it */
-	LockForUpdate,
-	/* Update/Delete */
-	ForUpdate
-} LockOper;
-
 extern bool synchronize_seqscans;
 static int GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf);
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
@@ -3355,8 +3342,22 @@ reacquire_buffer:
 		 */
 		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 		oldtup.t_len = ItemIdGetLength(lp);
-		tup_trans_slot_id = trans_slot_id;
-		tup_xid = xid;
+
+		/*
+		 * If the computed infomask for the updated tuple doesn't contain a
+		 * multilocker flag, we must have stored current transaction slot on the
+		 * tuple (due to LockForUpdate). In that case, we should update the
+		 * tuple xid as well.
+		 */
+		if (!ZHeapTupleHasMultiLockers(lock_old_infomask))
+		{
+			Assert((result_trans_slot_id == trans_slot_id) ||
+			(ZHeapPageHasTPDSlot((PageHeader) page) &&
+			result_trans_slot_id == trans_slot_id + 1));
+			tup_trans_slot_id = trans_slot_id;
+			tup_xid = xid;
+			save_tup_xid = tup_xid;
+		}
 	}
 	else
 	{
@@ -5969,7 +5970,7 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 	{
 		ZGetMultiLockInfo(old_infomask, tup_xid, tup_trans_slot,
 						  add_to_xid, &new_infomask, &new_trans_slot,
-						  &mode, &old_tuple_has_update, is_update);
+						  &mode, &old_tuple_has_update, lockoper);
 	}
 	else if (!is_update &&
 			 TransactionIdIsInProgress(single_locker_xid))
@@ -6134,7 +6135,7 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 	}
 	else
 	{
-		if (!is_update && !old_tuple_has_update)
+		if (lockoper != ForUpdate && !old_tuple_has_update)
 			new_infomask |= ZHEAP_XID_LOCK_ONLY;
 		switch (mode)
 		{
