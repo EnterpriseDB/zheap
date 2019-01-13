@@ -3384,12 +3384,15 @@ reacquire_buffer:
 		 * multilocker flag, we must have stored current transaction slot on the
 		 * tuple (due to LockForUpdate). In that case, we should update the
 		 * tuple xid as well.
+		 *
+		 * Also note that, there is possibility that our slot might have moved
+		 * to the TPD; in such case we should get previous slot_no + 1.
 		 */
 		if (!ZHeapTupleHasMultiLockers(lock_old_infomask))
 		{
 			Assert((result_trans_slot_id == trans_slot_id) ||
 			(ZHeapPageHasTPDSlot((PageHeader) page) &&
-			result_trans_slot_id == trans_slot_id + 1));
+			result_trans_slot_id + 1 == trans_slot_id));
 			tup_trans_slot_id = trans_slot_id;
 			tup_xid = xid;
 			save_tup_xid = tup_xid;
