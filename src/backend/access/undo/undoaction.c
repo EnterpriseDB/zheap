@@ -1620,6 +1620,36 @@ RollbackHTGetDBList()
 }
 
 /*
+ * Remove all the entries for the given dbid. This is required in cases when
+ * the database is dropped and there were rollback requests pushed to the
+ * hash-table.
+ */
+void
+RollbackHTCleanup(Oid dbid)
+{
+	RollbackHashEntry *rh;
+	HASH_SEQ_STATUS status;
+	UndoRecPtr	start_urec_ptr;
+
+	/* Fetch the rollback requests */
+	LWLockAcquire(RollbackHTLock, LW_SHARED);
+
+	Assert(hash_get_num_entries(RollbackHT) <= ROLLBACK_HT_SIZE);
+	hash_seq_init(&status, RollbackHT);
+	while (RollbackHT != NULL &&
+		  (rh = (RollbackHashEntry *) hash_seq_search(&status)) != NULL)
+	{
+		if (rh->dbid == dbid)
+		{
+			start_urec_ptr = rh->start_urec_ptr;
+			hash_search(RollbackHT, &start_urec_ptr, HASH_REMOVE, NULL);
+		}
+	}
+
+	LWLockRelease(RollbackHTLock);
+}
+
+/*
  *		ConditionTransactionUndoActionLock
  *
  * Insert a lock showing that the undo action for given transaction is in

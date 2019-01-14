@@ -79,6 +79,9 @@ extern bool PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr,
 /* To perform the undo actions reading from the hash table */
 extern void RollbackFromHT(Oid dbid);
 
+/* To remove the all the entries of a database from hash-table */
+extern void RollbackHTCleanup(Oid dbid);
+
 extern List *RollbackHTGetDBList(void);
 extern bool ConditionTransactionUndoActionLock(TransactionId xid);
 extern void TransactionUndoActionLockRelease(TransactionId xid);
