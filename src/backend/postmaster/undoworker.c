@@ -347,31 +347,16 @@ undo_worker_launch(Oid dbid)
 	bgw.bgw_notify_pid = MyProcPid;
 	bgw.bgw_main_arg = Int32GetDatum(slot);
 
-	StartTransactionCommand();
 	/* Check the database exists or not. */
+
+	StartTransactionCommand();
 	if (!dbid_exist(dbid))
 	{
 		CommitTransactionCommand();
 
 		LWLockAcquire(UndoWorkerLock, LW_EXCLUSIVE);
 		undo_worker_cleanup(worker);
-		LWLockRelease(UndoWorkerLock);
-		return true;
-	}
-
-	/*
-	 * Acquire database object lock before launching the worker so that it
-	 * doesn't get dropped while worker is connecting to the database.
-	 */
-	LockSharedObject(DatabaseRelationId, dbid, 0, RowExclusiveLock);
-
-	/*  Recheck whether database still exists or not. */
-	if (!dbid_exist(dbid))
-	{
-		CommitTransactionCommand();
-
-		LWLockAcquire(UndoWorkerLock, LW_EXCLUSIVE);
-		undo_worker_cleanup(worker);
+		RollbackHTCleanup(dbid);
 		LWLockRelease(UndoWorkerLock);
 		return true;
 	}
@@ -383,7 +368,6 @@ undo_worker_launch(Oid dbid)
 		undo_worker_cleanup(worker);
 		LWLockRelease(UndoWorkerLock);
 
-		UnlockSharedObject(DatabaseRelationId, dbid, 0, RowExclusiveLock);
 		CommitTransactionCommand();
 
 		return false;
@@ -392,11 +376,6 @@ undo_worker_launch(Oid dbid)
 	/* Now wait until it attaches. */
 	WaitForUndoWorkerAttach(worker, generation, bgw_handle);
 
-	/*
-	 * By this point the undo-worker has already connected to the database so we
-	 * can release the database lock.
-	 */
-	UnlockSharedObject(DatabaseRelationId, dbid, 0, RowExclusiveLock);
 	CommitTransactionCommand();
 
 	return true;
@@ -645,11 +624,11 @@ UndoWorkerMain(Datum main_arg)
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 
-	/* Connect to the database. */
-	BackgroundWorkerInitializeConnectionByOid(dbid, 0, 0);
-
 	/* Attach to slot */
 	undo_worker_attach(worker_slot);
+
+	/* Connect to the database. */
+	BackgroundWorkerInitializeConnectionByOid(dbid, 0, 0);
 
 	/*
 	 * Create resource owner for undo worker.  Undo worker need this as it
