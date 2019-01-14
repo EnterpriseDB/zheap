@@ -5101,6 +5101,19 @@ failed:
 			ItemPointerSetMovedPartitions(&tmfd->ctid);
 		else
 			tmfd->ctid = ctid;
+
+		/*
+		 * If item id is deleted, tuple won't be initialized.  In that case, we
+		 * should set t_self with the tuple tid and the length as zero to let
+		 * the caller know that the item id is deleted.
+		 */
+		if (ItemIdIsDeleted(lp))
+		{
+			tuple->t_self = *tid;
+			tuple->t_len = 0;
+			tuple->t_tableOid = RelationGetRelid(relation);
+		}
+
 		tmfd->xmax = tup_xid;
 		if (result == TM_SelfModified)
 			tmfd->cmax = tup_cid;
