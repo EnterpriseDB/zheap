@@ -211,15 +211,20 @@ retry:
 
 		ReleaseBuffer(buffer);
 
-		/* Should not encounter speculative tuple on recheck */
-		Assert(!(tuple->t_data->t_infomask & ZHEAP_SPECULATIVE_INSERT));
-
 		/* it was updated, so look at the updated version */
 		*tid = hufd->ctid;
 		/* updated row should have xmin matching this xmax */
 		priorXmax = hufd->xmax;
 
-		if (ItemPointerEquals(&hufd->ctid, &tuple->t_self) && false)
+		/*
+		 * We should not encounter a speculative tuple on recheck.  Also,
+		 * for a deleted item pointer, tuple data is not initialized.
+		 */
+		Assert((tuple->t_len == 0) ||
+			  !(tuple->t_data->t_infomask & ZHEAP_SPECULATIVE_INSERT));
+
+		if (ItemPointerEquals(&hufd->ctid, &tuple->t_self) &&
+			!hufd->in_place_updated_or_locked)
 		{
 			/* tuple was deleted, so give up */
 			return HeapTupleDeleted;
