@@ -233,6 +233,18 @@ loop:
 			 * we're done.
 			 */
 			page = BufferGetPage(buffer);
+
+			/*
+			 * Initialize page, it'll be used soon.  We could avoid dirtying the
+			 * buffer here, and rely on the caller to do so whenever it puts a
+			 * tuple onto the page, but there seems not much benefit in doing so.
+			 */
+			if (PageIsNew(page))
+			{
+				ZheapInitPage(page, BufferGetPageSize(buffer));
+				MarkBufferDirty(buffer);
+			}
+
 			pageFreeSpace = PageGetZHeapFreeSpace(page);
 			if (len + saveFreeSpace <= pageFreeSpace)
 			{
