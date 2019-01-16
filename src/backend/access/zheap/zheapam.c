@@ -5643,7 +5643,10 @@ lock_tuple:
 												   &lock_reacquired, false,
 												   true, NULL);
 		if (lock_reacquired)
+		{
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 			goto lock_tuple;
+		}
 
 		if (trans_slot_id == InvalidXactSlotId)
 		{
