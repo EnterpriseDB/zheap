@@ -8110,9 +8110,17 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		 * Instead of just unlocking the TPD buffer like heap buffer its ok to
 		 * unlock and release, because next time while trying to reserve the
 		 * slot if we get the slot in TPD then anyway we will pin it again.
+		 *
+		 * Releasing all TPD buffers can release the TPD buffer which was not
+		 * used for current heap page (in case of non-in-place updates via
+		 * MultiPageReserveTransSlot), but that is okay because we anyway need
+		 * to reacquire heap and TPD buffer locks by the caller. This also
+		 * avoids the risk of deadlock where someone acquires the lock on heap
+		 * page before we can reacquire it and waits for the TPD lock held by
+		 * us, so we will wait on that process to release the lock on heap page
+		 * and that process will wait on use.
 		 */
-		if (TPDSlot || ZHeapPageHasTPDSlot((PageHeader) page))
-			UnlockReleaseTPDBuffers();
+		UnlockReleaseTPDBuffers();
 
 		for (i = 0; i < nAbortedXactSlots; i++)
 		{
