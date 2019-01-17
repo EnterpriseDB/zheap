@@ -1397,10 +1397,8 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
 	Page		targpage;
 	OffsetNumber maxoffset;
-	ZHeapTupleTableSlot *zslot;
 
 	Assert(TTS_IS_ZHEAP(slot));
-	zslot = (ZHeapTupleTableSlot *) slot;
 
 	if (scan->rs_cblock == ZHEAP_METAPAGE)
 		return false;
@@ -1421,7 +1419,7 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 	for (; scan->rs_cindex <= maxoffset; scan->rs_cindex++)
 	{
 		ItemId		itemid;
-		ZHeapTuple	targtuple = &zslot->tupdata;
+		ZHeapTuple	targtuple;
 		Size        targztuple_len;
 		bool		sample_it = false;
 		TransactionId xid;
@@ -1452,12 +1450,15 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 			continue;
 		}
 
+		/* Allocate memory for target tuple. */
 		targztuple_len = ItemIdGetLength(itemid);
+		targtuple = palloc(ZHEAPTUPLESIZE + targztuple_len);
 		targtuple->t_len = targztuple_len;
-		targtuple->t_data = palloc(targztuple_len);
+		targtuple->t_data = (ZHeapTupleHeader) ((char *) targtuple + ZHEAPTUPLESIZE);
 		targtuple->t_tableOid = RelationGetRelid(scan->rs_scan.rs_rd);
-
 		ItemPointerSet(&targtuple->t_self, scan->rs_cblock, scan->rs_cindex);
+
+		/* Copy target tuple data. */
 		memcpy(targtuple->t_data,
 			   ((ZHeapTupleHeader) PageGetItem((Page) targpage, itemid)),
 			   targztuple_len);
@@ -1535,6 +1536,10 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 			/* note that we leave the buffer locked here! */
 			return true;
 		}
+
+		/* Free memory for target tuple. */
+		if (targtuple)
+			zheap_freetuple(targtuple);
 	}
 
 	/* Now release the lock and pin on the page */
