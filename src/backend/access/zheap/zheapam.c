@@ -12232,27 +12232,43 @@ CheckAndLockTPDPage(Relation relation, int new_trans_slot_id, int old_trans_slot
 		ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(newbuf)) &&
 		PageHasFreeLinePointers((PageHeader)BufferGetPage(newbuf)))
 	{
+		BlockNumber	oldbuf_tpd_blk = InvalidBlockNumber,
+					newbuf_tpd_blk;
+
 		/*
-		 * If the old buffer and new buffer refers to the same TPD page
-		 * and the old transaction slot corresponds to a TPD slot,
-		 * we must have locked the TPD page during slot reservation.
+		 * If TPD exists for old buffer, then get the corresponding TPD block
+		 * number.
 		 */
-		if (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)) &&
-			(old_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS))
+		if (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)))
+			oldbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(oldbuf);
+		newbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(newbuf);
+
+		/*
+		 * If the old buffer and new buffer refers to the same TPD page and the
+		 * old transaction slot corresponds to a TPD slot, we must have locked
+		 * the TPD page during slot reservation.
+		 */
+		if (old_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 		{
-			Page oldpage, newpage;
-			ZHeapPageOpaque oldopaque, newopaque;
-			BlockNumber oldtpdblk, newtpdblk;
+			/* old page must point to valid TPD block */
+			Assert(oldbuf_tpd_blk != InvalidBlockNumber);
 
-			oldpage = BufferGetPage(oldbuf);
-			newpage = BufferGetPage(newbuf);
-			oldopaque = (ZHeapPageOpaque) PageGetSpecialPointer(oldpage);
-			newopaque = (ZHeapPageOpaque) PageGetSpecialPointer(newpage);
-
-			oldtpdblk = oldopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid_epoch;
-			newtpdblk = newopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid_epoch;
-
-			if (oldtpdblk != newtpdblk)
+			/*
+			 * To avoid deadlock, we need to ensure that we always lock the
+			 * lower numbered TPD block first.
+			 *
+			 * Releasing and reacquiring the lock on higher numbered TPD block
+			 * is safe because we have reserved the transaction slot in that
+			 * block which will avoid pruning the TPD entry. We also have lock
+			 * on the heap page, so no one can extend the TPD entry.
+			 */
+			if (newbuf_tpd_blk < oldbuf_tpd_blk)
+			{
+				ReleaseLastTPDBufferByTPDBlock(oldbuf_tpd_blk);
+				TPDPageLock(relation, newbuf);
+				TPDPageLock(relation, oldbuf);
+			}
+			else if (newbuf_tpd_blk > oldbuf_tpd_blk)
 				TPDPageLock(relation, newbuf);
 		}
 		else
