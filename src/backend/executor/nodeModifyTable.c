@@ -534,8 +534,13 @@ ExecInsert(ModifyTableState *mtstate,
 			 * insertion lock".  Others can use that to wait for us to decide
 			 * if we're going to go ahead with the insertion, instead of
 			 * waiting for the whole transaction to complete.
+			 *
+			 * In this case, we use top transaction id to create the speculative
+			 * lock tag to make it generic across different storage engine.  When
+			 * encountering a conflict, we should use SubTransGetTopmostTransaction()
+			 * to determine the xid on which we should wait.
 			 */
-			specToken = SpeculativeInsertionLockAcquire(GetCurrentTransactionId());
+			specToken = SpeculativeInsertionLockAcquire(GetTopTransactionId());
 
 			/* insert the tuple, with the speculative token */
 			table_insert_speculative(resultRelationDesc, slot,
@@ -556,11 +561,11 @@ ExecInsert(ModifyTableState *mtstate,
 			/*
 			 * Wake up anyone waiting for our decision.  They will re-check
 			 * the tuple, see that it's no longer speculative, and wait on our
-			 * XID as if this was a regularly inserted tuple all along.  Or if
-			 * we killed the tuple, they will see it's dead, and proceed as if
-			 * the tuple never existed.
+			 * top XID as if this was a regularly inserted tuple all along.  Or
+			 * if we killed the tuple, they will see it's dead, and proceed as
+			 * if the tuple never existed.
 			 */
-			SpeculativeInsertionLockRelease(GetCurrentTransactionId());
+			SpeculativeInsertionLockRelease(GetTopTransactionId());
 
 			/*
 			 * If there was a conflict, start from the beginning.  We'll do
