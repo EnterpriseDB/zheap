@@ -489,7 +489,19 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 		 * To compensate that we use memcpy to fetch passbyval attributes.
 		 */
 		if (thisatt->attbyval)
-			memcpy(&values[attnum], tp + off, thisatt->attlen);
+		{
+			Datum datum;
+
+			memcpy(&datum, tp + off, thisatt->attlen);
+
+			/*
+			 * We use fetch_att to set the other uninitialized bytes in datum
+			 * field as zero.  We could achieve that by just initializing
+			 * datum with zero, but this helps us to keep the code in sync
+			 * with heap.
+			 */
+			values[attnum] = fetch_att(&datum, true, thisatt->attlen);
+		}
 		else
 			values[attnum] = PointerGetDatum((char *) (tp + off));
 
@@ -568,6 +580,13 @@ slot_deform_ztuple(TupleTableSlot *slot, ZHeapTuple tuple, uint32 *offp, int nat
 			Datum datum;
 
 			memcpy(&datum, tp, thisatt->attlen);
+
+			/*
+			 * We use fetch_att to set the other uninitialized bytes in datum
+			 * field as zero.  We could achieve that by just initializing
+			 * datum with zero, but this helps us to keep the code in sync
+			 * with heap.
+			 */
 			values[attnum] = fetch_att(&datum, true, thisatt->attlen);
 		}
 		else
@@ -6478,7 +6497,19 @@ znocachegetattr(ZHeapTuple tuple,
 
 	thisatt = TupleDescAttr(tupleDesc, attnum);
 	if (thisatt->attbyval)
-		memcpy(&ret_datum, tp + off, thisatt->attlen);
+	{
+		Datum datum;
+
+		memcpy(&datum, tp + off, thisatt->attlen);
+
+		/*
+		 * We use fetch_att to set the other uninitialized bytes in datum
+		 * field as zero.  We could achieve that by just initializing
+		 * datum with zero, but this helps us to keep the code in sync
+		 * with heap.
+		 */
+		ret_datum = fetch_att(&datum, true, thisatt->attlen);
+	}
 	else
 		ret_datum = PointerGetDatum((char *) (tp + off));
 
