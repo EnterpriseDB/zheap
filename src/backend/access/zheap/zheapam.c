@@ -3134,13 +3134,14 @@ zheap_tuple_updated:
 		InsertPreparedUndo();
 
 		/*
-		 * We never set the locker slot on the tuple, so pass set_tpd_map_slot
-		 * flag as false from the locker.  From all other places it should
-		 * always be passed as true so that the proper slot get set in the TPD
-		 * offset map if its a TPD slot.
+		 * For lockers, we only set the slot on tuple when the lock mode is
+		 * LockForUpdate and the tuple doesn't have multilocker flag.  In that
+		 * case, pass set_tpd_map_slot as true, flase otherwise.  In this case
+		 * the lockmode is always LockForUpdate.
 		 */
-		PageSetUNDO(undorecord, buffer, trans_slot_id, true, epoch,
-					xid, urecptr, NULL, 0);
+		PageSetUNDO(undorecord, buffer, trans_slot_id,
+					ZHeapTupleHasMultiLockers(lock_old_infomask) ? false : true,
+					epoch, xid, urecptr, NULL, 0);
 
 		ZHeapTupleHeaderSetXactSlot(oldtup.t_data, result_trans_slot_id);
 
@@ -5877,13 +5878,13 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	InsertPreparedUndo();
 
 	/*
-	 * We never set the locker slot on the tuple, so pass set_tpd_map_slot flag
-	 * as false from the locker.  From all other places it should always be
-	 * passed as true so that the proper slot get set in the TPD offset map if
-	 * its a TPD slot.
+	 * For lockers, we only set the slot on tuple when the lock mode is
+	 * LockForUpdate and the tuple doesn't have multilocker flag.  In that
+	 * case, pass set_tpd_map_slot as true, flase otherwise.
 	 */
 	PageSetUNDO(undorecord, buf, trans_slot_id,
-				(lockopr == LockForUpdate) ? true : false,
+				(!ZHeapTupleHasMultiLockers(new_infomask) &&
+				 (lockopr == LockForUpdate)) ? true : false,
 				epoch, xid, urecptr, NULL, 0);
 
 	ZHeapTupleHeaderSetXactSlot(zhtup->t_data, new_trans_slot_id);
