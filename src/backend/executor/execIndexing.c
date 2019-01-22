@@ -107,6 +107,7 @@
 #include "postgres.h"
 
 #include "access/relscan.h"
+#include "access/subtrans.h"
 #include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
@@ -803,7 +804,7 @@ retry:
 				XLTW_RecheckExclusionConstr : XLTW_InsertIndex;
 			index_endscan(index_scan);
 			if (DirtySnapshot.speculativeToken)
-				SpeculativeInsertionWait(DirtySnapshot.xmin,
+				SpeculativeInsertionWait(SubTransGetTopmostTransaction(DirtySnapshot.xmin),
 										 DirtySnapshot.speculativeToken);
 			else if (DirtySnapshot.subxid != InvalidSubTransactionId)
 				SubXactLockTableWait(xwait, DirtySnapshot.subxid, heap,

@@ -18,6 +18,7 @@
 #include "access/heapam.h"
 #include "access/nbtree.h"
 #include "access/nbtxlog.h"
+#include "access/subtrans.h"
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/xloginsert.h"
@@ -268,7 +269,8 @@ top:
 			 * wait for the transaction to finish as usual.
 			 */
 			if (speculativeToken)
-				SpeculativeInsertionWait(xwait, speculativeToken);
+				SpeculativeInsertionWait(SubTransGetTopmostTransaction(xwait),
+										 speculativeToken);
 			else if (subxid != InvalidSubTransactionId)
 				SubXactLockTableWait(xwait, subxid, rel, &itup->t_tid,
 									 XLTW_InsertIndex);
