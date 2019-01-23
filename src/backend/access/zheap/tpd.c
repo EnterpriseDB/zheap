@@ -1755,6 +1755,11 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
  * TPDPageGetTransactionSlotInfo for more details on how we deal with pruned
  * TPD entries.
  *
+ * clean_tpd_loc indicates whether we can clear the TPD location from the page
+ * zheap page if the corresponding TPD entry got pruned away.  To clear the TPD
+ * location from the zheap page, the zheap buffer must be locked in exclusive
+ * mode.
+ *
  * This function returns a pointer to an array of transaction slots, it is the
  * responsibility of the caller to free it.
  */
@@ -1763,7 +1768,8 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 						   OffsetNumber offnum, bool keepTPDBufLock,
 						   bool checkOffset, int *num_map_entries,
 						   int *num_trans_slots, int *tpd_buf_id,
-						   bool *tpd_e_pruned, bool *alloc_bigger_map)
+						   bool *tpd_e_pruned, bool *alloc_bigger_map,
+						   bool clean_tpd_loc)
 {
 	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
 	Page		heappage = BufferGetPage(heapbuf);
@@ -1800,6 +1806,14 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	/* Heap page must have TPD entry. */
 	Assert(phdr->pd_flags & PD_PAGE_HAS_TPD_SLOT);
 
+	/*
+	 * Heap page should be locked in exclusive mode in case the TPD location
+	 * from the can be cleaned.
+	 */
+	Assert(!clean_tpd_loc ||
+		   LWLockHeldByMeInMode(BufferDescriptorGetContentLock(GetBufferDescriptor(heapbuf - 1)),
+								LW_EXCLUSIVE));
+
 	/* The last slot in page has the address of the required TPD entry. */
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
@@ -1820,7 +1834,8 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 			 * frozen aka transaction is all-visible and can clear the slot from
 			 * heap tuples.
 			 */
-			LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+			if (clean_tpd_loc)
+				LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
 			goto failed_and_buf_not_locked;
 		}
 	}
@@ -1843,19 +1858,12 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	tpdpage = BufferGetPage(tpd_buf);
 
 	/* Check whether TPD entry can exist on page? */
-	if (PageIsEmpty(tpdpage))
+	if (PageIsEmpty(tpdpage) ||
+		(PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData))) ||
+		(tpdItemOff > PageGetMaxOffsetNumber(tpdpage)))
 	{
-		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
-		goto failed;
-	}
-	if (PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData)))
-	{
-		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
-		goto failed;
-	}
-	if (tpdItemOff > PageGetMaxOffsetNumber(tpdpage))
-	{
-		LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
+		if (clean_tpd_loc)
+			LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
 		goto failed;
 	}
 
@@ -1864,11 +1872,7 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	/* TPD entry has been pruned */
 	if (!ItemIdIsUsed(itemId))
 	{
-		BufferDesc *bufHdr = GetBufferDescriptor(heapbuf - 1);
-
-		if (BufferIsLocal(heapbuf) ||
-			LWLockHeldByMeInMode(BufferDescriptorGetContentLock(bufHdr),
-								 LW_EXCLUSIVE))
+		if (clean_tpd_loc)
 			LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
 		goto failed;
 	}
@@ -1884,11 +1888,7 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	 */
 	if (tpd_e_hdr.blkno != BufferGetBlockNumber(heapbuf))
 	{
-		BufferDesc *bufHdr = GetBufferDescriptor(heapbuf - 1);
-
-		if (BufferIsLocal(heapbuf) ||
-			LWLockHeldByMeInMode(BufferDescriptorGetContentLock(bufHdr),
-								 LW_EXCLUSIVE))
+		if (clean_tpd_loc)
 			LogAndClearTPDLocation(relation, heapbuf, tpd_e_pruned);
 		goto failed;
 	}
@@ -1990,10 +1990,15 @@ TPDPageReserveTransSlot(Relation relation, Buffer buf, OffsetNumber offnum,
 	bool	tpd_e_pruned;
 	bool	alloc_bigger_map;
 
+	/*
+	 * Since the zheap buffer is locked in exclusive mode, we can clear the
+	 * TPD location from the page if necessary.
+	 */
 	trans_slots = TPDPageGetTransactionSlots(relation, buf, offnum,
 											 true, true, &num_map_entries,
 											 &num_slots, &buf_idx,
-											 &tpd_e_pruned, &alloc_bigger_map);
+											 &tpd_e_pruned, &alloc_bigger_map,
+											 true);
 	if (tpd_e_pruned)
 	{
 		Assert(trans_slots == NULL);
@@ -2024,10 +2029,15 @@ TPDPageReserveTransSlot(Relation relation, Buffer buf, OffsetNumber offnum,
 		if (*lock_reacquired)
 			return InvalidXactSlotId;
 
+		/*
+		 * Since the zheap buffer is locked in exclusive mode, we can clear the
+		 * TPD location from the page if necessary.
+		 */
 		trans_slots = TPDPageGetTransactionSlots(relation, buf, offnum, true,
 												 true, &num_map_entries,
 												 &num_slots, &buf_idx,
-												 &tpd_e_pruned, &alloc_bigger_map);
+												 &tpd_e_pruned, &alloc_bigger_map,
+												 true);
 		/*
 		 * We are already holding TPD buffer lock so the TPD entry can not be
 		 * pruned away.
@@ -2117,6 +2127,10 @@ TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 	bool	tpd_e_pruned;
 	bool	alloc_bigger_map;
 
+	/*
+	 * Since the zheap buffer is locked in exclusive mode, we can clear the
+	 * TPD location from the page if necessary.
+	 */
 	trans_slots = TPDPageGetTransactionSlots(relation,
 											 heapbuf,
 											 offnum,
@@ -2126,7 +2140,8 @@ TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 											 &num_slots,
 											 &buf_idx,
 											 &tpd_e_pruned,
-											 &alloc_bigger_map);
+											 &alloc_bigger_map,
+											 true);
 	if (tpd_e_pruned)
 	{
 		Assert(trans_slots == NULL);

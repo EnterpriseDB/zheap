@@ -1249,12 +1249,14 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 
 		/*
 		 * Read TPD slot array. So that we can keep the slot urec_ptr
-		 * intact while clearing the transaction id from the slot.
+		 * intact while clearing the transaction id from the slot.  In recovery,
+		 * we should not clear the TPD location.
 		 */
 		tpd_slots = TPDPageGetTransactionSlots(NULL, buffer,
 											   InvalidOffsetNumber,
 											   true, false, NULL, NULL,
-											   NULL, NULL, NULL);
+											   NULL, NULL, NULL,
+											   false);
 
 		for (i = 0; i < nCompletedSlots; i++)
 		{

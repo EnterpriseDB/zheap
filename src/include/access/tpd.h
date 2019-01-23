@@ -94,7 +94,8 @@ extern TransInfo *TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 						   OffsetNumber offnum, bool keepTPDBufLock,
 						   bool checkOffset, int *num_map_entries,
 						   int *num_trans_slots, int *tpd_buf_id,
-						   bool *tpd_e_pruned, bool *alloc_bigger_map);
+						   bool *tpd_e_pruned, bool *alloc_bigger_map,
+						   bool clean_tpd_loc);
 extern int TPDPageReserveTransSlot(Relation relation, Buffer heapbuf,
 						OffsetNumber offset, UndoRecPtr *urec_ptr,
 						bool *lock_reacquired,
