@@ -4489,6 +4489,24 @@ check_tup_satisfies_update:
 						if (rollback_and_relocked)
 						{
 							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+
+							/*
+							 * Also take care of cases when page is pruned after we release
+							 * the buffer lock. For this we check if ItemId is not deleted
+							 * and refresh the tuple offset position in page.  If TID is
+							 * already delete marked due to pruning, then get new ctid, so
+							 * that we can lock the new tuple.
+							 */
+							if (ItemIdIsDeleted(lp))
+							{
+								ctid = *tid;
+								ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
+								result = TM_Updated;
+								goto failed;
+							}
+
+							zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+							zhtup.t_len = ItemIdGetLength(lp);
 							goto check_tup_satisfies_update;
 						}
 						else if (res != TM_Ok)
@@ -5455,6 +5473,50 @@ lock_tuple:
 		{
 			UnlockReleaseBuffer(buf);
 			return TM_Ok;
+		}
+
+		/* Since we've reacquired the buffer lock, we should refetch the tuple. */
+		page = BufferGetPage(buf);
+		offnum = ItemPointerGetOffsetNumber(&mytup->t_self);
+		lp = PageGetItemId(page, offnum);
+
+		/* free the old tuple */
+		zheap_freetuple(mytup);
+
+		/*
+		 * If this tuple was created by an aborted (sub)transaction and its
+		 * rollback got applied, then we already locked the last live one
+		 * in the chain, thus we're done, so return success.
+		 */
+		if (!ItemIdIsUsed(lp))
+		{
+			result = TM_Ok;
+			goto out_locked;
+		}
+		else if (ItemIdIsDeleted(lp))
+		{
+			CommandId		tup_cid;
+
+			/* There is no point of locking a deleted and pruned tuple. */
+			mytup = ZHeapGetVisibleTuple(offnum, SnapshotAny, buf, NULL);
+			ctid = &mytup->t_self;
+			ZHeapPageGetNewCtid(buf, ctid, &tup_xid, &tup_cid);
+			goto next;
+		}
+		else
+		{
+			mytup = palloc(ZHEAPTUPLESIZE + ItemIdGetLength(lp));
+			mytup->t_data = (ZHeapTupleHeader) ((char *) (mytup) + ZHEAPTUPLESIZE);
+			mytup->t_len = ItemIdGetLength(lp);
+			mytup->t_tableOid = RelationGetRelid(rel);
+			ItemPointerSet(&(mytup->t_self), BufferGetBlockNumber(buf), offnum);
+			/*
+			 * We always need to make a copy of zheap tuple as once we release
+			 * the lock on buffer an in-place update can change the tuple.
+			 */
+			memcpy(mytup->t_data,
+				   ((ZHeapTupleHeader) PageGetItem(page, lp)),
+				   ItemIdGetLength(lp));
 		}
 
 		ZHeapTupleGetTransInfo(mytup, buf, &tup_trans_slot, &epoch_xid,
