@@ -755,7 +755,10 @@ zbuffer_exec_pending_rollback(Relation rel, Buffer buf, BlockNumber *tpd_blkno)
 	 * Fetch all the transaction information from the page and its corresponding
 	 * TPD page.
 	 */
-	trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots, tpd_blkno);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots,
+											  tpd_blkno);
+	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 
 	for (slot_no = 0; slot_no < total_trans_slots; slot_no++)
 	{
@@ -12227,6 +12230,8 @@ log_zheap_visible(RelFileNode rnode, Buffer heap_buffer, Buffer vm_buffer,
  * This method returns all the transaction slots for the input zheap page
  * including the corresponding TPD page. It also returns the corresponding
  * TPD buffer if there is one.
+ *
+ * The caller should hold a buffer content lock on the zheap buffer.
  */
 TransInfo *
 GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
@@ -12249,6 +12254,12 @@ GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
 	{
 		int		num_tpd_trans_slots;
 
+		/*
+		 * TPD entry can be cleaned only if the zheap buffer is locked in
+		 * exclusive mode. But, in this path, the zheap buffer can be locked
+		 * in shared mode as well (see ZGetMultiLockMembers()).  Hence, we
+		 * pass clean_tpd_loc as false.
+		 */
 		tpd_trans_slots = TPDPageGetTransactionSlots(rel,
 													 buf,
 													 InvalidOffsetNumber,
@@ -12258,8 +12269,12 @@ GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
 													 &num_tpd_trans_slots,
 													 NULL,
 													 &tpd_e_pruned,
-													 NULL);
-		if (!tpd_e_pruned)
+													 NULL,
+													 false);
+
+		/* TPD location should not be cleaned from the zheap buffer page. */
+		Assert(!tpd_e_pruned);
+		if (num_tpd_trans_slots > 0)
 		{
 			ZHeapPageOpaque	zopaque;
 			TransInfo	last_trans_slot_info;
@@ -12285,21 +12300,28 @@ GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
 				   tpd_trans_slots, num_tpd_trans_slots * sizeof(TransInfo));
 
 			pfree(tpd_trans_slots);
+			Assert(*total_trans_slots >= ZHEAP_PAGE_TRANS_SLOTS);
+			return trans_slots;
+		}
+		else if (num_tpd_trans_slots == 0)
+		{
+			*total_trans_slots = ZHEAP_PAGE_TRANS_SLOTS - 1;
+			trans_slots = (TransInfo *)
+					palloc(*total_trans_slots * sizeof(TransInfo));
+			memcpy(trans_slots, page + phdr->pd_special,
+				   *total_trans_slots * sizeof(TransInfo));
+			return trans_slots;
 		}
 	}
 
-	if (!ZHeapPageHasTPDSlot(phdr) || tpd_e_pruned)
-	{
-		Assert (trans_slots == NULL);
+	Assert (!ZHeapPageHasTPDSlot(phdr) || tpd_e_pruned);
+	Assert (trans_slots == NULL);
 
-		*total_trans_slots = ZHEAP_PAGE_TRANS_SLOTS;
-		trans_slots = (TransInfo *)
-				palloc(*total_trans_slots * sizeof(TransInfo));
-		memcpy(trans_slots, page + phdr->pd_special,
-			   *total_trans_slots * sizeof(TransInfo));
-	}
-
-	Assert(*total_trans_slots >= ZHEAP_PAGE_TRANS_SLOTS);
+	*total_trans_slots = ZHEAP_PAGE_TRANS_SLOTS;
+	trans_slots = (TransInfo *)
+			palloc(*total_trans_slots * sizeof(TransInfo));
+	memcpy(trans_slots, page + phdr->pd_special,
+		   *total_trans_slots * sizeof(TransInfo));
 
 	return trans_slots;
 }
