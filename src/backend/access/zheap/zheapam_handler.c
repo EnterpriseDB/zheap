@@ -253,7 +253,7 @@ retry:
 				 * reused for an unrelated tuple.  This implies that the latest
 				 * version of the row was deleted, so we need do nothing.
 				 */
-				if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax, false))
+				if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax, true))
 				{
 					ReleaseBuffer(buffer);
 					return HeapTupleDeleted;
