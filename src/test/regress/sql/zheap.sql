@@ -203,3 +203,107 @@ CREATE MATERIALIZED VIEW mvtest_mv AS SELECT * FROM cursor_zheap;
 
 DROP MATERIALIZED VIEW mvtest_mv;
 DROP TABLE cursor_zheap;
+
+-------------------------------------------
+-- Test cases for commit/rollback in SPI --
+-------------------------------------------
+
+CREATE TABLE test1 (a int, b text);
+CREATE TABLE test2 (x int);
+INSERT INTO test2 VALUES (0), (1), (2), (3), (4);
+
+TRUNCATE test1;
+
+DO LANGUAGE plpgsql $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN SELECT * FROM test2 ORDER BY x LOOP
+        INSERT INTO test1 (a) VALUES (r.x);
+        COMMIT;
+    END LOOP;
+END;
+$$;
+
+SELECT * FROM test1;
+
+-- error in cursor loop with commit
+TRUNCATE test1;
+
+DO LANGUAGE plpgsql $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN SELECT * FROM test2 ORDER BY x LOOP
+        INSERT INTO test1 (a) VALUES (12/(r.x-2));
+        COMMIT;
+    END LOOP;
+END;
+$$;
+
+SELECT * FROM test1;
+
+-- rollback inside cursor loop
+TRUNCATE test1;
+
+DO LANGUAGE plpgsql $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN SELECT * FROM test2 ORDER BY x LOOP
+        INSERT INTO test1 (a) VALUES (r.x);
+        ROLLBACK;
+    END LOOP;
+END;
+$$;
+
+SELECT * FROM test1;
+
+-- first commit then rollback inside cursor loop
+TRUNCATE test1;
+
+DO LANGUAGE plpgsql $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN SELECT * FROM test2 ORDER BY x LOOP
+        INSERT INTO test1 (a) VALUES (r.x);
+        IF r.x % 2 = 0 THEN
+            COMMIT;
+        ELSE
+            ROLLBACK;
+        END IF;
+    END LOOP;
+END;
+$$;
+
+SELECT * FROM test1;
+
+SELECT * FROM pg_cursors;
+
+-- commit/rollback with begin exception case
+-- should throw error
+TRUNCATE test1;
+
+DO LANGUAGE plpgsql $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN SELECT * FROM test2 ORDER BY x LOOP
+        INSERT INTO test1 (a) VALUES (r.x);
+        IF r.x % 2 = 0 THEN
+            COMMIT;
+        ELSE
+            ROLLBACK;
+        END IF;
+    END LOOP;
+EXCEPTION WHEN OTHERS THEN
+	RAISE NOTICE '% %', SQLERRM, SQLSTATE;
+END;
+$$;
+
+SELECT * FROM test1;
+SELECT * FROM test2;
+
+DROP TABLE test1;
+DROP TABLE test2;

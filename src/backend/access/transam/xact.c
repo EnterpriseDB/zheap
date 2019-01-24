@@ -3430,6 +3430,62 @@ perform_rollback:
 }
 
 /*
+ * CurrentXactPerformUndoActionsIfPending - Execute undo actions for current
+ * xact.
+ *
+ * When current transaction state is in progress and it has some pending undo
+ * actions, perform the same.
+ */
+void
+CurrentXactPerformUndoActions(void)
+{
+	int i;
+
+	/*
+	 * If we are in a valid transaction state then execute the undo action here
+	 * itself, otherwise we have already stored the required information for
+	 * executing the undo action later.
+	 */
+	if (CurrentTransactionState->state == TRANS_INPROGRESS)
+	{
+		for (i = 0; i < UndoPersistenceLevels; i++)
+		{
+			if (UndoActionStartPtr[i])
+			{
+				if (i == UNDO_TEMP)
+					execute_undo_actions(UndoActionStartPtr[i], UndoActionEndPtr[i],
+										false, true, true);
+				else
+				{
+					uint64 size = UndoActionStartPtr[i] - UndoActionEndPtr[i];
+					bool result = false;
+
+					/*
+					 * If this is a large rollback request then push it to undo-worker
+					 * through RollbackHT, undo-worker will perform it's undo actions
+					 * later.
+					 */
+					if (size >= rollback_overflow_size * 1024 * 1024)
+						result = PushRollbackReq(UndoActionStartPtr[i],
+												 UndoActionEndPtr[i],
+												 InvalidOid);
+
+					if (!result)
+					{
+						execute_undo_actions(UndoActionStartPtr[i],
+											 UndoActionEndPtr[i],
+											 true, true, true);
+						UndoActionStartPtr[i] = InvalidUndoRecPtr;
+					}
+				}
+			}
+		}
+	}
+	else
+		PerformUndoActions = true;
+}
+
+/*
  *	PreventInTransactionBlock
  *
  *	This routine is to be called by statements that must not run inside
@@ -4111,45 +4167,7 @@ UserAbortTransactionBlock(void)
 	memcpy (UndoActionStartPtr, latest_urec_ptr, sizeof(UndoActionStartPtr));
 	memcpy (UndoActionEndPtr, s->start_urec_ptr, sizeof(UndoActionEndPtr));
 
-	/*
-	 * If we are in a valid transaction state then execute the undo action here
-	 * itself, otherwise we have already stored the required information for
-	 * executing the undo action later.
-	 */
-	if (CurrentTransactionState->state == TRANS_INPROGRESS)
-	{
-		for (i = 0; i < UndoPersistenceLevels; i++)
-		{
-			if (latest_urec_ptr[i])
-			{
-				if (i == UNDO_TEMP)
-					execute_undo_actions(UndoActionStartPtr[i], UndoActionEndPtr[i],
-										false, true, true);
-				else
-				{
-					uint64 size = latest_urec_ptr[i] - s->start_urec_ptr[i];
-					bool result = false;
-
-					/*
-					 * If this is a large rollback request then push it to undo-worker
-					 * through RollbackHT, undo-worker will perform it's undo actions
-					 * later.
-					 */
-					if (size >= rollback_overflow_size * 1024 * 1024)
-						result = PushRollbackReq(UndoActionStartPtr[i], UndoActionEndPtr[i], InvalidOid);
-
-					if (!result)
-					{
-						execute_undo_actions(UndoActionStartPtr[i], UndoActionEndPtr[i],
-											true, true, true);
-						UndoActionStartPtr[i] = InvalidUndoRecPtr;
-					}
-				}
-			}
-		}
-	}
-	else
-		PerformUndoActions = true;
+	CurrentXactPerformUndoActions();
 }
 
 /*
@@ -6351,4 +6369,17 @@ xact_redo(XLogReaderState *record)
 	}
 	else
 		elog(PANIC, "xact_redo: unknown op code %u", info);
+}
+
+/*
+ * SetUndoActionsPtr - set the start and end undo record pointers before performing
+ * the undo actions.
+ */
+void
+SetUndoActionsPtr(void)
+{
+	TransactionState s = CurrentTransactionState;
+
+	memcpy (UndoActionStartPtr, s->latest_urec_ptr, sizeof(UndoActionStartPtr));
+	memcpy (UndoActionEndPtr, s->start_urec_ptr, sizeof(UndoActionEndPtr));
 }
