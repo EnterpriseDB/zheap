@@ -162,22 +162,22 @@ CREATE TABLE update_test_zheap(c1 int,c2 char(1000),c3 varchar(10))
 INSERT INTO update_test_zheap VALUES(generate_series(1,7), 'aaa', 'aaa');
 UPDATE update_test_zheap SET c3 = 'bbbbb' WHERE c1=1;
 
-SELECT c1 from update_test_zheap;
+SELECT c1 from update_test_zheap ORDER BY c1;
 
 UPDATE update_test_zheap SET c3 = 'bbbbb' WHERE c1 = 2;
 
 -- record c1 = 2 should come before c1 = 1 because prune should have
 -- reclaimed space of moved c1 = 1 and hence new c1 = 2 will be inserted
 -- in same page.
-SELECT c1 from update_test_zheap;
+SELECT c1 from update_test_zheap ORDER BY c1;
 
 -- update last record c1 = 2 such that it can be inplace extended.
 UPDATE update_test_zheap SET c3 = 'cccccc' WHERE c1 = 2;
-SELECT c1 from update_test_zheap;
+SELECT c1 from update_test_zheap ORDER BY c1;
 
 -- update another record in the page to force pruning.
 UPDATE update_test_zheap SET c3 = 'bbbbb' WHERE c1 = 7;
-SELECT c1 from update_test_zheap;
+SELECT c1 from update_test_zheap ORDER BY c1;
 
 DROP TABLE update_test_zheap;
 
