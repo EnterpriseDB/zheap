@@ -345,7 +345,7 @@ retry:
 				 */
 				if (TransactionIdIsCurrentTransactionId(priorXmax))
 				{
-					CommandId cmin;
+					CommandId tup_cid;
 
 					LockBuffer(buffer, BUFFER_LOCK_SHARE);
 					/*
@@ -355,14 +355,13 @@ retry:
 					 * from page rather than relying on it's in-memory copy.  See
 					 * ValidateTuplesXact.
 					 */
-					cmin = ZHeapTupleGetCid(tuple, buffer, InvalidUndoRecPtr,
-											InvalidXactSlotId);
-					if (cmin >= cid)
+					tup_cid = ZHeapTupleGetCid(tuple, buffer, InvalidUndoRecPtr,
+											   InvalidXactSlotId);
+					if (tup_cid >= cid)
 					{
 						// ZBORKED: check equivalent heap code
 						tmfd->xmax = priorXmax;
-						tmfd->cmax = cmin;
-
+						tmfd->cmax = tup_cid;
 						UnlockReleaseBuffer(buffer);
 						// ZBORKED: is this correct?
 						return TM_SelfModified;
