@@ -3430,7 +3430,7 @@ perform_rollback:
 }
 
 /*
- * CurrentXactPerformUndoActionsIfPending - Execute undo actions for current
+ * CurrentXactPerformUndoActions - Execute undo actions for current
  * xact.
  *
  * When current transaction state is in progress and it has some pending undo
