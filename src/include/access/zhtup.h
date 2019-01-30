@@ -308,10 +308,6 @@ extern CommandId ZHeapPageGetCid(Buffer buf, int trans_slot, uint32 epoch,
 extern int GetTransactionSlotInfo(Buffer buf, OffsetNumber offset,
 					   int trans_slot_id, uint32 *epoch, TransactionId *xid,
 					   UndoRecPtr *urec_ptr, bool NoTPDBufLock, bool TPDSlot);
-extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
-						int *trans_slot, uint64 *epoch_xid_out,
-						TransactionId *xid_out, CommandId *cid_out,
-						UndoRecPtr *urec_ptr_out, bool nobuflock);
 extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf,
 						UndoRecPtr urec_ptr, ItemPointer ctid);
 extern void ZHeapTupleGetSubXid(ZHeapTuple zhtup, Buffer buf,

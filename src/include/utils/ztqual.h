@@ -28,6 +28,11 @@
 extern void FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch,
 								   TransactionId *xid, CommandId *cid,
 								   UndoRecPtr *urec_ptr, bool skip_lockers);
+extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
+						int *trans_slot, uint64 *epoch_xid_out,
+						TransactionId *xid_out, CommandId *cid_out,
+						UndoRecPtr *urec_ptr_out, bool nobuflock,
+						Snapshot snapshot);
 /* Fetch CTID information stored in undo */
 extern void ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid,
 								TransactionId *xid, CommandId *cid);
