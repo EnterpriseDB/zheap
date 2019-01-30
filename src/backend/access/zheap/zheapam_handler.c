@@ -333,6 +333,8 @@ retry:
 				 */
 				if (TransactionIdIsCurrentTransactionId(priorXmax))
 				{
+					CommandId tup_cid;
+
 					LockBuffer(buffer, BUFFER_LOCK_SHARE);
 					/*
 					 * Fixme -If the tuple is updated such that its transaction slot
@@ -341,9 +343,11 @@ retry:
 					 * from page rather than relying on it's in-memory copy.  See
 					 * ValidateTuplesXact.
 					 */
-					if (ZHeapTupleGetCid(tuple, buffer, InvalidUndoRecPtr,
-										 InvalidXactSlotId) >= cid)
+					tup_cid = ZHeapTupleGetCid(tuple, buffer, InvalidUndoRecPtr,
+											   InvalidXactSlotId);
+					if (tup_cid >= cid)
 					{
+						hufd->cmax = tup_cid;
 						UnlockReleaseBuffer(buffer);
 						// ZBORKED: is this correct?
 						return HeapTupleSelfUpdated;
