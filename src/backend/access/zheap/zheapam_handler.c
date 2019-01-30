@@ -390,7 +390,7 @@ retry:
 
 			/* updated row should have xid matching this xmax */
 			ZHeapTupleGetTransInfo(tuple, buffer, NULL, NULL, &priorXmax, NULL,
-								   NULL, true);
+								   NULL, true, InvalidSnapshot);
 
 			/*
 			 * As we still hold a snapshot to which priorXmax is not visible, neither
@@ -672,7 +672,7 @@ zheapam_compute_xid_horizon_for_tuples(Relation rel,
 			ztup.t_tableOid = InvalidOid;
 			ztup.t_data = NULL;
 			ZHeapTupleGetTransInfo(&ztup, buf, NULL, NULL, &xid, NULL, NULL,
-								   false);
+								   false, InvalidSnapshot);
 			if (TransactionIdDidCommit(xid) &&
 				TransactionIdFollows(xid, latestRemovedXid))
 				latestRemovedXid = xid;
@@ -694,7 +694,7 @@ zheapam_compute_xid_horizon_for_tuples(Relation rel,
 				TransactionId	xid;
 
 				ZHeapTupleGetTransInfo(&ztup, buf, NULL, NULL, &xid,
-									   NULL, NULL, false);
+									   NULL, NULL, false, InvalidSnapshot);
 				ZHeapTupleHeaderAdvanceLatestRemovedXid(ztuphdr, xid, &latestRemovedXid);
 			}
 		}
