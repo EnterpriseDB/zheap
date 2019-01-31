@@ -8531,6 +8531,7 @@ ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
 {
 	UnpackedUndoRecord	*urec;
 
+fetch_next:
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(ctid),
 						   ItemPointerGetOffsetNumber(ctid),
@@ -8547,15 +8548,29 @@ ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
 
 	/*
 	 * The tuple should be deleted/updated previously. Else, the caller should
-	 * not be calling this function.
+	 * not be calling this function.  There can also be a concurrent key share
+	 * locker which reserved the same slot as the updater's slot.  In that case,
+	 * we've to fetch the prior undo records in order to get the required
+	 * information.
 	 */
-	Assert(urec->uur_type == UNDO_DELETE || urec->uur_type == UNDO_UPDATE);
+	Assert(urec->uur_type == UNDO_DELETE || urec->uur_type == UNDO_UPDATE ||
+		   urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY);
 
-	/*
-	 * For a deleted tuple, ctid refers to self.
-	 */
-	if (urec->uur_type != UNDO_DELETE)
+	if (urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY)
 	{
+		/*
+		 * If some concurrent transaction has taken a key share lock on the
+		 * tuple, we should fetch the previous undo.
+		 */
+		urec_ptr = urec->uur_blkprev;
+		UndoRecordRelease(urec);
+		goto fetch_next;
+	}
+	else if (urec->uur_type != UNDO_DELETE)
+	{
+		/*
+		 * For a deleted tuple, ctid refers to self.
+		 */
 		Assert(urec->uur_payload.len > 0);
 		*ctid = *(ItemPointer) urec->uur_payload.data;
 	}
