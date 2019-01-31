@@ -1660,9 +1660,6 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 
 	ExecClearTuple(slot);
 
-	if (scan->rs_cindex == -1)
-		return false;
-
 	/*
 	 * When not using pagemode, we must lock the buffer during tuple
 	 * visibility checks.
