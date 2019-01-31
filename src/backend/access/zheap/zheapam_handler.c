@@ -1584,8 +1584,11 @@ zheap_scan_sample_next_block(TableScanDesc sscan, struct SampleScanState *scanst
 	TsmRoutine *tsm = scanstate->tsmroutine;
 	BlockNumber blockno;
 
+	/* at least meta page should be there */
+	Assert(scan->rs_nblocks > 0);
+
 	/* return false immediately if relation is empty */
-	if (scan->rs_nblocks == 0)
+	if (scan->rs_nblocks == ZHEAP_METAPAGE + 1)
 		return false;
 
 nextblock:
