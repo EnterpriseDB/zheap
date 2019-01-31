@@ -1669,7 +1669,7 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 	BlockNumber blockno = scan->rs_cblock;
 	bool		pagemode = scan->rs_base.rs_pageatatime;
 	Page		page;
-	bool		all_visible;
+	bool		all_visible = false;
 	OffsetNumber maxoffset;
 	uint8       vmstatus;
 	Buffer      vmbuffer = InvalidBuffer;
