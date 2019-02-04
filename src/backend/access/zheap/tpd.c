@@ -3136,8 +3136,9 @@ XLogReadTPDBuffer(XLogReaderState *record, uint8 block_id)
 	 * Remember the buffer, so that it can be release later via
 	 * UnlockReleaseTPDBuffers.
 	 */
-	GetTPDBuffer(NULL, BufferGetBlockNumber(tpd_buf), tpd_buf,
-				 TPD_BUF_FIND_OR_KNOWN_ENTER, &already_exists);
+	if (action != BLK_NOTFOUND)
+		GetTPDBuffer(NULL, BufferGetBlockNumber(tpd_buf), tpd_buf,
+					 TPD_BUF_FIND_OR_KNOWN_ENTER, &already_exists);
 
 	return action;
 }

@@ -373,6 +373,7 @@ UndoRecordUpdateTransInfo(int idx)
 	int			i = 0;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	UndoLogControl *log;
+	uint16		remaining_bytes;
 
 	log = UndoLogGet(logno);
 	urec_ptr = xact_urec_info[idx].urecptr;
@@ -391,6 +392,7 @@ UndoRecordUpdateTransInfo(int idx)
 	 * Update the next transactions start urecptr in the transaction header.
 	 */
 	starting_byte = UndoRecPtrGetPageOffset(urec_ptr);
+	remaining_bytes = sizeof(UndoRecPtr);
 
 	do
 	{
@@ -399,16 +401,45 @@ UndoRecordUpdateTransInfo(int idx)
 
 		buf_idx = xact_urec_info[idx].idx_undo_buffers[i];
 		buffer = undo_buffer[buf_idx].buf;
-		page = BufferGetPage(buffer);
 
-		/* Overwrite the previously written undo. */
-		if (InsertUndoRecord(&xact_urec_info[idx].uur, page, starting_byte, &already_written, true))
+		if (BufferIsValid(buffer))
 		{
-			MarkBufferDirty(buffer);
-			break;
-		}
+			page = BufferGetPage(buffer);
 
-		MarkBufferDirty(buffer);
+			/* Overwrite the previously written undo. */
+			if (InsertUndoRecord(&xact_urec_info[idx].uur, page, starting_byte,
+				&already_written, true))
+			{
+				MarkBufferDirty(buffer);
+				break;
+			}
+
+			MarkBufferDirty(buffer);
+		}
+		else
+		{
+			/*
+			 * During recovery, there might be some blocks which are already
+			 * removed by discard process, so we can just skip inserting into
+			 * those blocks.
+			 */
+			Assert(InRecovery);
+
+			/*
+			 * Block is not valid so we can not write to the current block
+			 * but we might need to insert remaining partial record to the
+			 * next block so set proper value for already_written variable
+			 * to jump to the undo record offset from which we want to
+			 * insert into next block.
+			 */
+			if ((BLCKSZ - starting_byte) >= remaining_bytes)
+				break;
+			else
+			{
+				already_written = BLCKSZ - starting_byte;
+				remaining_bytes -= already_written;
+			}
+		}
 		starting_byte = UndoLogBlockHeaderSize;
 		i++;
 
@@ -439,6 +470,7 @@ UndoGetBufferSlot(RelFileNode rnode,
 {
 	int			i;
 	Buffer		buffer;
+	XLogRedoAction 	action = BLK_NEEDS_REDO;
 
 	/* Don't do anything, if we already have a buffer pinned for the block. */
 	for (i = 0; i < buffer_idx; i++)
@@ -471,7 +503,7 @@ UndoGetBufferSlot(RelFileNode rnode,
 		 * Fetch the buffer in which we want to insert the undo record.
 		 */
 		if (InRecovery)
-			XLogReadBufferForRedoBlock(xlog_record,
+			action = XLogReadBufferForRedoBlock(xlog_record,
 									   rnode,
 									   UndoLogForkNum,
 									   blk,
@@ -491,10 +523,18 @@ UndoGetBufferSlot(RelFileNode rnode,
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		}
 
-		undo_buffer[buffer_idx].buf = buffer;
-		undo_buffer[buffer_idx].blk = blk;
-		undo_buffer[buffer_idx].logno = rnode.relNode;
-		undo_buffer[buffer_idx].zero = rbm == RBM_ZERO;
+		if (action == BLK_NOTFOUND)
+		{
+			undo_buffer[buffer_idx].buf = InvalidBuffer;
+			undo_buffer[buffer_idx].blk = InvalidBlockNumber;
+		}
+		else
+		{
+			undo_buffer[buffer_idx].buf = buffer;
+			undo_buffer[buffer_idx].blk = blk;
+			undo_buffer[buffer_idx].logno = rnode.relNode;
+			undo_buffer[buffer_idx].zero = rbm == RBM_ZERO;
+		}
 		buffer_idx++;
 	}
 
@@ -903,6 +943,7 @@ InsertPreparedUndo(void)
 	int			bufidx = 0;
 	int			idx;
 	uint16		undo_len = 0;
+	uint16		remaining_bytes;
 	UndoRecPtr	urp;
 	UnpackedUndoRecord *uur;
 	UndoLogOffset offset;
@@ -949,6 +990,7 @@ InsertPreparedUndo(void)
 			uur->uur_prevlen += UndoLogBlockHeaderSize;
 
 		undo_len = 0;
+		remaining_bytes = UndoRecordExpectedSize(uur);
 
 		do
 		{
@@ -956,27 +998,60 @@ InsertPreparedUndo(void)
 			Buffer		buffer;
 
 			buffer = undo_buffer[undospace.undo_buffer_idx[bufidx]].buf;
-			page = BufferGetPage(buffer);
 
-			/*
-			 * Initialize the page whenever we try to write the first record
-			 * in page.  We start writting immediately after the block header.
-			 */
-			if (starting_byte == UndoLogBlockHeaderSize)
-				PageInit(page, BLCKSZ, 0);
-
-			/*
-			 * Try to insert the record into the current page. If it doesn't
-			 * succeed then recall the routine with the next page.
-			 */
-			if (InsertUndoRecord(uur, page, starting_byte, &already_written, false))
+			if (BufferIsValid(buffer))
 			{
-				undo_len += already_written;
-				MarkBufferDirty(buffer);
-				break;
-			}
+				page = BufferGetPage(buffer);
 
-			MarkBufferDirty(buffer);
+				/*
+				 * Initialize the page whenever we try to write the first record
+				 * in page.  We start writing immediately after the block
+				 * header.
+				 */
+				if (starting_byte == UndoLogBlockHeaderSize)
+					PageInit(page, BLCKSZ, 0);
+
+				/*
+				 * Try to insert the record into the current page. If it doesn't
+				 * succeed then recall the routine with the next page.
+				 */
+				if (InsertUndoRecord(uur, page, starting_byte, &already_written, false))
+				{
+					undo_len += already_written;
+					MarkBufferDirty(buffer);
+					break;
+				}
+
+				MarkBufferDirty(buffer);
+			}
+			else
+			{
+				/*
+				 * During recovery, there might be some blocks which are already
+				 * deleted due to some discard command so we can just skip
+				 * inserting into those blocks.
+				 */
+				Assert(InRecovery);
+
+				/*
+				 * Block is not valid so we can not write to the current block
+				 * but we might need to insert remaining partial record to the
+				 * next block so set proper value for already_written variable
+				 * to jump to the undo record offset from which we want to
+				 * insert into next block.
+				 */
+				if ((BLCKSZ - starting_byte) >= remaining_bytes)
+				{
+					undo_len += remaining_bytes;
+					break;
+				}
+				else
+				{
+					already_written = BLCKSZ - starting_byte;
+					undo_len += already_written;
+					remaining_bytes -= already_written;
+				}
+			}
 
 			/*
 			 * If we are swithing to the next block then consider the header
@@ -1343,7 +1418,10 @@ UnlockReleaseUndoBuffers(void)
 	int			i;
 
 	for (i = 0; i < buffer_idx; i++)
-		UnlockReleaseBuffer(undo_buffer[i].buf);
+	{
+		if (BufferIsValid(undo_buffer[i].buf))
+			UnlockReleaseBuffer(undo_buffer[i].buf);
+	}
 
 	ResetUndoBuffers();
 }

@@ -22,6 +22,7 @@
 #include "access/transam.h"
 #include "access/undolog.h"
 #include "access/undolog_xlog.h"
+#include "access/tpd.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xlogreader.h"
@@ -1522,7 +1523,10 @@ prepare_xlog:
 		recptr = XLogInsertExtended(RM_UNDOLOG_ID, XLOG_UNDOLOG_META,
 									RedoRecPtr, doPageWrites);
 		if (recptr == InvalidXLogRecPtr)
+		{
+			ResetRegisteredTPDBuffers();
 			goto prepare_xlog;
+		}
 
 		UndoLogSetLSN(recptr);
 	}

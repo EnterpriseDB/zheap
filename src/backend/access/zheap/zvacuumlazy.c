@@ -407,17 +407,21 @@ prepare_xlog:
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
 		XLogRegisterData((char *) &xl_rec, SizeOfZHeapUnused);
-		RegisterUndoLogBuffers(2);
 
 		XLogRegisterData((char *) unused, uncnt * sizeof(OffsetNumber));
 		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
 		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			(void) RegisterTPDBuffer(page, 1);
 
+		RegisterUndoLogBuffers(2);
+
 		recptr = XLogInsertExtended(RM_ZHEAP2_ID, XLOG_ZHEAP_UNUSED, RedoRecPtr,
 									doPageWrites);
 		if (recptr == InvalidXLogRecPtr)
+		{
+			ResetRegisteredTPDBuffers();
 			goto prepare_xlog;
+		}
 
 		PageSetLSN(page, recptr);
 		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
