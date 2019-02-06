@@ -395,9 +395,10 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 
 	/*
 	 * To determine the last safe xid that can be allocated, we need to
-	 * consider oldestXidHavingUndo.  The oldestXidHavingUndo will be only
-	 * valid for zheap storage engine, so it won't impact any other storage
-	 * engine.
+	 * consider oldestXidHavingUndo because this is a oldest xid whose undo is
+	 * not yet discarded so this is still a valid xid in system.
+	 * The oldestXidHavingUndo will be only valid for zheap storage engine, so
+	 * it won't impact any other storage engine.
 	 */
 	oldestXidHavingUndo = GetXidFromEpochXid(
 						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
