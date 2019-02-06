@@ -6249,6 +6249,28 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 		/* Keep the old tuple slot as it is */
 		new_trans_slot = tup_trans_slot;
 	}
+	else if (is_update &&
+			 TransactionIdIsInProgress(single_locker_xid))
+	{
+		LockTupleMode old_mode;
+
+		/*
+		 * There can be a non-conflicting key share locker on the tuple and
+		 * we want to update the tuple in no-key exclusive mode.  In that case,
+		 * we should set the multilocker flag as well.
+		 */
+		Assert(ZHEAP_XID_IS_LOCKED_ONLY(old_infomask));
+		if (single_locker_xid != add_to_xid)
+		{
+			new_infomask |= ZHEAP_MULTI_LOCKERS;
+		}
+
+		old_mode = get_old_lock_mode(old_infomask);
+
+		/* Acquire the strongest of both. */
+		Assert (single_locker_xid == add_to_xid || mode > old_mode);
+		mode = old_mode;
+	}
 
 	if (is_update && !ZHeapTupleHasMultiLockers(new_infomask))
 	{

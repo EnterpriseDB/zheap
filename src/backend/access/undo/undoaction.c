@@ -1147,7 +1147,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 								prev_trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
 								Assert(trans_slot == ZHTUP_SLOT_FROZEN ||
 									   trans_slot == prev_trans_slot ||
-									   ((ZHeapPageHasTPDSlot((PageHeader) page) &&
+									   (ZHeapPageHasTPDSlot((PageHeader) page) &&
 									   trans_slot == prev_trans_slot + 1));
 							}
 						}
