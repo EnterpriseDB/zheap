@@ -919,6 +919,9 @@ typedef struct TwoPhaseFileHeader
 	/*
 	 * We need the locations of start and end undo record pointers when rollbacks
 	 * are to be performed for prepared transactions using zheap relations.
+	 * We need to store these information in file as user might rollback the
+	 * prepared transaction after recovery and for that we need it's start and
+	 * end undo locations.
 	 */
 	UndoRecPtr	start_urec_ptr[UndoPersistenceLevels];
 	UndoRecPtr	end_urec_ptr[UndoPersistenceLevels];
@@ -1519,13 +1522,16 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 		if (end_urec_ptr[i] != InvalidUndoRecPtr && !isCommit)
 		{
 			bool	result = false;
-			uint64	rollback_size = 0;
 
 			if (i != UNDO_TEMP)
+			{
+				uint64	rollback_size = 0;
+
 				rollback_size = end_urec_ptr[i] - start_urec_ptr[i];
 
-			if (rollback_size >= rollback_overflow_size * 1024 * 1024)
-				result = PushRollbackReq(end_urec_ptr[i], start_urec_ptr[i], InvalidOid);
+				if (rollback_size >= rollback_overflow_size * 1024 * 1024)
+					result = PushRollbackReq(end_urec_ptr[i], start_urec_ptr[i], InvalidOid);
+			}
 
 			/*
 			 * ZBORKED: set rellock = true, as we do *not* actually have all
