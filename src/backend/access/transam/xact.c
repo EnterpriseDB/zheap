@@ -307,7 +307,16 @@ typedef struct SubXactCallbackItem
 
 static SubXactCallbackItem *SubXact_callbacks = NULL;
 
-/* Location in undo log from where to start applying the undo actions. */
+/*
+ * Global states of transaction undo.  Generally, we maintains these states
+ * in TransactionState but in case of error we remove the transaction state
+ * so we calculate the UndoActionStartPtr and UndoActionEndPtr based on user
+ * rollback command and store them in global state variables.  We also set
+ * PerformUndoActions to true and this is indication for
+ * XactPerformUndoActionsIfPending whether we have any undo action to apply
+ * after each statement executed.  After undo action is applied
+ * PerformUndoActions is reset.
+ */
 static UndoRecPtr UndoActionStartPtr[UndoPersistenceLevels] =
 															{InvalidUndoRecPtr,
 															 InvalidUndoRecPtr,
@@ -2999,12 +3008,12 @@ void
 CommitTransactionCommand(void)
 {
 	TransactionState s = CurrentTransactionState;
-	UndoRecPtr	end_urec_ptr[UndoPersistenceLevels];
+	UndoRecPtr	latest_urec_ptr[UndoPersistenceLevels];
 	UndoRecPtr	start_urec_ptr[UndoPersistenceLevels];
 	int	i;
 
 	memcpy(start_urec_ptr, s->start_urec_ptr, sizeof(start_urec_ptr));
-	memcpy(end_urec_ptr, s->latest_urec_ptr, sizeof(end_urec_ptr));
+	memcpy(latest_urec_ptr, s->latest_urec_ptr, sizeof(latest_urec_ptr));
 
 	if (s->chain)
 		SaveTransactionCharacteristics();
@@ -3118,7 +3127,7 @@ CommitTransactionCommand(void)
 			 * return to the idle state.
 			 */
 		case TBLOCK_PREPARE:
-			PrepareTransaction(start_urec_ptr, end_urec_ptr);
+			PrepareTransaction(start_urec_ptr, latest_urec_ptr);
 			s->blockState = TBLOCK_DEFAULT;
 			break;
 
@@ -3166,17 +3175,22 @@ CommitTransactionCommand(void)
 				s = CurrentTransactionState;	/* changed by pop */
 
 				/*
-				 * Update the end undo record pointer if it's not valid with
-				 * the currently popped transaction's end undo record pointer.
-				 * This is particularly required when the first command of
-				 * the transaction is of type which does not require an undo,
-				 * e.g. savepoint x.
-				 * Accordingly, update the start undo record pointer.
+				 * Compute latest_urec_ptr and start_urec_ptr to store them
+				 * in TwoPhaseFileHeader if transaction is prepared so that
+				 * we can execute its undo action if the transaction is rolled
+				 * back at later stage.
+				 * There is possibility that the lastest transaction which has
+				 * a valid latest_urec_ptr is not the top most sub-transaction
+				 * in the transaction stack and same is true with the
+				 * start_urec_ptr.  So while we are traversing the transaction
+				 * stack we need to update latest_urec_ptr and start_urec_ptr
+				 * appropriately.
 				 */
 				for (i = 0; i < UndoPersistenceLevels; i++)
 				{
-					if (!UndoRecPtrIsValid(end_urec_ptr[i]))
-						end_urec_ptr[i] = s->latest_urec_ptr[i];
+					if (!UndoRecPtrIsValid(latest_urec_ptr[i]) &&
+						UndoRecPtrIsValid(s->latest_urec_ptr[i]))
+						latest_urec_ptr[i] = s->latest_urec_ptr[i];
 
 					if (UndoRecPtrIsValid(s->start_urec_ptr[i]))
 						start_urec_ptr[i] = s->start_urec_ptr[i];
@@ -3193,7 +3207,7 @@ CommitTransactionCommand(void)
 			else if (s->blockState == TBLOCK_PREPARE)
 			{
 				Assert(s->parent == NULL);
-				PrepareTransaction(start_urec_ptr, end_urec_ptr);
+				PrepareTransaction(start_urec_ptr, latest_urec_ptr);
 				s->blockState = TBLOCK_DEFAULT;
 			}
 			else
