@@ -102,7 +102,8 @@ static bool TPDPageIsValid(Relation relation, Buffer heapbuf,
 						   bool *tpd_e_pruned, Buffer tpd_buf,
 						   OffsetNumber tpdItemOff,
 						   TPDEntryHeaderData  *tpd_e_hdr,
-						   bool clean_tpd_loc);
+						   bool clean_tpd_loc,
+						   bool is_tpd_buf_locked);
 
 void
 ResetRegisteredTPDBuffers()
@@ -1914,7 +1915,7 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 		 * acquiring the lock, so we are safe here.
 		 */
 		valid = TPDPageIsValid(relation, heapbuf, tpd_e_pruned, tpd_buf,
-							   tpdItemOff, &tpd_e_hdr, clean_tpd_loc);
+							   tpdItemOff, &tpd_e_hdr, clean_tpd_loc, false);
 		if (!valid)
 		{
 			ReleaseLastTPDBuffer(tpd_buf, false);
@@ -1929,7 +1930,7 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 
 	/* Check whether TPD entry can exist on page? */
 	valid = TPDPageIsValid(relation, heapbuf, tpd_e_pruned, tpd_buf,
-						   tpdItemOff, &tpd_e_hdr, clean_tpd_loc);
+						   tpdItemOff, &tpd_e_hdr, clean_tpd_loc, true);
 	if (!valid)
 		goto failed;
 
@@ -1998,11 +1999,10 @@ failed_and_buf_not_locked:
 static bool
 TPDPageIsValid(Relation relation, Buffer heapbuf, bool *tpd_e_pruned,
 			   Buffer tpd_buf, OffsetNumber tpdItemOff,
-			   TPDEntryHeaderData  *tpd_e_hdr, bool clean_tpd_loc)
+			   TPDEntryHeaderData  *tpd_e_hdr, bool clean_tpd_loc,
+			   bool is_tpd_buf_locked)
 {
 	Page	tpdpage;
-	ItemId	itemId;
-	uint16	tpd_e_offset;
 
 	tpdpage = BufferGetPage(tpd_buf);
 
@@ -2013,24 +2013,37 @@ TPDPageIsValid(Relation relation, Buffer heapbuf, bool *tpd_e_pruned,
 	if (PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData)))
 		goto failed;
 
-	if (tpdItemOff > PageGetMaxOffsetNumber(tpdpage))
-		goto failed;
-
-	itemId = PageGetItemId(tpdpage, tpdItemOff);
-	/* TPD entry has been pruned */
-	if (!ItemIdIsUsed(itemId))
-		goto failed;
-
-	tpd_e_offset = ItemIdGetOffset(itemId);
-	memcpy((char *) tpd_e_hdr, tpdpage + tpd_e_offset, SizeofTPDEntryHeader);
-
 	/*
-	 * This TPD entry is for some other block, so we can't continue.  This
-	 * indicates that the TPD entry corresponding to heap block has been
-	 * pruned and some other TPD entry has been moved at its location.
+	 * Only if TPD buffer is locked, we will read TPD entry header because it
+	 * is possible that other backend is re-arranging TPD entries due to extend
+	 * request and we might get wrong information.
 	 */
-	if (tpd_e_hdr->blkno != BufferGetBlockNumber(heapbuf))
-		goto failed;
+	if (is_tpd_buf_locked)
+	{
+		ItemId	itemId;
+		uint16	tpd_e_offset;
+
+		if (tpdItemOff > PageGetMaxOffsetNumber(tpdpage))
+			goto failed;
+
+		itemId = PageGetItemId(tpdpage, tpdItemOff);
+
+		/* TPD entry has been pruned */
+		if (!ItemIdIsUsed(itemId))
+			goto failed;
+
+		tpd_e_offset = ItemIdGetOffset(itemId);
+		memcpy((char *) tpd_e_hdr, tpdpage + tpd_e_offset,
+			   SizeofTPDEntryHeader);
+
+		/*
+		 * This TPD entry is for some other block, so we can't continue.  This
+		 * indicates that the TPD entry corresponding to heap block has been
+		 * pruned and some other TPD entry has been moved at its location.
+		 */
+		if (tpd_e_hdr->blkno != BufferGetBlockNumber(heapbuf))
+			goto failed;
+	}
 
 	/* This TPD buffer is not pruned, so return true. */
 	return true;
@@ -2382,7 +2395,7 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 
 			/* Check whether TPD entry can exist on page? */
 			valid = TPDPageIsValid(NULL, heapbuf, NULL, tpdbuffer, tpdItemOff,
-								   &tpd_e_hdr, false);
+								   &tpd_e_hdr, false, false);
 			if (!valid)
 			{
 				ReleaseBuffer(tpdbuffer);
@@ -2434,7 +2447,7 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 	 * undetected deadlock.
 	 */
 	valid = TPDPageIsValid(NULL, heapbuf, NULL, tpdbuffer, tpdItemOff,
-						   &tpd_e_hdr, false);
+						   &tpd_e_hdr, false, true);
 	if (!valid)
 		goto slot_is_frozen;
 
@@ -2700,7 +2713,7 @@ GetTPDEntryData(Buffer heapbuf, int *num_entries, int *entry_size,
 
 	/* Check whether TPD entry can exist on page? */
 	valid = TPDPageIsValid(NULL, heapbuf, NULL, tpd_buf, tpdItemOff,
-						   &tpd_e_hdr, false);
+						   &tpd_e_hdr, false, true);
 	if (!valid)
 		return NULL;
 
@@ -3099,7 +3112,7 @@ TPDPageLock(Relation relation, Buffer heapbuf)
 	 * where we have used TPDPageIsValid for similar reason.
 	 */
 	valid = TPDPageIsValid(relation, heapbuf, NULL, tpd_buf, tpdItemOff,
-						   &tpd_e_hdr, true);
+						   &tpd_e_hdr, true, false);
 	if (!valid)
 	{
 		ReleaseLastTPDBuffer(tpd_buf, false);
@@ -3110,7 +3123,7 @@ TPDPageLock(Relation relation, Buffer heapbuf)
 
 	/* Check whether TPD entry can exist on page? */
 	valid = TPDPageIsValid(relation, heapbuf, NULL, tpd_buf, tpdItemOff,
-						   &tpd_e_hdr, true);
+						   &tpd_e_hdr, true, true);
 	if (!valid)
 	{
 		ReleaseLastTPDBuffer(tpd_buf, true);
