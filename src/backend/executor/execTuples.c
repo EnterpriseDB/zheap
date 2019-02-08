@@ -1791,7 +1791,7 @@ ExecGetZHeapTupleFromSlot(TupleTableSlot *slot)
 	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
 
 	if (!TTS_IS_ZHEAP(slot))
-		elog(ERROR, "unsupported");
+		elog(ERROR, "trying to fetch a zheap tuple from wrong slot type");
 
 	if (TTS_EMPTY(slot))
 		return NULL;

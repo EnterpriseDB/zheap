@@ -2610,8 +2610,7 @@ ZHeapTupleSatisfies(ZHeapTuple stup, Snapshot snapshot, Buffer buffer, ItemPoint
 			return ZHeapTupleSatisfiesDirty(stup, snapshot, buffer, ctid);
 			break;
 		case HISTORIC_MVCC_VISIBILITY:
-			// ZBORKED: need a better error message
-			elog(PANIC, "unimplemented");
+			elog(ERROR, "unsupported snapshot type");
 			break;
 		case NON_VACUUMABLE_VISIBILTY:
 			return ZHeapTupleSatisfiesNonVacuumable(stup, snapshot, buffer, ctid);

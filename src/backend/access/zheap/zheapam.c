@@ -4307,7 +4307,6 @@ check_tup_satisfies_update:
 									   snapshot, &in_place_updated_or_locked);
 	if (result == HeapTupleInvisible)
 	{
-		/* ZBORKED? this previously didn't set up a tuple */
 		tuple->t_tableOid = RelationGetRelid(relation);
 		tuple->t_len = zhtup.t_len;
 		tuple->t_self = zhtup.t_self;
@@ -9044,7 +9043,7 @@ zheap_beginscan(Relation relation, Snapshot snapshot,
 	scan->rs_scan.rs_allow_sync = allow_sync;
 	scan->rs_scan.rs_temp_snap = temp_snap;
 	scan->rs_scan.rs_parallel = parallel_scan;
-	scan->rs_ntuples = 0; // ZBORKED ?
+	scan->rs_ntuples = 0;
 
 	/*
 	 * we can use page-at-a-time mode if it's an MVCC-safe snapshot
@@ -9157,7 +9156,6 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 		scan->rs_cbuf = InvalidBuffer;
 	}
 
-	// ZBORKED
 	if (page == ZHEAP_METAPAGE)
 	{
 		/* needs to be udpated to keep track of scan position */
