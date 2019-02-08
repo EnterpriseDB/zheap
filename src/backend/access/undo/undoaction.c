@@ -1083,16 +1083,12 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 					 * locker information present in infomask and infomask2.
 					 */
 					undo_tup_hdr = (ZHeapTupleHeader) uur->uur_tuple.data;
-					zhtup->t_hoff = undo_tup_hdr->t_hoff;
 
 					if (!(ZHeapTupleHasMultiLockers(infomask)))
 					{
 						int			trans_slot;
 						int			prev_trans_slot PG_USED_FOR_ASSERTS_ONLY;
 						TransactionId	slot_xid;
-
-						zhtup->t_infomask2 = undo_tup_hdr->t_infomask2;
-						zhtup->t_infomask = undo_tup_hdr->t_infomask;
 
 						/*
 						 * We need to set the previous slot for tuples that are
@@ -1101,10 +1097,6 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 						 */
 						if (uur->uur_type == UNDO_XID_LOCK_ONLY)
 						{
-							if (uur->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
-								prev_trans_slot = ZHTUP_SLOT_FROZEN;
-							else
-								prev_trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
 
 							trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
 							trans_slot = GetTransactionSlotInfo(buffer,
@@ -1116,25 +1108,55 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 																false,
 																false);
 
+							zhtup->t_infomask2 = undo_tup_hdr->t_infomask2;
+							zhtup->t_infomask = undo_tup_hdr->t_infomask;
+							zhtup->t_hoff = undo_tup_hdr->t_hoff;
+
 							/*
-							 * For a non multi locker case, the slot in undo
-							 * (hence on tuple) must be either a frozen slot or
-							 * the previous slot. It is quite possible that
-							 * previous slot may moved in TPD. Generally, we
-							 * always set the multi-locker bit on the tuple
-							 * whenever the tuple slot is not frozen. But, if
-							 * the tuple is inserted/modified by the same
-							 * transaction that later takes a lock on it, we
-							 * keep the transaction slot as it is.
-							 * See compute_new_xid_infomask for details.
+							 * If the previous version of the tuple points to a TPD
+							 * slot then we need to update the slot in the offset map
+							 * of the TPD entry.  But, only if we still have a valid
+							 * TPD entry for the page otherwise the old tuple version
+							 * must be all visible and we can mark the slot as frozen.
 							 */
-							Assert(trans_slot == ZHTUP_SLOT_FROZEN ||
-								   trans_slot == prev_trans_slot ||
-								   (ZHeapPageHasTPDSlot((PageHeader) page) &&
-									trans_slot == prev_trans_slot + 1));
+							if (uur->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
+							{
+								prev_trans_slot = *(int *) ((char *) uur->uur_payload.data + sizeof(LockTupleMode));
+								/*
+								 * For a non multi locker case, the slot in undo
+								 * (hence on tuple) must be either a frozen slot or
+								 * the previous slot.
+								 */
+								Assert(trans_slot == ZHTUP_SLOT_FROZEN ||
+									   trans_slot == prev_trans_slot);
+							}
+							else
+							{
+								/*
+								 * For a non multi locker case, the slot in undo
+								 * (hence on tuple) must be either a frozen slot or
+								 * the previous slot. It is quite possible that
+								 * previous slot may moved in TPD. Generally, we
+								 * always set the multi-locker bit on the tuple
+								 * whenever the tuple slot is not frozen. But, if
+								 * the tuple is inserted/modified by the same
+								 * transaction that later takes a lock on it, we
+								 * keep the transaction slot as it is.
+								 * See compute_new_xid_infomask for details.
+								 */
+								prev_trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup);
+								Assert(trans_slot == ZHTUP_SLOT_FROZEN ||
+									   trans_slot == prev_trans_slot ||
+									   ((ZHeapPageHasTPDSlot((PageHeader) page) &&
+									   trans_slot == prev_trans_slot + 1));
+							}
 						}
 						else
 						{
+							zhtup->t_infomask2 = undo_tup_hdr->t_infomask2;
+							zhtup->t_infomask = undo_tup_hdr->t_infomask;
+							zhtup->t_hoff = undo_tup_hdr->t_hoff;
+
 							/*
 							 * Fetch previous transaction slot on tuple formed from
 							 * undo record.
@@ -1153,7 +1175,7 @@ execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 							{
 								TransactionId	prev_slot_xid;
 
-								prev_trans_slot = *(int *)((char *)uur->uur_payload.data + sizeof(LockTupleMode));
+								prev_trans_slot = *(int *) ((char *) uur->uur_payload.data + sizeof(LockTupleMode));
 
 								/*
 								 * If the previous transaction slot points to a TPD
