@@ -484,9 +484,9 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	{
 		/*
 		 * FIXME:  what we should do if TPD entry can not fit in one page?
-		 * currently we are forcing it to retry.
+		 * currently we are giving error.
 		 */
-		elog(LOG, "TPD entry size (%lu) cannot be greater than \
+		elog(ERROR, "TPD entry size (%lu) cannot be greater than \
 			 MaxTPDEntrySize (%u)", new_size_tpd_entry, MaxTPDEntrySize);
 
 		*reserved_slot_no = InvalidXactSlotId;
