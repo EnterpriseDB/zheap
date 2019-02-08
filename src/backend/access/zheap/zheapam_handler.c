@@ -2097,15 +2097,6 @@ copy_buffer:
 			buffer = ReadBuffer(srcRel, target_blkno);
 		page = (Page) BufferGetPage(buffer);
 
-		if (!PageIsVerified(page, target_blkno))
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("invalid page in block %u of relation %s",
-							target_blkno,
-							relpathbackend(src->smgr_rnode.node,
-										   src->smgr_rnode.backend,
-										   forkNum))));
-
 		/*
 		 * WAL-log the copied page. Unfortunately we don't know what kind of a
 		 * page this is, so we have to log the full page including any unused
@@ -2125,8 +2116,12 @@ copy_buffer:
 
 		ReleaseBuffer(buffer);
 
-		/* If there is a TPD page corresponding to the current page, copy it. */
-		if (BlockNumberIsValid(tpd_blkno))
+		/*
+		 * If we have rolled back some transaction from TPD of the target page
+		 * and the TPD block number is lesser than the target block number, we
+		 * have to write the TPD page again.
+		 */
+		if (BlockNumberIsValid(tpd_blkno) && tpd_blkno < target_blkno)
 		{
 			target_blkno = tpd_blkno;
 			tpd_blkno = InvalidBlockNumber;
