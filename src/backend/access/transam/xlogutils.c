@@ -329,6 +329,8 @@ XLogReadBufferForRedoBlock(XLogReaderState *record,
 	elog(ERROR,
 		 "could not find block ref rel %u/%u/%u, forknum = %u, block = %u",
 		 rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blockno);
+
+	return 0; /* silence compiler warnings */
 }
 
 /*
