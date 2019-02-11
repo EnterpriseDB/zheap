@@ -20,6 +20,7 @@
 #include "access/transam.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
+#include "executor/tuptable.h"
 #include "storage/bufpage.h"
 #include "storage/buf.h"
 #include "storage/itemptr.h"
@@ -247,21 +248,37 @@ extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
 				Datum *values, bool *isnull);
 extern void zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 				  Datum *values, bool *isnull);
-struct TupleTableSlot;
-extern void slot_deform_ztuple(struct TupleTableSlot *slot, ZHeapTuple tuple, uint32 *offp, int natts);
 extern Size zheap_compute_data_size(TupleDesc tupleDesc, Datum *values,
 				bool *isnull, int t_hoff);
 extern void zheap_fill_tuple(TupleDesc tupleDesc,
 				Datum *values, bool *isnull,
 				char *data, Size data_size,
 				uint16 *infomask, bits8 *bit);
-
 extern void zheap_freetuple(ZHeapTuple zhtup);
 extern Datum znocachegetattr(ZHeapTuple tup, int attnum,
 				TupleDesc att);
 extern Datum zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 TupleDesc tupleDesc, bool *isnull);
 extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
+
+/* Tuple table slot related API's that are specific zheap tuples. */
+typedef struct ZHeapTupleTableSlot
+{
+	TupleTableSlot base;
+	ZHeapTuple	tuple;		/* physical tuple */
+	ZHeapTupleData tupdata;
+	uint32		off;		/* saved state for slot_deform_tuple */
+} ZHeapTupleTableSlot;
+
+struct TupleTableSlot;
+extern void slot_deform_ztuple(struct TupleTableSlot *slot, ZHeapTuple tuple,
+							   uint32 *offp, int natts);
+extern ZHeapTuple ExecGetZHeapTupleFromSlot(struct TupleTableSlot *slot);
+extern struct TupleTableSlot *ExecStoreZTuple(ZHeapTuple tuple,
+						struct TupleTableSlot *slot, Buffer buffer,
+						bool shouldFree);
+extern PGDLLIMPORT const TupleTableSlotOps TTSOpsZHeapTuple;
+#define TTS_IS_ZHEAP(slot) ((slot)->tts_ops == &TTSOpsZHeapTuple)
 
 /* This is same as fastgetattr except that it takes ZHeapTuple as input. */
 #define zfastgetattr(tup, attnum, tupleDesc, isnull)					\
