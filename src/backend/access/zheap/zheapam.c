@@ -808,7 +808,7 @@ zbuffer_exec_pending_rollback(Relation rel, Buffer buf, BlockNumber *tpd_blkno)
  */
 void
 zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
-			 int options, BulkInsertState bistate)
+			 int options, BulkInsertState bistate, uint32 specToken)
 {
 	TransactionId xid = InvalidTransactionId;
 	uint32	epoch = 0;
@@ -958,13 +958,10 @@ reacquire_buffer:
 		 */
 		if (options & HEAP_INSERT_SPECULATIVE)
 		{
-			uint32 specToken;
-
 			undorecord.uur_payload.len = sizeof(uint32);
-			specToken = GetSpeculativeInsertionToken();
 			initStringInfo(&undorecord.uur_payload);
 			appendBinaryStringInfo(&undorecord.uur_payload,
-								   (char *)&specToken,
+								   (char *) &specToken,
 								   sizeof(uint32));
 		}
 		else
