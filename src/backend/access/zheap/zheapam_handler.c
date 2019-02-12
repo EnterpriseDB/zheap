@@ -2024,8 +2024,8 @@ zheapam_set_new_filenode(Relation rel, char persistence,
 /*
  * copy_zrelation_data - copy zheap data
  *
- * In this method, we copy a zheap relation block by block. Here is the algorithm
- * for the same:
+ * In this method, we copy the main fork of a zheap relation block by block.
+ * Here is the algorithm for the same:
  * For each zheap page,
  * a. If it's a meta page, copy it as it is.
  * b. If it's a TPD page, copy it as it is.
@@ -2039,32 +2039,22 @@ zheapam_set_new_filenode(Relation rel, char persistence,
  * to reflect the changes.
  */
 static void
-copy_zrelation_data(Relation srcRel, SMgrRelation dst, ForkNumber forkNum)
+copy_zrelation_data(Relation srcRel, SMgrRelation dst)
 {
 	Page		page;
 	bool		use_wal;
-	bool		copying_initfork;
 	BlockNumber nblocks;
 	BlockNumber blkno;
 	SMgrRelation src = srcRel->rd_smgr;
 	char relpersistence = srcRel->rd_rel->relpersistence;
 
 	/*
-	 * The init fork for an unlogged relation in many respects has to be
-	 * treated the same as normal relation, changes need to be WAL logged and
-	 * it needs to be synced to disk.
-	 */
-	copying_initfork = relpersistence == RELPERSISTENCE_UNLOGGED &&
-		forkNum == INIT_FORKNUM;
-
-	/*
 	 * We need to log the copied data in WAL iff WAL archiving/streaming is
 	 * enabled AND it's a permanent relation.
 	 */
-	use_wal = XLogIsNeeded() &&
-		(relpersistence == RELPERSISTENCE_PERMANENT || copying_initfork);
+	use_wal = XLogIsNeeded() && (relpersistence == RELPERSISTENCE_PERMANENT);
 
-	nblocks = smgrnblocks(src, forkNum);
+	nblocks = smgrnblocks(src, MAIN_FORKNUM);
 
 	for (blkno = 0; blkno < nblocks; blkno++)
 	{
@@ -2099,7 +2089,7 @@ copy_buffer:
 		 * space.
 		 */
 		if (use_wal)
-			log_newpage(&dst->smgr_rnode.node, forkNum, target_blkno, page, false);
+			log_newpage(&dst->smgr_rnode.node, MAIN_FORKNUM, target_blkno, page, false);
 
 		PageSetChecksumInplace(page, target_blkno);
 
@@ -2108,7 +2098,7 @@ copy_buffer:
 		 * rel, because there's no need for smgr to schedule an fsync for this
 		 * write; we'll do it ourselves below.
 		 */
-		smgrextend(dst, forkNum, target_blkno, page, true);
+		smgrextend(dst, MAIN_FORKNUM, target_blkno, page, true);
 
 		ReleaseBuffer(buffer);
 
@@ -2141,8 +2131,8 @@ copy_buffer:
 	 * wouldn't replay our earlier WAL entries. If we do not fsync those pages
 	 * here, they might still not be on disk when the crash occurs.
 	 */
-	if (relpersistence == RELPERSISTENCE_PERMANENT || copying_initfork)
-		smgrimmedsync(dst, forkNum);
+	if (relpersistence == RELPERSISTENCE_PERMANENT)
+		smgrimmedsync(dst, MAIN_FORKNUM);
 }
 
 static void
@@ -2163,7 +2153,7 @@ zheapam_relation_copy_data(Relation rel, RelFileNode newrnode)
 	RelationCreateStorage(newrnode, rel->rd_rel->relpersistence);
 
 	/* copy main fork */
-	copy_zrelation_data(rel, dstrel, MAIN_FORKNUM);
+	copy_zrelation_data(rel, dstrel);
 
 	/* copy those extra forks that exist */
 	for (ForkNumber forkNum = MAIN_FORKNUM + 1;
@@ -2182,8 +2172,11 @@ zheapam_relation_copy_data(Relation rel, RelFileNode newrnode)
 				 forkNum == INIT_FORKNUM))
 				log_smgrcreate(&newrnode, forkNum);
 			/*
-			 * ZBORKED: this really should also use copy_zrelation_data for
-			 * the init fork.
+			 * In zheap, other forks don't have any undo operation associated
+			 * with them.  Hence, we don't need to undergo the costly process
+			 * of calling copy_zrelation_data where we read the buffers, perform
+			 * undo actions and then copy them.  We can simply copy the buffers
+			 * at smgr level.
 			 */
 			RelationCopyStorage(rel->rd_smgr, dstrel, forkNum,
 								rel->rd_rel->relpersistence);
