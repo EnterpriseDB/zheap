@@ -260,4 +260,9 @@ typedef struct ZHeapFreeOffsetRanges
 	int nranges;
 } ZHeapFreeOffsetRanges;
 
+/* in zheap/zvacuumlazy.c */
+struct VacuumParams;
+extern void lazy_vacuum_zheap_rel(Relation onerel, struct VacuumParams *params,
+								  BufferAccessStrategy bstrategy);
+
 #endif   /* ZHEAP_H */
