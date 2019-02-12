@@ -282,10 +282,6 @@ extern bool should_attempt_truncation(Relation rel, LVRelStats *vacrelstats);
 extern void lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats,
 							   BufferAccessStrategy vac_strategy);
 
-/* in commands/zvacuumlazy.c */
-extern void lazy_vacuum_zheap_rel(Relation onerel, VacuumParams *params,
-								  BufferAccessStrategy bstrategy);
-
 /* in commands/analyze.c */
 extern void analyze_rel(Oid relid, RangeVar *relation,
 			VacuumParams *params, List *va_cols, bool in_outer_xact,
