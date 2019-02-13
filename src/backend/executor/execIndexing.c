@@ -92,7 +92,7 @@
  * To avoid the livelock, one of the backends must back out first, and then
  * wait, while the other one waits without backing out.  It doesn't matter
  * which one backs out, so we employ an arbitrary rule that the transaction
- * with the higher XID backs out.
+ * with the higher top XID backs out.
  *
  *
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
@@ -779,22 +779,20 @@ retry:
 		xwait = TransactionIdIsValid(DirtySnapshot.xmin) ?
 			DirtySnapshot.xmin : DirtySnapshot.xmax;
 
-		/* For zheap, we always use Top Transaction Id. */
-		// ZBORKED: What does this even mean?
-		if (RelationStorageIsZHeap(heap))
-		{
-			xid = GetTopTransactionId();
-		}
-		else
-		{
-			xid = GetCurrentTransactionId();
-		}
+		/*
+		 * When a speculative insertion conflict is detected among two in-progress
+		 * transactions, one of the backends must back out first, and then wait,
+		 * while the other one waits without backing out.  It doesn't matter
+		 * which one backs out, so we employ an arbitrary rule that the transaction
+		 * with the higher top XID backs out. (See notes in file header)
+		 */
+		xid = GetTopTransactionId();
 
 		if (TransactionIdIsValid(xwait) &&
 			(waitMode == CEOUC_WAIT ||
 			 (waitMode == CEOUC_LIVELOCK_PREVENTING_WAIT &&
 			  DirtySnapshot.speculativeToken &&
-			  TransactionIdPrecedes(xid, xwait))))
+			  TransactionIdPrecedes(xid, SubTransGetTopmostTransaction(xwait)))))
 		{
 			/*
 			 * PBORKED? When waiting, we used to use t_ctid, rather than
