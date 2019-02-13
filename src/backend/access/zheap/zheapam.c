@@ -611,9 +611,6 @@ slot_deform_ztuple(TupleTableSlot *slot, ZHeapTuple tuple, uint32 *offp, int nat
 	 */
 	slot->tts_nvalid = attnum;
 	*offp = tp - ((char *) tup + tup->t_hoff);
-	/* For zheap, cached offsets are not used. */
-	/* ZBORKED: should just stop setting this */
-	slot->tts_flags |= TTS_FLAG_SLOW;
 }
 
 /*
