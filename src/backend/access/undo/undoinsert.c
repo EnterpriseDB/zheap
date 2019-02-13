@@ -367,7 +367,7 @@ void
 UndoRecordUpdateTransInfo(int idx)
 {
 	UndoLogNumber logno = UndoRecPtrGetLogNo(xact_urec_info[idx].urecptr);
-	Page		page;
+	Page		page = NULL;
 	int			starting_byte;
 	int			already_written = 0;
 	int			i = 0;
@@ -935,7 +935,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, TransactionId xid,
 void
 InsertPreparedUndo(void)
 {
-	Page		page;
+	Page		page = NULL;
 	int			starting_byte;
 	int			already_written;
 	int			bufidx = 0;
