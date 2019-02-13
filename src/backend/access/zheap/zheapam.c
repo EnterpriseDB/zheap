@@ -8844,16 +8844,21 @@ zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
 
 /*
  * ZheapInitMetaPage - Allocate and initialize the zheap metapage.
+ *
+ * If already_exists is true, we allocate a new zheap metapage else we
+ * re-initialize the existing metapage.
  */
 void
-ZheapInitMetaPage(Relation rel, ForkNumber forkNum)
+ZheapInitMetaPage(Relation rel, ForkNumber forkNum, bool already_exists)
 {
 	Buffer		buf;
 	bool		use_wal;
 
-	buf = ReadBufferExtended(rel, forkNum, P_NEW, RBM_NORMAL, NULL);
+	buf = ReadBufferExtended(rel, forkNum,
+							 already_exists ? ZHEAP_METAPAGE : P_NEW,
+							 RBM_NORMAL, NULL);
 	if (BufferGetBlockNumber(buf) != ZHEAP_METAPAGE)
-		elog(ERROR, "unexpected zheap relation size: %u, should be %u",
+		elog(ERROR, "unexpected zheap metapage block number: %u, should be %u",
 			 BufferGetBlockNumber(buf), ZHEAP_METAPAGE);
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 

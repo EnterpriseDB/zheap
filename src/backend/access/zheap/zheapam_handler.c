@@ -1651,14 +1651,15 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 static void
 zheapam_relation_nontransactional_truncate(Relation rel)
 {
-	RelationTruncate(rel, 0);
+	/*
+	 * Don't truncate the meta page.  We'll re-initialize it later.
+	 */
+	RelationTruncate(rel, ZHEAP_METAPAGE + 1);
 
 	/*
-	 * Re-Initialize the meta page.
-	 *
-	 * ZBORKED: Should we instead just not truncate the metapage away?
+	 * Re-Initialize the existing meta page.
 	 */
-	ZheapInitMetaPage(rel, MAIN_FORKNUM);
+	ZheapInitMetaPage(rel, MAIN_FORKNUM, true);
 }
 
 static void
@@ -1825,7 +1826,7 @@ zheapam_set_new_filenode(Relation rel, char persistence,
 	Assert(rel->rd_rel->relkind != 'p');
 
 	/* initialize the metapage for zheap */
-	ZheapInitMetaPage(rel, MAIN_FORKNUM);
+	ZheapInitMetaPage(rel, MAIN_FORKNUM, false);
 
 	/*
 	 * f required, set up an init fork for an unlogged table so that it can be
@@ -1844,7 +1845,7 @@ zheapam_set_new_filenode(Relation rel, char persistence,
 		smgrimmedsync(rel->rd_smgr, INIT_FORKNUM);
 
 		/* ZBORKED: This causes separate WAL, which doesn't seem optimal */
-		ZheapInitMetaPage(rel, INIT_FORKNUM);
+		ZheapInitMetaPage(rel, INIT_FORKNUM, false);
 	}
 }
 
