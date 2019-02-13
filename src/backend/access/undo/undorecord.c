@@ -78,10 +78,18 @@ UndoRecordExpectedSize(UnpackedUndoRecord *uur)
  * previous value for *already_written should be passed again, and
  * starting_byte should be passed as sizeof(PageHeaderData) (since the record
  * will continue immediately following the page header).
+ *
+ * remaining_bytes number of bytes to be written yet.  This value is only
+ * considered when page is NULL and that is required when caller just wanted
+ * the local work_hdr and the already_written variable to get updated but
+ * don't want to insert actual data in current block and work_hdr should be
+ * updated so that we can insert the remaining partial record in the next
+ * valid block.
  */
 bool
 InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
-				 int starting_byte, int *already_written, bool header_only)
+				 int starting_byte, int *already_written, int remaining_bytes,
+				 bool header_only)
 {
 	char	   *writeptr = (char *) page + starting_byte;
 	char	   *endptr = (char *) page + BLCKSZ;
@@ -141,6 +149,19 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		Assert(work_txn.urec_next == uur->uur_next);
 		Assert(work_payload.urec_payload_len == uur->uur_payload.len);
 		Assert(work_payload.urec_tuple_len == uur->uur_tuple.len);
+	}
+
+	/*
+	 * Update already_written variable and return, see detailed comment in
+	 * function header.
+	 */
+	if (page == NULL)
+	{
+		*already_written += (BLCKSZ - starting_byte);
+		if (remaining_bytes <= (BLCKSZ - starting_byte))
+			return true;
+		else
+			return false;
 	}
 
 	/* Write header (if not already done). */

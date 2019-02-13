@@ -408,7 +408,7 @@ UndoRecordUpdateTransInfo(int idx)
 
 			/* Overwrite the previously written undo. */
 			if (InsertUndoRecord(&xact_urec_info[idx].uur, page, starting_byte,
-				&already_written, true))
+				&already_written, 0, true))
 			{
 				MarkBufferDirty(buffer);
 				break;
@@ -432,13 +432,11 @@ UndoRecordUpdateTransInfo(int idx)
 			 * to jump to the undo record offset from which we want to
 			 * insert into next block.
 			 */
-			if ((BLCKSZ - starting_byte) >= remaining_bytes)
+			if (InsertUndoRecord(&xact_urec_info[idx].uur, page, starting_byte,
+				&already_written, remaining_bytes, true))
 				break;
 			else
-			{
-				already_written = BLCKSZ - starting_byte;
-				remaining_bytes -= already_written;
-			}
+				remaining_bytes -= (BLCKSZ - starting_byte);
 		}
 		starting_byte = UndoLogBlockHeaderSize;
 		i++;
@@ -1018,7 +1016,8 @@ InsertPreparedUndo(void)
 				 * Try to insert the record into the current page. If it doesn't
 				 * succeed then recall the routine with the next page.
 				 */
-				if (InsertUndoRecord(uur, page, starting_byte, &already_written, false))
+				if (InsertUndoRecord(uur, page, starting_byte, &already_written,
+									 0, false))
 				{
 					undo_len += already_written;
 					MarkBufferDirty(buffer);
@@ -1041,23 +1040,22 @@ InsertPreparedUndo(void)
 				 * but we might need to insert remaining partial record to the
 				 * next block so set proper value for already_written variable
 				 * to jump to the undo record offset from which we want to
-				 * insert into next block.
+				 * insert into next block.  InsertUndoRecord will not write
+				 * anything if the input page is NULL, it will just update the
+				 * already_written count and local work header.
 				 */
-				if ((BLCKSZ - starting_byte) >= remaining_bytes)
+				if (InsertUndoRecord(uur, page, starting_byte, &already_written,
+					remaining_bytes, false))
 				{
-					undo_len += remaining_bytes;
+					undo_len += already_written;
 					break;
 				}
 				else
-				{
-					already_written = BLCKSZ - starting_byte;
-					undo_len += already_written;
-					remaining_bytes -= already_written;
-				}
+					remaining_bytes -= (BLCKSZ - starting_byte);
 			}
 
 			/*
-			 * If we are swithing to the next block then consider the header
+			 * If we are switching to the next block then consider the header
 			 * in total undo length.
 			 */
 			starting_byte = UndoLogBlockHeaderSize;
