@@ -285,18 +285,18 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 		execute_pruning = true;
 
 		/*
-		 * We prepare the temporary copy of the page so that during page
-		 * repair fragmentation we can use it to copy the actual tuples.
-		 */
-		tmppage = PageGetTempPageCopy(page);
-
-		/*
 		 * Lock the TPD page before starting critical section.  We might need
 		 * to access it during page repair fragmentation.
 		 */
 		phdr = (PageHeader) page;
 		if (ZHeapPageHasTPDSlot(phdr))
 			TPDPageLock(relation, buffer);
+
+		/*
+		 * We prepare the temporary copy of the page so that during page
+		 * repair fragmentation we can use it to copy the actual tuples.
+		 */
+		tmppage = PageGetTempPageCopy(page);
 	}
 
 	/* Any error while applying the changes is critical */

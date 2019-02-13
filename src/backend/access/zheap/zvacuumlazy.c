@@ -116,18 +116,18 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 	bool		pruned = false;
 
 	/*
-	 * We prepare the temporary copy of the page so that during page
-	 * repair fragmentation we can use it to copy the actual tuples.
-	 * See comments atop zheap_page_prune_guts.
-	 */
-	tmppage = PageGetTempPageCopy(page);
-
-	/*
 	 * Lock the TPD page before starting critical section.  We might need
 	 * to access it during page repair fragmentation.
 	 */
 	if (ZHeapPageHasTPDSlot((PageHeader) page))
 		TPDPageLock(onerel, buffer);
+
+	/*
+	 * We prepare the temporary copy of the page so that during page
+	 * repair fragmentation we can use it to copy the actual tuples.
+	 * See comments atop zheap_page_prune_guts.
+	 */
+	tmppage = PageGetTempPageCopy(page);
 
 	/* Report the number of blocks vacuumed. */
 	pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_VACUUMED, blkno - 1);
@@ -306,13 +306,6 @@ reacquire_slot:
 								&undometa);
 
 	/*
-	 * We prepare the temporary copy of the page so that during page
-	 * repair fragmentation we can use it to copy the actual tuples.
-	 * See comments atop zheap_page_prune_guts.
-	 */
-	tmppage = PageGetTempPageCopy(page);
-
-	/*
 	 * Lock the TPD page before starting critical section.  We might need
 	 * to access it during page repair fragmentation.  Note that if the
 	 * transaction slot belongs to TPD entry, then the TPD page must be
@@ -321,6 +314,14 @@ reacquire_slot:
 	if (trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS &&
 		ZHeapPageHasTPDSlot((PageHeader) page))
 		TPDPageLock(onerel, buffer);
+
+	/*
+	 * We prepare the temporary copy of the page so that during page
+	 * repair fragmentation we can use it to copy the actual tuples.
+	 * See comments atop zheap_page_prune_guts.
+	 */
+	tmppage = PageGetTempPageCopy(page);
+
 
 	/* Report the number of blocks vacuumed. */
 	pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_VACUUMED, blkno - 1);
