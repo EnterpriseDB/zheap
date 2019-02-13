@@ -95,7 +95,7 @@ typedef ZHeapMetaPageData *ZHeapMetaPage;
 
 extern void zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
 					BlockNumber last_blkno);
-extern void ZheapInitMetaPage(Relation rel, ForkNumber forkNum);
+extern void ZheapInitMetaPage(Relation rel, ForkNumber forkNum, bool already_exists);
 extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
 										int slot_no, TransactionId xwait);
 extern void zbuffer_exec_pending_rollback(Relation rel, Buffer buf,
