@@ -3323,13 +3323,21 @@ reacquire_buffer:
 														   false,
 														   true,
 														   NULL);
+
+			/*
+			 * We must get a valid slot and wouldn't have reacquired the buffer
+			 * lock as we already have a reserved slot.
+			 */
+			Assert (!lock_reacquired);
+			Assert (new_trans_slot_id != InvalidXactSlotId);
+
 			/*
 			 * We should get the same slot what we reserved previously because
 			 * our transaction information should already be there.  But, there
 			 * is possibility that our slot might have moved to the TPD in such
 			 * case we should get previous slot_no + 1.
 			 */
-			Assert((new_trans_slot_id == trans_slot_id) ||
+			Assert ((new_trans_slot_id == trans_slot_id) ||
 					(ZHeapPageHasTPDSlot((PageHeader)page) &&
 					 new_trans_slot_id == trans_slot_id + 1));
 
@@ -7266,59 +7274,66 @@ MultiPageReserveTransSlot(Relation relation,
 						  int *newbuf_trans_slot_id,
 						  bool *lock_reacquired)
 {
-	Page		oldbuf_page, newbuf_page;
 	bool		always_extend;
-	bool		has_oldbuf_tpd, has_newbuf_tpd;
 	bool		is_tpdblk_order_changed;
 	int			slot_id;
-	BlockNumber	oldbuf_tpd_blk = InvalidBlockNumber,
-				newbuf_tpd_blk = InvalidBlockNumber;
-	bool		use_aborted_slot;
+	bool		use_aborted_slot = true;
+	BlockNumber	oldbuf_tpd_blk = InvalidBlockNumber;
+
+	/*
+	 * To avoid deadlock risks, we can't reuse aborted transaction slots while
+	 * reserving transaction slot on new buffer block in case the new block is
+	 * smaller than old block.  This is because while reusing the aborted
+	 * transaction's slot we need to release the lock on page, apply the undo
+	 * actions and then reacquire the lock.  When we try to reacquire the lock
+	 * on smaller block, it will break our rule "lock lower number block first".
+	 * We don't need to bother about oldbuf as by now we already have reserved
+	 * slot on old buffer, here, we will just get our previously reserved slot.
+	 */
+	if (BufferGetBlockNumber(newbuf) < BufferGetBlockNumber(oldbuf))
+		use_aborted_slot = false;
+
+	/*
+	 * If previously reserved slot is from TPD then we should have TPD page
+	 * into heap buffer.
+	 */
+	Assert (*oldbuf_trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS ||
+			ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)));
+
+	/* If TPD exist, then get corresponding TPD block number for old buffer. */
+	if (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)))
+		oldbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(oldbuf);
 
 retry_tpd_lock :
 
 	/* Initialize flags with default values. */
 	always_extend = false;
 	is_tpdblk_order_changed = false;
-	use_aborted_slot = true;
-
-	/* Get corresponding pages from old and new buffers. */
-	oldbuf_page = BufferGetPage(oldbuf);
-	newbuf_page = BufferGetPage(newbuf);
-
-	/* Checking that buffer has TPD page. */
-	has_oldbuf_tpd = ZHeapPageHasTPDSlot((PageHeader) oldbuf_page);
-	has_newbuf_tpd = ZHeapPageHasTPDSlot((PageHeader) newbuf_page);
-
-	/* If TPD exists, then get corresponding TPD block numbers. */
-	if (has_oldbuf_tpd)
-		oldbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(oldbuf);
-	if (has_newbuf_tpd)
-		newbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(newbuf);
 
 	/*
-	 * If both the buffers has TPD entry, then reserve the transaction slot in
-	 * increasing order of corresponding TPD blocks to avoid deadlock.
+	 * Only if previously reserved slot is from TPD or last slot and now we
+	 * have TPD, then we will check that we can verify slot on old buffer first
+	 * or we should get slot for new buffer first.
 	 */
-	if (has_oldbuf_tpd && has_newbuf_tpd)
+	if (*oldbuf_trans_slot_id >= ZHEAP_PAGE_TRANS_SLOTS &&
+		ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)))
 	{
-		if (oldbuf_tpd_blk > newbuf_tpd_blk)
-			is_tpdblk_order_changed = true;
+		/*
+		 * If TPD exists on both the buffers then reserve the slot in the
+		 * increasing order of TPD blocks to avoid deadlock.
+		 */
+		if (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(newbuf)))
+		{
+			/*
+			 * If both the buffers has TPD entry, then reserve the transaction
+			 * slot in increasing order of corresponding TPD blocks to avoid
+			 * deadlock.
+			 */
+			if (GetTPDBlockNumberFromHeapBuffer(oldbuf) >
+				GetTPDBlockNumberFromHeapBuffer(newbuf))
+				is_tpdblk_order_changed = true;
+		}
 	}
-
-	/*
-	 * To avoid deadlock risks, we can't reuse aborted transaction slots
-	 * while reserving transaction slot on new buffer block in case the
-	 * new block is smaller than old block.  This is because while reusing
-	 * the aborted transaction's slot we need to release the lock on page,
-	 * apply the undo actions and then reacquire the lock.  When we try
-	 * try to reacquire the lock on smaller block, it will break our rule
-	 * "lock lower number block first".  We don't need to bother about oldbuf
-	 * as by now we already have reserved slot on old buffer, here, we will
-	 * just get our previously reserved slot.
-	 */
-	if (BufferGetBlockNumber(newbuf) < BufferGetBlockNumber(oldbuf))
-		use_aborted_slot = false;
 
 	/* Now reserve the slots in both the pages. */
 	if (!is_tpdblk_order_changed)
@@ -7335,17 +7350,15 @@ retry_tpd_lock :
 											 true,
 											 NULL);
 
-		/* Try again if the buffer lock is released and reacquired. */
-		if (*lock_reacquired)
-			return;
-
 		/*
 		 * If old buffer has TPD page, then TPD block of old buffer should not
-		 * change. Because already we have reserved a slot for old buffer.
+		 * change. We must get a valid slot and wouldn't have reacquired the
+		 * buffer lock as we already have a reserved slot.
 		 */
-		Assert((has_oldbuf_tpd &&
-				(oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf))) ||
-			   !has_oldbuf_tpd);
+		Assert (!(*lock_reacquired));
+		Assert (slot_id != InvalidXactSlotId);
+		Assert (oldbuf_tpd_blk == InvalidBlockNumber ||
+				oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf));
 
 		/*
 		 * If reserved transaction slot for old buffer is from TPD page, then
@@ -7382,8 +7395,11 @@ retry_tpd_lock :
 														   use_aborted_slot,
 														   NULL);
 
-		/* Try again if the buffer lock is released and reacquired. */
-		if (*lock_reacquired)
+		/*
+		 * Try again if the buffer lock is released and reacquired. Or if we
+		 * are not able to reserve any slot.
+		 */
+		if (*lock_reacquired || (*newbuf_trans_slot_id == InvalidXactSlotId))
 			return;
 
 		/*
@@ -7395,9 +7411,6 @@ retry_tpd_lock :
 		 */
 		if (*newbuf_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 		{
-			/* Get TPD block of new buffer. */
-			newbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(newbuf);
-
 			/*
 			 * If TPD block of new buffer gets changed and becomes greater than
 			 * old buffer TPD block, then we should release TPD buffer lock of
@@ -7407,10 +7420,11 @@ retry_tpd_lock :
 			 * block after releasing TPD buffer lock, because vacuum can free
 			 * that page, so always try again to reserve slot.
 			 */
-			if (newbuf_tpd_blk > oldbuf_tpd_blk)
+			if (GetTPDBlockNumberFromHeapBuffer(newbuf) >
+				GetTPDBlockNumberFromHeapBuffer(oldbuf))
 			{
 				/* Release lock to avoid deadlock. */
-				ReleaseLastTPDBufferByTPDBlock(newbuf_tpd_blk);
+				ReleaseLastTPDBufferByTPDBlock(GetTPDBlockNumberFromHeapBuffer(newbuf));
 				goto retry_tpd_lock;
 			}
 		}
@@ -7430,9 +7444,12 @@ retry_tpd_lock :
 		/*
 		 * TPD block of old buffer must not change as we already have a
 		 * reserved slot in the old buffer and for in-progress transactions,
-		 * TPD block can't be pruned.
+		 * TPD block can't be pruned.  Due to the same reason, we must get a
+		 * valid slot and wouldn't have reacquired the buffer lock.
 		 */
-		Assert(oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf));
+		Assert (!(*lock_reacquired));
+		Assert (slot_id != InvalidXactSlotId);
+		Assert (oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf));
 	}
 
 	/*
@@ -7441,7 +7458,7 @@ retry_tpd_lock :
 	 * which case it's value will be previous_slot_number + 1.
 	 */
 	Assert((slot_id == *oldbuf_trans_slot_id) ||
-		   (ZHeapPageHasTPDSlot((PageHeader) oldbuf_page) &&
+		   (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)) &&
 			slot_id == (*oldbuf_trans_slot_id) + 1));
 
 	*oldbuf_trans_slot_id = slot_id;
