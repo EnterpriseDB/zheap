@@ -7306,7 +7306,7 @@ MultiPageReserveTransSlot(Relation relation,
 	bool		is_tpdblk_order_changed;
 	int			slot_id;
 	bool		use_aborted_slot = true;
-	BlockNumber	oldbuf_tpd_blk = InvalidBlockNumber;
+	BlockNumber	oldbuf_tpd_blk PG_USED_FOR_ASSERTS_ONLY = InvalidBlockNumber;
 
 	/*
 	 * To avoid deadlock risks, we can't reuse aborted transaction slots while
