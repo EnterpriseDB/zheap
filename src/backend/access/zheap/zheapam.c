@@ -9399,7 +9399,7 @@ zheapgettup_pagemode(ZHeapScanDesc scan,
 			 * return null immediately if relation is empty
 			 */
 			if (scan->rs_scan.rs_nblocks == ZHEAP_METAPAGE + 1 ||
-				scan->rs_scan.rs_numblocks == ZHEAP_METAPAGE + 1)
+				scan->rs_scan.rs_numblocks == 0)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				tuple = NULL;
@@ -9457,7 +9457,7 @@ zheapgettup_pagemode(ZHeapScanDesc scan,
 			 * return null immediately if relation is empty
 			 */
 			if (scan->rs_scan.rs_nblocks == ZHEAP_METAPAGE + 1 ||
-				scan->rs_scan.rs_numblocks == ZHEAP_METAPAGE + 1)
+				scan->rs_scan.rs_numblocks == 0)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				tuple = NULL;
@@ -9653,7 +9653,7 @@ zheapgettup(ZHeapScanDesc scan,
 			 * return null immediately if relation is empty
 			 */
 			if (scan->rs_scan.rs_nblocks == ZHEAP_METAPAGE + 1 ||
-				scan->rs_scan.rs_numblocks == ZHEAP_METAPAGE + 1)
+				scan->rs_scan.rs_numblocks == 0)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				return NULL;
@@ -9711,7 +9711,7 @@ zheapgettup(ZHeapScanDesc scan,
 			 * return null immediately if relation is empty
 			 */
 			if (scan->rs_scan.rs_nblocks == ZHEAP_METAPAGE + 1 ||
-				scan->rs_scan.rs_numblocks == ZHEAP_METAPAGE + 1)
+				scan->rs_scan.rs_numblocks == 0)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				return NULL;
