@@ -5473,8 +5473,9 @@ lock_tuple:
 		 * If this tuple was created by an aborted (sub)transaction and its
 		 * rollback got applied, then we already locked the last live one
 		 * in the chain, thus we're done, so return success.
+		 * If tuple is dead, then there is no need to lock it.
 		 */
-		if (!ItemIdIsUsed(lp))
+		if (!ItemIdIsUsed(lp) || ItemIdIsDead(lp))
 		{
 			result = HeapTupleMayBeUpdated;
 			goto out_locked;
