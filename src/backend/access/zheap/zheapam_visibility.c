@@ -2698,6 +2698,16 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 			if (tuple_inplace_updated)
 			{
 				/*
+				 * If xid is invalid, then we konw that slot is frozen and
+				 * tuple will be visible so we can return false.
+				 */
+				if (*xid == InvalidTransactionId)
+				{
+					Assert (visible);
+					return false;
+				}
+
+				/*
 				 * We can't rely on callers visibility information for
 				 * in-place updated tuples because they consider the tuple as
 				 * visible if any version of the tuple is visible whereas we
