@@ -6296,7 +6296,8 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 
 		/* Acquire the strongest of both. */
 		Assert (single_locker_xid == add_to_xid || mode > old_mode);
-		mode = old_mode;
+		if (mode < old_mode)
+			mode = old_mode;
 	}
 
 	if (is_update && !ZHeapTupleHasMultiLockers(new_infomask))
