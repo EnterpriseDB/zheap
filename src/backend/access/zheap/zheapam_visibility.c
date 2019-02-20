@@ -307,7 +307,7 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, int *trans_slot,
 			goto slot_is_frozen;
 
 		xid = InvalidTransactionId;
-		FetchTransInfoFromUndo(zhtup, &epoch, &xid, &cid, &urec_ptr, false);
+		FetchTransInfoFromUndo(zhtup, &epoch, &xid, &cid, &urec_ptr, true);
 	}
 	else if (!ItemIdIsDeleted(lp) && ZHeapTupleHasMultiLockers(tuple->t_infomask))
 	{
