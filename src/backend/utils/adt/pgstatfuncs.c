@@ -163,19 +163,11 @@ pg_stat_get_tuples_inplace_updated(PG_FUNCTION_ARGS)
 	Oid			relid = PG_GETARG_OID(0);
 	int64		result;
 	PgStat_StatTabEntry *tabentry;
-	Relation	rel = table_open(relid, AccessShareLock);
 
-	/*
-	 * Counter tuples_hot_updated stores number of hot updates for heap table
-	 * and the number of inplace updates for zheap table.
-	 */
-	if ((tabentry = pgstat_fetch_stat_tabentry(relid)) == NULL ||
-		!RelationStorageIsZHeap(rel))
+	if ((tabentry = pgstat_fetch_stat_tabentry(relid)) == NULL)
 		result = 0;
 	else
-		result = (int64) (tabentry->tuples_hot_updated);
-
-	table_close(rel, AccessShareLock);
+		result = (int64) (tabentry->tuples_inplace_updated);
 
 	PG_RETURN_INT64(result);
 }
