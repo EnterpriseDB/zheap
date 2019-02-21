@@ -88,13 +88,10 @@ typedef int64 PgStat_Counter;
  * the index AM, while tuples_fetched is the number of tuples successfully
  * fetched by heap_fetch under the control of simple indexscans for this index.
  *
- * tuples_inserted/updated/deleted/hot_updated count attempted actions,
+ * tuples_inserted/updated/deleted/hot_updated/inplace_updated count attempted actions,
  * regardless of whether the transaction committed.  delta_live_tuples,
  * delta_dead_tuples, and changed_tuples are set depending on commit or abort.
  * Note that delta_live_tuples and delta_dead_tuples can be negative!
- *
- * Note: t_tuples_hot_updated stores the count of hot updates for a heap table
- * and the count of inplace updates for a zheap table.
  * ----------
  */
 typedef struct PgStat_TableCounts
@@ -106,6 +103,7 @@ typedef struct PgStat_TableCounts
 
 	PgStat_Counter t_tuples_inserted;
 	PgStat_Counter t_tuples_updated;
+	PgStat_Counter t_tuples_inplace_updated;
 	PgStat_Counter t_tuples_deleted;
 	PgStat_Counter t_tuples_hot_updated;
 	bool		t_truncated;
@@ -168,12 +166,14 @@ typedef struct PgStat_TableStatus
 typedef struct PgStat_TableXactStatus
 {
 	PgStat_Counter tuples_inserted; /* tuples inserted in (sub)xact */
-	PgStat_Counter tuples_updated;	/* tuples updated in (sub)xact */
+	PgStat_Counter tuples_updated;	/* tuples non-inplace updated in (sub)xact */
+	PgStat_Counter tuples_inplace_updated;	/* tuples inplace updated in (sub)xact */
 	PgStat_Counter tuples_deleted;	/* tuples deleted in (sub)xact */
 	bool		truncated;		/* relation truncated in this (sub)xact */
 	PgStat_Counter inserted_pre_trunc;	/* tuples inserted prior to truncate */
 	PgStat_Counter updated_pre_trunc;	/* tuples updated prior to truncate */
 	PgStat_Counter deleted_pre_trunc;	/* tuples deleted prior to truncate */
+	PgStat_Counter inplace_pre_trunc;	/* tuples inplace updated prior to truncate */
 	int			nest_level;		/* subtransaction nest level */
 	/* links to other structs for same relation: */
 	struct PgStat_TableXactStatus *upper;	/* next higher subxact if any */
@@ -626,12 +626,9 @@ typedef struct PgStat_StatTabEntry
 
 	PgStat_Counter tuples_inserted;
 	PgStat_Counter tuples_updated;
+	PgStat_Counter tuples_inplace_updated;
 	PgStat_Counter tuples_deleted;
 
-	/*
-	 * Counter tuples_hot_updated stores number of hot updates for heap table
-	 * and the number of inplace updates for zheap table.
-	 */
 	PgStat_Counter tuples_hot_updated;
 
 	PgStat_Counter n_live_tuples;
