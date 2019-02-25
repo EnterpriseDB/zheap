@@ -14,6 +14,7 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = prunetpd.o prunezheap.o rewritezheap.o tpd.o tpdxlog.o zheapam.o \
 	zheapam_handler.o zheapamutils.o zheapam_visibility.o zheapamxlog.o \
-	zhio.o zmultilocker.o zvacuumlazy.o ztuptoaster.o
+	zhio.o zmultilocker.o zpage.o zvacuumlazy.o \
+	ztuptoaster.o
 
 include $(top_srcdir)/src/backend/common.mk

@@ -93,9 +93,40 @@ typedef ZHeapMetaPageData *ZHeapMetaPage;
 #define ZHEAP_INSERT_NO_LOGICAL	TABLE_INSERT_NO_LOGICAL
 #define ZHEAP_INSERT_SPECULATIVE 0x0010
 
+/*
+ * Given a page, it stores contiguous ranges of free offsets that can be
+ * used/reused in the same page. This is used in zheap_multi_insert to decide
+ * the number of undo records needs to be prepared before entering into critical
+ * section.
+ */
+typedef struct ZHeapFreeOffsetRanges
+{
+	OffsetNumber startOffset[MaxOffsetNumber];
+	OffsetNumber endOffset[MaxOffsetNumber];
+	int nranges;
+} ZHeapFreeOffsetRanges;
+
+/* Page related API's (zpage.c). */
+#define ZPageAddItem(buffer, input_page, item, size, offsetNumber, overwrite, is_heap, NoTPDBufLock) \
+	ZPageAddItemExtended(buffer, input_page, item, size, offsetNumber, \
+						 ((overwrite) ? PAI_OVERWRITE : 0) | \
+						 ((is_heap) ? PAI_IS_HEAP : 0), \
+						 NoTPDBufLock)
+
+extern OffsetNumber ZPageAddItemExtended(Buffer buffer, Page input_page,
+						Item item, Size size, OffsetNumber offsetNumber,
+						int flags, bool NoTPDBufLock);
+extern Size PageGetZHeapFreeSpace(Page page);
+extern void RelationPutZHeapTuple(Relation relation, Buffer buffer,
+								  ZHeapTuple tuple);
+extern ZHeapFreeOffsetRanges *ZHeapGetUsableOffsetRanges(Buffer buffer,
+						ZHeapTuple *tuples, int ntuples, Size saveFreeSpace);
+extern void ZheapInitPage(Page page, Size pageSize);
 extern void zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
 					BlockNumber last_blkno);
 extern void ZheapInitMetaPage(Relation rel, ForkNumber forkNum, bool already_exists);
+
+
 extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
 										int slot_no, TransactionId xwait);
 extern void zbuffer_exec_pending_rollback(Relation rel, Buffer buf,
@@ -144,7 +175,6 @@ extern TransInfo* GetTransactionsSlotsForPage(Relation rel, Buffer buf,
 											  int *total_trans_slots,
 											  BlockNumber *tpd_blkno);
 
-extern void ZheapInitPage(Page page, Size pageSize);
 struct TupleTableSlot;
 extern void zheap_multi_insert(Relation relation, struct TupleTableSlot **slots,
 								int ntuples, CommandId cid, int options,
@@ -248,18 +278,6 @@ ZHeapSatisfyUndoRecord(UnpackedUndoRecord* uurec, BlockNumber blkno,
 extern bool
 ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 					TransactionId priorXmax, bool nobuflock);
-/*
- * Given a page, it stores contiguous ranges of free offsets that can be
- * used/reused in the same page. This is used in zheap_multi_insert to decide
- * the number of undo records needs to be prepared before entering into critical
- * section.
- */
-typedef struct ZHeapFreeOffsetRanges
-{
-	OffsetNumber startOffset[MaxOffsetNumber];
-	OffsetNumber endOffset[MaxOffsetNumber];
-	int nranges;
-} ZHeapFreeOffsetRanges;
 
 extern void copy_zrelation_data(Relation srcRel, SMgrRelation dst);
 extern TransactionId zheap_compute_xid_horizon_for_tuples(Relation rel,
