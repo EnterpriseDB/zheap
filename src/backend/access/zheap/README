@@ -283,7 +283,7 @@ We don’t need alignment padding between the tuple header and the tuple data as
 we always make a copy of the tuple to support in-place updates. Likewise, we ideally
 don't need any alignment padding between tuples. However, there are places in zheap
 code where we access tuple header directly from page (ex. zheap_delete, zheap_update,
-etc.) for which we them to be aligned at two-byte boundary).
+etc.) for which we want them to be aligned at two-byte boundary).
 
 Undo chain
 -----------
