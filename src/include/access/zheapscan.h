@@ -32,14 +32,40 @@ typedef struct ZHeapScanDescData
 	/* rs_numblocks is usually InvalidBlockNumber, meaning "scan whole rel" */
 	BufferAccessStrategy rs_strategy;	/* access strategy for reads */
 
-	ZHeapTuple rs_cztup;		/* current tuple in scan, if any */
+	ZHeapTuple	rs_cztup;		/* current tuple in scan, if any */
 
 	int			rs_cindex;		/* current tuple's index in vistuples */
 	int			rs_ntuples;		/* number of visible tuples on page */
 
-	ZHeapTuple      rs_visztuples[MaxZHeapTuplesPerPage];
+	ZHeapTuple	rs_visztuples[MaxZHeapTuplesPerPage];
 }			ZHeapScanDescData;
 
 typedef struct ZHeapScanDescData *ZHeapScanDesc;
 
-#endif /* ZHEAPSCAN_H */
+extern TableScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,
+									 int nkeys, ScanKey key, ParallelTableScanDesc parallel_scan,
+									 bool allow_strat, bool allow_sync, bool allow_pagemode,
+									 bool is_bitmapscan, bool is_samplescan, bool temp_snap);
+extern void zheap_rescan(TableScanDesc scan, ScanKey key, bool set_params,
+			 bool allow_strat, bool allow_sync, bool allow_pagemode);
+extern void zheap_setscanlimits(TableScanDesc scan, BlockNumber startBlk,
+					BlockNumber endBlk);
+extern void zheap_update_snapshot(TableScanDesc scan, Snapshot snapshot);
+extern bool zheapgetpage(TableScanDesc scan, BlockNumber page);
+extern ZHeapTuple zheap_getnext(TableScanDesc scan, ScanDirection direction);
+extern struct TupleTableSlot *zheap_getnextslot(TableScanDesc scan,
+				  ScanDirection direction, struct TupleTableSlot *slot);
+
+struct TBMIterateResult;
+extern bool zheap_scan_bitmap_pagescan(TableScanDesc sscan, struct TBMIterateResult *tbmres);
+extern bool zheap_scan_bitmap_pagescan_next(TableScanDesc sscan, struct TupleTableSlot *slot);
+
+extern ZHeapTuple zheap_search_buffer(ItemPointer tid, Relation relation,
+									  Buffer buffer, Snapshot snapshot, bool *all_dead);
+extern bool zheap_search(ItemPointer tid, Relation relation, Snapshot snapshot,
+			 bool *all_dead);
+extern bool zheap_fetch(Relation relation, Snapshot snapshot,
+			ItemPointer tid, ZHeapTuple * tuple, Buffer *userbuf,
+			bool keep_buf, Relation stats_relation);
+
+#endif							/* ZHEAPSCAN_H */
