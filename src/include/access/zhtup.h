@@ -34,9 +34,9 @@ typedef struct ZMultiLockMember
 {
 	TransactionId xid;
 	SubTransactionId subxid;
-	int		trans_slot_id;
+	int			trans_slot_id;
 	LockTupleMode mode;
-} ZMultiLockMember;
+}			ZMultiLockMember;
 
  /*
   * Possible lock modes for a tuple.
@@ -49,7 +49,7 @@ typedef enum LockOper
 	LockForUpdate,
 	/* Update/Delete */
 	ForUpdate
-} LockOper;
+}			LockOper;
 
 /*
  * Heap tuple header.  To avoid wasting space, the fields should be
@@ -65,20 +65,21 @@ typedef enum LockOper
 
 typedef struct ZHeapTupleHeaderData
 {
-	uint16		t_infomask2;	/* number of attributes + translot info + various flags */
+	uint16		t_infomask2;	/* number of attributes + translot info +
+								 * various flags */
 
-	uint16		t_infomask;	/* various flag bits, see below */
+	uint16		t_infomask;		/* various flag bits, see below */
 
-	uint8		t_hoff;		/* sizeof header incl. bitmap, padding */
+	uint8		t_hoff;			/* sizeof header incl. bitmap, padding */
 
 	/* ^ - 5 bytes - ^ */
 
 	bits8		t_bits[FLEXIBLE_ARRAY_MEMBER];	/* bitmap of NULLs */
 
 	/* MORE DATA FOLLOWS AT END OF STRUCT */
-} ZHeapTupleHeaderData;
+}			ZHeapTupleHeaderData;
 
-typedef ZHeapTupleHeaderData *ZHeapTupleHeader;
+typedef ZHeapTupleHeaderData * ZHeapTupleHeader;
 
 #define SizeofZHeapTupleHeader offsetof(ZHeapTupleHeaderData, t_bits)
 
@@ -87,10 +88,10 @@ typedef struct ZHeapTupleData
 	uint32		t_len;			/* length of *t_data */
 	ItemPointerData t_self;		/* SelfItemPointer */
 	Oid			t_tableOid;		/* table the tuple came from */
-	ZHeapTupleHeader t_data;		/* -> tuple header and data */
-} ZHeapTupleData;
+	ZHeapTupleHeader t_data;	/* -> tuple header and data */
+}			ZHeapTupleData;
 
-typedef ZHeapTupleData *ZHeapTuple;
+typedef ZHeapTupleData * ZHeapTuple;
 
 #define ZHEAPTUPLESIZE	MAXALIGN(sizeof(ZHeapTupleData))
 
@@ -119,15 +120,19 @@ typedef ZHeapTupleData *ZHeapTuple;
 										 * modified, or tuple deleted */
 #define ZHEAP_MULTI_LOCKERS		0x0800	/* tuple was locked by multiple
 										 * lockers */
-#define ZHEAP_INVALID_XACT_SLOT	0x1000	/* transaction slot on tuple got reused */
-#define ZHEAP_SPECULATIVE_INSERT	0x2000 /* tuple insertion is a speculative
-											* insertion and can be taken back */
+#define ZHEAP_INVALID_XACT_SLOT	0x1000	/* transaction slot on tuple got
+										 * reused */
+#define ZHEAP_SPECULATIVE_INSERT	0x2000	/* tuple insertion is a
+											 * speculative insertion and can
+											 * be taken back */
 
-#define ZHEAP_MOVED		(ZHEAP_DELETED | ZHEAP_UPDATED)  /* moved tuple to another partition */
+#define ZHEAP_MOVED		(ZHEAP_DELETED | ZHEAP_UPDATED) /* moved tuple to
+														 * another partition */
 #define ZHEAP_LOCK_MASK		(ZHEAP_XID_KEYSHR_LOCK | ZHEAP_XID_NOKEY_EXCL_LOCK | \
 							 ZHEAP_XID_SHR_LOCK | ZHEAP_XID_EXCL_LOCK)
 
-#define ZHEAP_VIS_STATUS_MASK	0x1FF0	/* mask for visibility bits (5 ~ 13 bits) */
+#define ZHEAP_VIS_STATUS_MASK	0x1FF0	/* mask for visibility bits (5 ~ 13
+										 * bits) */
 
 /*
  * Use these to test whether a particular lock is applied to a tuple
@@ -144,9 +149,12 @@ typedef ZHeapTupleData *ZHeapTuple;
 /*
  * information stored in t_infomask2:
  */
-#define ZHEAP_NATTS_MASK			0x07FF	/* 11 bits for number of attributes */
-#define ZHEAP_XACT_SLOT				0xF800	/* 5 bits (12, 13, 14, 15 and 16) for transaction slot */
-#define	ZHEAP_XACT_SLOT_MASK		0x000B	/* 11 - mask to retrieve transaction slot */
+#define ZHEAP_NATTS_MASK			0x07FF	/* 11 bits for number of
+											 * attributes */
+#define ZHEAP_XACT_SLOT				0xF800	/* 5 bits (12, 13, 14, 15 and 16)
+											 * for transaction slot */
+#define	ZHEAP_XACT_SLOT_MASK		0x000B	/* 11 - mask to retrieve
+											 * transaction slot */
 
 #define ZHeapTupleHasExternal(tuple) \
 		(((tuple)->t_data->t_infomask & ZHEAP_HASEXTERNAL) != 0)
@@ -202,7 +210,8 @@ typedef ZHeapTupleData *ZHeapTuple;
 )
 
 static inline
-void ZHeapTupleHeaderSetXactSlot(ZHeapTupleHeader tup, int slotno)
+void
+ZHeapTupleHeaderSetXactSlot(ZHeapTupleHeader tup, int slotno)
 {
 	/*
 	 * The slots that belongs to TPD entry always point to last slot on the
@@ -212,7 +221,7 @@ void ZHeapTupleHeaderSetXactSlot(ZHeapTupleHeader tup, int slotno)
 		slotno = ZHEAP_PAGE_TRANS_SLOTS;
 
 	(tup)->t_infomask2 = ((tup)->t_infomask2 & ~ZHEAP_XACT_SLOT) |
-						 (slotno << ZHEAP_XACT_SLOT_MASK);
+		(slotno << ZHEAP_XACT_SLOT_MASK);
 }
 
 #define ZHeapTupleHeaderSetMovedPartitions(tup) \
@@ -244,39 +253,41 @@ void ZHeapTupleHeaderSetXactSlot(ZHeapTupleHeader tup, int slotno)
 	 t_infomask & ZHEAP_XID_LOCK_ONLY) != 0) \
 )
 
-extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
-				Datum *values, bool *isnull);
-extern void zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
-				  Datum *values, bool *isnull);
 extern Size zheap_compute_data_size(TupleDesc tupleDesc, Datum *values,
-				bool *isnull, int t_hoff);
+						bool *isnull, int t_hoff);
 extern void zheap_fill_tuple(TupleDesc tupleDesc,
-				Datum *values, bool *isnull,
-				char *data, Size data_size,
-				uint16 *infomask, bits8 *bit);
+				 Datum *values, bool *isnull,
+				 char *data, Size data_size,
+				 uint16 *infomask, bits8 *bit);
+extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
+								   Datum *values, bool *isnull);
+extern void zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
+				   Datum *values, bool *isnull);
 extern void zheap_freetuple(ZHeapTuple zhtup);
 extern Datum znocachegetattr(ZHeapTuple tup, int attnum,
 				TupleDesc att);
 extern Datum zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 TupleDesc tupleDesc, bool *isnull);
 extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
+extern bool zheap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
+						ZHeapTuple tup1, ZHeapTuple tup2);
 
 /* Tuple table slot related API's that are specific zheap tuples. */
 typedef struct ZHeapTupleTableSlot
 {
 	TupleTableSlot base;
-	ZHeapTuple	tuple;		/* physical tuple */
+	ZHeapTuple	tuple;			/* physical tuple */
 	ZHeapTupleData tupdata;
-	uint32		off;		/* saved state for slot_deform_tuple */
-} ZHeapTupleTableSlot;
+	uint32		off;			/* saved state for slot_deform_tuple */
+}			ZHeapTupleTableSlot;
 
 struct TupleTableSlot;
 extern void slot_deform_ztuple(struct TupleTableSlot *slot, ZHeapTuple tuple,
-							   uint32 *offp, int natts);
+				   uint32 *offp, int natts);
 extern ZHeapTuple ExecGetZHeapTupleFromSlot(struct TupleTableSlot *slot);
 extern struct TupleTableSlot *ExecStoreZTuple(ZHeapTuple tuple,
-						struct TupleTableSlot *slot, Buffer buffer,
-						bool shouldFree);
+				struct TupleTableSlot *slot, Buffer buffer,
+				bool shouldFree);
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsZHeapTuple;
 #define TTS_IS_ZHEAP(slot) ((slot)->tts_ops == &TTSOpsZHeapTuple)
 
@@ -319,20 +330,20 @@ extern PGDLLIMPORT const TupleTableSlotOps TTSOpsZHeapTuple;
 
 /* Zheap transaction information related API's */
 extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf,
-								  UndoRecPtr urec_ptr, int trans_slot_id);
+				 UndoRecPtr urec_ptr, int trans_slot_id);
 extern CommandId ZHeapPageGetCid(Buffer buf, int trans_slot, uint32 epoch,
-						TransactionId xid, UndoRecPtr urec_ptr, OffsetNumber off);
+				TransactionId xid, UndoRecPtr urec_ptr, OffsetNumber off);
 extern int GetTransactionSlotInfo(Buffer buf, OffsetNumber offset,
 					   int trans_slot_id, uint32 *epoch, TransactionId *xid,
-					   UndoRecPtr *urec_ptr, bool NoTPDBufLock, bool TPDSlot);
+					   UndoRecPtr * urec_ptr, bool NoTPDBufLock, bool TPDSlot);
 extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf,
-						UndoRecPtr urec_ptr, ItemPointer ctid);
+				  UndoRecPtr urec_ptr, ItemPointer ctid);
 extern void ZHeapTupleGetSubXid(ZHeapTuple zhtup, Buffer buf,
-				UndoRecPtr urec_ptr, SubTransactionId *subxid);
+					UndoRecPtr urec_ptr, SubTransactionId *subxid);
 extern void ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf,
-							UndoRecPtr urec_ptr, uint32 *specToken);
+					   UndoRecPtr urec_ptr, uint32 *specToken);
 extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
-							 ItemPointer ctid);
+				 ItemPointer ctid);
 
 /* Page related API's. */
 
@@ -358,4 +369,4 @@ extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
 #define MaxZHeapTupleSize  (BLCKSZ - MAXALIGN(SizeOfPageHeaderData + SizeOfZHeapPageOpaqueData + sizeof(ItemIdData)))
 #define MinZHeapTupleSize  MAXALIGN(SizeofZHeapTupleHeader)
 
-#endif   /* ZHTUP_H */
+#endif							/* ZHTUP_H */
