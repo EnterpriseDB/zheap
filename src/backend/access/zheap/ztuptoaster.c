@@ -51,7 +51,6 @@
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
 #include "access/zheap.h"
-#include "access/zheaputils.h"
 
 static void ztoast_delete_datum(Relation rel, Datum value, bool is_speculative);
 static Datum ztoast_save_datum(Relation rel, Datum value,
