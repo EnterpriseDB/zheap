@@ -16,6 +16,7 @@
 
 #include "miscadmin.h"
 
+#include "access/bufmask.h"
 #include "access/tpd.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
@@ -2226,5 +2227,35 @@ zheap2_redo(XLogReaderState *record)
 			break;
 		default:
 			elog(PANIC, "zheap2_redo: unknown op code %u", info);
+	}
+}
+
+/*
+ * Mask a zheap page before performing consistency checks on it.
+ */
+void
+zheap_mask(char *pagedata, BlockNumber blkno)
+{
+	Page		page = (Page)pagedata;
+
+	mask_page_lsn_and_checksum(page);
+
+	mask_page_hint_bits(page);
+	mask_unused_space(page);
+
+	if (PageGetSpecialSize(page) == MAXALIGN(BLCKSZ))
+	{
+		ZHeapMetaPage metap PG_USED_FOR_ASSERTS_ONLY;
+		metap = ZHeapPageGetMeta(page);
+		/* It's a meta-page, no need to mask further. */
+		Assert(metap->zhm_magic == ZHEAP_MAGIC);
+		Assert(metap->zhm_version == ZHEAP_VERSION);
+		return;
+	}
+
+	if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+	{
+		/* It's a TPD page, no need to mask further. */
+		return;
 	}
 }

@@ -318,8 +318,8 @@ extern void zheap_redo(XLogReaderState *record);
 extern void zheap_desc(StringInfo buf, XLogReaderState *record);
 extern const char *zheap_identify(uint8 info);
 extern void zheap2_redo(XLogReaderState *record);
+extern void zheap_mask(char *pagedata, BlockNumber blkno);
 extern void zheap2_desc(StringInfo buf, XLogReaderState *record);
 extern const char *zheap2_identify(uint8 info);
-extern void zheap_mask(char *pagedata, BlockNumber blkno);
 
 #endif   /* ZHEAP_XLOG_H */
