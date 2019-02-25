@@ -25,21 +25,21 @@
 #include "miscadmin.h"
 #include "utils/memdebug.h"
 
- /*
-  * ZPageAddItemExtended - Add an item to a zheap page.
-  *
-  * This is similar to PageAddItemExtended except for max tuples that can be
-  * accomodated on a page and alignment for each item (Ideally, we don't need
-  * to align space between tuples as we always make the copy of tuple to
-  * support in-place updates.  However, there are places in zheap code where
-  * we access tuple header directly from page (ex. zheap_delete, zheap_update,
-  * etc.) for which we them to be aligned at two-byte boundary). It
-  * additionally handles the itemids that are marked as unused, but still
-  * can't be reused.
-  *
-  * Callers passed a valid input_page only incase there are constructing the
-  * in-memory copy of tuples and then directly sync the page.
-  */
+/*
+ * ZPageAddItemExtended - Add an item to a zheap page.
+ *
+ * This is similar to PageAddItemExtended except for max tuples that can be
+ * accomodated on a page and alignment for each item (Ideally, we don't need
+ * to align space between tuples as we always make the copy of tuple to
+ * support in-place updates.  However, there are places in zheap code where
+ * we access tuple header directly from page (ex. zheap_delete, zheap_update,
+ * etc.) for which we them to be aligned at two-byte boundary). It
+ * additionally handles the itemids that are marked as unused, but still
+ * can't be reused.
+ *
+ * Callers passed a valid input_page only incase there are constructing the
+ * in-memory copy of tuples and then directly sync the page.
+ */
 OffsetNumber
 ZPageAddItemExtended(Buffer buffer,
 					 Page input_page,
