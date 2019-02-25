@@ -57,7 +57,6 @@
 #include "access/zheapam_xlog.h"
 #include "access/zheap.h"
 #include "access/zheapscan.h"
-#include "access/zheaputils.h"
 #include "access/zmultilocker.h"
 #include "catalog/catalog.h"
 #include "executor/tuptable.h"
