@@ -215,40 +215,6 @@ extern void ZPageRepairFragmentation(Buffer buffer, Page tmppage, OffsetNumber t
 extern void compactify_ztuples(itemIdSort itemidbase, int nitems, Page page,
 							Page tmppage);
 
-/* Zheap scan related API's */
-extern bool zheapgetpage(TableScanDesc scan, BlockNumber page);
-extern void zheap_rescan(TableScanDesc scan, ScanKey key, bool set_params,
-			bool allow_strat, bool allow_sync, bool allow_pagemode);
-extern void zheap_rescan_set_params(TableScanDesc scan, ScanKey key,
-					   bool allow_strat, bool allow_sync, bool allow_pagemode);
-extern TableScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,
-			   int nkeys, ScanKey key,
-			   ParallelTableScanDesc parallel_scan,
-			   bool allow_strat,
-			   bool allow_sync,
-			   bool allow_pagemode,
-			   bool is_bitmapscan,
-			   bool is_samplescan,
-			   bool temp_snap);
-extern void zheap_endscan(TableScanDesc sscan);
-extern void zheap_setscanlimits(TableScanDesc scan, BlockNumber startBlk,
-				   BlockNumber endBlk);
-extern ZHeapTuple zheap_getnext(TableScanDesc scan, ScanDirection direction);
-extern void zheap_update_snapshot(TableScanDesc scan, Snapshot snapshot);
-extern bool zheap_getnextslot(TableScanDesc scan, ScanDirection direction, struct TupleTableSlot *slot);
-struct TBMIterateResult;
-extern bool zheap_scan_bitmap_next_block(TableScanDesc sscan, struct TBMIterateResult *tbmres);
-extern bool zheap_scan_bitmap_next_tuple(TableScanDesc sscan, struct TBMIterateResult *tbmres, struct TupleTableSlot *slot);
-
-extern ZHeapTuple zheap_search_buffer(ItemPointer tid, Relation relation,
-									  Buffer buffer, Snapshot snapshot,
-									  bool *all_dead);
-extern bool zheap_search(ItemPointer tid, Relation relation, Snapshot snapshot,
-						 bool *all_dead);
-
-extern bool zheap_fetch(Relation relation, Snapshot snapshot,
-				ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
-				bool keep_buf);
 extern bool zheap_fetch_undo(Relation relation, Snapshot snapshot,
 				ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
 				Relation stats_relation);
