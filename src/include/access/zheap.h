@@ -55,30 +55,30 @@
 typedef struct TransInfo
 {
 	uint32		xid_epoch;
-	TransactionId	xid;
+	TransactionId xid;
 	UndoRecPtr	urec_ptr;
-} TransInfo;
+}			TransInfo;
 
 typedef struct ZHeapPageOpaqueData
 {
 	TransInfo	transinfo[1];
-} ZHeapPageOpaqueData;
+}			ZHeapPageOpaqueData;
 
-typedef ZHeapPageOpaqueData *ZHeapPageOpaque;
+typedef ZHeapPageOpaqueData * ZHeapPageOpaque;
 
 #define SizeOfZHeapPageOpaqueData (ZHEAP_PAGE_TRANS_SLOTS \
 										 * sizeof(TransInfo))
 typedef struct ZHeapMetaPageData
 {
-	uint32          zhm_magic;      /* magic no. for zheap tables */
-	uint32          zhm_version;    /* version ID */
-	uint32          zhm_first_used_tpd_page;
-	uint32          zhm_last_used_tpd_page;
-} ZHeapMetaPageData;
+	uint32		zhm_magic;		/* magic no. for zheap tables */
+	uint32		zhm_version;	/* version ID */
+	uint32		zhm_first_used_tpd_page;
+	uint32		zhm_last_used_tpd_page;
+}			ZHeapMetaPageData;
 
-typedef ZHeapMetaPageData *ZHeapMetaPage;
+typedef ZHeapMetaPageData * ZHeapMetaPage;
 
-#define ZHEAP_METAPAGE 0               /* metapage is always block 0 */
+#define ZHEAP_METAPAGE 0		/* metapage is always block 0 */
 #define ZHEAP_MAGIC            0xA056
 #define ZHEAP_VERSION  1
 
@@ -95,8 +95,8 @@ typedef struct ZHeapFreeOffsetRanges
 {
 	OffsetNumber startOffset[MaxOffsetNumber];
 	OffsetNumber endOffset[MaxOffsetNumber];
-	int nranges;
-} ZHeapFreeOffsetRanges;
+	int			nranges;
+}			ZHeapFreeOffsetRanges;
 
 /* Page related API's (zpage.c). */
 #define ZPageAddItem(buffer, input_page, item, size, offsetNumber, overwrite, is_heap, NoTPDBufLock) \
@@ -106,144 +106,142 @@ typedef struct ZHeapFreeOffsetRanges
 						 NoTPDBufLock)
 
 extern OffsetNumber ZPageAddItemExtended(Buffer buffer, Page input_page,
-						Item item, Size size, OffsetNumber offsetNumber,
-						int flags, bool NoTPDBufLock);
+					 Item item, Size size, OffsetNumber offsetNumber,
+					 int flags, bool NoTPDBufLock);
 extern Size PageGetZHeapFreeSpace(Page page);
 extern void RelationPutZHeapTuple(Relation relation, Buffer buffer,
-								  ZHeapTuple tuple);
-extern ZHeapFreeOffsetRanges *ZHeapGetUsableOffsetRanges(Buffer buffer,
-						ZHeapTuple *tuples, int ntuples, Size saveFreeSpace);
+					  ZHeapTuple tuple);
+extern ZHeapFreeOffsetRanges * ZHeapGetUsableOffsetRanges(Buffer buffer,
+														  ZHeapTuple * tuples, int ntuples, Size saveFreeSpace);
 extern void ZheapInitPage(Page page, Size pageSize);
 extern void zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
-					BlockNumber last_blkno);
+					 BlockNumber last_blkno);
 extern void ZheapInitMetaPage(Relation rel, ForkNumber forkNum, bool already_exists);
 
 
 extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
-										int slot_no, TransactionId xwait);
+							int slot_no, TransactionId xwait);
 extern void zbuffer_exec_pending_rollback(Relation rel, Buffer buf,
-										  BlockNumber *tpd_blkno);
+							  BlockNumber *tpd_blkno);
 extern void zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate, uint32 specToken);
 extern void simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot);
 extern HTSU_Result zheap_delete(Relation relation, ItemPointer tid,
-						CommandId cid, Snapshot crosscheck, Snapshot snapshot,
-						bool wait, HeapUpdateFailureData *hufd, bool changingPart);
+			 CommandId cid, Snapshot crosscheck, Snapshot snapshot,
+			 bool wait, HeapUpdateFailureData *hufd, bool changingPart);
 extern HTSU_Result zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
-					CommandId cid, Snapshot crosscheck, Snapshot snapshot, bool wait,
-					HeapUpdateFailureData *hufd, LockTupleMode *lockmode);
+			 CommandId cid, Snapshot crosscheck, Snapshot snapshot, bool wait,
+			 HeapUpdateFailureData *hufd, LockTupleMode *lockmode);
 extern HTSU_Result zheap_lock_tuple(Relation relation, ItemPointer tid,
-					CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
-					bool follow_updates, bool eval, Snapshot snapshot,
-					ZHeapTuple tuple, Buffer *buffer, HeapUpdateFailureData *hufd);
+				 CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
+				 bool follow_updates, bool eval, Snapshot snapshot,
+				 ZHeapTuple tuple, Buffer *buffer, HeapUpdateFailureData *hufd);
 extern void zheap_finish_speculative(Relation relation, ZHeapTuple tuple);
 extern void zheap_abort_speculative(Relation relation, ZHeapTuple tuple);
 extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
-									  OffsetNumber offset, uint32 epoch,
-									  TransactionId xid, UndoRecPtr *ureptr,
-									  bool *lock_reacquired,
-									  bool extend_if_required,
-									  bool use_aborted_slot,
-									  bool *slot_reused_or_TPD_slot);
+						   OffsetNumber offset, uint32 epoch,
+						   TransactionId xid, UndoRecPtr * ureptr,
+						   bool *lock_reacquired,
+						   bool extend_if_required,
+						   bool use_aborted_slot,
+						   bool *slot_reused_or_TPD_slot);
 extern void MultiPageReserveTransSlot(Relation relation,
-									  Buffer oldbuf, Buffer newbuf,
-									  OffsetNumber oldbuf_offnum,
-									  OffsetNumber newbuf_offnum,
-									  uint32 epoch, TransactionId xid,
-									  UndoRecPtr * oldbuf_prev_urecptr,
-									  UndoRecPtr * newbuf_prev_urecptr,
-									  int *oldbuf_trans_slot_id,
-									  int *newbuf_trans_slot_id,
-									  bool *lock_reacquired);
+						  Buffer oldbuf, Buffer newbuf,
+						  OffsetNumber oldbuf_offnum,
+						  OffsetNumber newbuf_offnum,
+						  uint32 epoch, TransactionId xid,
+						  UndoRecPtr * oldbuf_prev_urecptr,
+						  UndoRecPtr * newbuf_prev_urecptr,
+						  int *oldbuf_trans_slot_id,
+						  int *newbuf_trans_slot_id,
+						  bool *lock_reacquired);
 extern int PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
-									TransactionId xid, UndoRecPtr *urec_ptr,
-									bool keepTPDBufLock, bool locktpd,
-									bool *tpd_page_locked);
+						 TransactionId xid, UndoRecPtr * urec_ptr,
+						 bool keepTPDBufLock, bool locktpd,
+						 bool *tpd_page_locked);
 extern void PageGetTransactionSlotInfo(Buffer buf, int slot_no,
-									   uint32 *epoch, TransactionId *xid,
-									   UndoRecPtr *urec_ptr,
-									   bool keepTPDBufLock);
-extern TransInfo* GetTransactionsSlotsForPage(Relation rel, Buffer buf,
-											  int *total_trans_slots,
-											  BlockNumber *tpd_blkno);
+						   uint32 *epoch, TransactionId *xid,
+						   UndoRecPtr * urec_ptr,
+						   bool keepTPDBufLock);
+extern TransInfo * GetTransactionsSlotsForPage(Relation rel, Buffer buf,
+											   int *total_trans_slots,
+											   BlockNumber *tpd_blkno);
 
 struct TupleTableSlot;
 extern void zheap_multi_insert(Relation relation, struct TupleTableSlot **slots,
-								int ntuples, CommandId cid, int options,
-								BulkInsertState bistate);
+				   int ntuples, CommandId cid, int options,
+				   BulkInsertState bistate);
 extern void zheap_get_latest_tid(Relation relation,
 					 Snapshot snapshot,
 					 ItemPointer tid);
 extern XLogRecPtr log_zheap_visible(RelFileNode rnode, Buffer heap_buffer,
-							Buffer vm_buf, TransactionId cutoff_xid, uint8 flags);
+				  Buffer vm_buf, TransactionId cutoff_xid, uint8 flags);
 extern void PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id,
-					uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr);
+						   uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr);
 extern void PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer,
-				int trans_slot_id, bool set_tpd_map_slot, uint32 epoch,
-				TransactionId xid, UndoRecPtr urecptr, OffsetNumber *usedoff,
-				int ucnt);
+			int trans_slot_id, bool set_tpd_map_slot, uint32 epoch,
+			TransactionId xid, UndoRecPtr urecptr, OffsetNumber *usedoff,
+			int ucnt);
 extern UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
 
 /* Pruning related API's (prunezheap.c) */
 extern bool zheap_page_prune_opt(Relation relation, Buffer buffer,
-								 OffsetNumber offnum, Size space_required);
+					 OffsetNumber offnum, Size space_required);
 extern int zheap_page_prune_guts(Relation relation, Buffer buffer,
-								 TransactionId OldestXmin, OffsetNumber target_offnum,
-								 Size space_required, bool report_stats, bool force_prune,
-								 TransactionId *latestRemovedXid, bool *pruned);
+					  TransactionId OldestXmin, OffsetNumber target_offnum,
+					  Size space_required, bool report_stats, bool force_prune,
+					  TransactionId *latestRemovedXid, bool *pruned);
 extern void zheap_page_prune_execute(Buffer buffer, OffsetNumber target_offnum,
-						OffsetNumber *deleted, int ndeleted,
-						OffsetNumber *nowdead, int ndead,
-						OffsetNumber *nowunused, int nunused);
+						 OffsetNumber *deleted, int ndeleted,
+						 OffsetNumber *nowdead, int ndead,
+						 OffsetNumber *nowunused, int nunused);
 extern XLogRecPtr log_zheap_clean(Relation reln, Buffer buffer,
-								  OffsetNumber target_offnum, Size space_required,
-								  OffsetNumber *nowdeleted, int ndeleted,
-								  OffsetNumber *nowdead, int ndead,
-								  OffsetNumber *nowunused, int nunused,
-								  TransactionId latestRemovedXid, bool pruned);
+				OffsetNumber target_offnum, Size space_required,
+				OffsetNumber *nowdeleted, int ndeleted,
+				OffsetNumber *nowdead, int ndead,
+				OffsetNumber *nowunused, int nunused,
+				TransactionId latestRemovedXid, bool pruned);
 extern void ZPageRepairFragmentation(Buffer buffer, Page tmppage, OffsetNumber target_offnum,
-							Size space_required, bool NoTPDBufLock, bool *pruned,
-							bool unused_set);
+						 Size space_required, bool NoTPDBufLock, bool *pruned,
+						 bool unused_set);
 extern void compactify_ztuples(itemIdSort itemidbase, int nitems, Page page,
-							Page tmppage);
+				   Page tmppage);
 
 extern bool zheap_fetch_undo(Relation relation, Snapshot snapshot,
-				ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
-				Relation stats_relation);
+				 ItemPointer tid, ZHeapTuple * tuple, Buffer *userbuf,
+				 Relation stats_relation);
 extern ZHeapTuple zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer,
 										ItemPointer tid);
 extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
-						TransactionId xid, TransactionId *latestRemovedXid);
+										TransactionId xid, TransactionId *latestRemovedXid);
 extern void zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
-											  bool isFrozen, bool TPDSlot);
+								  bool isFrozen, bool TPDSlot);
 extern bool PageFreezeTransSlots(Relation relation, Buffer buf,
-								 bool *lock_reacquired, TransInfo *transinfo,
-								 int num_slots, bool use_aborted_slot);
+					 bool *lock_reacquired, TransInfo * transinfo,
+					 int num_slots, bool use_aborted_slot);
 extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
-									int *completed_slots,
-									OffsetNumber *offset_completed_slots,
-									int	*numOffsets);
+						int *completed_slots,
+						OffsetNumber *offset_completed_slots,
+						int *numOffsets);
 extern TransactionId zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer);
 
 /* Zheap and undo record interaction related API's */
-extern ZHeapTuple CopyTupleFromUndoRecord(UnpackedUndoRecord *urec,
+extern ZHeapTuple CopyTupleFromUndoRecord(UnpackedUndoRecord * urec,
 										  ZHeapTuple zhtup, int *trans_slot_id,
 										  CommandId *cid, bool free_zhtup,
 										  Page page);
-extern bool
-ZHeapSatisfyUndoRecord(UnpackedUndoRecord* uurec, BlockNumber blkno,
-								OffsetNumber offset, TransactionId xid);
-extern bool
-ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
-					TransactionId priorXmax, bool nobuflock);
+extern bool ZHeapSatisfyUndoRecord(UnpackedUndoRecord * uurec, BlockNumber blkno,
+					   OffsetNumber offset, TransactionId xid);
+extern bool ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
+				   TransactionId priorXmax, bool nobuflock);
 
 extern void copy_zrelation_data(Relation srcRel, SMgrRelation dst);
 extern TransactionId zheap_compute_xid_horizon_for_tuples(Relation rel,
-							ItemPointerData *tids, int nitems);
+									 ItemPointerData *tids, int nitems);
 
 /* in zheap/zvacuumlazy.c */
 struct VacuumParams;
 extern void lazy_vacuum_zheap_rel(Relation onerel, int options,
-	struct VacuumParams *params, BufferAccessStrategy bstrategy);
+					  struct VacuumParams *params, BufferAccessStrategy bstrategy);
 
-#endif   /* ZHEAP_H */
+#endif							/* ZHEAP_H */

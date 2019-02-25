@@ -75,22 +75,20 @@
 #include "utils/tqual.h"
 
 extern bool synchronize_seqscans;
-static int GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf);
+static int	GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf);
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
 									   int options);
-static Bitmapset *
-ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
+static Bitmapset *ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 							  ZHeapTuple oldtup, ZHeapTuple newtup);
 static void log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
-					UnpackedUndoRecord newundorecord, UndoRecPtr urecptr,
-					UndoRecPtr newurecptr, Buffer oldbuf, Buffer newbuf,
-					ZHeapTuple oldtup, ZHeapTuple newtup,
-					int old_tup_trans_slot_id, int trans_slot_id,
-					int new_trans_slot_id, bool inplace_update,
-					bool all_visible_cleared, bool new_all_visible_cleared,
-					xl_undolog_meta *undometa);
-static HTSU_Result
-zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
+				 UnpackedUndoRecord newundorecord, UndoRecPtr urecptr,
+				 UndoRecPtr newurecptr, Buffer oldbuf, Buffer newbuf,
+				 ZHeapTuple oldtup, ZHeapTuple newtup,
+				 int old_tup_trans_slot_id, int trans_slot_id,
+				 int new_trans_slot_id, bool inplace_update,
+				 bool all_visible_cleared, bool new_all_visible_cleared,
+				 xl_undolog_meta * undometa);
+static HTSU_Result zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 						 TransactionId xid, LockTupleMode mode, LockOper lockopr,
 						 CommandId cid, bool *rollback_and_relocked);
 static void zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
@@ -107,8 +105,8 @@ static void compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf,
 						 LockTupleMode mode, LockOper lockoper,
 						 uint16 *result_infomask, int *result_trans_slot);
 static inline void CheckAndLockTPDPage(Relation relation, int new_trans_slot_id,
-									   int old_trans_slot_id, Buffer newbuf,
-									   Buffer oldbuf);
+					int old_trans_slot_id, Buffer newbuf,
+					Buffer oldbuf);
 
 /*
  * Subroutine for zheap_insert(). Prepares a tuple for insertion.
@@ -126,12 +124,13 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 	 * If we skip writing/using WAL, we must force the relation down to disk
 	 * (using heap_sync) before it's safe to commit the transaction. This
 	 * requires writing out any dirty buffers of that relation and then doing
-	 * a forced fsync. For zheap, we've to fsync the corresponding undo buffers
-	 * as well. It is difficult to keep track of dirty undo buffers and fsync
-	 * them at end of the operation in some function similar to heap_sync.
-	 * But, if we're freezing the tuple during insertion, we can use the
-	 * HEAP_INSERT_SKIP_WAL optimization since we don't write undo for the same.
-	 * Thus just skip the optimization if only HEAP_INSERT_SKIP_WAL is specified.
+	 * a forced fsync. For zheap, we've to fsync the corresponding undo
+	 * buffers as well. It is difficult to keep track of dirty undo buffers
+	 * and fsync them at end of the operation in some function similar to
+	 * heap_sync. But, if we're freezing the tuple during insertion, we can
+	 * use the HEAP_INSERT_SKIP_WAL optimization since we don't write undo for
+	 * the same. Thus just skip the optimization if only HEAP_INSERT_SKIP_WAL
+	 * is specified.
 	 */
 
 	/*
@@ -166,7 +165,7 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 		return tup;
 	}
 	else if (ZHeapTupleHasExternal(tup) || tup->t_len > TOAST_TUPLE_THRESHOLD)
-		 return ztoast_insert_or_update(relation, tup, NULL, options);
+		return ztoast_insert_or_update(relation, tup, NULL, options);
 	else
 		return tup;
 }
@@ -201,19 +200,19 @@ bool
 zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no,
 							TransactionId xwait)
 {
-	UndoRecPtr urec_ptr;
+	UndoRecPtr	urec_ptr;
 	TransactionId xid;
-	uint32	epoch;
-	int		out_slot_no PG_USED_FOR_ASSERTS_ONLY;
+	uint32		epoch;
+	int			out_slot_no PG_USED_FOR_ASSERTS_ONLY;
 
-	out_slot_no =  GetTransactionSlotInfo(buffer,
-										  InvalidOffsetNumber,
-										  slot_no,
-										  &epoch,
-										  &xid,
-										  &urec_ptr,
-										  true,
-										  true);
+	out_slot_no = GetTransactionSlotInfo(buffer,
+										 InvalidOffsetNumber,
+										 slot_no,
+										 &epoch,
+										 &xid,
+										 &urec_ptr,
+										 true,
+										 true);
 
 	/* As the rollback is pending, the slot can't be frozen. */
 	Assert(out_slot_no != ZHTUP_SLOT_FROZEN);
@@ -246,19 +245,19 @@ zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no,
 void
 zbuffer_exec_pending_rollback(Relation rel, Buffer buf, BlockNumber *tpd_blkno)
 {
-	int				slot_no;
-	int				total_trans_slots = 0;
-	uint64			epoch;
-	TransactionId	xid;
-	UndoRecPtr		urec_ptr;
-	TransInfo 		*trans_slots = NULL;
-	bool			any_tpd_slot_rolled_back = false;
+	int			slot_no;
+	int			total_trans_slots = 0;
+	uint64		epoch;
+	TransactionId xid;
+	UndoRecPtr	urec_ptr;
+	TransInfo  *trans_slots = NULL;
+	bool		any_tpd_slot_rolled_back = false;
 
 	Assert(tpd_blkno != NULL);
 
 	/*
-	 * Fetch all the transaction information from the page and its corresponding
-	 * TPD page.
+	 * Fetch all the transaction information from the page and its
+	 * corresponding TPD page.
 	 */
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots,
@@ -291,8 +290,8 @@ zbuffer_exec_pending_rollback(Relation rel, Buffer buf, BlockNumber *tpd_blkno)
 	}
 
 	/*
-	 * If we've not rolled back anything from TPD slot, there is no
-	 * need set the TPD buffer.
+	 * If we've not rolled back anything from TPD slot, there is no need set
+	 * the TPD buffer.
 	 */
 	if (!any_tpd_slot_rolled_back)
 		*tpd_blkno = InvalidBlockNumber;
@@ -316,9 +315,9 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate, uint32 specToken)
 {
 	TransactionId xid = InvalidTransactionId;
-	uint32	epoch = 0;
+	uint32		epoch = 0;
 	ZHeapTuple	zheaptup;
-	UnpackedUndoRecord	undorecord;
+	UnpackedUndoRecord undorecord;
 	Buffer		buffer;
 	Buffer		vmbuffer = InvalidBuffer;
 	bool		all_visible_cleared = false;
@@ -326,14 +325,14 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	Page		page;
 	UndoRecPtr	urecptr = InvalidUndoRecPtr,
 				prev_urecptr = InvalidUndoRecPtr;
-	xl_undolog_meta	undometa;
+	xl_undolog_meta undometa;
 	uint8		vm_status = 0;
 	bool		lock_reacquired;
 	bool		skip_undo;
 
 	/*
-	 * We can skip inserting undo records if the tuples are to be marked
-	 * as frozen.
+	 * We can skip inserting undo records if the tuples are to be marked as
+	 * frozen.
 	 */
 	skip_undo = (options & HEAP_INSERT_FROZEN);
 
@@ -353,6 +352,7 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	zheaptup = zheap_prepare_insert(relation, tup, options);
 
 reacquire_buffer:
+
 	/*
 	 * Find buffer to insert this tuple into.  If the page is all visible,
 	 * this will also pin the requisite visibility map page.
@@ -372,13 +372,13 @@ reacquire_buffer:
 	{
 		/*
 		 * The transaction information of tuple needs to be set in transaction
-		 * slot, so needs to reserve the slot before proceeding with the actual
-		 * operation.  It will be costly to wait for getting the slot, but we do
-		 * that by releasing the buffer lock.
+		 * slot, so needs to reserve the slot before proceeding with the
+		 * actual operation.  It will be costly to wait for getting the slot,
+		 * but we do that by releasing the buffer lock.
 		 *
-		 * We don't yet know the offset number of the inserting tuple so just pass
-		 * the max offset number + 1 so that if it need to get slot from the TPD
-		 * it can ensure that the TPD has sufficient map entries.
+		 * We don't yet know the offset number of the inserting tuple so just
+		 * pass the max offset number + 1 so that if it need to get slot from
+		 * the TPD it can ensure that the TPD has sufficient map entries.
 		 */
 		trans_slot_id = PageReserveTransactionSlot(relation,
 												   buffer,
@@ -424,8 +424,8 @@ reacquire_buffer:
 	}
 
 	/*
-	 * See heap_insert to know why checking conflicts is important
-	 * before actually inserting the tuple.
+	 * See heap_insert to know why checking conflicts is important before
+	 * actually inserting the tuple.
 	 */
 	CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
 
@@ -435,11 +435,11 @@ reacquire_buffer:
 		 * Prepare an undo record.  Unlike other operations, insert operation
 		 * doesn't have a prior version to store in undo, so ideally, we don't
 		 * need to store any additional information like
-		 * UREC_INFO_PAYLOAD_CONTAINS_SLOT for TPD entries.  However, for the sake
-		 * of consistency with inserts via non-inplace updates, we keep the
-		 * additional information in this operation.  Also, we need such an
-		 * information in future where we need to know more information for undo
-		 * tuples and it would be good for forensic purpose as well.
+		 * UREC_INFO_PAYLOAD_CONTAINS_SLOT for TPD entries.  However, for the
+		 * sake of consistency with inserts via non-inplace updates, we keep
+		 * the additional information in this operation.  Also, we need such
+		 * an information in future where we need to know more information for
+		 * undo tuples and it would be good for forensic purpose as well.
 		 */
 		undorecord.uur_type = UNDO_INSERT;
 		undorecord.uur_info = 0;
@@ -454,12 +454,13 @@ reacquire_buffer:
 		undorecord.uur_tuple.len = 0;
 
 		/*
-		 * Store the speculative insertion token in undo, so that we can retrieve
-		 * it during visibility check of the speculatively inserted tuples.
+		 * Store the speculative insertion token in undo, so that we can
+		 * retrieve it during visibility check of the speculatively inserted
+		 * tuples.
 		 *
-		 * Note that we don't need to WAL log this value as this is a temporary
-		 * information required only on master node to detect conflicts for
-		 * Insert .. On Conflict.
+		 * Note that we don't need to WAL log this value as this is a
+		 * temporary information required only on master node to detect
+		 * conflicts for Insert .. On Conflict.
 		 */
 		if (options & HEAP_INSERT_SPECULATIVE)
 		{
@@ -480,21 +481,21 @@ reacquire_buffer:
 	}
 
 	/*
-	 * If there is a valid vmbuffer get its status.  The vmbuffer will not
-	 * be valid if operated page is newly extended, see
-	 * RelationGetBufferForZTuple. Also, anyway by default vm status
-	 * bits are clear for those pages hence no need to clear it again!
+	 * If there is a valid vmbuffer get its status.  The vmbuffer will not be
+	 * valid if operated page is newly extended, see
+	 * RelationGetBufferForZTuple. Also, anyway by default vm status bits are
+	 * clear for those pages hence no need to clear it again!
 	 */
 	if (BufferIsValid(vmbuffer))
 		vm_status = visibilitymap_get_status(relation,
-								BufferGetBlockNumber(buffer),
-								&vmbuffer);
+											 BufferGetBlockNumber(buffer),
+											 &vmbuffer);
 
 	/*
-	 * Lock the TPD page before starting critical section.  We might need
-	 * to access it in ZPageAddItemExtended.  Note that if the transaction
-	 * slot belongs to TPD entry, then the TPD page must be locked during
-	 * slot reservation.
+	 * Lock the TPD page before starting critical section.  We might need to
+	 * access it in ZPageAddItemExtended.  Note that if the transaction slot
+	 * belongs to TPD entry, then the TPD page must be locked during slot
+	 * reservation.
 	 *
 	 * XXX We can optimize this by avoid taking TPD page lock unless the page
 	 * has some unused item which requires us to fetch the transaction
@@ -518,8 +519,8 @@ reacquire_buffer:
 	{
 		all_visible_cleared = true;
 		visibilitymap_clear(relation,
-						ItemPointerGetBlockNumber(&(zheaptup->t_self)),
-						vmbuffer, VISIBILITYMAP_VALID_BITS);
+							ItemPointerGetBlockNumber(&(zheaptup->t_self)),
+							vmbuffer, VISIBILITYMAP_VALID_BITS);
 	}
 
 	if (!skip_undo)
@@ -536,7 +537,7 @@ reacquire_buffer:
 	/* XLOG stuff */
 	if (RelationNeedsWAL(relation))
 	{
-		xl_undo_header	xlundohdr;
+		xl_undo_header xlundohdr;
 		xl_zheap_insert xlrec;
 		xl_zheap_header xlhdr;
 		XLogRecPtr	recptr;
@@ -553,10 +554,10 @@ reacquire_buffer:
 		if (RelationIsAccessibleInLogicalDecoding(relation))
 		{
 			/*
-			 * Fixme: This won't work as it needs to access cmin/cmax which
-			 * we probably needs to retrieve from TPD or UNDO.
+			 * Fixme: This won't work as it needs to access cmin/cmax which we
+			 * probably needs to retrieve from TPD or UNDO.
 			 */
-			/*log_heap_new_cid(relation, zheaptup);*/
+			/* log_heap_new_cid(relation, zheaptup); */
 		}
 
 		/*
@@ -729,9 +730,9 @@ simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot)
 	HeapUpdateFailureData hufd;
 
 	result = zheap_delete(relation, tid,
-						 GetCurrentCommandId(true), InvalidSnapshot, snapshot,
-						 true, /* wait for commit */
-						 &hufd, false /* changingPart */);
+						  GetCurrentCommandId(true), InvalidSnapshot, snapshot,
+						  true, /* wait for commit */
+						  &hufd, false /* changingPart */ );
 	switch (result)
 	{
 		case HeapTupleSelfUpdated:
@@ -770,27 +771,29 @@ zheap_delete(Relation relation, ItemPointer tid,
 {
 	HTSU_Result result;
 	TransactionId xid = GetTopTransactionId();
-	TransactionId	tup_xid,
-					oldestXidHavingUndo,
-					single_locker_xid;
-	SubTransactionId	tup_subxid = InvalidSubTransactionId;
-	CommandId		tup_cid;
+	TransactionId tup_xid,
+				oldestXidHavingUndo,
+				single_locker_xid;
+	SubTransactionId tup_subxid = InvalidSubTransactionId;
+	CommandId	tup_cid;
 	ItemId		lp;
 	ZHeapTupleData zheaptup;
-	UnpackedUndoRecord	undorecord;
+	UnpackedUndoRecord undorecord;
 	Page		page;
 	BlockNumber blkno;
 	OffsetNumber offnum;
 	Buffer		buffer;
 	Buffer		vmbuffer = InvalidBuffer;
-	UndoRecPtr	urecptr, prev_urecptr;
-	ItemPointerData	ctid;
+	UndoRecPtr	urecptr,
+				prev_urecptr;
+	ItemPointerData ctid;
 	uint32		epoch = GetEpochForXid(xid);
 	int			tup_trans_slot_id,
 				trans_slot_id,
 				new_trans_slot_id,
 				single_locker_trans_slot;
-	uint16		new_infomask, temp_infomask;
+	uint16		new_infomask,
+				temp_infomask;
 	bool		have_tuple_lock = false;
 	bool		in_place_updated_or_locked = false;
 	bool		all_visible_cleared = false;
@@ -865,17 +868,17 @@ check_tup_satisfies_update:
 				 errmsg("attempted to delete invisible tuple")));
 	}
 	else if ((result == HeapTupleBeingUpdated ||
-			 ((result == HeapTupleMayBeUpdated) &&
-			  ZHeapTupleHasMultiLockers(zheaptup.t_data->t_infomask))) &&
-			  wait)
+			  ((result == HeapTupleMayBeUpdated) &&
+			   ZHeapTupleHasMultiLockers(zheaptup.t_data->t_infomask))) &&
+			 wait)
 	{
-		List	*mlmembers = NIL;
+		List	   *mlmembers = NIL;
 		TransactionId xwait;
-		SubTransactionId	xwait_subxid;
-		int		xwait_trans_slot;
-		uint16	infomask;
-		bool    isCommitted;
-		bool	can_continue = false;
+		SubTransactionId xwait_subxid;
+		int			xwait_trans_slot;
+		uint16		infomask;
+		bool		isCommitted;
+		bool		can_continue = false;
 
 		lock_reacquired = false;
 		xwait_subxid = tup_subxid;
@@ -908,20 +911,21 @@ check_tup_satisfies_update:
 		 */
 		if (ZHeapTupleHasMultiLockers(infomask))
 		{
-			LockTupleMode	old_lock_mode;
-			TransactionId	update_xact;
-			bool			upd_xact_aborted = false;
+			LockTupleMode old_lock_mode;
+			TransactionId update_xact;
+			bool		upd_xact_aborted = false;
 
 			/*
-			 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if current
-			 * transaction has already locked the tuple for update because of
-			 * multilocker flag. In that case, we've to check whether the current
-			 * transaction has already locked the tuple for update.
+			 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if
+			 * current transaction has already locked the tuple for update
+			 * because of multilocker flag. In that case, we've to check
+			 * whether the current transaction has already locked the tuple
+			 * for update.
 			 */
 
 			/*
-			 * Get the transaction slot and undo record pointer if we are already in a
-			 * transaction.
+			 * Get the transaction slot and undo record pointer if we are
+			 * already in a transaction.
 			 */
 			trans_slot_id = PageGetTransactionSlotId(relation, buffer, epoch, xid,
 													 &prev_urecptr, false, false,
@@ -929,18 +933,19 @@ check_tup_satisfies_update:
 
 			if (trans_slot_id != InvalidXactSlotId)
 			{
-				List	*mlmembers;
+				List	   *mlmembers;
 				ListCell   *lc;
 
 				/*
-				 * If any subtransaction of the current top transaction already holds
-				 * a lock as strong as or stronger than what we're requesting, we
-				 * effectively hold the desired lock already.  We *must* succeed
-				 * without trying to take the tuple lock, else we will deadlock
-				 * against anyone wanting to acquire a stronger lock.
+				 * If any subtransaction of the current top transaction
+				 * already holds a lock as strong as or stronger than what
+				 * we're requesting, we effectively hold the desired lock
+				 * already.  We *must* succeed without trying to take the
+				 * tuple lock, else we will deadlock against anyone wanting to
+				 * acquire a stronger lock.
 				 */
 				mlmembers = ZGetMultiLockMembersForCurrentXact(&zheaptup,
-													trans_slot_id, prev_urecptr);
+															   trans_slot_id, prev_urecptr);
 
 				foreach(lc, mlmembers)
 				{
@@ -955,6 +960,7 @@ check_tup_satisfies_update:
 					if (mlmember->mode >= LockTupleExclusive)
 					{
 						result = HeapTupleMayBeUpdated;
+
 						/*
 						 * There is no other active locker on the tuple except
 						 * current transaction id, so we can delete the tuple.
@@ -980,22 +986,22 @@ check_tup_satisfies_update:
 				update_xact = InvalidTransactionId;
 
 			if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
-								HWLOCKMODE_from_locktupmode(LockTupleExclusive)))
+									HWLOCKMODE_from_locktupmode(LockTupleExclusive)))
 			{
 				/*
-				 * There is a potential conflict.  It is quite possible
-				 * that by this time the locker has already been committed.
-				 * So we need to check for conflict with all the possible
-				 * lockers and wait for each of them after releasing a
-				 * buffer lock and acquiring a lock on a tuple.
+				 * There is a potential conflict.  It is quite possible that
+				 * by this time the locker has already been committed. So we
+				 * need to check for conflict with all the possible lockers
+				 * and wait for each of them after releasing a buffer lock and
+				 * acquiring a lock on a tuple.
 				 */
 				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 				mlmembers = ZGetMultiLockMembers(relation, &zheaptup, buffer,
 												 true);
 
 				/*
-				 * If there is no multi-lock members apart from the current transaction
-				 * then no need for tuplock, just go ahead.
+				 * If there is no multi-lock members apart from the current
+				 * transaction then no need for tuplock, just go ahead.
 				 */
 				if (mlmembers != NIL)
 				{
@@ -1017,8 +1023,8 @@ check_tup_satisfies_update:
 
 				/*
 				 * There was no UPDATE in the Multilockers. No
-				 * TransactionIdIsInProgress() call needed here, since we called
-				 * ZMultiLockMembersWait() above.
+				 * TransactionIdIsInProgress() call needed here, since we
+				 * called ZMultiLockMembersWait() above.
 				 */
 				if (!TransactionIdIsValid(update_xact))
 					can_continue = true;
@@ -1045,7 +1051,7 @@ check_tup_satisfies_update:
 
 		if (lock_reacquired)
 		{
-			TransactionId	current_tup_xid;
+			TransactionId current_tup_xid;
 
 			/*
 			 * By the time, we require the lock on buffer, some other xact
@@ -1072,7 +1078,8 @@ check_tup_satisfies_update:
 
 			if (ZHeapTupleHasMultiLockers(infomask))
 			{
-				List	*new_mlmembers;
+				List	   *new_mlmembers;
+
 				new_mlmembers = ZGetMultiLockMembers(relation, &zheaptup,
 													 buffer, false);
 
@@ -1129,9 +1136,9 @@ check_tup_satisfies_update:
 			}
 
 			/* Aborts of multi-lockers are already dealt above. */
-			if(!ZHeapTupleHasMultiLockers(infomask))
+			if (!ZHeapTupleHasMultiLockers(infomask))
 			{
-				bool	has_update = false;
+				bool		has_update = false;
 
 				if (!ZHEAP_XID_IS_LOCKED_ONLY(zheaptup.t_data->t_infomask))
 					has_update = true;
@@ -1139,8 +1146,8 @@ check_tup_satisfies_update:
 				isCommitted = TransactionIdDidCommit(xwait);
 
 				/*
-				 * For aborted transaction, if the undo actions are not applied
-				 * yet, then apply them before modifying the page.
+				 * For aborted transaction, if the undo actions are not
+				 * applied yet, then apply them before modifying the page.
 				 */
 				if (!isCommitted)
 					zheap_exec_pending_rollback(relation,
@@ -1150,11 +1157,11 @@ check_tup_satisfies_update:
 
 				if (!isCommitted)
 				{
-					TransactionId	current_tup_xid;
+					TransactionId current_tup_xid;
 
 					/*
-					 * For aborted updates, we must allow to reverify the tuple
-					 * in case it's values got changed.
+					 * For aborted updates, we must allow to reverify the
+					 * tuple in case it's values got changed.
 					 */
 					if (has_update)
 						goto check_tup_satisfies_update;
@@ -1198,8 +1205,8 @@ check_tup_satisfies_update:
 			 && ZHeapTupleHasMultiLockers(zheaptup.t_data->t_infomask))
 	{
 		/*
-		 * Get the transaction slot and undo record pointer if we are already in a
-		 * transaction.
+		 * Get the transaction slot and undo record pointer if we are already
+		 * in a transaction.
 		 */
 		trans_slot_id = PageGetTransactionSlotId(relation, buffer, epoch, xid,
 												 &prev_urecptr, false, false,
@@ -1207,32 +1214,34 @@ check_tup_satisfies_update:
 
 		if (trans_slot_id != InvalidXactSlotId)
 		{
-			List	*mlmembers;
+			List	   *mlmembers;
 			ListCell   *lc;
 
 			/*
-			 * If any subtransaction of the current top transaction already holds
-			 * a lock as strong as or stronger than what we're requesting, we
-			 * effectively hold the desired lock already.  We *must* succeed
-			 * without trying to take the tuple lock, else we will deadlock
-			 * against anyone wanting to acquire a stronger lock.
+			 * If any subtransaction of the current top transaction already
+			 * holds a lock as strong as or stronger than what we're
+			 * requesting, we effectively hold the desired lock already.  We
+			 * *must* succeed without trying to take the tuple lock, else we
+			 * will deadlock against anyone wanting to acquire a stronger
+			 * lock.
 			 */
 			mlmembers = ZGetMultiLockMembersForCurrentXact(&zheaptup,
-												trans_slot_id, prev_urecptr);
+														   trans_slot_id, prev_urecptr);
 
 			foreach(lc, mlmembers)
 			{
 				ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
 
 				/*
-				 * Only members of our own transaction must be present in
-				 * the list.
+				 * Only members of our own transaction must be present in the
+				 * list.
 				 */
 				Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
 
 				if (mlmember->mode >= LockTupleExclusive)
 				{
 					result = HeapTupleMayBeUpdated;
+
 					/*
 					 * There is no other active locker on the tuple except
 					 * current transaction id, so we can delete the tuple.
@@ -1311,7 +1320,7 @@ zheap_tuple_updated:
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
 		pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
-		pg_usleep(10000L);	/* 10 ms */
+		pg_usleep(10000L);		/* 10 ms */
 		pgstat_report_wait_end();
 
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
@@ -1340,16 +1349,16 @@ zheap_tuple_updated:
 	Assert(trans_slot_id != InvalidXactSlotId);
 
 	/*
-	 * It's possible that tuple slot is now marked as frozen. Hence, we refetch
-	 * the tuple here.
+	 * It's possible that tuple slot is now marked as frozen. Hence, we
+	 * refetch the tuple here.
 	 */
 	Assert(!ItemIdIsDeleted(lp));
 	zheaptup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 	zheaptup.t_len = ItemIdGetLength(lp);
 
 	/*
-	 * If the slot is marked as frozen, the latest modifier of the tuple must be
-	 * frozen.
+	 * If the slot is marked as frozen, the latest modifier of the tuple must
+	 * be frozen.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot((ZHeapTupleHeader) (zheaptup.t_data)) == ZHTUP_SLOT_FROZEN)
 	{
@@ -1360,8 +1369,8 @@ zheap_tuple_updated:
 	temp_infomask = zheaptup.t_data->t_infomask;
 
 	/*
-	 * If all the members were lockers and are all gone, we can do away
-	 * with the MULTI_LOCKERS bit.
+	 * If all the members were lockers and are all gone, we can do away with
+	 * the MULTI_LOCKERS bit.
 	 */
 	if (ZHeapTupleHasMultiLockers(temp_infomask) &&
 		!any_multi_locker_member_alive)
@@ -1380,14 +1389,14 @@ zheap_tuple_updated:
 	Assert(new_trans_slot_id == trans_slot_id);
 
 	/*
-	 * If the last transaction that has updated the tuple is already too
-	 * old, then consider it as frozen which means it is all-visible.  This
-	 * ensures that we don't need to store epoch in the undo record to check
-	 * if the undo tuple belongs to previous epoch and hence all-visible.  See
+	 * If the last transaction that has updated the tuple is already too old,
+	 * then consider it as frozen which means it is all-visible.  This ensures
+	 * that we don't need to store epoch in the undo record to check if the
+	 * undo tuple belongs to previous epoch and hence all-visible.  See
 	 * comments atop of file ztqual.c.
 	 */
 	oldestXidHavingUndo = GetXidFromEpochXid(
-						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+											 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 	if (TransactionIdPrecedes(tup_xid, oldestXidHavingUndo))
 		tup_xid = FrozenTransactionId;
 
@@ -1395,9 +1404,9 @@ zheap_tuple_updated:
 
 	/*
 	 * Prepare an undo record.  We need to separately store the latest
-	 * transaction id that has changed the tuple to ensure that we don't
-	 * try to process the tuple in undo chain that is already discarded.
-	 * See GetTupleFromUndo.
+	 * transaction id that has changed the tuple to ensure that we don't try
+	 * to process the tuple in undo chain that is already discarded. See
+	 * GetTupleFromUndo.
 	 */
 	undorecord.uur_type = UNDO_DELETE;
 	undorecord.uur_info = 0;
@@ -1414,11 +1423,11 @@ zheap_tuple_updated:
 	initStringInfo(&undorecord.uur_tuple);
 
 	/*
-	 * Copy the entire old tuple including it's header in the undo record.
-	 * We need this to reconstruct the tuple if current tuple is not
-	 * visible to some other transaction.  We choose to write the complete
-	 * tuple in undo record for delete operation so that we can reuse the
-	 * space after the transaction performing the operation commits.
+	 * Copy the entire old tuple including it's header in the undo record. We
+	 * need this to reconstruct the tuple if current tuple is not visible to
+	 * some other transaction.  We choose to write the complete tuple in undo
+	 * record for delete operation so that we can reuse the space after the
+	 * transaction performing the operation commits.
 	 */
 	appendBinaryStringInfo(&undorecord.uur_tuple,
 						   (char *) &zheaptup.t_len,
@@ -1432,9 +1441,10 @@ zheap_tuple_updated:
 	appendBinaryStringInfo(&undorecord.uur_tuple,
 						   (char *) zheaptup.t_data,
 						   zheaptup.t_len);
+
 	/*
-	 * Store the transaction slot number for undo tuple in undo record, if
-	 * the slot belongs to TPD entry.  We can always get the current tuple's
+	 * Store the transaction slot number for undo tuple in undo record, if the
+	 * slot belongs to TPD entry.  We can always get the current tuple's
 	 * transaction slot number by referring offset->slot map in TPD entry,
 	 * however that won't be true for tuple in undo.
 	 */
@@ -1449,8 +1459,8 @@ zheap_tuple_updated:
 	}
 
 	/*
-	 * Store subtransaction id in undo record.  See SubXactLockTableWait
-	 * to know why we need to store subtransaction id in undo.
+	 * Store subtransaction id in undo record.  See SubXactLockTableWait to
+	 * know why we need to store subtransaction id in undo.
 	 */
 	if (hasSubXactLock)
 	{
@@ -1479,7 +1489,7 @@ zheap_tuple_updated:
 	/* We must have a valid vmbuffer. */
 	Assert(BufferIsValid(vmbuffer));
 	vm_status = visibilitymap_get_status(relation,
-								BufferGetBlockNumber(buffer), &vmbuffer);
+										 BufferGetBlockNumber(buffer), &vmbuffer);
 
 	START_CRIT_SECTION();
 
@@ -1517,10 +1527,10 @@ zheap_tuple_updated:
 	 */
 	if (RelationNeedsWAL(relation))
 	{
-		ZHeapTupleHeader	zhtuphdr = NULL;
-		xl_undo_header	xlundohdr;
+		ZHeapTupleHeader zhtuphdr = NULL;
+		xl_undo_header xlundohdr;
 		xl_zheap_delete xlrec;
-		xl_zheap_header	xlhdr;
+		xl_zheap_header xlhdr;
 		XLogRecPtr	recptr;
 		XLogRecPtr	RedoRecPtr;
 		uint32		totalundotuplen = 0;
@@ -1552,9 +1562,9 @@ zheap_tuple_updated:
 		 * regenerate the undo tuple during recovery as the tuple state must
 		 * be same as now, otherwise we need to store it explicitly.
 		 *
-		 * Since we don't yet have the insert lock, including the page
-		 * image decision could change later and in that case we need prepare
-		 * the WAL record again.
+		 * Since we don't yet have the insert lock, including the page image
+		 * decision could change later and in that case we need prepare the
+		 * WAL record again.
 		 */
 prepare_xlog:
 		/* LOG undolog meta if this is the first WAL after the checkpoint. */
@@ -1567,7 +1577,7 @@ prepare_xlog:
 
 			totalundotuplen = *((uint32 *) &undorecord.uur_tuple.data[0]);
 			dataoff = sizeof(uint32) + sizeof(ItemPointerData) + sizeof(Oid);
-			zhtuphdr = (ZHeapTupleHeader) &undorecord.uur_tuple.data[dataoff];
+			zhtuphdr = (ZHeapTupleHeader) & undorecord.uur_tuple.data[dataoff];
 
 			xlhdr.t_infomask2 = zhtuphdr->t_infomask2;
 			xlhdr.t_infomask = zhtuphdr->t_infomask;
@@ -1587,7 +1597,7 @@ prepare_xlog:
 			XLogRegisterData((char *) &xlhdr, SizeOfZHeapHeader);
 			/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
 			XLogRegisterData((char *) zhtuphdr + SizeofZHeapTupleHeader,
-							totalundotuplen - SizeofZHeapTupleHeader);
+							 totalundotuplen - SizeofZHeapTupleHeader);
 		}
 
 		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
@@ -1624,6 +1634,7 @@ prepare_xlog:
 		ReleaseBuffer(vmbuffer);
 
 	UnlockReleaseUndoBuffers();
+
 	/*
 	 * If the tuple has toasted out-of-line attributes, we need to delete
 	 * those items too.  We have to do this before releasing the buffer
@@ -1675,10 +1686,10 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	HTSU_Result result;
 	TransactionId xid = GetTopTransactionId();
 	TransactionId tup_xid,
-				  save_tup_xid,
-				  oldestXidHavingUndo,
-				  single_locker_xid;
-	SubTransactionId	tup_subxid = InvalidSubTransactionId;
+				save_tup_xid,
+				oldestXidHavingUndo,
+				single_locker_xid;
+	SubTransactionId tup_subxid = InvalidSubTransactionId;
 	CommandId	tup_cid;
 	Bitmapset  *inplace_upd_attrs = NULL;
 	Bitmapset  *key_attrs = NULL;
@@ -1687,12 +1698,15 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	ItemId		lp;
 	ZHeapTupleData oldtup;
 	ZHeapTuple	zheaptup;
-	UndoRecPtr	urecptr, prev_urecptr, new_prev_urecptr;
+	UndoRecPtr	urecptr,
+				prev_urecptr,
+				new_prev_urecptr;
 	UndoRecPtr	new_urecptr = InvalidUndoRecPtr;
-	UnpackedUndoRecord	undorecord, new_undorecord;
+	UnpackedUndoRecord undorecord,
+				new_undorecord;
 	Page		page;
 	BlockNumber block;
-	ItemPointerData	ctid;
+	ItemPointerData ctid;
 	Buffer		buffer,
 				newbuf,
 				vmbuffer = InvalidBuffer,
@@ -1707,10 +1721,12 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 				result_trans_slot_id,
 				single_locker_trans_slot;
 	uint16		old_infomask;
-	uint16		new_infomask, temp_infomask;
+	uint16		new_infomask,
+				temp_infomask;
 	uint16		infomask_old_tuple = 0;
 	uint16		infomask_new_tuple = 0;
-	OffsetNumber	old_offnum, max_offset;
+	OffsetNumber old_offnum,
+				max_offset;
 	bool		all_visible_cleared = false;
 	bool		new_all_visible_cleared = false;
 	bool		have_tuple_lock = false;
@@ -1724,7 +1740,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	bool		lock_reacquired;
 	bool		need_toast;
 	bool		hasSubXactLock = false;
-	xl_undolog_meta	undometa;
+	xl_undolog_meta undometa;
 	uint8		vm_status;
 	uint8		vm_status_new = 0;
 	bool		slot_reused_or_TPD_slot = false;
@@ -1830,8 +1846,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	}
 	else
 		need_toast = (newtup->t_len >= TOAST_TUPLE_THRESHOLD ||
-					 ZHeapTupleHasExternal(&oldtup) ||
-					 ZHeapTupleHasExternal(newtup));
+					  ZHeapTupleHasExternal(&oldtup) ||
+					  ZHeapTupleHasExternal(newtup));
 
 	oldtupsize = SHORTALIGN(oldtup.t_len);
 	newtupsize = SHORTALIGN(newtup->t_len);
@@ -1863,11 +1879,11 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 
 	/*
 	 * ctid needs to be fetched from undo chain.  You might think that it will
-	 * be always same as the passed in ctid as the old tuple is already visible
-	 * out snapshot.  However, it is quite possible that after checking the
-	 * visibility of old tuple, some concurrent session would have performed
-	 * non in-place update and in such a case we need can only get it via
-	 * undo.
+	 * be always same as the passed in ctid as the old tuple is already
+	 * visible out snapshot.  However, it is quite possible that after
+	 * checking the visibility of old tuple, some concurrent session would
+	 * have performed non in-place update and in such a case we need can only
+	 * get it via undo.
 	 */
 	ctid = *otid;
 
@@ -1889,11 +1905,11 @@ check_tup_satisfies_update:
 				 errmsg("attempted to update invisible tuple")));
 	}
 	else if ((result == HeapTupleBeingUpdated ||
-			 ((result == HeapTupleMayBeUpdated) &&
-			  ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask))) &&
-			  wait)
+			  ((result == HeapTupleMayBeUpdated) &&
+			   ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask))) &&
+			 wait)
 	{
-		List	*mlmembers;
+		List	   *mlmembers;
 		TransactionId xwait;
 		SubTransactionId xwait_subxid;
 		int			xwait_trans_slot;
@@ -1919,21 +1935,22 @@ check_tup_satisfies_update:
 		if (ZHeapTupleHasMultiLockers(infomask))
 		{
 			TransactionId update_xact;
-			LockTupleMode	old_lock_mode;
-			int		remain = 0;
+			LockTupleMode old_lock_mode;
+			int			remain = 0;
 			bool		isAborted;
 			bool		upd_xact_aborted = false;
 
 			/*
-			 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if current
-			 * transaction has already locked the tuple for update because of
-			 * multilocker flag. In that case, we've to check whether the current
-			 * transaction has already locked the tuple for update.
+			 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if
+			 * current transaction has already locked the tuple for update
+			 * because of multilocker flag. In that case, we've to check
+			 * whether the current transaction has already locked the tuple
+			 * for update.
 			 */
 
 			/*
-			 * Get the transaction slot and undo record pointer if we are already in a
-			 * transaction.
+			 * Get the transaction slot and undo record pointer if we are
+			 * already in a transaction.
 			 */
 			trans_slot_id = PageGetTransactionSlotId(relation, buffer, epoch, xid,
 													 &prev_urecptr, false, false,
@@ -1941,18 +1958,19 @@ check_tup_satisfies_update:
 
 			if (trans_slot_id != InvalidXactSlotId)
 			{
-				List	*mlmembers;
+				List	   *mlmembers;
 				ListCell   *lc;
 
 				/*
-				 * If any subtransaction of the current top transaction already holds
-				 * a lock as strong as or stronger than what we're requesting, we
-				 * effectively hold the desired lock already.  We *must* succeed
-				 * without trying to take the tuple lock, else we will deadlock
-				 * against anyone wanting to acquire a stronger lock.
+				 * If any subtransaction of the current top transaction
+				 * already holds a lock as strong as or stronger than what
+				 * we're requesting, we effectively hold the desired lock
+				 * already.  We *must* succeed without trying to take the
+				 * tuple lock, else we will deadlock against anyone wanting to
+				 * acquire a stronger lock.
 				 */
 				mlmembers = ZGetMultiLockMembersForCurrentXact(&oldtup,
-													trans_slot_id, prev_urecptr);
+															   trans_slot_id, prev_urecptr);
 
 				foreach(lc, mlmembers)
 				{
@@ -1990,10 +2008,10 @@ check_tup_satisfies_update:
 			 * leave any transaction whether locker or updater, it can lead to
 			 * inconsistency.  Basically, in such a case after waiting for all
 			 * the conflicting transactions we might clear the multilocker
-			 * flag and proceed with update and it is quite possible that after
-			 * the update, undo worker rollbacks some of the previous locker
-			 * which can overwrite the tuple (Note, till multilocker bit is set,
-			 * the rollback actions won't overwrite the tuple).
+			 * flag and proceed with update and it is quite possible that
+			 * after the update, undo worker rollbacks some of the previous
+			 * locker which can overwrite the tuple (Note, till multilocker
+			 * bit is set, the rollback actions won't overwrite the tuple).
 			 *
 			 * OTOH for non-conflicting lockers, as we don't clear the
 			 * multi-locker flag, there is no urgency to perform undo actions
@@ -2015,22 +2033,22 @@ check_tup_satisfies_update:
 			if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
 									HWLOCKMODE_from_locktupmode(*lockmode)))
 			{
-				TransactionId	current_tup_xid;
+				TransactionId current_tup_xid;
 
 				/*
-				 * There is a potential conflict.  It is quite possible
-				 * that by this time the locker has already been committed.
-				 * So we need to check for conflict with all the possible
-				 * lockers and wait for each of them after releasing a
-				 * buffer lock and acquiring a lock on a tuple.
+				 * There is a potential conflict.  It is quite possible that
+				 * by this time the locker has already been committed. So we
+				 * need to check for conflict with all the possible lockers
+				 * and wait for each of them after releasing a buffer lock and
+				 * acquiring a lock on a tuple.
 				 */
 				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 				mlmembers = ZGetMultiLockMembers(relation, &oldtup, buffer,
 												 true);
 
 				/*
-				 * If there is no multi-lock members apart from the current transaction
-				 * then no need for tuplock, just go ahead.
+				 * If there is no multi-lock members apart from the current
+				 * transaction then no need for tuplock, just go ahead.
 				 */
 				if (mlmembers != NIL)
 				{
@@ -2076,13 +2094,14 @@ check_tup_satisfies_update:
 
 				if (ZHeapTupleHasMultiLockers(infomask))
 				{
-					List	*new_mlmembers;
+					List	   *new_mlmembers;
+
 					new_mlmembers = ZGetMultiLockMembers(relation, &oldtup,
 														 buffer, false);
 
 					/*
-					 * Ensure, no new lockers have been added, if so, then start
-					 * again.
+					 * Ensure, no new lockers have been added, if so, then
+					 * start again.
 					 */
 					if (!ZMultiLockMembersSame(mlmembers, new_mlmembers))
 					{
@@ -2099,9 +2118,9 @@ check_tup_satisfies_update:
 				}
 
 				/*
-				 * xwait is done, but if xwait had just locked the tuple then some
-				 * other xact could update this tuple before we get to this point.
-				 * Check for xid change, and start over if so.
+				 * xwait is done, but if xwait had just locked the tuple then
+				 * some other xact could update this tuple before we get to
+				 * this point. Check for xid change, and start over if so.
 				 */
 				ZHeapTupleGetTransInfo(&oldtup, buffer, NULL, NULL, &current_tup_xid,
 									   NULL, NULL, false, InvalidSnapshot);
@@ -2114,8 +2133,8 @@ check_tup_satisfies_update:
 				isAborted = TransactionIdDidAbort(update_xact);
 
 				/*
-				 * For aborted transaction, if the undo actions are not applied
-				 * yet, then apply them before modifying the page.
+				 * For aborted transaction, if the undo actions are not
+				 * applied yet, then apply them before modifying the page.
 				 */
 				if (isAborted &&
 					zheap_exec_pending_rollback(relation, buffer,
@@ -2154,9 +2173,9 @@ check_tup_satisfies_update:
 		}
 		else
 		{
-			bool	isCommitted;
-			bool	has_update = false;
-			TransactionId	current_tup_xid;
+			bool		isCommitted;
+			bool		has_update = false;
+			TransactionId current_tup_xid;
 
 			/*
 			 * Wait for regular transaction to end; but first, acquire tuple
@@ -2175,11 +2194,11 @@ check_tup_satisfies_update:
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
 			/*
-			 * Also take care of cases when page is pruned after we release the
-			 * buffer lock. For this we check if ItemId is not deleted and refresh
-			 * the tuple offset position in page.  If TID is already delete marked
-			 * due to pruning, then get new ctid, so that we can update the new
-			 * tuple.
+			 * Also take care of cases when page is pruned after we release
+			 * the buffer lock. For this we check if ItemId is not deleted and
+			 * refresh the tuple offset position in page.  If TID is already
+			 * delete marked due to pruning, then get new ctid, so that we can
+			 * update the new tuple.
 			 */
 			if (ItemIdIsDeleted(lp))
 			{
@@ -2230,8 +2249,8 @@ check_tup_satisfies_update:
 				has_update = true;
 
 			/*
-			 * We may overwrite if previous xid is aborted, or if it is committed
-			 * but only locked the tuple without updating it.
+			 * We may overwrite if previous xid is aborted, or if it is
+			 * committed but only locked the tuple without updating it.
 			 */
 			isCommitted = TransactionIdDidCommit(xwait);
 
@@ -2279,8 +2298,8 @@ check_tup_satisfies_update:
 	else if (result == HeapTupleMayBeUpdated)
 	{
 		/*
-		 * There is no active locker on the tuple, so we avoid grabbing
-		 * the lock on new tuple.
+		 * There is no active locker on the tuple, so we avoid grabbing the
+		 * lock on new tuple.
 		 */
 		checked_lockers = true;
 		locker_remains = false;
@@ -2289,10 +2308,10 @@ check_tup_satisfies_update:
 			 ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask))
 	{
 		/*
-		 * If a tuple is updated and is visible to our snapshot, we allow to update
-		 * it;  Else, we return HeapTupleUpdated and visit EvalPlanQual path to
-		 * check whether the quals still match.  In that path, we also lock the
-		 * tuple so that nobody can update it before us.
+		 * If a tuple is updated and is visible to our snapshot, we allow to
+		 * update it;  Else, we return HeapTupleUpdated and visit EvalPlanQual
+		 * path to check whether the quals still match.  In that path, we also
+		 * lock the tuple so that nobody can update it before us.
 		 *
 		 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if current
 		 * transaction has already locked the tuple for update because of
@@ -2301,8 +2320,8 @@ check_tup_satisfies_update:
 		 */
 
 		/*
-		 * Get the transaction slot and undo record pointer if we are already in a
-		 * transaction.
+		 * Get the transaction slot and undo record pointer if we are already
+		 * in a transaction.
 		 */
 		trans_slot_id = PageGetTransactionSlotId(relation, buffer, epoch, xid,
 												 &prev_urecptr, false, false,
@@ -2310,26 +2329,27 @@ check_tup_satisfies_update:
 
 		if (trans_slot_id != InvalidXactSlotId)
 		{
-			List	*mlmembers;
+			List	   *mlmembers;
 			ListCell   *lc;
 
 			/*
-			 * If any subtransaction of the current top transaction already holds
-			 * a lock as strong as or stronger than what we're requesting, we
-			 * effectively hold the desired lock already.  We *must* succeed
-			 * without trying to take the tuple lock, else we will deadlock
-			 * against anyone wanting to acquire a stronger lock.
+			 * If any subtransaction of the current top transaction already
+			 * holds a lock as strong as or stronger than what we're
+			 * requesting, we effectively hold the desired lock already.  We
+			 * *must* succeed without trying to take the tuple lock, else we
+			 * will deadlock against anyone wanting to acquire a stronger
+			 * lock.
 			 */
 			mlmembers = ZGetMultiLockMembersForCurrentXact(&oldtup,
-												trans_slot_id, prev_urecptr);
+														   trans_slot_id, prev_urecptr);
 
 			foreach(lc, mlmembers)
 			{
 				ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
 
 				/*
-				 * Only members of our own transaction must be present in
-				 * the list.
+				 * Only members of our own transaction must be present in the
+				 * list.
 				 */
 				Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
 
@@ -2390,7 +2410,10 @@ zheap_tuple_updated:
 		return result;
 	}
 
-	/* Acquire subtransaction lock, if current transaction is a subtransaction. */
+	/*
+	 * Acquire subtransaction lock, if current transaction is a
+	 * subtransaction.
+	 */
 	if (IsSubTransaction())
 	{
 		SubXactLockTableInsert(GetCurrentSubTransactionId());
@@ -2404,7 +2427,7 @@ zheap_tuple_updated:
 	 */
 	if (!use_inplace_update && !is_index_updated && !need_toast)
 	{
-		bool	pruned;
+		bool		pruned;
 
 		/* Here, we pass delta space required to accomodate the new tuple. */
 		pruned = zheap_page_prune_opt(relation, buffer, old_offnum,
@@ -2425,8 +2448,8 @@ zheap_tuple_updated:
 	pagefree = PageGetZHeapFreeSpace(page);
 
 	/*
-	 * Incase of the non in-place update we also need to
-	 * reserve a map for the new tuple.
+	 * Incase of the non in-place update we also need to reserve a map for the
+	 * new tuple.
 	 */
 	if (!use_inplace_update)
 		max_offset += 1;
@@ -2449,7 +2472,7 @@ zheap_tuple_updated:
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
 		pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
-		pg_usleep(10000L);	/* 10 ms */
+		pg_usleep(10000L);		/* 10 ms */
 		pgstat_report_wait_end();
 
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
@@ -2479,8 +2502,8 @@ zheap_tuple_updated:
 	Assert(trans_slot_id != InvalidXactSlotId);
 
 	/*
-	 * It's possible that tuple slot is now marked as frozen. Hence, we refetch
-	 * the tuple here.
+	 * It's possible that tuple slot is now marked as frozen. Hence, we
+	 * refetch the tuple here.
 	 */
 	Assert(!ItemIdIsDeleted(lp));
 	oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
@@ -2492,13 +2515,13 @@ zheap_tuple_updated:
 	 * the performance.  To avoid accessing undo, we perform non-inplace
 	 * updates so as to distribute the tuple across pages so that we don't
 	 * face scaracity of transaction slots on the page.  However, we must have
-	 * a hard limit for this optimization, else the number of blocks will increase
-	 * unboundedly.
+	 * a hard limit for this optimization, else the number of blocks will
+	 * increase unboundedly.
 	 *
 	 * Note that the similar optimization apllies when we use TPD slots as
 	 * that will also lead to another hop during visibility checks.
 	 */
-	if(slot_reused_or_TPD_slot)
+	if (slot_reused_or_TPD_slot)
 	{
 		BlockNumber nblocks = RelationGetNumberOfBlocks(relation);
 
@@ -2509,8 +2532,8 @@ zheap_tuple_updated:
 	}
 
 	/*
-	 * If the slot is marked as frozen, the latest modifier of the tuple must be
-	 * frozen.
+	 * If the slot is marked as frozen, the latest modifier of the tuple must
+	 * be frozen.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot((ZHeapTupleHeader) (oldtup.t_data)) == ZHTUP_SLOT_FROZEN)
 	{
@@ -2519,36 +2542,36 @@ zheap_tuple_updated:
 	}
 
 	/*
-	 * Save the xid that has updated the tuple to compute infomask for
-	 * tuple.
+	 * Save the xid that has updated the tuple to compute infomask for tuple.
 	 */
 	save_tup_xid = tup_xid;
 
 	/*
-	 * If the last transaction that has updated the tuple is already too
-	 * old, then consider it as frozen which means it is all-visible.  This
-	 * ensures that we don't need to store epoch in the undo record to check
-	 * if the undo tuple belongs to previous epoch and hence all-visible.  See
+	 * If the last transaction that has updated the tuple is already too old,
+	 * then consider it as frozen which means it is all-visible.  This ensures
+	 * that we don't need to store epoch in the undo record to check if the
+	 * undo tuple belongs to previous epoch and hence all-visible.  See
 	 * comments atop of file ztqual.c.
 	 */
 	oldestXidHavingUndo = GetXidFromEpochXid(
-						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+											 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 	if (TransactionIdPrecedes(tup_xid, oldestXidHavingUndo))
 	{
 		tup_xid = FrozenTransactionId;
 	}
 
 	/*
-	 * updated tuple doesn't fit on current page or the toaster needs
-	 * to be activated or transaction slot has been resued.
+	 * updated tuple doesn't fit on current page or the toaster needs to be
+	 * activated or transaction slot has been resued.
 	 */
 	Assert(!slot_reused_or_TPD_slot || !use_inplace_update);
 	if (slot_reused_or_TPD_slot ||
 		(!use_inplace_update && newtupsize > pagefree) ||
 		need_toast)
 	{
-		uint16	lock_old_infomask;
-		BlockNumber	oldblk, newblk;
+		uint16		lock_old_infomask;
+		BlockNumber oldblk,
+					newblk;
 
 		/*
 		 * To prevent concurrent sessions from updating the tuple, we have to
@@ -2578,11 +2601,12 @@ zheap_tuple_updated:
 		appendBinaryStringInfo(&undorecord.uur_payload,
 							   (char *) (lockmode),
 							   sizeof(LockTupleMode));
+
 		/*
 		 * Store the transaction slot number for undo tuple in undo record, if
-		 * the slot belongs to TPD entry.  We can always get the current tuple's
-		 * transaction slot number by referring offset->slot map in TPD entry,
-		 * however that won't be true for tuple in undo.
+		 * the slot belongs to TPD entry.  We can always get the current
+		 * tuple's transaction slot number by referring offset->slot map in
+		 * TPD entry, however that won't be true for tuple in undo.
 		 */
 		if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 		{
@@ -2663,11 +2687,11 @@ zheap_tuple_updated:
 		 */
 		if (RelationNeedsWAL(relation))
 		{
-			xl_zheap_lock	xlrec;
-			xl_undo_header  xlundohdr;
-			XLogRecPtr      recptr;
-			XLogRecPtr		RedoRecPtr;
-			bool			doPageWrites;
+			xl_zheap_lock xlrec;
+			xl_undo_header xlundohdr;
+			XLogRecPtr	recptr;
+			XLogRecPtr	RedoRecPtr;
+			bool		doPageWrites;
 
 			/*
 			 * Store the information required to generate undo record during
@@ -2692,11 +2716,11 @@ zheap_tuple_updated:
 				xlrec.flags |= XLZ_LOCK_CONTAINS_TPD_SLOT;
 
 			if (hasSubXactLock)
-				 xlrec.flags |= XLZ_LOCK_CONTAINS_SUBXACT;
+				xlrec.flags |= XLZ_LOCK_CONTAINS_SUBXACT;
 			if (undorecord.uur_type == UNDO_XID_LOCK_FOR_UPDATE)
 				xlrec.flags |= XLZ_LOCK_FOR_UPDATE;
 
-prepare_xlog:
+	prepare_xlog:
 			/* LOG undolog meta if this is the first WAL after the checkpoint. */
 			LogUndoMetaData(&undometa);
 
@@ -2763,6 +2787,7 @@ prepare_xlog:
 		else
 			zheaptup = newtup;
 reacquire_buffer:
+
 		/*
 		 * Get a new page for inserting tuple.  We will need to acquire buffer
 		 * locks on both old and new pages.  See heap_update.
@@ -2832,21 +2857,21 @@ reacquire_buffer:
 														   NULL);
 
 			/*
-			 * We must get a valid slot and wouldn't have reacquired the buffer
-			 * lock as we already have a reserved slot.
+			 * We must get a valid slot and wouldn't have reacquired the
+			 * buffer lock as we already have a reserved slot.
 			 */
-			Assert (!lock_reacquired);
-			Assert (new_trans_slot_id != InvalidXactSlotId);
+			Assert(!lock_reacquired);
+			Assert(new_trans_slot_id != InvalidXactSlotId);
 
 			/*
 			 * We should get the same slot what we reserved previously because
-			 * our transaction information should already be there.  But, there
-			 * is possibility that our slot might have moved to the TPD in such
-			 * case we should get previous slot_no + 1.
+			 * our transaction information should already be there.  But,
+			 * there is possibility that our slot might have moved to the TPD
+			 * in such case we should get previous slot_no + 1.
 			 */
-			Assert ((new_trans_slot_id == trans_slot_id) ||
-					(ZHeapPageHasTPDSlot((PageHeader)page) &&
-					 new_trans_slot_id == trans_slot_id + 1));
+			Assert((new_trans_slot_id == trans_slot_id) ||
+				   (ZHeapPageHasTPDSlot((PageHeader) page) &&
+					new_trans_slot_id == trans_slot_id + 1));
 
 			trans_slot_id = new_trans_slot_id;
 		}
@@ -2863,8 +2888,8 @@ reacquire_buffer:
 		{
 			/*
 			 * If non in-place update is happening on two different buffers,
-			 * then release the new buffer, and release the lock on old buffer.
-			 * Else, only release the lock on old buffer.
+			 * then release the new buffer, and release the lock on old
+			 * buffer. Else, only release the lock on old buffer.
 			 */
 			if (buffer != newbuf)
 				UnlockReleaseBuffer(newbuf);
@@ -2895,9 +2920,9 @@ reacquire_buffer:
 
 		/*
 		 * If the computed infomask for the updated tuple doesn't contain a
-		 * multilocker flag, we must have stored current transaction slot on the
-		 * tuple (due to LockForUpdate). In that case, we should update the
-		 * tuple xid as well.
+		 * multilocker flag, we must have stored current transaction slot on
+		 * the tuple (due to LockForUpdate). In that case, we should update
+		 * the tuple xid as well.
 		 *
 		 * Also note that, there is possibility that our slot might have moved
 		 * to the TPD; in such case we should get previous slot_no + 1.
@@ -2905,8 +2930,8 @@ reacquire_buffer:
 		if (!ZHeapTupleHasMultiLockers(lock_old_infomask))
 		{
 			Assert((result_trans_slot_id == trans_slot_id) ||
-			(ZHeapPageHasTPDSlot((PageHeader) page) &&
-			result_trans_slot_id + 1 == trans_slot_id));
+				   (ZHeapPageHasTPDSlot((PageHeader) page) &&
+					result_trans_slot_id + 1 == trans_slot_id));
 			tup_trans_slot_id = trans_slot_id;
 			tup_xid = xid;
 			save_tup_xid = tup_xid;
@@ -2943,37 +2968,37 @@ reacquire_buffer:
 	initStringInfo(&undorecord.uur_tuple);
 
 	/*
-	 * Copy the entire old tuple including it's header in the undo record.
-	 * We need this to reconstruct the old tuple if current tuple is not
-	 * visible to some other transaction.  We choose to write the complete
-	 * tuple in undo record for update operation so that we can reuse the
-	 * space of old tuples for non-inplace-updates after the transaction
-	 * performing the operation commits.
+	 * Copy the entire old tuple including it's header in the undo record. We
+	 * need this to reconstruct the old tuple if current tuple is not visible
+	 * to some other transaction.  We choose to write the complete tuple in
+	 * undo record for update operation so that we can reuse the space of old
+	 * tuples for non-inplace-updates after the transaction performing the
+	 * operation commits.
 	 */
 	appendBinaryStringInfo(&undorecord.uur_tuple,
-							(char *) &oldtup.t_len,
-							sizeof(uint32));
+						   (char *) &oldtup.t_len,
+						   sizeof(uint32));
 	appendBinaryStringInfo(&undorecord.uur_tuple,
-							(char *) &oldtup.t_self,
-							sizeof(ItemPointerData));
+						   (char *) &oldtup.t_self,
+						   sizeof(ItemPointerData));
 	appendBinaryStringInfo(&undorecord.uur_tuple,
-							(char *) &oldtup.t_tableOid,
-							sizeof(Oid));
+						   (char *) &oldtup.t_tableOid,
+						   sizeof(Oid));
 	appendBinaryStringInfo(&undorecord.uur_tuple,
-							(char *) oldtup.t_data,
-							oldtup.t_len);
+						   (char *) oldtup.t_data,
+						   oldtup.t_len);
 
 	if (use_inplace_update)
 	{
-		bool	hasPayload = false;
+		bool		hasPayload = false;
 
 		undorecord.uur_type = UNDO_INPLACE_UPDATE;
 
 		/*
 		 * Store the transaction slot number for undo tuple in undo record, if
-		 * the slot belongs to TPD entry.  We can always get the current tuple's
-		 * transaction slot number by referring offset->slot map in TPD entry,
-		 * however that won't be true for tuple in undo.
+		 * the slot belongs to TPD entry.  We can always get the current
+		 * tuple's transaction slot number by referring offset->slot map in
+		 * TPD entry, however that won't be true for tuple in undo.
 		 */
 		if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 		{
@@ -3016,8 +3041,8 @@ reacquire_buffer:
 	}
 	else
 	{
-		Size	payload_len;
-		UnpackedUndoRecord	undorec[2];
+		Size		payload_len;
+		UnpackedUndoRecord undorec[2];
 
 		undorecord.uur_type = UNDO_UPDATE;
 
@@ -3073,7 +3098,7 @@ reacquire_buffer:
 		UndoSetPrepareSize(undorec, 2, InvalidTransactionId,
 						   UndoPersistenceForRelation(relation), NULL, &undometa);
 
-		/* copy updated record (uur_info might got updated )*/
+		/* copy updated record (uur_info might got updated ) */
 		undorecord = undorec[0];
 		new_undorecord = undorec[1];
 
@@ -3108,8 +3133,8 @@ reacquire_buffer:
 	temp_infomask = oldtup.t_data->t_infomask;
 
 	/*
-	 * We can't rely on any_multi_locker_member_alive to clear the multi locker
-	 * bit, if the the lock on the buffer is released inbetween.
+	 * We can't rely on any_multi_locker_member_alive to clear the multi
+	 * locker bit, if the the lock on the buffer is released inbetween.
 	 */
 	if (buffer == newbuf)
 	{
@@ -3137,8 +3162,8 @@ reacquire_buffer:
 	/*
 	 * Propagate the lockers information to the new tuple.  Since we're doing
 	 * an update, the only possibility is that the lockers had FOR KEY SHARE
-	 * lock.  For in-place updates, we are not creating any new version, so
-	 * we don't need to propagate anything.
+	 * lock.  For in-place updates, we are not creating any new version, so we
+	 * don't need to propagate anything.
 	 */
 	if ((checked_lockers && !locker_remains) || use_inplace_update)
 		new_infomask = 0;
@@ -3158,7 +3183,7 @@ reacquire_buffer:
 	if (use_inplace_update)
 	{
 		infomask_old_tuple = infomask_new_tuple =
-					old_infomask | new_infomask | ZHEAP_INPLACE_UPDATED;
+			old_infomask | new_infomask | ZHEAP_INPLACE_UPDATED;
 	}
 	else
 	{
@@ -3169,7 +3194,7 @@ reacquire_buffer:
 	/* We must have a valid buffer. */
 	Assert(BufferIsValid(vmbuffer));
 	vm_status = visibilitymap_get_status(relation,
-								BufferGetBlockNumber(buffer), &vmbuffer);
+										 BufferGetBlockNumber(buffer), &vmbuffer);
 
 	/*
 	 * If the page is new, then there will no valid vmbuffer_new and the
@@ -3177,12 +3202,12 @@ reacquire_buffer:
 	 */
 	if (newbuf != buffer && BufferIsValid(vmbuffer_new))
 		vm_status_new = visibilitymap_get_status(relation,
-								BufferGetBlockNumber(newbuf), &vmbuffer_new);
+												 BufferGetBlockNumber(newbuf), &vmbuffer_new);
 
 	/*
 	 * Make sure we have space to register regular pages, a couple of TPD
-	 * pages and undo log pages, before we enter the critical section.
-	 * TODO: what is the maximum number of pages we could touch?
+	 * pages and undo log pages, before we enter the critical section. TODO:
+	 * what is the maximum number of pages we could touch?
 	 */
 	XLogEnsureRecordSpace(8, 0);
 
@@ -3203,7 +3228,7 @@ reacquire_buffer:
 		{
 			new_all_visible_cleared = true;
 			visibilitymap_clear(relation, BufferGetBlockNumber(newbuf),
-					vmbuffer_new, VISIBILITYMAP_VALID_BITS);
+								vmbuffer_new, VISIBILITYMAP_VALID_BITS);
 		}
 	}
 
@@ -3248,13 +3273,13 @@ reacquire_buffer:
 		 * flags.
 		 */
 		oldtup.t_data->t_infomask = oldtup.t_data->t_infomask &
-											ZHEAP_VIS_STATUS_MASK;
+			ZHEAP_VIS_STATUS_MASK;
 		oldtup.t_data->t_infomask |= (zheaptup->t_data->t_infomask &
-										~ZHEAP_VIS_STATUS_MASK);
+									  ~ZHEAP_VIS_STATUS_MASK);
 		/* Copy number of attributes in infomask2 of new tuple. */
 		oldtup.t_data->t_infomask2 &= ~ZHEAP_NATTS_MASK;
 		oldtup.t_data->t_infomask2 |=
-					newtup->t_data->t_infomask2 & ZHEAP_NATTS_MASK;
+			newtup->t_data->t_infomask2 & ZHEAP_NATTS_MASK;
 		/* also update the tuple length and self pointer */
 		oldtup.t_len = zheaptup->t_len;
 		oldtup.t_data->t_hoff = zheaptup->t_data->t_hoff;
@@ -3271,8 +3296,8 @@ reacquire_buffer:
 									   sizeof(ItemPointerData));
 		if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			appendBinaryStringInfoNoExtend(&undorecord.uur_payload,
-										  (char *) &tup_trans_slot_id,
-										  sizeof(tup_trans_slot_id));
+										   (char *) &tup_trans_slot_id,
+										   sizeof(tup_trans_slot_id));
 		if (hasSubXactLock)
 		{
 			SubTransactionId subxid = GetCurrentSubTransactionId();
@@ -3333,11 +3358,13 @@ reacquire_buffer:
 		if (RelationIsAccessibleInLogicalDecoding(relation))
 		{
 			/*
-			 * Fixme: This won't work as it needs to access cmin/cmax which
-			 * we probably needs to retrieve from UNDO.
+			 * Fixme: This won't work as it needs to access cmin/cmax which we
+			 * probably needs to retrieve from UNDO.
 			 */
-			/*log_heap_new_cid(relation, &oldtup);
-			log_heap_new_cid(relation, heaptup);*/
+			/*
+			 * log_heap_new_cid(relation, &oldtup); log_heap_new_cid(relation,
+			 * heaptup);
+			 */
 		}
 
 		log_zheap_update(relation, undorecord, new_undorecord,
@@ -3390,10 +3417,11 @@ reacquire_buffer:
 	if (!use_inplace_update)
 	{
 		/*
-		 * If we've performed non-inplace update because of slot_reused_or_TPD_slot
-		 * optimization, we shouldn't increase the update stats else, it'll trigger
-		 * autovacuum unnecessarily. But, we want to autoanalyze the table
-		 * peridically.  Hence, we increase the insert count.
+		 * If we've performed non-inplace update because of
+		 * slot_reused_or_TPD_slot optimization, we shouldn't increase the
+		 * update stats else, it'll trigger autovacuum unnecessarily. But, we
+		 * want to autoanalyze the table peridically.  Hence, we increase the
+		 * insert count.
 		 */
 		if (!slot_reused_or_TPD_slot)
 			pgstat_count_heap_update(relation, false);
@@ -3436,38 +3464,39 @@ log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 				 int old_tup_trans_slot_id, int trans_slot_id,
 				 int new_trans_slot_id, bool inplace_update,
 				 bool all_visible_cleared, bool new_all_visible_cleared,
-				 xl_undolog_meta *undometa)
+				 xl_undolog_meta * undometa)
 {
-	xl_undo_header	xlundohdr,
-					xlnewundohdr;
-	xl_zheap_header	xlundotuphdr,
-					xlhdr;
+	xl_undo_header xlundohdr,
+				xlnewundohdr;
+	xl_zheap_header xlundotuphdr,
+				xlhdr;
 	xl_zheap_update xlrec;
 	ZHeapTuple	difftup;
-	ZHeapTupleHeader	zhtuphdr;
+	ZHeapTupleHeader zhtuphdr;
 	uint16		prefix_suffix[2];
 	uint16		prefixlen = 0,
 				suffixlen = 0;
 	XLogRecPtr	recptr;
 	XLogRecPtr	RedoRecPtr;
 	bool		doPageWrites;
-	char	*oldp = NULL;
-	char	*newp = NULL;
-	int		oldlen, newlen;
-	uint32	totalundotuplen;
-	Size	dataoff;
-	int		bufflags = REGBUF_STANDARD;
-	uint8	info = XLOG_ZHEAP_UPDATE;
+	char	   *oldp = NULL;
+	char	   *newp = NULL;
+	int			oldlen,
+				newlen;
+	uint32		totalundotuplen;
+	Size		dataoff;
+	int			bufflags = REGBUF_STANDARD;
+	uint8		info = XLOG_ZHEAP_UPDATE;
 
 	totalundotuplen = *((uint32 *) &undorecord.uur_tuple.data[0]);
 	dataoff = sizeof(uint32) + sizeof(ItemPointerData) + sizeof(Oid);
-	zhtuphdr = (ZHeapTupleHeader) &undorecord.uur_tuple.data[dataoff];
+	zhtuphdr = (ZHeapTupleHeader) & undorecord.uur_tuple.data[dataoff];
 
 	if (inplace_update)
 	{
 		/*
-		 * For inplace updates the old tuple is in undo record and the
-		 * new tuple is replaced in page where old tuple was present.
+		 * For inplace updates the old tuple is in undo record and the new
+		 * tuple is replaced in page where old tuple was present.
 		 */
 		oldp = (char *) zhtuphdr + zhtuphdr->t_hoff;
 		oldlen = totalundotuplen - zhtuphdr->t_hoff;
@@ -3523,8 +3552,7 @@ log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 	}
 
 	/*
-	 * Store the information required to generate undo record during
-	 * replay.
+	 * Store the information required to generate undo record during replay.
 	 */
 	xlundohdr.reloid = undorecord.uur_reloid;
 	xlundohdr.urec_ptr = urecptr;
@@ -3568,11 +3596,11 @@ log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 	}
 
 	/*
-	 * If full_page_writes is enabled, and the buffer image is not
-	 * included in the WAL then we can rely on the tuple in the page to
-	 * regenerate the undo tuple during recovery.  For detail comments related
-	 * to handling of full_page_writes get changed at run time, refer comments
-	 * in zheap_delete.
+	 * If full_page_writes is enabled, and the buffer image is not included in
+	 * the WAL then we can rely on the tuple in the page to regenerate the
+	 * undo tuple during recovery.  For detail comments related to handling of
+	 * full_page_writes get changed at run time, refer comments in
+	 * zheap_delete.
 	 */
 prepare_xlog:
 	/* LOG undolog meta if this is the first WAL after the checkpoint. */
@@ -3618,7 +3646,7 @@ prepare_xlog:
 	XLogRegisterBuffer(0, newbuf, bufflags);
 	if (oldbuf != newbuf)
 	{
-		uint8	block_id;
+		uint8		block_id;
 
 		XLogRegisterBuffer(1, oldbuf, REGBUF_STANDARD);
 		block_id = 2;
@@ -3694,8 +3722,8 @@ prepare_xlog:
 
 		/* data after common prefix */
 		XLogRegisterBufData(0,
-			  ((char *) difftup->t_data) + difftup->t_data->t_hoff + prefixlen,
-			  difftup->t_len - difftup->t_data->t_hoff - prefixlen - suffixlen);
+							((char *) difftup->t_data) + difftup->t_data->t_hoff + prefixlen,
+							difftup->t_len - difftup->t_data->t_hoff - prefixlen - suffixlen);
 	}
 
 	/* filtering by origin on a row level is much more efficient */
@@ -3741,14 +3769,14 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 				 ZHeapTuple tuple, Buffer *buffer, HeapUpdateFailureData *hufd)
 {
 	HTSU_Result result;
-	ZHeapTupleData	zhtup;
+	ZHeapTupleData zhtup;
 	UndoRecPtr	prev_urecptr;
 	ItemId		lp;
 	Page		page;
-	ItemPointerData	ctid;
+	ItemPointerData ctid;
 	TransactionId xid,
-				  tup_xid,
-				  single_locker_xid;
+				tup_xid,
+				single_locker_xid;
 	SubTransactionId tup_subxid = InvalidSubTransactionId;
 	CommandId	tup_cid;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
@@ -3756,7 +3784,7 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 	int			tup_trans_slot_id,
 				trans_slot_id,
 				single_locker_trans_slot;
-	OffsetNumber	offnum;
+	OffsetNumber offnum;
 	LockOper	lockopr;
 	bool		require_sleep;
 	bool		have_tuple_lock = false;
@@ -3780,8 +3808,8 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 
 	/*
 	 * If TID is already delete marked due to pruning, then get new ctid, so
-	 * that we can lock the new tuple.  We will get new ctid if the tuple
-	 * was non-inplace-updated otherwise we will get same TID.
+	 * that we can lock the new tuple.  We will get new ctid if the tuple was
+	 * non-inplace-updated otherwise we will get same TID.
 	 */
 	if (ItemIdIsDeleted(lp))
 	{
@@ -3832,10 +3860,10 @@ check_tup_satisfies_update:
 			 (result == HeapTupleMayBeUpdated &&
 			  ZHeapTupleHasMultiLockers(zhtup.t_data->t_infomask)))
 	{
-		TransactionId	xwait;
-		SubTransactionId	xwait_subxid;
-		int				xwait_trans_slot;
-		uint16			infomask;
+		TransactionId xwait;
+		SubTransactionId xwait_subxid;
+		int			xwait_trans_slot;
+		uint16		infomask;
 
 		xwait_subxid = tup_subxid;
 
@@ -3874,13 +3902,13 @@ check_tup_satisfies_update:
 		 */
 		if (ZHeapTupleHasMultiLockers(infomask))
 		{
-			List	*mlmembers;
+			List	   *mlmembers;
 			ListCell   *lc;
 
 			if (trans_slot_id != InvalidXactSlotId)
 			{
 				mlmembers = ZGetMultiLockMembersForCurrentXact(&zhtup,
-													trans_slot_id, urec_ptr);
+															   trans_slot_id, urec_ptr);
 
 				foreach(lc, mlmembers)
 				{
@@ -3974,20 +4002,21 @@ check_tup_satisfies_update:
 													   &rollback_and_relocked);
 
 						/*
-						 * If the update was by some aborted transaction and its
-						 * pending undo actions are applied now, then check the
-						 * latest copy of the tuple.
+						 * If the update was by some aborted transaction and
+						 * its pending undo actions are applied now, then
+						 * check the latest copy of the tuple.
 						 */
 						if (rollback_and_relocked)
 						{
 							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 
 							/*
-							 * Also take care of cases when page is pruned after we release
-							 * the buffer lock. For this we check if ItemId is not deleted
-							 * and refresh the tuple offset position in page.  If TID is
-							 * already delete marked due to pruning, then get new ctid, so
-							 * that we can lock the new tuple.
+							 * Also take care of cases when page is pruned
+							 * after we release the buffer lock. For this we
+							 * check if ItemId is not deleted and refresh the
+							 * tuple offset position in page.  If TID is
+							 * already delete marked due to pruning, then get
+							 * new ctid, so that we can lock the new tuple.
 							 */
 							if (ItemIdIsDeleted(lp))
 							{
@@ -4014,11 +4043,11 @@ check_tup_satisfies_update:
 				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 
 				/*
-				 * Also take care of cases when page is pruned after we release
-				 * the buffer lock. For this we check if ItemId is not deleted
-				 * and refresh the tuple offset position in page.  If TID is
-				 * already delete marked due to pruning, then get new ctid, so
-				 * that we can lock the new tuple.
+				 * Also take care of cases when page is pruned after we
+				 * release the buffer lock. For this we check if ItemId is not
+				 * deleted and refresh the tuple offset position in page.  If
+				 * TID is already delete marked due to pruning, then get new
+				 * ctid, so that we can lock the new tuple.
 				 */
 				if (ItemIdIsDeleted(lp))
 				{
@@ -4068,11 +4097,11 @@ check_tup_satisfies_update:
 				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 
 				/*
-				 * Also take care of cases when page is pruned after we release
-				 * the buffer lock. For this we check if ItemId is not deleted
-				 * and refresh the tuple offset position in page.  If TID is
-				 * already delete marked due to pruning, then get new ctid, so
-				 * that we can lock the new tuple.
+				 * Also take care of cases when page is pruned after we
+				 * release the buffer lock. For this we check if ItemId is not
+				 * deleted and refresh the tuple offset position in page.  If
+				 * TID is already delete marked due to pruning, then get new
+				 * ctid, so that we can lock the new tuple.
 				 */
 				if (ItemIdIsDeleted(lp))
 				{
@@ -4100,9 +4129,9 @@ check_tup_satisfies_update:
 		}
 		else if (mode == LockTupleNoKeyExclusive)
 		{
-			LockTupleMode	old_lock_mode;
-			TransactionId	current_tup_xid;
-			bool	buf_lock_reacquired = false;
+			LockTupleMode old_lock_mode;
+			TransactionId current_tup_xid;
+			bool		buf_lock_reacquired = false;
 
 			old_lock_mode = get_old_lock_mode(infomask);
 
@@ -4114,7 +4143,7 @@ check_tup_satisfies_update:
 			if (ZHeapTupleHasMultiLockers(infomask))
 			{
 				if (!DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
-									HWLOCKMODE_from_locktupmode(mode)))
+										 HWLOCKMODE_from_locktupmode(mode)))
 				{
 					LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 					buf_lock_reacquired = true;
@@ -4129,11 +4158,11 @@ check_tup_satisfies_update:
 			if (buf_lock_reacquired)
 			{
 				/*
-				 * Also take care of cases when page is pruned after we release
-				 * the buffer lock. For this we check if ItemId is not deleted
-				 * and refresh the tuple offset position in page.  If TID is
-				 * already delete marked due to pruning, then get new ctid, so
-				 * that we can lock the new tuple.
+				 * Also take care of cases when page is pruned after we
+				 * release the buffer lock. For this we check if ItemId is not
+				 * deleted and refresh the tuple offset position in page.  If
+				 * TID is already delete marked due to pruning, then get new
+				 * ctid, so that we can lock the new tuple.
 				 */
 				if (ItemIdIsDeleted(lp))
 				{
@@ -4163,14 +4192,14 @@ check_tup_satisfies_update:
 		 * that the strength of the lock already held is irrelevant; this is
 		 * not about recording the lock (which will be done regardless of this
 		 * optimization, below).  Also, note that the cases where we hold a
-		 * lock stronger than we are requesting are already handled above
-		 * by not doing anything.
+		 * lock stronger than we are requesting are already handled above by
+		 * not doing anything.
 		 */
 		if (require_sleep &&
 			!ZHeapTupleHasMultiLockers(infomask) &&
 			TransactionIdIsCurrentTransactionId(xwait))
 		{
-			TransactionId	current_tup_xid;
+			TransactionId current_tup_xid;
 
 			/*
 			 * ... but if the xid changed in the meantime, start over
@@ -4208,9 +4237,9 @@ check_tup_satisfies_update:
 		}
 		else if (require_sleep)
 		{
-			List	*mlmembers = NIL;
-			bool	upd_xact_aborted = false;
-			TransactionId   current_tup_xid;
+			List	   *mlmembers = NIL;
+			bool		upd_xact_aborted = false;
+			TransactionId current_tup_xid;
 
 			/*
 			 * Acquire tuple lock to establish our priority for the tuple, or
@@ -4236,8 +4265,8 @@ check_tup_satisfies_update:
 
 			if (ZHeapTupleHasMultiLockers(infomask))
 			{
-				LockTupleMode	old_lock_mode;
-				TransactionId	update_xact;
+				LockTupleMode old_lock_mode;
+				TransactionId update_xact;
 
 				old_lock_mode = get_old_lock_mode(infomask);
 
@@ -4252,13 +4281,13 @@ check_tup_satisfies_update:
 					update_xact = InvalidTransactionId;
 
 				if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
-									HWLOCKMODE_from_locktupmode(mode)))
+										HWLOCKMODE_from_locktupmode(mode)))
 				{
 					/*
 					 * There is a potential conflict.  It is quite possible
-					 * that by this time the locker has already been committed.
-					 * So we need to check for conflict with all the possible
-					 * lockers and wait for each of them.
+					 * that by this time the locker has already been
+					 * committed. So we need to check for conflict with all
+					 * the possible lockers and wait for each of them.
 					 */
 					mlmembers = ZGetMultiLockMembers(relation, &zhtup,
 													 *buffer, true);
@@ -4282,7 +4311,11 @@ check_tup_satisfies_update:
 																  &upd_xact_aborted))
 							{
 								result = HeapTupleWouldBlock;
-								/* recovery code expects to have buffer lock held */
+
+								/*
+								 * recovery code expects to have buffer lock
+								 * held
+								 */
 								LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 								goto failed;
 							}
@@ -4325,33 +4358,37 @@ check_tup_satisfies_update:
 							if (!ConditionalSubXactLockTableWait(xwait, xwait_subxid))
 							{
 								result = HeapTupleWouldBlock;
-								/* recovery code expects to have buffer lock held */
+
+								/*
+								 * recovery code expects to have buffer lock
+								 * held
+								 */
 								LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 								goto failed;
 							}
 						}
 						else if (!ConditionalXactLockTableWait(xwait))
 						{
-								result = HeapTupleWouldBlock;
-								/* recovery code expects to have buffer lock held */
-								LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-								goto failed;
+							result = HeapTupleWouldBlock;
+							/* recovery code expects to have buffer lock held */
+							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+							goto failed;
 						}
 						break;
 					case LockWaitError:
 						if (xwait_subxid != InvalidSubTransactionId)
 						{
 							if (!ConditionalSubXactLockTableWait(xwait, xwait_subxid))
-									ereport(ERROR,
-									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-										errmsg("could not obtain lock on row in relation \"%s\"",
-										RelationGetRelationName(relation))));
+								ereport(ERROR,
+										(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+										 errmsg("could not obtain lock on row in relation \"%s\"",
+												RelationGetRelationName(relation))));
 						}
 						else if (!ConditionalXactLockTableWait(xwait))
 							ereport(ERROR,
 									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-										errmsg("could not obtain lock on row in relation \"%s\"",
-										RelationGetRelationName(relation))));
+									 errmsg("could not obtain lock on row in relation \"%s\"",
+											RelationGetRelationName(relation))));
 						break;
 				}
 			}
@@ -4410,7 +4447,7 @@ check_tup_satisfies_update:
 
 			if (ZHeapTupleHasMultiLockers(infomask))
 			{
-				List	*new_mlmembers;
+				List	   *new_mlmembers;
 
 				/*
 				 * If the aborted xact is for update, then we need to reverify
@@ -4477,7 +4514,7 @@ check_tup_satisfies_update:
 
 		if (TransactionIdIsValid(xwait) && TransactionIdDidAbort(xwait))
 		{
-			TransactionId   current_tup_xid;
+			TransactionId current_tup_xid;
 
 			/*
 			 * For aborted transaction, if the undo actions are not applied
@@ -4496,15 +4533,15 @@ check_tup_satisfies_update:
 
 			/*
 			 * While executing the undo action we have released the buffer
-			 * lock.  So if the tuple infomask got changed while applying
-			 * the undo action then we must reverify the tuple.
+			 * lock.  So if the tuple infomask got changed while applying the
+			 * undo action then we must reverify the tuple.
 			 */
 			ZHeapTupleGetTransInfo(&zhtup, *buffer, NULL, NULL,
 								   &current_tup_xid, NULL, NULL, false,
 								   InvalidSnapshot);
 			if (xid_infomask_changed(zhtup.t_data->t_infomask, infomask) ||
 				!TransactionIdEquals(current_tup_xid, xwait))
-				goto check_tup_satisfies_update;		
+				goto check_tup_satisfies_update;
 		}
 
 		/*
@@ -4521,8 +4558,8 @@ check_tup_satisfies_update:
 	}
 	else if (result == HeapTupleMayBeUpdated)
 	{
-		TransactionId	xwait;
-		uint16			infomask;
+		TransactionId xwait;
+		uint16		infomask;
 
 		if (TransactionIdIsValid(single_locker_xid))
 			xwait = single_locker_xid;
@@ -4543,13 +4580,13 @@ check_tup_satisfies_update:
 		 */
 		if (ZHeapTupleHasMultiLockers(infomask))
 		{
-			List	*mlmembers;
+			List	   *mlmembers;
 			ListCell   *lc;
 
 			if (trans_slot_id != InvalidXactSlotId)
 			{
 				mlmembers = ZGetMultiLockMembersForCurrentXact(&zhtup,
-									trans_slot_id, urec_ptr);
+															   trans_slot_id, urec_ptr);
 
 				foreach(lc, mlmembers)
 				{
@@ -4597,17 +4634,17 @@ check_tup_satisfies_update:
 						ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
 						ZHEAP_XID_IS_EXCL_LOCKED(infomask) ||
 						ZHeapTupleIsInPlaceUpdated(infomask))
-						{
-							goto out_locked;
-						}
-						break;
+					{
+						goto out_locked;
+					}
+					break;
 				case LockTupleNoKeyExclusive:
-						if (ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
-							ZHeapTupleIsInPlaceUpdated(infomask))
-						{
-							goto out_locked;
-						}
-						break;
+					if (ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
+						ZHeapTupleIsInPlaceUpdated(infomask))
+					{
+						goto out_locked;
+					}
+					break;
 				case LockTupleExclusive:
 					if (ZHeapTupleIsInPlaceUpdated(infomask) &&
 						ZHEAP_XID_IS_EXCL_LOCKED(infomask))
@@ -4635,9 +4672,9 @@ failed:
 			hufd->ctid = ctid;
 
 		/*
-		 * If item id is deleted, tuple won't be initialized.  In that case, we
-		 * should set t_self with the tuple tid and the length as zero to let
-		 * the caller know that the item id is deleted.
+		 * If item id is deleted, tuple won't be initialized.  In that case,
+		 * we should set t_self with the tuple tid and the length as zero to
+		 * let the caller know that the item id is deleted.
 		 */
 		if (ItemIdIsDeleted(lp))
 		{
@@ -4674,17 +4711,17 @@ failed:
 		LockBuffer(*buffer, BUFFER_LOCK_UNLOCK);
 
 		pgstat_report_wait_start(PG_WAIT_PAGE_TRANS_SLOT);
-		pg_usleep(10000L);	/* 10 ms */
+		pg_usleep(10000L);		/* 10 ms */
 		pgstat_report_wait_end();
 
 		LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 
 		/*
-		 * Also take care of cases when page is pruned after we release
-		 * the buffer lock. For this we check if ItemId is not deleted and
-		 * refresh the tuple offset position in page.  If TID is already
-		 * delete marked due to pruning, then get new ctid, so that we can
-		 * lock the new tuple.
+		 * Also take care of cases when page is pruned after we release the
+		 * buffer lock. For this we check if ItemId is not deleted and refresh
+		 * the tuple offset position in page.  If TID is already delete marked
+		 * due to pruning, then get new ctid, so that we can lock the new
+		 * tuple.
 		 */
 		if (ItemIdIsDeleted(lp))
 		{
@@ -4704,16 +4741,16 @@ failed:
 	Assert(trans_slot_id != InvalidXactSlotId);
 
 	/*
-	 * It's possible that tuple slot is now marked as frozen. Hence, we refetch
-	 * the tuple here.
+	 * It's possible that tuple slot is now marked as frozen. Hence, we
+	 * refetch the tuple here.
 	 */
 	Assert(!ItemIdIsDeleted(lp));
 	zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 	zhtup.t_len = ItemIdGetLength(lp);
 
 	/*
-	 * If the slot is marked as frozen, the latest modifier of the tuple must be
-	 * frozen.
+	 * If the slot is marked as frozen, the latest modifier of the tuple must
+	 * be frozen.
 	 */
 	if (ZHeapTupleHeaderGetXactSlot((ZHeapTupleHeader) (zhtup.t_data)) == ZHTUP_SLOT_FROZEN)
 	{
@@ -4722,8 +4759,8 @@ failed:
 	}
 
 	/*
-	 * If all the members were lockers and are all gone, we can do away
-	 * with the MULTI_LOCKERS bit.
+	 * If all the members were lockers and are all gone, we can do away with
+	 * the MULTI_LOCKERS bit.
 	 */
 	zheap_lock_tuple_guts(relation, *buffer, &zhtup, tup_xid, xid, mode,
 						  lockopr, epoch, tup_trans_slot_id, trans_slot_id,
@@ -4817,8 +4854,8 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	else if (TransactionIdDidAbort(xid))
 	{
 		/*
-		 * For aborted transaction, if the undo actions are not applied
-		 * yet, then apply them before modifying the page.
+		 * For aborted transaction, if the undo actions are not applied yet,
+		 * then apply them before modifying the page.
 		 */
 		zheap_exec_pending_rollback(rel, buf, trans_slot_id, xid);
 
@@ -4896,14 +4933,14 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 	Buffer		buf;
 	Page		page;
 	ItemPointerData tupid;
-	TransactionId	tup_xid;
+	TransactionId tup_xid;
 	int			tup_trans_slot;
-	TransactionId	priorXmax = InvalidTransactionId;
+	TransactionId priorXmax = InvalidTransactionId;
 	uint32		epoch;
 	uint64		epoch_xid;
 	int			trans_slot_id;
 	bool		lock_reacquired;
-	OffsetNumber	offnum;
+	OffsetNumber offnum;
 
 	ItemPointerCopy(ctid, &tupid);
 
@@ -4912,19 +4949,19 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 
 	for (;;)
 	{
-		ZHeapTupleData	zhtup;
-		ItemId	lp;
-		uint16	old_infomask;
+		ZHeapTupleData zhtup;
+		ItemId		lp;
+		uint16		old_infomask;
 		UndoRecPtr	urec_ptr;
 
 		if (!zheap_fetch(rel, SnapshotAny, ctid, &mytup, &buf, false, NULL))
 		{
 			/*
 			 * if we fail to find the updated version of the tuple, it's
-			 * because it was vacuumed/pruned/rolledback away after its creator
-			 * transaction aborted.  So behave as if we got to the end of the
-			 * chain, and there's no further tuple to lock: return success to
-			 * caller.
+			 * because it was vacuumed/pruned/rolledback away after its
+			 * creator transaction aborted.  So behave as if we got to the end
+			 * of the chain, and there's no further tuple to lock: return
+			 * success to caller.
 			 */
 			if (mytup == NULL)
 				return HeapTupleMayBeUpdated;
@@ -4958,8 +4995,8 @@ lock_tuple:
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 
 		/*
-		 * If we reached the end of the chain, we're done, so return
-		 * success.  See EvalPlanQualZFetch for detailed reason.
+		 * If we reached the end of the chain, we're done, so return success.
+		 * See EvalPlanQualZFetch for detailed reason.
 		 */
 		if (TransactionIdIsValid(priorXmax) &&
 			!ValidateTuplesXact(mytup, SnapshotAny, buf, priorXmax, false))
@@ -4968,7 +5005,10 @@ lock_tuple:
 			return HeapTupleMayBeUpdated;
 		}
 
-		/* Since we've reacquired the buffer lock, we should refetch the tuple. */
+		/*
+		 * Since we've reacquired the buffer lock, we should refetch the
+		 * tuple.
+		 */
 		page = BufferGetPage(buf);
 		offnum = ItemPointerGetOffsetNumber(&mytup->t_self);
 		lp = PageGetItemId(page, offnum);
@@ -4978,9 +5018,9 @@ lock_tuple:
 
 		/*
 		 * If this tuple was created by an aborted (sub)transaction and its
-		 * rollback got applied, then we already locked the last live one
-		 * in the chain, thus we're done, so return success.
-		 * If tuple is dead, then there is no need to lock it.
+		 * rollback got applied, then we already locked the last live one in
+		 * the chain, thus we're done, so return success. If tuple is dead,
+		 * then there is no need to lock it.
 		 */
 		if (!ItemIdIsUsed(lp) || ItemIdIsDead(lp))
 		{
@@ -4989,7 +5029,7 @@ lock_tuple:
 		}
 		else if (ItemIdIsDeleted(lp))
 		{
-			CommandId		tup_cid;
+			CommandId	tup_cid;
 
 			/* There is no point of locking a deleted and pruned tuple. */
 			mytup = ZHeapGetVisibleTuple(offnum, SnapshotAny, buf, NULL);
@@ -5004,6 +5044,7 @@ lock_tuple:
 			mytup->t_len = ItemIdGetLength(lp);
 			mytup->t_tableOid = RelationGetRelid(rel);
 			ItemPointerSet(&(mytup->t_self), BufferGetBlockNumber(buf), offnum);
+
 			/*
 			 * We always need to make a copy of zheap tuple as once we release
 			 * the lock on buffer an in-place update can change the tuple.
@@ -5038,16 +5079,16 @@ lock_tuple:
 		 */
 		if (IsZHeapTupleModified(old_infomask))
 		{
-			SubTransactionId	subxid = InvalidSubTransactionId;
-			LockTupleMode	old_lock_mode;
+			SubTransactionId subxid = InvalidSubTransactionId;
+			LockTupleMode old_lock_mode;
 			bool		needwait;
 			bool		has_update = false;
 
 			if (ZHeapTupleHasMultiLockers(old_infomask))
 			{
-				List	*mlmembers;
+				List	   *mlmembers;
 				ListCell   *lc;
-				TransactionId	update_xact = InvalidTransactionId;
+				TransactionId update_xact = InvalidTransactionId;
 
 				/*
 				 * As we always maintain strongest lock mode on the tuple, it
@@ -5064,7 +5105,7 @@ lock_tuple:
 					if (TransactionIdIsValid(update_xact))
 					{
 						has_update = (update_xact == mlmember->xid) ?
-											true : false;
+							true : false;
 					}
 
 					result = test_lockmode_for_conflict(rel,
@@ -5082,8 +5123,8 @@ lock_tuple:
 					/*
 					 * If the update was by some aborted transaction with
 					 * pending rollback, then it's undo actions are applied.
-					 * Now, notify the caller to check for the latest
-					 * copy of the tuple.
+					 * Now, notify the caller to check for the latest copy of
+					 * the tuple.
 					 */
 					if (*rollback_and_relocked)
 					{
@@ -5134,7 +5175,7 @@ lock_tuple:
 					 * modifier is all-visible.
 					 */
 					Assert(!(tup_trans_slot == ZHTUP_SLOT_FROZEN ||
-					epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)));
+							 epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)));
 
 					if (ZHEAP_XID_IS_KEYSHR_LOCKED(old_infomask))
 						old_lock_mode = LockTupleKeyShare;
@@ -5168,10 +5209,9 @@ lock_tuple:
 													rollback_and_relocked);
 
 				/*
-				 * If the update was by some aborted transaction with
-				 * pending rollback, then it's undo actions are applied.
-				 * Now, notify the caller to check for the latest
-				 * copy of the tuple.
+				 * If the update was by some aborted transaction with pending
+				 * rollback, then it's undo actions are applied. Now, notify
+				 * the caller to check for the latest copy of the tuple.
 				 */
 				if (*rollback_and_relocked)
 					goto out_locked;
@@ -5212,9 +5252,9 @@ lock_tuple:
 
 		/*
 		 * The transaction information of tuple needs to be set in transaction
-		 * slot, so needs to reserve the slot before proceeding with the actual
-		 * operation.  It will be costly to wait for getting the slot, but we do
-		 * that by releasing the buffer lock.
+		 * slot, so needs to reserve the slot before proceeding with the
+		 * actual operation.  It will be costly to wait for getting the slot,
+		 * but we do that by releasing the buffer lock.
 		 */
 		trans_slot_id = PageReserveTransactionSlot(rel, buf, offnum, epoch,
 												   xid, &prev_urecptr,
@@ -5246,8 +5286,8 @@ lock_tuple:
 		Assert(ItemIdIsNormal(lp));
 
 		/*
-		 * It's possible that tuple slot is now marked as frozen. Hence, we refetch
-		 * the tuple here.
+		 * It's possible that tuple slot is now marked as frozen. Hence, we
+		 * refetch the tuple here.
 		 */
 		zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 		zhtup.t_len = ItemIdGetLength(lp);
@@ -5255,8 +5295,8 @@ lock_tuple:
 		zhtup.t_self = mytup->t_self;
 
 		/*
-		 * If the slot is marked as frozen, the latest modifier of the tuple must be
-		 * frozen.
+		 * If the slot is marked as frozen, the latest modifier of the tuple
+		 * must be frozen.
 		 */
 		if (ZHeapTupleHeaderGetXactSlot((ZHeapTupleHeader) (zhtup.t_data)) == ZHTUP_SLOT_FROZEN)
 		{
@@ -5270,6 +5310,7 @@ lock_tuple:
 							  prev_urecptr, cid, false);
 
 next:
+
 		/*
 		 * if we find the end of update chain, or if the transaction that has
 		 * updated the tuple is aborter, we're done.
@@ -5293,9 +5334,9 @@ next:
 		priorXmax = tup_xid;
 
 		/*
-		 * As we still hold a snapshot to which priorXmax is not visible, neither
-		 * the transaction slot on tuple can be marked as frozen nor the
-		 * corresponding undo be discarded.
+		 * As we still hold a snapshot to which priorXmax is not visible,
+		 * neither the transaction slot on tuple can be marked as frozen nor
+		 * the corresponding undo be discarded.
 		 */
 		Assert(TransactionIdIsValid(priorXmax));
 
@@ -5331,11 +5372,11 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 {
 	TransactionId oldestXidHavingUndo;
 	UndoRecPtr	urecptr;
-	UnpackedUndoRecord	undorecord;
+	UnpackedUndoRecord undorecord;
 	int			new_trans_slot_id;
-	uint16		  old_infomask;
-	uint16		  new_infomask = 0;
-	Page		  page;
+	uint16		old_infomask;
+	uint16		new_infomask = 0;
+	Page		page;
 	xl_undolog_meta undometa;
 	bool		hasSubXactLock = false;
 
@@ -5345,8 +5386,8 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	old_infomask = zhtup->t_data->t_infomask;
 
 	/*
-	 * If all the members were lockers and are all gone, we can do away
-	 * with the MULTI_LOCKERS bit.
+	 * If all the members were lockers and are all gone, we can do away with
+	 * the MULTI_LOCKERS bit.
 	 */
 	if (ZHeapTupleHasMultiLockers(old_infomask) && clear_multi_locker)
 		old_infomask &= ~ZHEAP_MULTI_LOCKERS;
@@ -5356,7 +5397,10 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 							 single_locker_xid, mode, lockopr,
 							 &new_infomask, &new_trans_slot_id);
 
-	/* Acquire subtransaction lock, if current transaction is a subtransaction. */
+	/*
+	 * Acquire subtransaction lock, if current transaction is a
+	 * subtransaction.
+	 */
 	if (IsSubTransaction())
 	{
 		SubXactLockTableInsert(GetCurrentSubTransactionId());
@@ -5364,22 +5408,22 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	}
 
 	/*
-	 * If the last transaction that has updated the tuple is already too
-	 * old, then consider it as frozen which means it is all-visible.  This
-	 * ensures that we don't need to store epoch in the undo record to check
-	 * if the undo tuple belongs to previous epoch and hence all-visible.  See
+	 * If the last transaction that has updated the tuple is already too old,
+	 * then consider it as frozen which means it is all-visible.  This ensures
+	 * that we don't need to store epoch in the undo record to check if the
+	 * undo tuple belongs to previous epoch and hence all-visible.  See
 	 * comments atop of file ztqual.c.
 	 */
 	oldestXidHavingUndo = GetXidFromEpochXid(
-						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+											 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 	if (TransactionIdPrecedes(tup_xid, oldestXidHavingUndo))
 		tup_xid = FrozenTransactionId;
 
 	/*
 	 * Prepare an undo record.  We need to separately store the latest
-	 * transaction id that has changed the tuple to ensure that we don't
-	 * try to process the tuple in undo chain that is already discarded.
-	 * See GetTupleFromUndo.
+	 * transaction id that has changed the tuple to ensure that we don't try
+	 * to process the tuple in undo chain that is already discarded. See
+	 * GetTupleFromUndo.
 	 */
 	if (ZHeapTupleHasMultiLockers(new_infomask))
 		undorecord.uur_type = UNDO_XID_MULTI_LOCK_ONLY;
@@ -5392,6 +5436,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	undorecord.uur_reloid = rel->rd_id;
 	undorecord.uur_prevxid = tup_xid;
 	undorecord.uur_xid = xid;
+
 	/*
 	 * While locking the tuple, we set the command id as FirstCommandId since
 	 * it doesn't modify the tuple, just updates the infomask.
@@ -5431,8 +5476,8 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	}
 
 	/*
-	 * Store subtransaction id in undo record.  See SubXactLockTableWait
-	 * to know why we need to store subtransaction id in undo.
+	 * Store subtransaction id in undo record.  See SubXactLockTableWait to
+	 * know why we need to store subtransaction id in undo.
 	 */
 	if (hasSubXactLock)
 	{
@@ -5475,11 +5520,11 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	 */
 	if (RelationNeedsWAL(rel))
 	{
-		xl_zheap_lock	xlrec;
-		xl_undo_header  xlundohdr;
-		XLogRecPtr      recptr;
-		XLogRecPtr		RedoRecPtr;
-		bool			doPageWrites;
+		xl_zheap_lock xlrec;
+		xl_undo_header xlundohdr;
+		XLogRecPtr	recptr;
+		XLogRecPtr	RedoRecPtr;
+		bool		doPageWrites;
 
 		/*
 		 * Store the information required to generate undo record during
@@ -5522,11 +5567,10 @@ prepare_xlog:
 
 		/*
 		 * We always include old tuple header for undo in WAL record
-		 * irrespective of full page image is taken or not. This is done
-		 * since savings for not including a zheap tuple header are less
-		 * compared to code complexity. However in future, if required we
-		 * can do it similar to what we have done in zheap_update or
-		 * zheap_delete.
+		 * irrespective of full page image is taken or not. This is done since
+		 * savings for not including a zheap tuple header are less compared to
+		 * code complexity. However in future, if required we can do it
+		 * similar to what we have done in zheap_update or zheap_delete.
 		 */
 		XLogRegisterData((char *) undorecord.uur_tuple.data,
 						 SizeofZHeapTupleHeader);
@@ -5625,8 +5669,8 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 		/*
 		 * When there is a single in-progress locker on the tuple and previous
 		 * inserter/updater became all visible, we've to set multi-locker flag
-		 * and highest lock mode. If current transaction tries to reacquire
-		 * a lock, we don't set multi-locker flag.
+		 * and highest lock mode. If current transaction tries to reacquire a
+		 * lock, we don't set multi-locker flag.
 		 */
 		Assert(ZHEAP_XID_IS_LOCKED_ONLY(old_infomask));
 		if (single_locker_xid != add_to_xid)
@@ -5653,8 +5697,8 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 		 * itself.
 		 *
 		 * However, this can happen while locking the updated tuple chain.  We
-		 * keep the transaction slot of original tuple as that will allow us to
-		 * check the visibility of tuple by just referring the current
+		 * keep the transaction slot of original tuple as that will allow us
+		 * to check the visibility of tuple by just referring the current
 		 * transaction slot.
 		 */
 		Assert((tup_xid == add_to_xid) || (mode == LockTupleKeyShare));
@@ -5671,10 +5715,10 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 		/*
 		 * It's a frozen update or insert, so the locker must not change the
 		 * slot on a tuple.  The lockmode to be used on tuple is computed
-		 * below. There could be a single committed/aborted locker (multilocker
-		 * case is handled in the first condition). In that case, we can ignore
-		 * the locker. If the locker is still in progress, it'll be handled in
-		 * above case.
+		 * below. There could be a single committed/aborted locker
+		 * (multilocker case is handled in the first condition). In that case,
+		 * we can ignore the locker. If the locker is still in progress, it'll
+		 * be handled in above case.
 		 */
 		new_trans_slot = ZHTUP_SLOT_FROZEN;
 	}
@@ -5766,8 +5810,8 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 		LockTupleMode old_mode;
 
 		/*
-		 * There can be a non-conflicting key share locker on the tuple and
-		 * we want to update the tuple in no-key exclusive mode.  In that case,
+		 * There can be a non-conflicting key share locker on the tuple and we
+		 * want to update the tuple in no-key exclusive mode.  In that case,
 		 * we should set the multilocker flag as well.
 		 */
 		Assert(ZHEAP_XID_IS_LOCKED_ONLY(old_infomask));
@@ -5779,7 +5823,7 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 		old_mode = get_old_lock_mode(old_infomask);
 
 		/* Acquire the strongest of both. */
-		Assert (single_locker_xid == add_to_xid || mode > old_mode);
+		Assert(single_locker_xid == add_to_xid || mode > old_mode);
 		if (mode < old_mode)
 			mode = old_mode;
 	}
@@ -5832,12 +5876,11 @@ infomask_is_computed:
 		*result_trans_slot = new_trans_slot;
 
 	/*
-	 * We store the reserved transaction slot only when we update the
-	 * tuple. For lock only, we keep the old transaction slot in the
-	 * tuple.
+	 * We store the reserved transaction slot only when we update the tuple.
+	 * For lock only, we keep the old transaction slot in the tuple.
 	 */
 	Assert(is_update || new_trans_slot == tup_trans_slot);
- }
+}
 
 /*
  *	zheap_finish_speculative - mark speculative insertion as successful
@@ -5921,14 +5964,14 @@ void
 zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 {
 	TransactionId xid = GetTopTransactionId();
-	TransactionId	current_tup_xid;
+	TransactionId current_tup_xid;
 	ItemPointer tid = &(tuple->t_self);
 	ItemId		lp;
 	ZHeapTupleHeader zhtuphdr;
 	Page		page;
 	BlockNumber block;
 	Buffer		buffer;
-	OffsetNumber	offnum;
+	OffsetNumber offnum;
 	int			out_slot_no PG_USED_FOR_ASSERTS_ONLY;
 	int			trans_slot_id;
 
@@ -5947,6 +5990,7 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 	zhtuphdr = (ZHeapTupleHeader) PageGetItem(page, lp);
 
 	trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtuphdr);
+
 	/*
 	 * Sanity check that the tuple really is a speculatively inserted tuple,
 	 * inserted by us.
@@ -5974,10 +6018,10 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 
 	/*
 	 * The tuple will become DEAD immediately.  However, we mark it dead
-	 * differently by keeping the trans_slot, to identify this is done
-	 * during speculative abort only.  Flag that this page is a candidate
-	 * for pruning.  The action here is exactly same as what we do for
-	 * rolling back insert.
+	 * differently by keeping the trans_slot, to identify this is done during
+	 * speculative abort only.  Flag that this page is a candidate for
+	 * pruning.  The action here is exactly same as what we do for rolling
+	 * back insert.
 	 */
 	ItemIdSetDeadExtended(lp, trans_slot_id);
 	ZPageSetPrunable(page, xid);
@@ -6036,14 +6080,14 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 TransactionId
 zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 {
-	UndoRecPtr urec_ptr;
+	UndoRecPtr	urec_ptr;
 	TransactionId xid = InvalidTransactionId;
-	int	trans_slot_id = InvalidXactSlotId;
-	int	prev_trans_slot_id;
+	int			trans_slot_id = InvalidXactSlotId;
+	int			prev_trans_slot_id;
 	TransactionId result;
 	BlockNumber blk;
 	OffsetNumber offnum;
-	UnpackedUndoRecord	*urec;
+	UnpackedUndoRecord *urec;
 	ZHeapTuple	undo_tup;
 
 	prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
@@ -6059,15 +6103,14 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 								  false);
 	undo_tup = zhtup;
 
-	while(true)
+	while (true)
 	{
 		urec = UndoFetchRecord(urec_ptr, blk, offnum, xid, NULL, ZHeapSatisfyUndoRecord);
 		if (urec != NULL)
 		{
 			/*
-			 * If we have valid undo record, then check if we have
-			 * reached the insert log and return the corresponding
-			 * transaction id.
+			 * If we have valid undo record, then check if we have reached the
+			 * insert log and return the corresponding transaction id.
 			 */
 			if (urec->uur_type == UNDO_INSERT ||
 				urec->uur_type == UNDO_MULTI_INSERT ||
@@ -6079,8 +6122,8 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 			}
 
 			undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
-						 NULL, (undo_tup) == (zhtup) ? false : true,
-						 BufferGetPage(buffer));
+											   NULL, (undo_tup) == (zhtup) ? false : true,
+											   BufferGetPage(buffer));
 
 			xid = urec->uur_prevxid;
 			urec_ptr = urec->uur_blkprev;
@@ -6094,8 +6137,8 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 
 
 			/*
-			 * Change the undo chain if the undo tuple is stamped
-			 * with the different transaction slot.
+			 * Change the undo chain if the undo tuple is stamped with the
+			 * different transaction slot.
 			 */
 			if (trans_slot_id != prev_trans_slot_id)
 			{
@@ -6114,11 +6157,11 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 		else
 		{
 			/*
-			 * Undo record could be null only when it's undo log
-			 * is/about to be discarded. We cannot use any assert
-			 * for checking is the log is actually discarded, since
-			 * UndoFetchRecord can return NULL for the records which
-			 * are not yet discarded but are about to be discarded.
+			 * Undo record could be null only when it's undo log is/about to
+			 * be discarded. We cannot use any assert for checking is the log
+			 * is actually discarded, since UndoFetchRecord can return NULL
+			 * for the records which are not yet discarded but are about to be
+			 * discarded.
 			 */
 			result = FrozenTransactionId;
 			break;
@@ -6147,7 +6190,7 @@ ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 		if (!zheap_tuple_attr_equals(RelationGetDescr(relation),
 									 attnum, oldtup, newtup))
 			modified = bms_add_member(modified,
-								attnum - FirstLowInvalidHeapAttributeNumber);
+									  attnum - FirstLowInvalidHeapAttributeNumber);
 	}
 
 	return modified;
@@ -6175,12 +6218,12 @@ ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 int
 GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 					   uint32 *epoch, TransactionId *xid,
-					   UndoRecPtr *urec_ptr, bool NoTPDBufLock, bool TPDSlot)
+					   UndoRecPtr * urec_ptr, bool NoTPDBufLock, bool TPDSlot)
 {
-	ZHeapPageOpaque	opaque;
-	Page	page;
+	ZHeapPageOpaque opaque;
+	Page		page;
 	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
-	int		out_trans_slot_id = trans_slot_id;
+	int			out_trans_slot_id = trans_slot_id;
 
 	page = BufferGetPage(buf);
 	phdr = (PageHeader) page;
@@ -6201,7 +6244,7 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 	}
 	else if (trans_slot_id < ZHEAP_PAGE_TRANS_SLOTS ||
 			 (trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS &&
-			 !ZHeapPageHasTPDSlot(phdr)))
+			  !ZHeapPageHasTPDSlot(phdr)))
 	{
 		if (epoch)
 			*epoch = opaque->transinfo[trans_slot_id - 1].xid_epoch;
@@ -6257,8 +6300,8 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
 			bool set_tpd_map_slot, uint32 epoch, TransactionId xid,
 			UndoRecPtr urecptr, OffsetNumber *usedoff, int ucnt)
 {
-	ZHeapPageOpaque	opaque;
-	Page	page = BufferGetPage(buffer);
+	ZHeapPageOpaque opaque;
+	Page		page = BufferGetPage(buffer);
 	PageHeader	phdr;
 
 	Assert(trans_slot_id != InvalidXactSlotId);
@@ -6270,8 +6313,8 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
 	 * Set the required information in the transaction slot. The transaction
 	 * slot can either be on the heap page or TPD page.
 	 *
-	 * During recovery, we set the required information in TPD separately
-	 * only if required.
+	 * During recovery, we set the required information in TPD separately only
+	 * if required.
 	 */
 	if (trans_slot_id < ZHEAP_PAGE_TRANS_SLOTS ||
 		(trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS &&
@@ -6297,8 +6340,8 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
 	}
 
 	elog(DEBUG1, "undo record: TransSlot: %d, Epoch: %d, TransactionId: %d, urec: " UndoRecPtrFormat ", prev_urec: " UINT64_FORMAT ", block: %d, offset: %d, undo_op: %d, xid_tup: %d, reloid: %d",
-				 trans_slot_id, epoch, xid, urecptr, undorecord.uur_blkprev, undorecord.uur_block, undorecord.uur_offset, undorecord.uur_type,
-				 undorecord.uur_prevxid, undorecord.uur_reloid);
+		 trans_slot_id, epoch, xid, urecptr, undorecord.uur_blkprev, undorecord.uur_block, undorecord.uur_offset, undorecord.uur_type,
+		 undorecord.uur_prevxid, undorecord.uur_reloid);
 }
 
 /*
@@ -6312,8 +6355,8 @@ void
 PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id, uint32 epoch,
 						   TransactionId xid, UndoRecPtr urec_ptr)
 {
-	ZHeapPageOpaque	opaque;
-	Page	page;
+	ZHeapPageOpaque opaque;
+	Page		page;
 	PageHeader	phdr;
 
 	page = BufferGetPage(buf);
@@ -6345,16 +6388,16 @@ PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id, uint32 epoch,
  */
 int
 PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
-						 TransactionId xid, UndoRecPtr *urec_ptr,
+						 TransactionId xid, UndoRecPtr * urec_ptr,
 						 bool keepTPDBufLock, bool locktpd,
 						 bool *tpd_page_locked)
 {
-	ZHeapPageOpaque	opaque;
-	Page	page;
+	ZHeapPageOpaque opaque;
+	Page		page;
 	PageHeader	phdr;
-	int		slot_no;
-	int		total_slots_in_page;
-	bool	check_tpd;
+	int			slot_no;
+	int			total_slots_in_page;
+	bool		check_tpd;
 
 	page = BufferGetPage(buf);
 	phdr = (PageHeader) page;
@@ -6393,7 +6436,7 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
 	/* Check if the slot exists on the TPD page. */
 	if (check_tpd)
 	{
-		int tpd_e_slot;
+		int			tpd_e_slot;
 
 		tpd_e_slot = TPDPageGetSlotIfExists(rel, buf, InvalidOffsetNumber,
 											epoch, xid, urec_ptr,
@@ -6412,8 +6455,8 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
 	else
 	{
 		/*
-		 * Lock the TPD page if the caller has instructed so and the page
-		 * has tpd slot.
+		 * Lock the TPD page if the caller has instructed so and the page has
+		 * tpd slot.
 		 */
 		if (locktpd && ZHeapPageHasTPDSlot(phdr))
 		{
@@ -6431,11 +6474,11 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
  */
 void
 PageGetTransactionSlotInfo(Buffer buf, int slot_no, uint32 *epoch,
-						 TransactionId *xid, UndoRecPtr *urec_ptr,
-						 bool keepTPDBufLock)
+						   TransactionId *xid, UndoRecPtr * urec_ptr,
+						   bool keepTPDBufLock)
 {
-	ZHeapPageOpaque	opaque;
-	Page	page;
+	ZHeapPageOpaque opaque;
+	Page		page;
 	PageHeader	phdr;
 
 	page = BufferGetPage(buf);
@@ -6460,14 +6503,14 @@ PageGetTransactionSlotInfo(Buffer buf, int slot_no, uint32 *epoch,
 	else
 	{
 		Assert((ZHeapPageHasTPDSlot(phdr)));
-		(void)TPDPageGetTransactionSlotInfo(buf,
-											slot_no,
-											InvalidOffsetNumber,
-											epoch,
-											xid,
-											urec_ptr,
-											false,
-											true);
+		(void) TPDPageGetTransactionSlotInfo(buf,
+											 slot_no,
+											 InvalidOffsetNumber,
+											 epoch,
+											 xid,
+											 urec_ptr,
+											 false,
+											 true);
 	}
 }
 
@@ -6485,8 +6528,8 @@ MultiPageReserveTransSlot(Relation relation,
 						  OffsetNumber oldbuf_offnum,
 						  OffsetNumber newbuf_offnum,
 						  uint32 epoch, TransactionId xid,
-						  UndoRecPtr *oldbuf_prev_urecptr,
-						  UndoRecPtr *newbuf_prev_urecptr,
+						  UndoRecPtr * oldbuf_prev_urecptr,
+						  UndoRecPtr * newbuf_prev_urecptr,
 						  int *oldbuf_trans_slot_id,
 						  int *newbuf_trans_slot_id,
 						  bool *lock_reacquired)
@@ -6495,7 +6538,7 @@ MultiPageReserveTransSlot(Relation relation,
 	bool		is_tpdblk_order_changed;
 	int			slot_id;
 	bool		use_aborted_slot = true;
-	BlockNumber	oldbuf_tpd_blk PG_USED_FOR_ASSERTS_ONLY = InvalidBlockNumber;
+	BlockNumber oldbuf_tpd_blk PG_USED_FOR_ASSERTS_ONLY = InvalidBlockNumber;
 
 	/*
 	 * To avoid deadlock risks, we can't reuse aborted transaction slots while
@@ -6503,9 +6546,10 @@ MultiPageReserveTransSlot(Relation relation,
 	 * smaller than old block.  This is because while reusing the aborted
 	 * transaction's slot we need to release the lock on page, apply the undo
 	 * actions and then reacquire the lock.  When we try to reacquire the lock
-	 * on smaller block, it will break our rule "lock lower number block first".
-	 * We don't need to bother about oldbuf as by now we already have reserved
-	 * slot on old buffer, here, we will just get our previously reserved slot.
+	 * on smaller block, it will break our rule "lock lower number block
+	 * first". We don't need to bother about oldbuf as by now we already have
+	 * reserved slot on old buffer, here, we will just get our previously
+	 * reserved slot.
 	 */
 	if (BufferGetBlockNumber(newbuf) < BufferGetBlockNumber(oldbuf))
 		use_aborted_slot = false;
@@ -6514,14 +6558,14 @@ MultiPageReserveTransSlot(Relation relation,
 	 * If previously reserved slot is from TPD then we should have TPD page
 	 * into heap buffer.
 	 */
-	Assert (*oldbuf_trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS ||
-			ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)));
+	Assert(*oldbuf_trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS ||
+		   ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)));
 
 	/* If TPD exist, then get corresponding TPD block number for old buffer. */
 	if (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)))
 		oldbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(oldbuf);
 
-retry_tpd_lock :
+retry_tpd_lock:
 
 	/* Initialize flags with default values. */
 	always_extend = false;
@@ -6529,8 +6573,8 @@ retry_tpd_lock :
 
 	/*
 	 * Only if previously reserved slot is from TPD or last slot and now we
-	 * have TPD, then we will check that we can verify slot on old buffer first
-	 * or we should get slot for new buffer first.
+	 * have TPD, then we will check that we can verify slot on old buffer
+	 * first or we should get slot for new buffer first.
 	 */
 	if (*oldbuf_trans_slot_id >= ZHEAP_PAGE_TRANS_SLOTS &&
 		ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)))
@@ -6572,10 +6616,10 @@ retry_tpd_lock :
 		 * change. We must get a valid slot and wouldn't have reacquired the
 		 * buffer lock as we already have a reserved slot.
 		 */
-		Assert (!(*lock_reacquired));
-		Assert (slot_id != InvalidXactSlotId);
-		Assert (oldbuf_tpd_blk == InvalidBlockNumber ||
-				oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf));
+		Assert(!(*lock_reacquired));
+		Assert(slot_id != InvalidXactSlotId);
+		Assert(oldbuf_tpd_blk == InvalidBlockNumber ||
+			   oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf));
 
 		/*
 		 * If reserved transaction slot for old buffer is from TPD page, then
@@ -6629,9 +6673,9 @@ retry_tpd_lock :
 		if (*newbuf_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 		{
 			/*
-			 * If TPD block of new buffer gets changed and becomes greater than
-			 * old buffer TPD block, then we should release TPD buffer lock of
-			 * new buffer and try again to avoid deadlock.
+			 * If TPD block of new buffer gets changed and becomes greater
+			 * than old buffer TPD block, then we should release TPD buffer
+			 * lock of new buffer and try again to avoid deadlock.
 			 *
 			 * For new buffer, there is no guarantee that we will get same TPD
 			 * block after releasing TPD buffer lock, because vacuum can free
@@ -6664,15 +6708,15 @@ retry_tpd_lock :
 		 * TPD block can't be pruned.  Due to the same reason, we must get a
 		 * valid slot and wouldn't have reacquired the buffer lock.
 		 */
-		Assert (!(*lock_reacquired));
-		Assert (slot_id != InvalidXactSlotId);
-		Assert (oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf));
+		Assert(!(*lock_reacquired));
+		Assert(slot_id != InvalidXactSlotId);
+		Assert(oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf));
 	}
 
 	/*
 	 * We should definetly get the slot for old page as we have reserved it
-	 * previously, but it is possible that it might have moved to TPD in
-	 * which case it's value will be previous_slot_number + 1.
+	 * previously, but it is possible that it might have moved to TPD in which
+	 * case it's value will be previous_slot_number + 1.
 	 */
 	Assert((slot_id == *oldbuf_trans_slot_id) ||
 		   (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)) &&
@@ -6689,9 +6733,9 @@ retry_tpd_lock :
 static int
 GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf)
 {
-	Page			page = BufferGetPage(heapbuf);
-	ZHeapPageOpaque	zopaque;
-	TransInfo		last_trans_slot_info;
+	Page		page = BufferGetPage(heapbuf);
+	ZHeapPageOpaque zopaque;
+	TransInfo	last_trans_slot_info;
 
 	/* The last slot in page has the address of the required TPD entry. */
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
@@ -6718,17 +6762,17 @@ GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf)
 int
 PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 						   uint32 epoch, TransactionId xid,
-						   UndoRecPtr *urec_ptr, bool *lock_reacquired,
+						   UndoRecPtr * urec_ptr, bool *lock_reacquired,
 						   bool always_extend, bool use_aborted_slot,
 						   bool *slot_reused_or_TPD_slot)
 {
-	ZHeapPageOpaque	opaque;
-	Page	page;
+	ZHeapPageOpaque opaque;
+	Page		page;
 	PageHeader	phdr;
-	int		latestFreeTransSlot = InvalidXactSlotId;
-	int		slot_no;
-	int		total_slots_in_page;
-	bool	check_tpd;
+	int			latestFreeTransSlot = InvalidXactSlotId;
+	int			slot_no;
+	int			total_slots_in_page;
+	bool		check_tpd;
 
 	*lock_reacquired = false;
 
@@ -6748,20 +6792,20 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 	}
 
 	/*
-	 * For temp relations, we don't have to check all the slots since
-	 * no other backend can access the same relation. If a slot is available,
-	 * we return it from here. Else, we freeze the slot in PageFreezeTransSlots.
+	 * For temp relations, we don't have to check all the slots since no other
+	 * backend can access the same relation. If a slot is available, we return
+	 * it from here. Else, we freeze the slot in PageFreezeTransSlots.
 	 *
 	 * XXX For temp tables, oldestXidWithEpochHavingUndo is not relevant as
 	 * the undo for them can be discarded on commit.  Hence, comparing xid
 	 * with oldestXidWithEpochHavingUndo during visibility checks can lead to
-	 * incorrect behavior.  To avoid that, we can mark the tuple as frozen
-	 * for any previous transaction id.  In that way, we don't have to
-	 * compare the previous xid of tuple with oldestXidWithEpochHavingUndo.
+	 * incorrect behavior.  To avoid that, we can mark the tuple as frozen for
+	 * any previous transaction id.  In that way, we don't have to compare the
+	 * previous xid of tuple with oldestXidWithEpochHavingUndo.
 	 */
 	if (RELATION_IS_LOCAL(relation))
 	{
-		/*  We can't access temp tables of other backends. */
+		/* We can't access temp tables of other backends. */
 		Assert(!RELATION_IS_OTHER_TEMP(relation));
 
 		slot_no = 0;
@@ -6794,7 +6838,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 	/* Check if we already have a slot on the TPD page */
 	if (check_tpd)
 	{
-		int tpd_e_slot;
+		int			tpd_e_slot;
 
 		tpd_e_slot = TPDPageGetSlotIfExists(relation, buf, offset, epoch,
 											xid, urec_ptr, true, true);
@@ -6835,7 +6879,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 			if (opaque->transinfo[slot_no].xid == InvalidTransactionId)
 			{
 				*urec_ptr = opaque->transinfo[slot_no].urec_ptr;
-				if(slot_reused_or_TPD_slot && *urec_ptr != InvalidUndoRecPtr)
+				if (slot_reused_or_TPD_slot && *urec_ptr != InvalidUndoRecPtr)
 					*slot_reused_or_TPD_slot = true;
 				return (slot_no + 1);
 			}
@@ -6847,7 +6891,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 		 */
 		Assert(false);
 	}
-	Assert (!RELATION_IS_LOCAL(relation));
+	Assert(!RELATION_IS_LOCAL(relation));
 
 	/*
 	 * Reserve the transaction slot in TPD.  First we check if there already
@@ -6856,7 +6900,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 	 */
 	if (ZHeapPageHasTPDSlot(phdr))
 	{
-		int tpd_e_slot;
+		int			tpd_e_slot;
 
 		tpd_e_slot = TPDPageReserveTransSlot(relation, buf, offset,
 											 urec_ptr, lock_reacquired,
@@ -6882,7 +6926,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 												 always_extend);
 		if (slot_no != InvalidXactSlotId)
 		{
-			if(slot_reused_or_TPD_slot)
+			if (slot_reused_or_TPD_slot)
 				*slot_reused_or_TPD_slot = true;
 			return slot_no;
 		}
@@ -6905,9 +6949,10 @@ void
 zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 								  bool isFrozen, bool TPDSlot)
 {
-	OffsetNumber offnum, maxoff;
-	Page page = BufferGetPage(buf);
-	int	i;
+	OffsetNumber offnum,
+				maxoff;
+	Page		page = BufferGetPage(buf);
+	int			i;
 
 	/* clear the slot info from tuples */
 	maxoff = PageGetMaxOffsetNumber(page);
@@ -6916,9 +6961,9 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 		 offnum <= maxoff;
 		 offnum = OffsetNumberNext(offnum))
 	{
-		ZHeapTupleHeader	tup_hdr;
+		ZHeapTupleHeader tup_hdr;
 		ItemId		itemid;
-		int		trans_slot;
+		int			trans_slot;
 
 		itemid = PageGetItemId(page, offnum);
 
@@ -6958,8 +7003,8 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 
 			/*
 			 * The input slots array always stores the slot index which starts
-			 * from 0, even for TPD slots, the index will start from 0.
-			 * So convert it into the slot index.
+			 * from 0, even for TPD slots, the index will start from 0. So
+			 * convert it into the slot index.
 			 */
 			trans_slot -= (ZHEAP_PAGE_TRANS_SLOTS + 1);
 		}
@@ -6985,22 +7030,26 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 				{
 					if (!ItemIdIsUsed(itemid))
 					{
-						/* This must be unused entry which has xact information. */
+						/*
+						 * This must be unused entry which has xact
+						 * information.
+						 */
 						Assert(ItemIdHasPendingXact(itemid));
 
 						/*
-						 * The pending xact must be commited if the corresponding
-						 * slot is being marked as frozen.  So, clear the pending
-						 * xact and transaction slot information from itemid.
+						 * The pending xact must be commited if the
+						 * corresponding slot is being marked as frozen.  So,
+						 * clear the pending xact and transaction slot
+						 * information from itemid.
 						 */
 						ItemIdSetUnused(itemid);
 					}
 					else if (ItemIdIsDeleted(itemid))
 					{
 						/*
-						 * The deleted item must not be visible to anyone if the
-						 * corresponding slot is being marked as frozen.  So,
-						 * marking it as dead.
+						 * The deleted item must not be visible to anyone if
+						 * the corresponding slot is being marked as frozen.
+						 * So, marking it as dead.
 						 */
 						ItemIdSetDead(itemid);
 					}
@@ -7013,20 +7062,24 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 				else
 				{
 					/*
-					 * We just append the invalid xact flag in the tuple/itemid to
-					 * indicate that for this tuple/itemid we need to fetch the
-					 * transaction information from undo record.  Also, we
-					 * ensure to clear the transaction information from unused
-					 * itemid.
+					 * We just append the invalid xact flag in the
+					 * tuple/itemid to indicate that for this tuple/itemid we
+					 * need to fetch the transaction information from undo
+					 * record.  Also, we ensure to clear the transaction
+					 * information from unused itemid.
 					 */
 					if (!ItemIdIsUsed(itemid))
 					{
-						/* This must be unused entry which has xact information. */
+						/*
+						 * This must be unused entry which has xact
+						 * information.
+						 */
 						Assert(ItemIdHasPendingXact(itemid));
 
 						/*
-						 * The pending xact is commited.  So, clear the pending xact
-						 * and transaction slot information from itemid.
+						 * The pending xact is commited.  So, clear the
+						 * pending xact and transaction slot information from
+						 * itemid.
 						 */
 						ItemIdSetUnused(itemid);
 					}
@@ -7055,10 +7108,11 @@ void
 GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 						int *completed_slots,
 						OffsetNumber *offset_completed_slots,
-						int	*numOffsets)
+						int *numOffsets)
 {
-	int				noffsets = 0;
-	OffsetNumber 	offnum, maxoff;
+	int			noffsets = 0;
+	OffsetNumber offnum,
+				maxoff;
 
 	maxoff = PageGetMaxOffsetNumber(page);
 
@@ -7066,9 +7120,10 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 		 offnum <= maxoff;
 		 offnum = OffsetNumberNext(offnum))
 	{
-		ZHeapTupleHeader	tup_hdr;
+		ZHeapTupleHeader tup_hdr;
 		ItemId		itemid;
-		int			i, trans_slot;
+		int			i,
+					trans_slot;
 
 		itemid = PageGetItemId(page, offnum);
 
@@ -7098,9 +7153,9 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
 		for (i = 0; i < nCompletedXactSlots; i++)
 		{
 			/*
-			 * we don't need to include the tuples that have not changed
-			 * since the last time as the special undo record for them can
-			 * be found in the undo chain of their present slot.
+			 * we don't need to include the tuples that have not changed since
+			 * the last time as the special undo record for them can be found
+			 * in the undo chain of their present slot.
 			 */
 			if (trans_slot == completed_slots[i])
 			{
@@ -7170,20 +7225,20 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
  */
 bool
 PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
-					 TransInfo *transinfo, int num_slots,
+					 TransInfo * transinfo, int num_slots,
 					 bool use_aborted_slot)
 {
-	uint64	oldestXidWithEpochHavingUndo;
-	int		slot_no;
-	int		*frozen_slots = NULL;
-	int		nFrozenSlots = 0;
-	int		*completed_xact_slots = NULL;
-	uint16	 nCompletedXactSlots = 0;
-	int		*aborted_xact_slots = NULL;
-	int		nAbortedXactSlots = 0;
-	bool	TPDSlot;
-	Page	page;
-	bool	result = false;
+	uint64		oldestXidWithEpochHavingUndo;
+	int			slot_no;
+	int		   *frozen_slots = NULL;
+	int			nFrozenSlots = 0;
+	int		   *completed_xact_slots = NULL;
+	uint16		nCompletedXactSlots = 0;
+	int		   *aborted_xact_slots = NULL;
+	int			nAbortedXactSlots = 0;
+	bool		TPDSlot;
+	Page		page;
+	bool		result = false;
 
 	page = BufferGetPage(buf);
 
@@ -7194,7 +7249,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 	if (num_slots == 0)
 	{
 		PageHeader	phdr;
-		ZHeapPageOpaque	opaque;
+		ZHeapPageOpaque opaque;
 
 		phdr = (PageHeader) page;
 		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
@@ -7232,12 +7287,13 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 	{
 		for (slot_no = 0; slot_no < num_slots; slot_no++)
 		{
-			uint64	slot_xid_epoch = transinfo[slot_no].xid_epoch;
-			TransactionId	slot_xid = transinfo[slot_no].xid;
+			uint64		slot_xid_epoch = transinfo[slot_no].xid_epoch;
+			TransactionId slot_xid = transinfo[slot_no].xid;
 
 			/*
-			 * Transaction slot can be considered frozen if it belongs to previous
-			 * epoch or transaction id is old enough that it is all visible.
+			 * Transaction slot can be considered frozen if it belongs to
+			 * previous epoch or transaction id is old enough that it is all
+			 * visible.
 			 */
 			slot_xid_epoch = MakeEpochXid(slot_xid_epoch, slot_xid);
 
@@ -7248,9 +7304,9 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 
 	if (nFrozenSlots > 0)
 	{
-		TransactionId	latestxid = InvalidTransactionId;
-		int		i;
-		int		slot_no;
+		TransactionId latestxid = InvalidTransactionId;
+		int			i;
+		int			slot_no;
 
 
 		START_CRIT_SECTION();
@@ -7264,7 +7320,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		{
 			for (i = 0; i < nFrozenSlots; i++)
 			{
-				int	tpd_slot_id;
+				int			tpd_slot_id;
 
 				slot_no = frozen_slots[i];
 
@@ -7320,12 +7376,13 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 			XLogRegisterData((char *) &xlrec, SizeOfZHeapFreezeXactSlot);
 
 			/*
-			 * Ideally we need the frozen slots information when WAL needs to be
-			 * applied on the page, but in case of the TPD slots freeze we need
-			 * the frozen slot information for both heap page as well as for the
-			 * TPD page.  So the problem is that if we register with any one of
-			 * the buffer it might happen that the data did not registered due
-			 * to fpw of that buffer but we need that data for another buffer.
+			 * Ideally we need the frozen slots information when WAL needs to
+			 * be applied on the page, but in case of the TPD slots freeze we
+			 * need the frozen slot information for both heap page as well as
+			 * for the TPD page.  So the problem is that if we register with
+			 * any one of the buffer it might happen that the data did not
+			 * registered due to fpw of that buffer but we need that data for
+			 * another buffer.
 			 */
 			XLogRegisterData((char *) frozen_slots, nFrozenSlots * sizeof(int));
 			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
@@ -7369,8 +7426,8 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 
 	if (nCompletedXactSlots > 0)
 	{
-		int		i;
-		int		slot_no;
+		int			i;
+		int			slot_no;
 
 
 		START_CRIT_SECTION();
@@ -7389,7 +7446,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		{
 			for (i = 0; i < nCompletedXactSlots; i++)
 			{
-				int tpd_slot_id;
+				int			tpd_slot_id;
 
 				slot_no = completed_xact_slots[i];
 				/* calculate the actual slot no. */
@@ -7445,11 +7502,11 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 	}
 	else if (nAbortedXactSlots && use_aborted_slot)
 	{
-		int		i;
-		int		slot_no;
+		int			i;
+		int			slot_no;
 		UndoRecPtr *urecptr = palloc(nAbortedXactSlots * sizeof(UndoRecPtr));
 		TransactionId *xid = palloc(nAbortedXactSlots * sizeof(TransactionId));
-		uint32 *epoch = palloc(nAbortedXactSlots * sizeof(uint32));
+		uint32	   *epoch = palloc(nAbortedXactSlots * sizeof(uint32));
 
 		/* Collect slot information before releasing the lock. */
 		for (i = 0; i < nAbortedXactSlots; i++)
@@ -7486,8 +7543,8 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		 * to reacquire heap and TPD buffer locks by the caller. This also
 		 * avoids the risk of deadlock where someone acquires the lock on heap
 		 * page before we can reacquire it and waits for the TPD lock held by
-		 * us, so we will wait on that process to release the lock on heap page
-		 * and that process will wait on use.
+		 * us, so we will wait on that process to release the lock on heap
+		 * page and that process will wait on use.
 		 */
 		UnlockReleaseTPDBuffers();
 
@@ -7533,18 +7590,18 @@ CommandId
 ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 				 int trans_slot_id)
 {
-	UnpackedUndoRecord	*urec;
+	UnpackedUndoRecord *urec;
 	UndoRecPtr	undo_rec_ptr;
 	CommandId	current_cid;
-	TransactionId	xid;
+	TransactionId xid;
 	uint64		epoch_xid;
 	uint32		epoch;
 	bool		TPDSlot = true;
 	int			out_slot_no;
 
 	/*
-	 * For undo tuple caller will pass the valid slot id otherwise we can get it
-	 * directly from the tuple.
+	 * For undo tuple caller will pass the valid slot id otherwise we can get
+	 * it directly from the tuple.
 	 */
 	if (trans_slot_id == InvalidXactSlotId)
 	{
@@ -7553,7 +7610,8 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 	}
 
 	/*
-	 * If urec_ptr is not provided, fetch the latest undo pointer from the page.
+	 * If urec_ptr is not provided, fetch the latest undo pointer from the
+	 * page.
 	 */
 	if (!UndoRecPtrIsValid(urec_ptr))
 	{
@@ -7568,21 +7626,21 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 	}
 	else
 	{
-		out_slot_no =  GetTransactionSlotInfo(buf,
-											  ItemPointerGetOffsetNumber(&zhtup->t_self),
-											  trans_slot_id,
-											  &epoch,
-											  &xid,
-											  NULL,
-											  true,
-											  TPDSlot);
+		out_slot_no = GetTransactionSlotInfo(buf,
+											 ItemPointerGetOffsetNumber(&zhtup->t_self),
+											 trans_slot_id,
+											 &epoch,
+											 &xid,
+											 NULL,
+											 true,
+											 TPDSlot);
 		undo_rec_ptr = urec_ptr;
 	}
 
 	if (out_slot_no == ZHTUP_SLOT_FROZEN)
 		return InvalidCommandId;
 
-	epoch_xid = (uint64 ) epoch;
+	epoch_xid = (uint64) epoch;
 	epoch_xid = MakeEpochXid(epoch_xid, xid);
 
 	if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
@@ -7633,7 +7691,7 @@ void
 ZHeapTupleGetSubXid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 					SubTransactionId *subxid)
 {
-	UnpackedUndoRecord	*urec;
+	UnpackedUndoRecord *urec;
 
 	*subxid = InvalidSubTransactionId;
 
@@ -7663,35 +7721,35 @@ ZHeapTupleGetSubXid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 		Assert(urec->uur_payload.len > 0);
 
 		/*
-		 * For UNDO_UPDATE, we first store the CTID, then transaction slot
-		 * and after that subtransaction id in payload.  For
-		 * UNDO_XID_LOCK_ONLY, we first store the Lockmode, then transaction
-		 * slot and after that subtransaction id.  So retrieve accordingly.
+		 * For UNDO_UPDATE, we first store the CTID, then transaction slot and
+		 * after that subtransaction id in payload.  For UNDO_XID_LOCK_ONLY,
+		 * we first store the Lockmode, then transaction slot and after that
+		 * subtransaction id.  So retrieve accordingly.
 		 */
 		if (urec->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
 		{
 			if (urec->uur_type == UNDO_UPDATE)
 				*subxid = *(int *) ((char *) urec->uur_payload.data +
-							sizeof(ItemPointerData) + sizeof(TransactionId));
+									sizeof(ItemPointerData) + sizeof(TransactionId));
 			else if (urec->uur_type == UNDO_XID_LOCK_ONLY ||
 					 urec->uur_type == UNDO_XID_LOCK_FOR_UPDATE ||
 					 urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY)
 				*subxid = *(int *) ((char *) urec->uur_payload.data +
-							sizeof(LockTupleMode) + sizeof(TransactionId));
+									sizeof(LockTupleMode) + sizeof(TransactionId));
 			else
 				*subxid = *(int *) ((char *) urec->uur_payload.data +
-								sizeof(TransactionId));
+									sizeof(TransactionId));
 		}
 		else
 		{
 			if (urec->uur_type == UNDO_UPDATE)
 				*subxid = *(int *) ((char *) urec->uur_payload.data +
-													sizeof(ItemPointerData));
+									sizeof(ItemPointerData));
 			else if (urec->uur_type == UNDO_XID_LOCK_ONLY ||
 					 urec->uur_type == UNDO_XID_LOCK_FOR_UPDATE ||
 					 urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY)
 				*subxid = *(int *) ((char *) urec->uur_payload.data +
-												sizeof(LockTupleMode));
+									sizeof(LockTupleMode));
 			else
 				*subxid = *(SubTransactionId *) urec->uur_payload.data;
 		}
@@ -7711,7 +7769,7 @@ void
 ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 					   uint32 *specToken)
 {
-	UnpackedUndoRecord	*urec;
+	UnpackedUndoRecord *urec;
 
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
@@ -7743,7 +7801,7 @@ CommandId
 ZHeapPageGetCid(Buffer buf, int trans_slot, uint32 epoch, TransactionId xid,
 				UndoRecPtr urec_ptr, OffsetNumber off)
 {
-	UnpackedUndoRecord	*urec;
+	UnpackedUndoRecord *urec;
 	CommandId	current_cid;
 	uint64		epoch_xid;
 
@@ -7779,7 +7837,7 @@ void
 ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
 				 ItemPointer ctid)
 {
-	UnpackedUndoRecord	*urec;
+	UnpackedUndoRecord *urec;
 
 fetch_next:
 	urec = UndoFetchRecord(urec_ptr,
@@ -7799,9 +7857,9 @@ fetch_next:
 	/*
 	 * The tuple should be deleted/updated previously. Else, the caller should
 	 * not be calling this function.  There can also be a concurrent key share
-	 * locker which reserved the same slot as the updater's slot.  In that case,
-	 * we've to fetch the prior undo records in order to get the required
-	 * information.
+	 * locker which reserved the same slot as the updater's slot.  In that
+	 * case, we've to fetch the prior undo records in order to get the
+	 * required information.
 	 */
 	Assert(urec->uur_type == UNDO_DELETE || urec->uur_type == UNDO_UPDATE ||
 		   urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY);
@@ -7841,19 +7899,19 @@ bool
 ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 				   TransactionId priorXmax, bool nobuflock)
 {
-	ZHeapTupleData	zhtup;
-	UnpackedUndoRecord	*urec = NULL;
-	UndoRecPtr		urec_ptr;
+	ZHeapTupleData zhtup;
+	UnpackedUndoRecord *urec = NULL;
+	UndoRecPtr	urec_ptr;
 	ZHeapTuple	undo_tup = NULL;
 	ItemPointer tid = &(tuple->t_self);
 	ItemId		lp;
 	Page		page;
-	TransactionId	xid;
-	TransactionId	prev_undo_xid = InvalidTransactionId;
+	TransactionId xid;
+	TransactionId prev_undo_xid = InvalidTransactionId;
 	uint32		epoch;
-	int	trans_slot_id = InvalidXactSlotId;
-	int	prev_trans_slot_id;
-	OffsetNumber	offnum;
+	int			trans_slot_id = InvalidXactSlotId;
+	int			prev_trans_slot_id;
+	OffsetNumber offnum;
 	bool		valid = false;
 
 	/*
@@ -7870,11 +7928,11 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 	zhtup.t_tableOid = tuple->t_tableOid;
 	zhtup.t_self = *tid;
 
-	if(ItemIdIsDead(lp) || !ItemIdHasStorage(lp))
+	if (ItemIdIsDead(lp) || !ItemIdHasStorage(lp))
 	{
 		/*
-		 * If the tuple is already removed by Rollbacks/pruning, then we
-		 * don't need to proceed further.
+		 * If the tuple is already removed by Rollbacks/pruning, then we don't
+		 * need to proceed further.
 		 */
 		if (nobuflock)
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
@@ -7884,9 +7942,9 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 	{
 		/*
 		 * If the tuple is updated such that its transaction slot has been
-		 * changed, then we will never be able to get the correct tuple from undo.
-		 * To avoid, that we get the latest tuple from page rather than relying on
-		 * it's in-memory copy.
+		 * changed, then we will never be able to get the correct tuple from
+		 * undo. To avoid, that we get the latest tuple from page rather than
+		 * relying on it's in-memory copy.
 		 */
 		zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 		zhtup.t_len = ItemIdGetLength(lp);
@@ -7897,18 +7955,19 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 	}
 	else
 	{
-		ZHeapTuple vis_tuple;
+		ZHeapTuple	vis_tuple;
+
 		trans_slot_id = ItemIdGetTransactionSlot(lp);
 		trans_slot_id = GetTransactionSlotInfo(buf, offnum, trans_slot_id,
 											   &epoch, &xid, &urec_ptr, true,
 											   false);
 
 		/*
-		 * XXX for now we shall get a visible undo tuple for the given
-		 * dirty snapshot. The tuple data is needed below in
-		 * CopyTupleFromUndoRecord and some undo records will not have
-		 * tuple data and mask info with them.
-		 * */
+		 * XXX for now we shall get a visible undo tuple for the given dirty
+		 * snapshot. The tuple data is needed below in CopyTupleFromUndoRecord
+		 * and some undo records will not have tuple data and mask info with
+		 * them.
+		 */
 		vis_tuple = ZHeapGetVisibleTuple(ItemPointerGetOffsetNumber(tid),
 										 snapshot, buf, NULL);
 		Assert(vis_tuple != NULL);
@@ -7917,9 +7976,8 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 	}
 
 	/*
-	 * Current xid on tuple must not precede oldestXidHavingUndo as it
-	 * will be greater than priorXmax which was not visible to our
-	 * snapshot.
+	 * Current xid on tuple must not precede oldestXidHavingUndo as it will be
+	 * greater than priorXmax which was not visible to our snapshot.
 	 */
 	Assert(trans_slot_id != ZHTUP_SLOT_FROZEN);
 
@@ -7951,9 +8009,9 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 							   ZHeapSatisfyUndoRecord);
 
 		/*
-		 * As we still hold a snapshot to which priorXmax is not visible, neither
-		 * the transaction slot on tuple can be marked as frozen nor the
-		 * corresponding undo be discarded.
+		 * As we still hold a snapshot to which priorXmax is not visible,
+		 * neither the transaction slot on tuple can be marked as frozen nor
+		 * the corresponding undo be discarded.
 		 */
 		Assert(urec != NULL);
 
@@ -7973,19 +8031,19 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		prev_undo_xid = urec->uur_prevxid;
 
 		/*
-		 * Change the undo chain if the undo tuple is stamped with the different
-		 * transaction slot.
+		 * Change the undo chain if the undo tuple is stamped with the
+		 * different transaction slot.
 		 */
 		if (prev_trans_slot_id != trans_slot_id)
 		{
-			trans_slot_id =  GetTransactionSlotInfo(buf,
-													ItemPointerGetOffsetNumber(&undo_tup->t_self),
-													trans_slot_id,
-													NULL,
-													NULL,
-													&urec_ptr,
-													true,
-													true);
+			trans_slot_id = GetTransactionSlotInfo(buf,
+												   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+												   trans_slot_id,
+												   NULL,
+												   NULL,
+												   &urec_ptr,
+												   true,
+												   true);
 		}
 		else
 			urec_ptr = urec->uur_blkprev;
@@ -8015,7 +8073,7 @@ tuple_is_valid:
 ZHeapTuple
 zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer, ItemPointer tid)
 {
-	UnpackedUndoRecord	*urec;
+	UnpackedUndoRecord *urec;
 	UndoRecPtr	urec_ptr;
 	ZHeapTuple	undo_tup;
 	int			out_slot_no PG_USED_FOR_ASSERTS_ONLY;
@@ -8068,7 +8126,7 @@ bool
 zheap_fetch_undo(Relation relation,
 				 Snapshot snapshot,
 				 ItemPointer tid,
-				 ZHeapTuple *tuple,
+				 ZHeapTuple * tuple,
 				 Buffer *userbuf,
 				 Relation stats_relation)
 {
@@ -8105,14 +8163,14 @@ ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
 	/*
 	 * Ignore tuples inserted by an aborted transaction.
 	 *
-	 * XXX we can ignore the tuple if it was non-in-place updated/deleted
-	 * by the inserting transaction, but for that we need to traverse the
+	 * XXX we can ignore the tuple if it was non-in-place updated/deleted by
+	 * the inserting transaction, but for that we need to traverse the
 	 * complete undo chain to find the root tuple, is it really worth?
 	 */
 	if (TransactionIdDidCommit(xid))
 	{
-		Assert (tuple->t_infomask & ZHEAP_DELETED ||
-				tuple->t_infomask & ZHEAP_UPDATED);
+		Assert(tuple->t_infomask & ZHEAP_DELETED ||
+			   tuple->t_infomask & ZHEAP_UPDATED);
 		if (TransactionIdFollows(xid, *latestRemovedXid))
 			*latestRemovedXid = xid;
 	}
@@ -8131,7 +8189,7 @@ ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
  *	free_zhtup - if true, free the previous version of tuple.
  */
 ZHeapTuple
-CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
+CopyTupleFromUndoRecord(UnpackedUndoRecord * urec, ZHeapTuple zhtup,
 						int *trans_slot_id, CommandId *cid, bool free_zhtup,
 						Page page)
 {
@@ -8147,7 +8205,8 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 				 * We need to deal with undo of root tuple only for a special
 				 * case where during non-inplace update operation, we
 				 * propagate the lockers information to the freshly inserted
-				 * tuple. But, we've to make sure the inserted tuple is locked only.
+				 * tuple. But, we've to make sure the inserted tuple is locked
+				 * only.
 				 */
 				Assert(ZHEAP_XID_IS_LOCKED_ONLY(zhtup->t_data->t_infomask));
 
@@ -8160,9 +8219,9 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 				memcpy(undo_tup->t_data, zhtup->t_data, zhtup->t_len);
 
 				/*
-				 * Ensure to clear the visibility related information from
-				 * the tuple.  This is required for the cases where the passed
-				 * in tuple has lock only flags set on it.
+				 * Ensure to clear the visibility related information from the
+				 * tuple.  This is required for the cases where the passed in
+				 * tuple has lock only flags set on it.
 				 */
 				undo_tup->t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
 
@@ -8189,7 +8248,7 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 		case UNDO_XID_LOCK_FOR_UPDATE:
 		case UNDO_XID_MULTI_LOCK_ONLY:
 			{
-				ZHeapTupleHeader	undo_tup_hdr;
+				ZHeapTupleHeader undo_tup_hdr;
 
 				Assert(zhtup != NULL);
 
@@ -8228,8 +8287,8 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 					if (urec->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
 					{
 						/*
-						 * We first store the Lockmode and then transaction slot in
-						 * payload, so retrieve it accordingly.
+						 * We first store the Lockmode and then transaction
+						 * slot in payload, so retrieve it accordingly.
 						 */
 						*trans_slot_id = *(int *) ((char *) urec->uur_payload.data + sizeof(LockTupleMode));
 					}
@@ -8246,14 +8305,16 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 				uint32		undo_tup_len;
 
 				/*
-				 * After this point, the previous version of tuple won't be used.
-				 * If we don't free the previous version, then we might accumulate
-				 * lot of memory when many prior versions needs to be traversed.
+				 * After this point, the previous version of tuple won't be
+				 * used. If we don't free the previous version, then we might
+				 * accumulate lot of memory when many prior versions needs to
+				 * be traversed.
 				 *
-				 * XXX One way to save deallocation and allocation of memory is to
-				 * only make a copy of prior version of tuple when it is determined
-				 * that the version is visible to current snapshot.  In practise,
-				 * we don't need to traverse many prior versions, so let's be tidy.
+				 * XXX One way to save deallocation and allocation of memory
+				 * is to only make a copy of prior version of tuple when it is
+				 * determined that the version is visible to current snapshot.
+				 * In practise, we don't need to traverse many prior versions,
+				 * so let's be tidy.
 				 */
 				undo_tup_len = *((uint32 *) &urec->uur_tuple.data[offset]);
 
@@ -8269,7 +8330,7 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 				memcpy(&undo_tup->t_tableOid, &urec->uur_tuple.data[offset], sizeof(Oid));
 				offset += sizeof(Oid);
 
-				memcpy(undo_tup->t_data, (ZHeapTupleHeader) &urec->uur_tuple.data[offset], undo_tup_len);
+				memcpy(undo_tup->t_data, (ZHeapTupleHeader) & urec->uur_tuple.data[offset], undo_tup_len);
 
 				/* Retrieve the TPD transaction slot from payload */
 				if (trans_slot_id)
@@ -8295,9 +8356,10 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord	*urec, ZHeapTuple zhtup,
 			break;
 		default:
 			elog(ERROR, "unsupported undo record type");
+
 			/*
-			 * During tests, we take down the server to notice the error easily.
-			 * This can be removed later.
+			 * During tests, we take down the server to notice the error
+			 * easily. This can be removed later.
 			 */
 			Assert(0);
 	}
@@ -8323,7 +8385,7 @@ void
 zheap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 				   CommandId cid, int options, BulkInsertState bistate)
 {
-	ZHeapTuple	*zheaptuples;
+	ZHeapTuple *zheaptuples;
 	int			i;
 	int			ndone;
 	char	   *scratch = NULL;
@@ -8332,18 +8394,19 @@ zheap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	bool		need_tuple_data = RelationIsLogicallyLogged(relation);
 	bool		need_cids = RelationIsAccessibleInLogicalDecoding(relation);
 	Size		saveFreeSpace;
-	TransactionId	xid = GetTopTransactionId();
+	TransactionId xid = GetTopTransactionId();
 	uint32		epoch = GetEpochForXid(xid);
-	xl_undolog_meta	undometa;
+	xl_undolog_meta undometa;
 	bool		lock_reacquired;
 	bool		skip_undo;
 
 	needwal = RelationNeedsWAL(relation);
 	saveFreeSpace = RelationGetTargetPageFreeSpace(relation,
 												   HEAP_DEFAULT_FILLFACTOR);
+
 	/*
-	 * We can skip inserting undo records if the tuples are to be marked
-	 * as frozen.
+	 * We can skip inserting undo records if the tuples are to be marked as
+	 * frozen.
 	 */
 	skip_undo = (options & HEAP_INSERT_FROZEN);
 
@@ -8363,9 +8426,9 @@ zheap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	 * beforehand. This has consideration that offset ranges and tuples to be
 	 * stored in page will have size lesser than BLCKSZ. This is true since a
 	 * zheap page contains page header and transaction slots in special area
-	 * which are not stored in scratch area. In future, if we reduce the number
-	 * of transaction slots to one, we may need to allocate twice the BLCKSZ of
-	 * scratch area.
+	 * which are not stored in scratch area. In future, if we reduce the
+	 * number of transaction slots to one, we may need to allocate twice the
+	 * BLCKSZ of scratch area.
 	 */
 	if (needwal)
 		scratch = palloc(BLCKSZ);
@@ -8379,23 +8442,24 @@ zheap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	ndone = 0;
 	while (ndone < ntuples)
 	{
-		Buffer	buffer;
-		Buffer	vmbuffer = InvalidBuffer;
-		bool	all_visible_cleared = false;
-		int		nthispage = 0;
-		int		trans_slot_id = InvalidXactSlotId;
-		int		ucnt = 0;
+		Buffer		buffer;
+		Buffer		vmbuffer = InvalidBuffer;
+		bool		all_visible_cleared = false;
+		int			nthispage = 0;
+		int			trans_slot_id = InvalidXactSlotId;
+		int			ucnt = 0;
 		UndoRecPtr	urecptr = InvalidUndoRecPtr,
-								prev_urecptr = InvalidUndoRecPtr;
-		UnpackedUndoRecord		*undorecord = NULL;
-		ZHeapFreeOffsetRanges	*zfree_offset_ranges;
-		OffsetNumber	usedoff[MaxOffsetNumber];
-		OffsetNumber	max_required_offset;
+					prev_urecptr = InvalidUndoRecPtr;
+		UnpackedUndoRecord *undorecord = NULL;
+		ZHeapFreeOffsetRanges *zfree_offset_ranges;
+		OffsetNumber usedoff[MaxOffsetNumber];
+		OffsetNumber max_required_offset;
 		uint8		vm_status;
 
 		CHECK_FOR_INTERRUPTS();
 
 reacquire_buffer:
+
 		/*
 		 * Find buffer where at least the next tuple will fit.  If the page is
 		 * all-visible, this will also pin the requisite visibility map page.
@@ -8430,16 +8494,17 @@ reacquire_buffer:
 			zfree_offset_ranges->endOffset[zfree_offset_ranges->nranges - 1];
 
 		/*
-		 * If we're not inserting an undo record, we don't have to reserve
-		 * a transaction slot as well.
+		 * If we're not inserting an undo record, we don't have to reserve a
+		 * transaction slot as well.
 		 */
 		if (!skip_undo)
 		{
 			/*
-			 * The transaction information of tuple needs to be set in transaction
-			 * slot, so needs to reserve the slot before proceeding with the actual
-			 * operation.  It will be costly to wait for getting the slot, but we do
-			 * that by releasing the buffer lock.
+			 * The transaction information of tuple needs to be set in
+			 * transaction slot, so needs to reserve the slot before
+			 * proceeding with the actual operation.  It will be costly to
+			 * wait for getting the slot, but we do that by releasing the
+			 * buffer lock.
 			 */
 			trans_slot_id = PageReserveTransactionSlot(relation,
 													   buffer,
@@ -8469,9 +8534,9 @@ reacquire_buffer:
 			Assert(trans_slot_id != InvalidXactSlotId);
 
 			/*
-			 * For every contiguous free or new offsets, we insert an undo record.
-			 * In the payload data of each undo record, we store the start and end
-			 * available offset for a contiguous range.
+			 * For every contiguous free or new offsets, we insert an undo
+			 * record. In the payload data of each undo record, we store the
+			 * start and end available offset for a contiguous range.
 			 */
 			undorecord = (UnpackedUndoRecord *) palloc(zfree_offset_ranges->nranges
 													   * sizeof(UnpackedUndoRecord));
@@ -8482,7 +8547,10 @@ reacquire_buffer:
 				/* prepare an undo record */
 				undorecord[i].uur_type = UNDO_MULTI_INSERT;
 				undorecord[i].uur_info = 0;
-				undorecord[i].uur_prevlen = 0;	/* Fixme - need to figure out how to set this value and then decide whether to WAL log it */
+				undorecord[i].uur_prevlen = 0;	/* Fixme - need to figure out
+												 * how to set this value and
+												 * then decide whether to WAL
+												 * log it */
 				undorecord[i].uur_reloid = relation->rd_id;
 				undorecord[i].uur_prevxid = FrozenTransactionId;
 				undorecord[i].uur_xid = xid;
@@ -8524,7 +8592,7 @@ reacquire_buffer:
 		 * bits are clear for those pages hence no need to clear it again!
 		 */
 		vm_status = visibilitymap_get_status(relation,
-										BufferGetBlockNumber(buffer), &vmbuffer);
+											 BufferGetBlockNumber(buffer), &vmbuffer);
 
 		/*
 		 * Lock the TPD page before starting critical section.  We might need
@@ -8532,9 +8600,9 @@ reacquire_buffer:
 		 * slot belongs to TPD entry, then the TPD page must be locked during
 		 * slot reservation.
 		 *
-		 * XXX We can optimize this by avoid taking TPD page lock unless the page
-		 * has some unused item which requires us to fetch the transaction
-		 * information from TPD.
+		 * XXX We can optimize this by avoid taking TPD page lock unless the
+		 * page has some unused item which requires us to fetch the
+		 * transaction information from TPD.
 		 */
 		if (trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS &&
 			ZHeapPageHasTPDSlot((PageHeader) page) &&
@@ -8585,32 +8653,32 @@ reacquire_buffer:
 
 				/*
 				 * We don't use heap_multi_insert for catalog tuples yet, but
-				 * better be prepared...
-				 * Fixme: This won't work as it needs to access cmin/cmax which
-				 * we probably needs to retrieve from TPD or UNDO.
+				 * better be prepared... Fixme: This won't work as it needs to
+				 * access cmin/cmax which we probably needs to retrieve from
+				 * TPD or UNDO.
 				 */
-				 if (needwal && need_cids)
-				 {
+				if (needwal && need_cids)
+				{
 					/* log_heap_new_cid(relation, heaptup); */
-				 }
-				 nthispage++;
+				}
+				nthispage++;
 			}
 
 			/*
-			 * Store the offset ranges in undo payload. We've not calculated the
-			 * end offset for the last range previously. Hence, we set it to
-			 * offnum - 1. There is no harm in doing the same for previous undo
-			 * records as well.
+			 * Store the offset ranges in undo payload. We've not calculated
+			 * the end offset for the last range previously. Hence, we set it
+			 * to offnum - 1. There is no harm in doing the same for previous
+			 * undo records as well.
 			 */
 			zfree_offset_ranges->endOffset[i] = offnum - 1;
 			if (!skip_undo)
 			{
 				appendBinaryStringInfo(&undorecord[i].uur_payload,
-										   (char *) &zfree_offset_ranges->startOffset[i],
-										   sizeof(OffsetNumber));
+									   (char *) &zfree_offset_ranges->startOffset[i],
+									   sizeof(OffsetNumber));
 				appendBinaryStringInfo(&undorecord[i].uur_payload,
-										  (char *) &zfree_offset_ranges->endOffset[i],
-										   sizeof(OffsetNumber));
+									   (char *) &zfree_offset_ranges->endOffset[i],
+									   sizeof(OffsetNumber));
 			}
 			elog(DEBUG1, "start offset: %d, end offset: %d",
 				 zfree_offset_ranges->startOffset[i], zfree_offset_ranges->endOffset[i]);
@@ -8636,8 +8704,8 @@ reacquire_buffer:
 			InsertPreparedUndo();
 
 			/*
-			 * We're sending the undo record for debugging purpose. So, just send
-			 * the last one.
+			 * We're sending the undo record for debugging purpose. So, just
+			 * send the last one.
 			 */
 			if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			{
@@ -8668,7 +8736,7 @@ reacquire_buffer:
 		/* XLOG stuff */
 		if (needwal)
 		{
-			xl_undo_header	xlundohdr;
+			xl_undo_header xlundohdr;
 			XLogRecPtr	recptr;
 			xl_zheap_multi_insert *xlrec;
 			uint8		info = XLOG_ZHEAP_MULTI_INSERT;
@@ -8702,9 +8770,9 @@ reacquire_buffer:
 			scratchptr += sizeof(int);
 			for (i = 0; i < zfree_offset_ranges->nranges; i++)
 			{
-				memcpy((char *)scratchptr, (char *)&zfree_offset_ranges->startOffset[i], sizeof(OffsetNumber));
+				memcpy((char *) scratchptr, (char *) &zfree_offset_ranges->startOffset[i], sizeof(OffsetNumber));
 				scratchptr += sizeof(OffsetNumber);
-				memcpy((char *)scratchptr, (char *)&zfree_offset_ranges->endOffset[i], sizeof(OffsetNumber));
+				memcpy((char *) scratchptr, (char *) &zfree_offset_ranges->endOffset[i], sizeof(OffsetNumber));
 				scratchptr += sizeof(OffsetNumber);
 			}
 
@@ -8745,8 +8813,8 @@ reacquire_buffer:
 
 			/*
 			 * Signal that this is the last xl_zheap_multi_insert record
-			 * emitted by this call to zheap_multi_insert(). Needed for logical
-			 * decoding so it knows when to cleanup temporary data.
+			 * emitted by this call to zheap_multi_insert(). Needed for
+			 * logical decoding so it knows when to cleanup temporary data.
 			 */
 			if (ndone + nthispage == ntuples)
 				xlrec->flags |= XLZ_INSERT_LAST_IN_MULTI;
@@ -8771,7 +8839,7 @@ reacquire_buffer:
 			if (need_tuple_data)
 				bufflags |= REGBUF_KEEP_DATA;
 
-prepare_xlog:
+	prepare_xlog:
 			/* LOG undolog meta if this is the first WAL after the checkpoint. */
 			LogUndoMetaData(&undometa);
 			GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
@@ -8859,8 +8927,9 @@ prepare_xlog:
 	if (IsCatalogRelation(relation))
 	{
 		/*
-		for (i = 0; i < ntuples; i++)
-			CacheInvalidateHeapTuple(relation, zheaptuples[i], NULL); */
+		 * for (i = 0; i < ntuples; i++) CacheInvalidateHeapTuple(relation,
+		 * zheaptuples[i], NULL);
+		 */
 	}
 
 	/*
@@ -8879,22 +8948,22 @@ prepare_xlog:
  * an undorecord satisfies the given conditions.
  */
 bool
-ZHeapSatisfyUndoRecord(UnpackedUndoRecord* urec, BlockNumber blkno,
-								OffsetNumber offset, TransactionId xid)
+ZHeapSatisfyUndoRecord(UnpackedUndoRecord * urec, BlockNumber blkno,
+					   OffsetNumber offset, TransactionId xid)
 {
 	Assert(urec != NULL);
 	Assert(blkno != InvalidBlockNumber);
 
 	if ((urec->uur_block != blkno ||
-		(TransactionIdIsValid(xid) && !TransactionIdEquals(xid, urec->uur_xid))))
+		 (TransactionIdIsValid(xid) && !TransactionIdEquals(xid, urec->uur_xid))))
 		return false;
 
 	switch (urec->uur_type)
 	{
 		case UNDO_MULTI_INSERT:
 			{
-				OffsetNumber	start_offset;
-				OffsetNumber	end_offset;
+				OffsetNumber start_offset;
+				OffsetNumber end_offset;
 
 				start_offset = ((OffsetNumber *) urec->uur_payload.data)[0];
 				end_offset = ((OffsetNumber *) urec->uur_payload.data)[1];
@@ -9003,8 +9072,8 @@ zheap_get_latest_tid(Relation relation,
 		}
 
 		/*
-		 * We always need to make a copy of zheap tuple; if an older version is
-		 * returned from the undo record, the passed in tuple gets freed.
+		 * We always need to make a copy of zheap tuple; if an older version
+		 * is returned from the undo record, the passed in tuple gets freed.
 		 */
 		tup_len = ItemIdGetLength(lp);
 		tp = palloc(ZHEAPTUPLESIZE + tup_len);
@@ -9020,11 +9089,11 @@ zheap_get_latest_tid(Relation relation,
 		infomask = tp->t_data->t_infomask;
 
 		/*
-		 * Ensure that the tuple is same as what we are expecting.  If the
-		 * the current or any prior version of tuple doesn't contain the
-		 * effect of priorXmax, then the slot must have been recycled and
-		 * reused for an unrelated tuple.  This implies that the latest
-		 * version of the row was deleted, so we need do nothing.
+		 * Ensure that the tuple is same as what we are expecting.  If the the
+		 * current or any prior version of tuple doesn't contain the effect of
+		 * priorXmax, then the slot must have been recycled and reused for an
+		 * unrelated tuple.  This implies that the latest version of the row
+		 * was deleted, so we need do nothing.
 		 */
 		if (TransactionIdIsValid(priorXmax) &&
 			!ValidateTuplesXact(tp, snapshot, buffer, priorXmax, false))
@@ -9050,13 +9119,13 @@ zheap_get_latest_tid(Relation relation,
 		resulttup = ZHeapTupleSatisfies(tp, snapshot, buffer, &new_ctid);
 
 		/*
-		 * If any prior version is visible, we pass latest visible as
-		 * true. The state of latest version of tuple is determined by
-		 * the called function.
+		 * If any prior version is visible, we pass latest visible as true.
+		 * The state of latest version of tuple is determined by the called
+		 * function.
 		 *
-		 * Note that, it's possible that tuple is updated in-place and
-		 * we're seeing some prior version of that. We handle that case
-		 * in ZHeapTupleHasSerializableConflictOut.
+		 * Note that, it's possible that tuple is updated in-place and we're
+		 * seeing some prior version of that. We handle that case in
+		 * ZHeapTupleHasSerializableConflictOut.
 		 */
 		CheckForSerializableConflictOut((resulttup != NULL), relation,
 										(void *) &ctid,
@@ -9093,7 +9162,7 @@ zheap_get_latest_tid(Relation relation,
  */
 XLogRecPtr
 log_zheap_visible(RelFileNode rnode, Buffer heap_buffer, Buffer vm_buffer,
-				 TransactionId cutoff_xid, uint8 vmflags)
+				  TransactionId cutoff_xid, uint8 vmflags)
 {
 	xl_zheap_visible xlrec;
 	XLogRecPtr	recptr;
@@ -9128,11 +9197,11 @@ TransInfo *
 GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
 							BlockNumber *tpd_blkno)
 {
-	Page	page;
+	Page		page;
 	PageHeader	phdr;
-	TransInfo *tpd_trans_slots;
-	TransInfo *trans_slots = NULL;
-	bool	tpd_e_pruned;
+	TransInfo  *tpd_trans_slots;
+	TransInfo  *trans_slots = NULL;
+	bool		tpd_e_pruned;
 
 	*total_trans_slots = 0;
 	if (tpd_blkno)
@@ -9143,7 +9212,7 @@ GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
 
 	if (ZHeapPageHasTPDSlot(phdr))
 	{
-		int		num_tpd_trans_slots;
+		int			num_tpd_trans_slots;
 
 		/*
 		 * TPD entry can be cleaned only if the zheap buffer is locked in
@@ -9167,7 +9236,7 @@ GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
 		Assert(!tpd_e_pruned);
 		if (num_tpd_trans_slots > 0)
 		{
-			ZHeapPageOpaque	zopaque;
+			ZHeapPageOpaque zopaque;
 			TransInfo	last_trans_slot_info;
 
 			zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
@@ -9177,12 +9246,12 @@ GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
 				*tpd_blkno = last_trans_slot_info.xid_epoch;
 
 			/*
-			 * The last slot in page contains TPD information, so we don't need to
-			 * include it.
+			 * The last slot in page contains TPD information, so we don't
+			 * need to include it.
 			 */
 			*total_trans_slots = num_tpd_trans_slots + ZHEAP_PAGE_TRANS_SLOTS - 1;
 			trans_slots = (TransInfo *)
-					palloc(*total_trans_slots * sizeof(TransInfo));
+				palloc(*total_trans_slots * sizeof(TransInfo));
 			/* Copy the transaction slots from the page. */
 			memcpy(trans_slots, page + phdr->pd_special,
 				   (ZHEAP_PAGE_TRANS_SLOTS - 1) * sizeof(TransInfo));
@@ -9198,19 +9267,19 @@ GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
 		{
 			*total_trans_slots = ZHEAP_PAGE_TRANS_SLOTS - 1;
 			trans_slots = (TransInfo *)
-					palloc(*total_trans_slots * sizeof(TransInfo));
+				palloc(*total_trans_slots * sizeof(TransInfo));
 			memcpy(trans_slots, page + phdr->pd_special,
 				   *total_trans_slots * sizeof(TransInfo));
 			return trans_slots;
 		}
 	}
 
-	Assert (!ZHeapPageHasTPDSlot(phdr) || tpd_e_pruned);
-	Assert (trans_slots == NULL);
+	Assert(!ZHeapPageHasTPDSlot(phdr) || tpd_e_pruned);
+	Assert(trans_slots == NULL);
 
 	*total_trans_slots = ZHEAP_PAGE_TRANS_SLOTS;
 	trans_slots = (TransInfo *)
-			palloc(*total_trans_slots * sizeof(TransInfo));
+		palloc(*total_trans_slots * sizeof(TransInfo));
 	memcpy(trans_slots, page + phdr->pd_special,
 		   *total_trans_slots * sizeof(TransInfo));
 
@@ -9237,9 +9306,9 @@ CheckAndLockTPDPage(Relation relation, int new_trans_slot_id, int old_trans_slot
 {
 	if (new_trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS &&
 		ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(newbuf)) &&
-		PageHasFreeLinePointers((PageHeader)BufferGetPage(newbuf)))
+		PageHasFreeLinePointers((PageHeader) BufferGetPage(newbuf)))
 	{
-		BlockNumber	oldbuf_tpd_blk = InvalidBlockNumber,
+		BlockNumber oldbuf_tpd_blk = InvalidBlockNumber,
 					newbuf_tpd_blk;
 
 		/*
@@ -9251,9 +9320,9 @@ CheckAndLockTPDPage(Relation relation, int new_trans_slot_id, int old_trans_slot
 		newbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(newbuf);
 
 		/*
-		 * If the old buffer and new buffer refers to the same TPD page and the
-		 * old transaction slot corresponds to a TPD slot, we must have locked
-		 * the TPD page during slot reservation.
+		 * If the old buffer and new buffer refers to the same TPD page and
+		 * the old transaction slot corresponds to a TPD slot, we must have
+		 * locked the TPD page during slot reservation.
 		 */
 		if (old_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 		{
@@ -9308,7 +9377,7 @@ copy_zrelation_data(Relation srcRel, SMgrRelation dst)
 	BlockNumber nblocks;
 	BlockNumber blkno;
 	SMgrRelation src = srcRel->rd_smgr;
-	char relpersistence = srcRel->rd_rel->relpersistence;
+	char		relpersistence = srcRel->rd_rel->relpersistence;
 
 	/*
 	 * We need to log the copied data in WAL iff WAL archiving/streaming is
@@ -9320,8 +9389,8 @@ copy_zrelation_data(Relation srcRel, SMgrRelation dst)
 
 	for (blkno = 0; blkno < nblocks; blkno++)
 	{
-		BlockNumber	target_blkno = InvalidBlockNumber;
-		BlockNumber	tpd_blkno = InvalidBlockNumber;
+		BlockNumber target_blkno = InvalidBlockNumber;
+		BlockNumber tpd_blkno = InvalidBlockNumber;
 		Buffer		buffer = InvalidBuffer;
 
 		/* If we got a cancel signal during the copy of the data, quit */
@@ -9429,7 +9498,7 @@ zheap_compute_xid_horizon_for_tuples(Relation rel,
 	 * get processed looking up and locking the page just once.
 	 */
 	qsort((void *) tids, nitems, sizeof(ItemPointerData),
-		  (int(*) (const void *, const void *)) ItemPointerCompare);
+		  (int (*) (const void *, const void *)) ItemPointerCompare);
 
 	/* prefetch all pages */
 #ifdef USE_PREFETCH
@@ -9453,7 +9522,7 @@ zheap_compute_xid_horizon_for_tuples(Relation rel,
 	for (int i = 0; i < nitems; i++)
 	{
 		ItemPointer htid = &tids[i];
-		ItemId hitemid;
+		ItemId		hitemid;
 		OffsetNumber hoffnum;
 
 		/*
@@ -9492,15 +9561,15 @@ zheap_compute_xid_horizon_for_tuples(Relation rel,
 		 */
 		if (ItemIdIsDeleted(hitemid))
 		{
-			TransactionId   xid;
-			ZHeapTupleData	ztup;
+			TransactionId xid;
+			ZHeapTupleData ztup;
 
 			ztup.t_self = *htid;
 			ztup.t_len = ItemIdGetLength(hitemid);
 			ztup.t_tableOid = InvalidOid;
 			ztup.t_data = NULL;
 			ZHeapTupleGetTransInfo(&ztup, buf, NULL, NULL, &xid, NULL, NULL,
-				false, InvalidSnapshot);
+								   false, InvalidSnapshot);
 			if (TransactionIdDidCommit(xid) &&
 				TransactionIdFollows(xid, latestRemovedXid))
 				latestRemovedXid = xid;
@@ -9508,9 +9577,9 @@ zheap_compute_xid_horizon_for_tuples(Relation rel,
 		else if (ItemIdHasStorage(hitemid))
 		{
 			ZHeapTupleHeader ztuphdr;
-			ZHeapTupleData	ztup;
+			ZHeapTupleData ztup;
 
-			ztuphdr = (ZHeapTupleHeader)PageGetItem(hpage, hitemid);
+			ztuphdr = (ZHeapTupleHeader) PageGetItem(hpage, hitemid);
 			ztup.t_self = *htid;
 			ztup.t_len = ItemIdGetLength(hitemid);
 			ztup.t_tableOid = InvalidOid;
@@ -9519,10 +9588,10 @@ zheap_compute_xid_horizon_for_tuples(Relation rel,
 			if (ztuphdr->t_infomask & ZHEAP_DELETED
 				|| ztuphdr->t_infomask & ZHEAP_UPDATED)
 			{
-				TransactionId	xid;
+				TransactionId xid;
 
 				ZHeapTupleGetTransInfo(&ztup, buf, NULL, NULL, &xid,
-					NULL, NULL, false, InvalidSnapshot);
+									   NULL, NULL, false, InvalidSnapshot);
 				ZHeapTupleHeaderAdvanceLatestRemovedXid(ztuphdr, xid, &latestRemovedXid);
 			}
 		}
