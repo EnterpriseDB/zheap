@@ -41,7 +41,6 @@
 #include "access/zhtup.h"
 #include "utils/ztqual.h"
 #include "access/zheapam_xlog.h"
-#include "access/zheaputils.h"
 #include "commands/dbcommands.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"

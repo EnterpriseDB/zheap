@@ -28,7 +28,6 @@
 #include "access/tpd.h"
 #include "access/zheap.h"
 #include "access/zheapam_xlog.h"
-#include "access/zheaputils.h"
 #include "utils/ztqual.h"
 #include "catalog/catalog.h"
 #include "miscadmin.h"

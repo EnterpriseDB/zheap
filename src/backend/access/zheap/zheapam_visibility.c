@@ -31,7 +31,6 @@
 #include "access/subtrans.h"
 #include "access/xact.h"
 #include "access/zheap.h"
-#include "access/zheaputils.h"
 #include "access/zmultilocker.h"
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
