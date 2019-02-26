@@ -98,31 +98,6 @@ typedef struct ZHeapFreeOffsetRanges
 	int			nranges;
 }			ZHeapFreeOffsetRanges;
 
-/* Page related API's (zpage.c). */
-#define ZPageAddItem(buffer, input_page, item, size, offsetNumber, overwrite, is_heap, NoTPDBufLock) \
-	ZPageAddItemExtended(buffer, input_page, item, size, offsetNumber, \
-						 ((overwrite) ? PAI_OVERWRITE : 0) | \
-						 ((is_heap) ? PAI_IS_HEAP : 0), \
-						 NoTPDBufLock)
-
-extern OffsetNumber ZPageAddItemExtended(Buffer buffer, Page input_page,
-					 Item item, Size size, OffsetNumber offsetNumber,
-					 int flags, bool NoTPDBufLock);
-extern Size PageGetZHeapFreeSpace(Page page);
-extern void RelationPutZHeapTuple(Relation relation, Buffer buffer,
-					  ZHeapTuple tuple);
-extern ZHeapFreeOffsetRanges * ZHeapGetUsableOffsetRanges(Buffer buffer,
-														  ZHeapTuple * tuples, int ntuples, Size saveFreeSpace);
-extern void ZheapInitPage(Page page, Size pageSize);
-extern void zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
-					 BlockNumber last_blkno);
-extern void ZheapInitMetaPage(Relation rel, ForkNumber forkNum, bool already_exists);
-
-
-extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
-							int slot_no, TransactionId xwait);
-extern void zbuffer_exec_pending_rollback(Relation rel, Buffer buf,
-							  BlockNumber *tpd_blkno);
 extern void zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate, uint32 specToken);
 extern void simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot);
@@ -183,6 +158,21 @@ extern void PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer,
 			TransactionId xid, UndoRecPtr urecptr, OffsetNumber *usedoff,
 			int ucnt);
 extern UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
+extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
+										TransactionId xid, TransactionId *latestRemovedXid);
+extern void zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
+								  bool isFrozen, bool TPDSlot);
+extern bool PageFreezeTransSlots(Relation relation, Buffer buf,
+					 bool *lock_reacquired, TransInfo * transinfo,
+					 int num_slots, bool use_aborted_slot);
+extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
+						int *completed_slots,
+						OffsetNumber *offset_completed_slots,
+						int *numOffsets);
+extern TransactionId zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer);
+extern void copy_zrelation_data(Relation srcRel, SMgrRelation dst);
+extern TransactionId zheap_compute_xid_horizon_for_tuples(Relation rel,
+									 ItemPointerData *tids, int nitems);
 
 /* Pruning related API's (prunezheap.c) */
 extern bool zheap_page_prune_opt(Relation relation, Buffer buffer,
@@ -207,37 +197,44 @@ extern void ZPageRepairFragmentation(Buffer buffer, Page tmppage, OffsetNumber t
 extern void compactify_ztuples(itemIdSort itemidbase, int nitems, Page page,
 				   Page tmppage);
 
+/* Page related API's (zpage.c). */
+#define ZPageAddItem(buffer, input_page, item, size, offsetNumber, overwrite, is_heap, NoTPDBufLock) \
+	ZPageAddItemExtended(buffer, input_page, item, size, offsetNumber, \
+						 ((overwrite) ? PAI_OVERWRITE : 0) | \
+						 ((is_heap) ? PAI_IS_HEAP : 0), \
+						 NoTPDBufLock)
+
+extern OffsetNumber ZPageAddItemExtended(Buffer buffer, Page input_page,
+					 Item item, Size size, OffsetNumber offsetNumber,
+					 int flags, bool NoTPDBufLock);
+extern Size PageGetZHeapFreeSpace(Page page);
+extern void RelationPutZHeapTuple(Relation relation, Buffer buffer,
+					  ZHeapTuple tuple);
+extern ZHeapFreeOffsetRanges * ZHeapGetUsableOffsetRanges(Buffer buffer,
+														  ZHeapTuple * tuples, int ntuples, Size saveFreeSpace);
+extern void ZheapInitPage(Page page, Size pageSize);
+extern void zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
+					 BlockNumber last_blkno);
+extern void ZheapInitMetaPage(Relation rel, ForkNumber forkNum, bool already_exists);
+
+/* Zheap and undo record interaction related API's (zundo.c) */
 extern bool zheap_fetch_undo(Relation relation, Snapshot snapshot,
 				 ItemPointer tid, ZHeapTuple * tuple, Buffer *userbuf,
 				 Relation stats_relation);
 extern ZHeapTuple zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer,
 										ItemPointer tid);
-extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
-										TransactionId xid, TransactionId *latestRemovedXid);
-extern void zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
-								  bool isFrozen, bool TPDSlot);
-extern bool PageFreezeTransSlots(Relation relation, Buffer buf,
-					 bool *lock_reacquired, TransInfo * transinfo,
-					 int num_slots, bool use_aborted_slot);
-extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
-						int *completed_slots,
-						OffsetNumber *offset_completed_slots,
-						int *numOffsets);
-extern TransactionId zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer);
-
-/* Zheap and undo record interaction related API's */
+extern bool ZHeapSatisfyUndoRecord(UnpackedUndoRecord * uurec, BlockNumber blkno,
+					   OffsetNumber offset, TransactionId xid);
 extern ZHeapTuple CopyTupleFromUndoRecord(UnpackedUndoRecord * urec,
 										  ZHeapTuple zhtup, int *trans_slot_id,
 										  CommandId *cid, bool free_zhtup,
 										  Page page);
-extern bool ZHeapSatisfyUndoRecord(UnpackedUndoRecord * uurec, BlockNumber blkno,
-					   OffsetNumber offset, TransactionId xid);
 extern bool ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 				   TransactionId priorXmax, bool nobuflock);
-
-extern void copy_zrelation_data(Relation srcRel, SMgrRelation dst);
-extern TransactionId zheap_compute_xid_horizon_for_tuples(Relation rel,
-									 ItemPointerData *tids, int nitems);
+extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
+							int slot_no, TransactionId xwait);
+extern void zbuffer_exec_pending_rollback(Relation rel, Buffer buf,
+							  BlockNumber *tpd_blkno);
 
 /* in zheap/zvacuumlazy.c */
 struct VacuumParams;
