@@ -36,8 +36,6 @@
 static bool execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr,
 						  Oid reloid, TransactionId xid, BlockNumber blkno,
 						  bool blk_chain_complete, bool norellock);
-static inline void undo_action_insert(Relation rel, Page page, OffsetNumber off,
-				   TransactionId xid);
 static void RollbackHTRemoveEntry(UndoRecPtr start_urec_ptr);
 
 /* This is the hash table to store all the rollabck requests. */
