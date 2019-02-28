@@ -3396,3 +3396,14 @@ yyscan_t
 z_stream
 z_streamp
 zic_t
+UndoBuffers
+PreparedUndoSpace
+XactUndoRecordInfo
+undorectype
+UndoRecordHeader
+UndoRecordRelationDetails
+UndoRecordBlock
+UndoRecordTransaction
+UndoRecordPayload
+UnpackedUndoRecord
+UndoRecPtr
