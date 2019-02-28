@@ -332,6 +332,7 @@ reacquire_buffer:
 		 * an information in future where we need to know more information for
 		 * undo tuples and it would be good for forensic purpose as well.
 		 */
+		undorecord.uur_rmid = RM_ZHEAP_ID;
 		undorecord.uur_type = UNDO_INSERT;
 		undorecord.uur_info = 0;
 		undorecord.uur_prevlen = 0;
@@ -1306,6 +1307,7 @@ zheap_tuple_updated:
 	 * to process the tuple in undo chain that is already discarded. See
 	 * GetTupleFromUndo.
 	 */
+	undorecord.uur_rmid = RM_ZHEAP_ID;
 	undorecord.uur_type = UNDO_DELETE;
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;
@@ -2477,6 +2479,7 @@ zheap_tuple_updated:
 		 * To prevent concurrent sessions from updating the tuple, we have to
 		 * temporarily mark it locked, while we release the lock.
 		 */
+		undorecord.uur_rmid = RM_ZHEAP_ID;
 		undorecord.uur_info = 0;
 		undorecord.uur_prevlen = 0;
 		undorecord.uur_reloid = relation->rd_id;
@@ -2853,6 +2856,7 @@ reacquire_buffer:
 	 * don't try to process the tuple in undo chain that is already discarded.
 	 * See GetTupleFromUndo.
 	 */
+	undorecord.uur_rmid = RM_ZHEAP_ID;
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;
 	undorecord.uur_reloid = relation->rd_id;
@@ -2970,6 +2974,7 @@ reacquire_buffer:
 		undorecord.uur_payload.len = payload_len;
 
 		/* prepare an undo record for new tuple */
+		new_undorecord.uur_rmid = RM_ZHEAP_ID;
 		new_undorecord.uur_type = UNDO_INSERT;
 		new_undorecord.uur_info = 0;
 		new_undorecord.uur_prevlen = 0;
@@ -5326,6 +5331,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	 * to process the tuple in undo chain that is already discarded. See
 	 * GetTupleFromUndo.
 	 */
+	undorecord.uur_rmid = RM_ZHEAP_ID;
 	if (ZHeapTupleHasMultiLockers(new_infomask))
 		undorecord.uur_type = UNDO_XID_MULTI_LOCK_ONLY;
 	else if (lockopr == LockForUpdate)
@@ -7995,6 +8001,7 @@ reacquire_buffer:
 			for (i = 0; i < zfree_offset_ranges->nranges; i++)
 			{
 				/* prepare an undo record */
+				undorecord[i].uur_rmid = RM_ZHEAP_ID;
 				undorecord[i].uur_type = UNDO_MULTI_INSERT;
 				undorecord[i].uur_info = 0;
 				undorecord[i].uur_prevlen = 0;	/* Fixme - need to figure out

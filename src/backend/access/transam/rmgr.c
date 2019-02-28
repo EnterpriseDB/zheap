@@ -23,6 +23,7 @@
 #include "access/undolog_xlog.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
+#include "access/zheap.h"
 #include "access/zheapam_xlog.h"
 #include "catalog/storage_xlog.h"
 #include "commands/dbcommands_xlog.h"
@@ -34,8 +35,8 @@
 #include "utils/relmapper.h"
 
 /* must be kept in sync with RmgrData definition in xlog_internal.h */
-#define PG_RMGR(symname,name,redo,desc,identify,startup,cleanup,mask) \
-	{ name, redo, desc, identify, startup, cleanup, mask },
+#define PG_RMGR(symname,name,redo,desc,identify,startup,cleanup,mask,undo,undo_desc) \
+	{ name, redo, desc, identify, startup, cleanup, mask, undo, undo_desc },
 
 const RmgrData RmgrTable[RM_MAX_ID + 1] = {
 #include "access/rmgrlist.h"

@@ -42,6 +42,7 @@ typedef enum undorectype
  */
 typedef struct UndoRecordHeader
 {
+	RmgrId		urec_rmid;		/* RMGR [XXX:TODO: this creates an alignment hole?] */
 	uint8		urec_type;		/* record type code */
 	uint8		urec_info;		/* flag bits */
 	uint16		urec_prevlen;	/* length of previous record in bytes */
@@ -175,6 +176,7 @@ typedef struct UndoRecordPayload
  */
 typedef struct UnpackedUndoRecord
 {
+	RmgrId		uur_rmid;		/* rmgr ID */
 	uint8		uur_type;		/* record type code */
 	uint8		uur_info;		/* flag bits */
 	uint16		uur_prevlen;	/* length of previous record */
