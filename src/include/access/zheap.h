@@ -240,5 +240,10 @@ extern void zbuffer_exec_pending_rollback(Relation rel, Buffer buf,
 struct VacuumParams;
 extern void lazy_vacuum_zheap_rel(Relation onerel, int options,
 					  struct VacuumParams *params, BufferAccessStrategy bstrategy);
+/* in zheap/zundo.c */
+extern bool zheap_undo_actions(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
+							   TransactionId xid, BlockNumber blkno,
+							   bool blk_chain_complete, bool rellock);
+
 
 #endif							/* ZHEAP_H */

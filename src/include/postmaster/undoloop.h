@@ -70,6 +70,13 @@ typedef struct RollbackHashEntry
 	Oid		   dbid;
 } RollbackHashEntry;
 
+/* undo record information */
+typedef struct UndoRecInfo
+{
+	UndoRecPtr	urp;	/* undo recptr (undo record location). */
+	UnpackedUndoRecord	*uur;	/* actual undo record. */
+} UndoRecInfo;
+
 extern bool RollbackHTIsFull(void);
 
 /* To push the rollback requests from backend to the respective hash table */

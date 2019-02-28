@@ -278,6 +278,7 @@ reacquire_slot:
 	}
 
 	/* prepare an undo record */
+	undorecord.uur_rmid = RM_ZHEAP_ID;
 	undorecord.uur_type = UNDO_ITEMID_UNUSED;
 	undorecord.uur_info = 0;
 	undorecord.uur_prevlen = 0;
