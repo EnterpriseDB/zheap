@@ -552,7 +552,21 @@ zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no,
 	UndoRecPtr	urec_ptr;
 	TransactionId xid;
 	uint32		epoch;
+	Page		page;
+	PageHeader	phdr;
 	int			out_slot_no PG_USED_FOR_ASSERTS_ONLY;
+
+
+	page = BufferGetPage(buffer);
+	phdr = (PageHeader) page;
+
+	/*
+	 * If the caller reaquired the lock before calling this function, rollback
+	 * could have been performed by some other backend or the undo-worker.  In
+	 * that case, the TPD entry can be pruned away.
+	 */
+	if (slot_no >= ZHEAP_PAGE_TRANS_SLOTS && !ZHeapPageHasTPDSlot(phdr))
+		return false;
 
 	out_slot_no = GetTransactionSlotInfo(buffer,
 										 InvalidOffsetNumber,
@@ -563,8 +577,14 @@ zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no,
 										 true,
 										 true);
 
-	/* As the rollback is pending, the slot can't be frozen. */
-	Assert(out_slot_no != ZHTUP_SLOT_FROZEN);
+	/*
+	 * If the caller reaquired the lock before calling this function, rollback
+	 * could have been performed by some other backend or the undo-worker.  In
+	 * that case, the TPD slot can be frozen since the TPD entry can be pruned
+	 * away.
+	 */
+	Assert(out_slot_no != ZHTUP_SLOT_FROZEN ||
+		   (ZHeapPageHasTPDSlot(phdr) && slot_no >= ZHEAP_PAGE_TRANS_SLOTS));
 
 	if (xwait != xid)
 		return false;
