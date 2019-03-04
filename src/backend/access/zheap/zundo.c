@@ -381,7 +381,6 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 	Page		page;
 	TransactionId xid;
 	TransactionId prev_undo_xid = InvalidTransactionId;
-	uint32		epoch;
 	int			trans_slot_id = InvalidXactSlotId;
 	int			prev_trans_slot_id;
 	OffsetNumber offnum;
@@ -421,19 +420,17 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		 */
 		zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 		zhtup.t_len = ItemIdGetLength(lp);
-		trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup.t_data);
-		trans_slot_id = GetTransactionSlotInfo(buf, offnum, trans_slot_id,
-											   &epoch, &xid, &urec_ptr, true,
-											   false);
+
+		/*
+		 * We've to call ZHeapTupleGetTransInfo to fetch the xact info of the
+		 * tuple since the tuple can be marked with invalid xact flag.
+		 */
+		ZHeapTupleGetTransInfo(&zhtup, buf, &trans_slot_id, NULL, &xid, NULL,
+							   &urec_ptr, false, InvalidSnapshot);
 	}
 	else
 	{
 		ZHeapTuple	vis_tuple;
-
-		trans_slot_id = ItemIdGetTransactionSlot(lp);
-		trans_slot_id = GetTransactionSlotInfo(buf, offnum, trans_slot_id,
-											   &epoch, &xid, &urec_ptr, true,
-											   false);
 
 		/*
 		 * XXX for now we shall get a visible undo tuple for the given dirty
@@ -446,6 +443,13 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		Assert(vis_tuple != NULL);
 		zhtup.t_data = vis_tuple->t_data;
 		zhtup.t_len = vis_tuple->t_len;
+
+		/*
+		 * We've to call ZHeapTupleGetTransInfo to fetch the xact info of the
+		 * tuple since the tuple can be marked with invalid xact flag.
+		 */
+		ZHeapTupleGetTransInfo(&zhtup, buf, &trans_slot_id, NULL, &xid, NULL,
+							   &urec_ptr, false, InvalidSnapshot);
 	}
 
 	/*
@@ -466,7 +470,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 	 * Current xid on tuple must not precede RecentGlobalXmin as it will be
 	 * greater than priorXmax which was not visible to our snapshot.
 	 */
-	Assert(TransactionIdEquals(xid, InvalidTransactionId) ||
+	Assert(TransactionIdIsValid(xid) &&
 		   !TransactionIdPrecedes(xid, RecentGlobalXmin));
 
 	do
@@ -502,6 +506,8 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		Assert(!TransactionIdPrecedes(urec->uur_prevxid, RecentGlobalXmin));
 
 		prev_undo_xid = urec->uur_prevxid;
+		urec_ptr = urec->uur_blkprev;
+		UndoRecordRelease(urec);
 
 		/*
 		 * Change the undo chain if the undo tuple is stamped with the
@@ -518,10 +524,16 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 												   true,
 												   true);
 		}
-		else
-			urec_ptr = urec->uur_blkprev;
 
-		UndoRecordRelease(urec);
+		/*
+		 * If the tuple has invalid xact flag, we may have to fetch the correct
+		 * xact info from other slot.
+		 */
+		if (ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
+		{
+			FetchTransInfoFromUndo(undo_tup, NULL, &prev_undo_xid, NULL, &urec_ptr, true);
+		}
+
 		urec = NULL;
 	} while (UndoRecPtrIsValid(urec_ptr));
 
