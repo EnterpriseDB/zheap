@@ -5709,6 +5709,14 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 		if (single_locker_xid != add_to_xid)
 		{
 			new_infomask |= ZHEAP_MULTI_LOCKERS;
+			/*
+			 * If the tuple has multilocker and we're locking the tuple for
+			 * update, we insert multilocker type of undo instead of
+			 * lock-for-update undo.  For multilocker undo, we keep the old
+			 * tuple slot as it is.
+			 */
+			if (lockoper == LockForUpdate)
+				new_trans_slot = tup_trans_slot;
 		}
 
 		old_mode = get_old_lock_mode(old_infomask);
