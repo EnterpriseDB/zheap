@@ -102,9 +102,12 @@ fetch_prior_undo:
 	 */
 	if (epoch)
 		*epoch = GetEpochForXid(urec->uur_xid);
-	*xid = urec->uur_xid;
-	*cid = urec->uur_cid;
-	*urec_ptr = urec_ptr_out;
+	if (xid)
+		*xid = urec->uur_xid;
+	if (cid)
+		*cid = urec->uur_cid;
+	if (urec_ptr)
+		*urec_ptr = urec_ptr_out;
 
 	if (skip_lockers &&
 		(urec->uur_type == UNDO_XID_LOCK_ONLY ||
