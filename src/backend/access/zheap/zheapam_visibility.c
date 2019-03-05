@@ -110,7 +110,6 @@ fetch_prior_undo:
 
 	if (skip_lockers &&
 		(urec->uur_type == UNDO_XID_LOCK_ONLY ||
-		 urec->uur_type == UNDO_XID_LOCK_FOR_UPDATE ||
 		 urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY))
 	{
 		*xid = InvalidTransactionId;
