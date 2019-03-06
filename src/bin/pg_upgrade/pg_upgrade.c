@@ -139,6 +139,8 @@ main(int argc, char **argv)
 
 	/* New now using xids of the old system */
 
+	merge_undo_logs();
+
 	/* -- NEW -- */
 	start_postmaster(&new_cluster, true);
 

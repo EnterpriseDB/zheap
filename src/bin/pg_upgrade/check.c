@@ -21,6 +21,7 @@ static void check_locale_and_encoding(DbInfo *olddb, DbInfo *newdb);
 static bool equivalent_locale(int category, const char *loca, const char *locb);
 static void check_is_install_user(ClusterInfo *cluster);
 static void check_proper_datallowconn(ClusterInfo *cluster);
+static void check_for_undo_data(ClusterInfo *cluster);
 static void check_for_prepared_transactions(ClusterInfo *cluster);
 static void check_for_isn_and_int8_passing_mismatch(ClusterInfo *cluster);
 static void check_for_tables_with_oids(ClusterInfo *cluster);
@@ -97,6 +98,7 @@ check_and_dump_old_cluster(bool live_check)
 	 */
 	check_is_install_user(&old_cluster);
 	check_proper_datallowconn(&old_cluster);
+	check_for_undo_data(&old_cluster);
 	check_for_prepared_transactions(&old_cluster);
 	check_for_reg_data_type_usage(&old_cluster);
 	check_for_isn_and_int8_passing_mismatch(&old_cluster);
@@ -171,6 +173,7 @@ check_new_cluster(void)
 
 	check_is_install_user(&new_cluster);
 
+	check_for_undo_data(&new_cluster);
 	check_for_prepared_transactions(&new_cluster);
 }
 
@@ -790,6 +793,46 @@ check_for_prepared_transactions(ClusterInfo *cluster)
 			pg_fatal("The source cluster contains prepared transactions\n");
 		else
 			pg_fatal("The target cluster contains prepared transactions\n");
+	}
+
+	PQclear(res);
+
+	PQfinish(conn);
+
+	check_ok();
+}
+
+
+/*
+ *	check_for_live_undo_data()
+ *
+ *	Make sure there are no live undo records (aborted transactions that have
+ *	not been rolled back, or committed transactions whose undo data has not
+ *	yet been discarded).
+ */
+static void
+check_for_undo_data(ClusterInfo *cluster)
+{
+	PGresult   *res;
+	PGconn	   *conn;
+
+	if (GET_MAJOR_VERSION(old_cluster.major_version) < 1300)
+		return;
+
+	conn = connectToServer(cluster, "template1");
+	prep_status("Checking for undo data");
+
+	res = executeQueryOrDie(conn,
+							"SELECT * "
+							"FROM pg_catalog.pg_stat_undo_logs "
+							"WHERE discard != insert");
+
+	if (PQntuples(res) != 0)
+	{
+		if (cluster == &old_cluster)
+			pg_fatal("The source cluster contains live undo data\n");
+		else
+			pg_fatal("The target cluster contains live undo data\n");
 	}
 
 	PQclear(res);

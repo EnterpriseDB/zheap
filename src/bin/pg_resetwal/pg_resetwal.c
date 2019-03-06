@@ -80,6 +80,7 @@ static bool ReadControlFile(void);
 static void GuessControlValues(void);
 static void PrintControlValues(bool guessed);
 static void PrintNewControlValues(void);
+static void AdjustRedoLocation(const char *DataDir);
 static void RewriteControlFile(void);
 static void FindEndOfXLOG(void);
 static void KillExistingXLOG(void);
@@ -510,6 +511,7 @@ main(int argc, char *argv[])
 	/*
 	 * Else, do the dirty deed.
 	 */
+	AdjustRedoLocation(DataDir);
 	RewriteControlFile();
 	KillExistingXLOG();
 	KillExistingArchiveStatus();
@@ -888,6 +890,80 @@ PrintNewControlValues(void)
 	}
 }
 
+
+/*
+ * Compute the new redo, and move the pg_undo file to match if necessary.
+ * Rather than renaming it, we'll create a new copy, so that a failure that
+ * occurs before the controlfile is rewritten won't be fatal.
+ */
+static void
+AdjustRedoLocation(const char *DataDir)
+{
+	uint64		old_redo = ControlFile.checkPointCopy.redo;
+	char		old_pg_undo_path[MAXPGPATH];
+	char		new_pg_undo_path[MAXPGPATH];
+	int			old_fd;
+	int			new_fd;
+	ssize_t		nread;
+	ssize_t		nwritten;
+	char		buffer[1024];
+
+	/*
+	 * Adjust fields as needed to force an empty XLOG starting at
+	 * newXlogSegNo.
+	 */
+	XLogSegNoOffsetToRecPtr(newXlogSegNo, SizeOfXLogLongPHD, WalSegSz,
+							ControlFile.checkPointCopy.redo);
+
+	/* If the redo location didn't move, we don't need to do anything. */
+	if (old_redo == ControlFile.checkPointCopy.redo)
+		return;
+
+	/*
+	 * Otherwise we copy the pg_undo file, because its name must match the redo
+	 * location.
+	 */
+	snprintf(old_pg_undo_path,
+			 sizeof(old_pg_undo_path),
+			 "pg_undo/%016" INT64_MODIFIER "X",
+			 old_redo);
+	snprintf(new_pg_undo_path,
+			 sizeof(new_pg_undo_path),
+			 "pg_undo/%016" INT64_MODIFIER "X",
+			 ControlFile.checkPointCopy.redo);
+	old_fd = open(old_pg_undo_path, O_RDONLY, 0);
+	if (old_fd < 0)
+	{
+		pg_log_error("could not open \"%s\": %m", old_pg_undo_path);
+		exit(1);
+	}
+	new_fd = open(new_pg_undo_path, O_RDWR | O_CREAT, 0644);
+	if (new_fd < 0)
+	{
+		pg_log_error("could not create \"%s\": %m", new_pg_undo_path);
+		exit(1);
+	}
+	while ((nread = read(old_fd, buffer, sizeof(buffer))) > 0)
+	{
+		do
+		{
+			nwritten = write(new_fd, buffer, nread);
+			if (nwritten < 0)
+			{
+				pg_log_error("could not write to \"%s\": %m", new_pg_undo_path);
+				exit(1);
+			}
+			nread -= nwritten;
+		} while (nread > 0);
+	}
+	if (nread < 0)
+	{
+		pg_log_error("could not read from \"%s\": %m", old_pg_undo_path);
+		exit(1);
+	}
+	close(old_fd);
+	close(new_fd);
+}
 
 /*
  * Write out the new pg_control file.

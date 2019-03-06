@@ -70,6 +70,9 @@ typedef struct SMgrRelationData
 	int			md_num_open_segs[MAX_FORKNUM + 1];
 	struct _MdfdVec *md_seg_fds[MAX_FORKNUM + 1];
 
+	/* For use by implementations. */
+	void	   *private_data;
+
 	/* if unowned, list link in list of all unowned SMgrRelations */
 	dlist_node	node;
 } SMgrRelationData;

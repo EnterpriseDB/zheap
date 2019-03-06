@@ -1,17 +1,17 @@
 #-------------------------------------------------------------------------
 #
 # Makefile--
-#    Makefile for storage/smgr
+#    Makefile for access/undo
 #
 # IDENTIFICATION
-#    src/backend/storage/smgr/Makefile
+#    src/backend/access/undo/Makefile
 #
 #-------------------------------------------------------------------------
 
-subdir = src/backend/storage/smgr
+subdir = src/backend/access/undo
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = md.o smgr.o undofile.o
+OBJS = undolog.o
 
 include $(top_srcdir)/src/backend/common.mk

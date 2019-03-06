@@ -10701,4 +10701,11 @@
   proname => 'pg_partition_root', prorettype => 'regclass',
   proargtypes => 'regclass', prosrc => 'pg_partition_root' },
 
+# undo logs
+{ oid => '5032', descr => 'list undo logs',
+  proname => 'pg_stat_get_undo_logs', procost => '1', prorows => '10', proretset => 't',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{oid,text,text,text,text,text,xid,int4,text}', proargmodes => '{o,o,o,o,o,o,o,o,o}',
+  proargnames => '{logno,category,tablespace,discard,insert,end,xid,pid,status}', prosrc => 'pg_stat_get_undo_logs' },
+
 ]

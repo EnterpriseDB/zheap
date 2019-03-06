@@ -59,6 +59,7 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 	bool		got_date_is_int = false;
 	bool		got_data_checksum_version = false;
 	bool		got_cluster_state = false;
+	bool		got_redo_location = false;
 	char	   *lc_collate = NULL;
 	char	   *lc_ctype = NULL;
 	char	   *lc_monetary = NULL;
@@ -485,6 +486,23 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 			cluster->controldata.data_checksum_version = str2uint(p);
 			got_data_checksum_version = true;
 		}
+		else if ((p = strstr(bufin, "Latest checkpoint's REDO location:")) != NULL)
+		{
+			uint32		hi;
+			uint32		lo;
+
+			p = strchr(p, ':');
+
+			if (p == NULL || strlen(p) <= 1)
+				pg_fatal("%d: controldata retrieval problem\n", __LINE__);
+
+			p++;				/* remove ':' char */
+
+			if (sscanf(p, "%X/%X", &hi, &lo) != 2)
+				pg_fatal("%d: controldata cannot parse REDO location\n", __LINE__);
+			cluster->controldata.redo_location = (((uint64) hi) << 32) | lo;
+			got_redo_location = true;
+		}
 	}
 
 	pclose(output);
@@ -527,6 +545,13 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 			got_nextxlogfile = true;
 		}
 	}
+
+	/*
+	 * If we used pg_resetwal instead of pg_controldata, there is no REDO
+	 * location.
+	 */
+	if (!got_redo_location)
+		cluster->controldata.redo_location = 0;
 
 	/* verify that we got all the mandatory pg_control data */
 	if (!got_xid || !got_oid ||

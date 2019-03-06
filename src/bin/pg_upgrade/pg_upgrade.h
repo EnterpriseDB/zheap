@@ -227,6 +227,7 @@ typedef struct
 	bool		date_is_int;
 	bool		float8_pass_by_value;
 	bool		data_checksum_version;
+	uint64		redo_location;
 } ControlData;
 
 /*
@@ -465,3 +466,7 @@ void		parallel_transfer_all_new_dbs(DbInfoArr *old_db_arr, DbInfoArr *new_db_arr
 										  char *old_pgdata, char *new_pgdata,
 										  char *old_tablespace);
 bool		reap_child(bool wait_for_child);
+
+/* undo.c */
+
+void		merge_undo_logs(void);

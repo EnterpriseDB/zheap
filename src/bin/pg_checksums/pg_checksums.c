@@ -167,7 +167,7 @@ skipfile(const char *fn)
 }
 
 static void
-scan_file(const char *fn, BlockNumber segmentno)
+scan_file(const char *fn, BlockNumber first_blkno)
 {
 	PGAlignedBlock buf;
 	PageHeader	header = (PageHeader) buf.data;
@@ -208,7 +208,7 @@ scan_file(const char *fn, BlockNumber segmentno)
 		if (PageIsNew(header))
 			continue;
 
-		csum = pg_checksum_page(buf.data, blockno + segmentno * RELSEG_SIZE);
+		csum = pg_checksum_page(buf.data, blockno + first_blkno);
 		current_size += r;
 		if (mode == PG_MODE_CHECK)
 		{
@@ -310,7 +310,7 @@ scan_directory(const char *basedir, const char *subdir, bool sizeonly)
 			char		fnonly[MAXPGPATH];
 			char	   *forkpath,
 					   *segmentpath;
-			BlockNumber segmentno = 0;
+			BlockNumber first_blkno;
 
 			if (skipfile(de->d_name))
 				continue;
@@ -325,15 +325,22 @@ scan_directory(const char *basedir, const char *subdir, bool sizeonly)
 			segmentpath = strchr(fnonly, '.');
 			if (segmentpath != NULL)
 			{
+				char	   *end;
+
 				*segmentpath++ = '\0';
-				segmentno = atoi(segmentpath);
-				if (segmentno == 0)
+				if (strstr(segmentpath, "undo"))
+					first_blkno = strtol(segmentpath, &end, 16) / BLCKSZ;
+				else
+					first_blkno = strtol(segmentpath, &end, 10) * RELSEG_SIZE;
+				if (*end != '\0')
 				{
-					pg_log_error("invalid segment number %d in file name \"%s\"",
-								 segmentno, fn);
+					pg_log_error("invalid segment number in file name \"%s\"",
+								 fn);
 					exit(1);
 				}
 			}
+			else
+				first_blkno = 0;
 
 			forkpath = strchr(fnonly, '_');
 			if (forkpath != NULL)
@@ -350,7 +357,7 @@ scan_directory(const char *basedir, const char *subdir, bool sizeonly)
 			 * the items in the data folder.
 			 */
 			if (!sizeonly)
-				scan_file(fn, segmentno);
+				scan_file(fn, first_blkno);
 		}
 #ifndef WIN32
 		else if (S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode))
