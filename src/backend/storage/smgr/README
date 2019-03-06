@@ -10,16 +10,14 @@ memory, but these were never supported in any externally released Postgres,
 nor in any version of PostgreSQL.)  The "magnetic disk" manager is itself
 seriously misnamed, because actually it supports any kind of device for
 which the operating system provides standard filesystem operations; which
-these days is pretty much everything of interest.  However, we retain the
-notion of a storage manager switch in case anyone ever wants to reintroduce
-other kinds of storage managers.  Removing the switch layer would save
-nothing noticeable anyway, since storage-access operations are surely far
-more expensive than one extra layer of C function calls.
+these days is pretty much everything of interest.  However, we retained the
+notion of a storage manager switch and it turned out to be useful for plugging
+in a new storage manager to support buffered undo logs.
 
 In Berkeley Postgres each relation was tagged with the ID of the storage
-manager to use for it.  This is gone.  It would be probably more reasonable
-to associate storage managers with tablespaces, should we ever re-introduce
-multiple storage managers into the system catalogs.
+manager to use for it.  This is gone.  While earlier PostgreSQL releases were
+hard coded to use md.c unconditionally, in PostgreSQL 13 storage managers
+can be defined that access other types of data files through shared buffers.
 
 The files in this directory, and their contents, are
 
@@ -28,10 +26,19 @@ The files in this directory, and their contents, are
 		accesses requested by higher-level code.  smgr.c also manages
 		the file handle cache (SMgrRelation table).
 
-    md.c	The "magnetic disk" storage manager, which is really just
-		an interface to the kernel's filesystem operations.
+    md.c	The storage manager for regular relations (tables and
+		indexes).
+
+    undo_file.c The undo log storage manager.  This supports
+		buffer-pool based access to the contents of undo log
+		segment files.  It supports a limited subset of the
+		smgr interface: it can only read and write blocks of
+		existing files.
 
 Note that md.c in turn relies on src/backend/storage/file/fd.c.
+undo_file.c also uses fd.c to read and write blocks, but it expects
+src/backend/access/undo/undolog.c to manage the files holding those
+blocks.
 
 
 Relation Forks
