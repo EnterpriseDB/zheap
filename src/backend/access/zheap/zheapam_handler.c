@@ -773,11 +773,12 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 	/*
 	 * Scan all tuples in the base relation.
 	 */
-	/* ZBORKED: move to slot API */
-	while ((zheapTuple = zheap_getnext(sscan, ForwardScanDirection)) != NULL)
+	while (zheap_getnextslot(sscan, ForwardScanDirection, slot))
 	{
 		bool		tupleIsAlive;
 		ZHeapTuple	targztuple = NULL;
+
+		zheapTuple = ExecGetZHeapTupleFromSlot(slot);
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -972,10 +973,6 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 		reltuples += 1;
 
 		MemoryContextReset(econtext->ecxt_per_tuple_memory);
-
-		/* Set up for predicate or expression evaluation */
-		/* ZBORKED: shouldfree = true if !scan->rs_pagescan.rs_pageatatime */
-		ExecStoreZTuple(zheapTuple, slot, InvalidBuffer, false);
 
 		/*
 		 * In a partial index, discard tuples that don't satisfy the
