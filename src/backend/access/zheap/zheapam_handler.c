@@ -65,7 +65,7 @@ zheapam_fetch_row_version(Relation relation,
 						  Relation stats_relation)
 {
 	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
-	Buffer buffer;
+	Buffer		buffer;
 
 	ExecClearTuple(slot);
 
@@ -122,7 +122,7 @@ zheapam_insert_speculative(Relation relation, TupleTableSlot *slot, CommandId ci
 
 static void
 zheapam_complete_speculative(Relation relation, TupleTableSlot *slot, uint32 spekToken,
-								  bool succeeded)
+							 bool succeeded)
 {
 	ZHeapTuple	tuple = ExecGetZHeapTupleFromSlot(slot);
 
@@ -142,9 +142,9 @@ zheapam_delete(Relation relation, ItemPointer tid, CommandId cid,
 			   HeapUpdateFailureData *hufd, bool changingPart)
 {
 	/*
-	 * Currently Deleting of index tuples are handled at vacuum, in case
-	 * if the storage itself is cleaning the dead tuples by itself, it is
-	 * the time to call the index tuple deletion also.
+	 * Currently Deleting of index tuples are handled at vacuum, in case if
+	 * the storage itself is cleaning the dead tuples by itself, it is the
+	 * time to call the index tuple deletion also.
 	 */
 	return zheap_delete(relation, tid, cid, crosscheck, snapshot, wait, hufd, changingPart);
 }
@@ -181,15 +181,15 @@ zheapam_delete(Relation relation, ItemPointer tid, CommandId cid,
  */
 static HTSU_Result
 zheapam_lock_tuple(Relation relation, ItemPointer tid, Snapshot snapshot,
-				TupleTableSlot *slot, CommandId cid, LockTupleMode mode,
-				LockWaitPolicy wait_policy, uint8 flags,
-				HeapUpdateFailureData *hufd)
+				   TupleTableSlot *slot, CommandId cid, LockTupleMode mode,
+				   LockWaitPolicy wait_policy, uint8 flags,
+				   HeapUpdateFailureData *hufd)
 {
 	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
-	HTSU_Result		result;
-	Buffer			buffer;
-	ZHeapTuple		tuple = &zslot->tupdata;
-	bool			doWeirdEval = (flags & TUPLE_LOCK_FLAG_WEIRD) != 0;
+	HTSU_Result result;
+	Buffer		buffer;
+	ZHeapTuple	tuple = &zslot->tupdata;
+	bool		doWeirdEval = (flags & TUPLE_LOCK_FLAG_WEIRD) != 0;
 
 	hufd->traversed = false;
 
@@ -213,11 +213,11 @@ retry:
 		priorXmax = hufd->xmax;
 
 		/*
-		 * We should not encounter a speculative tuple on recheck.  Also,
-		 * for a deleted item pointer, tuple data is not initialized.
+		 * We should not encounter a speculative tuple on recheck.  Also, for
+		 * a deleted item pointer, tuple data is not initialized.
 		 */
 		Assert((tuple->t_len == 0) ||
-			  !(tuple->t_data->t_infomask & ZHEAP_SPECULATIVE_INSERT));
+			   !(tuple->t_data->t_infomask & ZHEAP_SPECULATIVE_INSERT));
 
 		if (ItemPointerEquals(&hufd->ctid, &tuple->t_self) &&
 			!hufd->in_place_updated_or_locked)
@@ -244,10 +244,11 @@ retry:
 			{
 				/*
 				 * Ensure that the tuple is same as what we are expecting.  If
-				 * the current or any prior version of tuple doesn't contain the
-				 * effect of priorXmax, then the slot must have been recycled and
-				 * reused for an unrelated tuple.  This implies that the latest
-				 * version of the row was deleted, so we need do nothing.
+				 * the current or any prior version of tuple doesn't contain
+				 * the effect of priorXmax, then the slot must have been
+				 * recycled and reused for an unrelated tuple.  This implies
+				 * that the latest version of the row was deleted, so we need
+				 * do nothing.
 				 */
 				if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax, true))
 				{
@@ -260,8 +261,8 @@ retry:
 					elog(ERROR, "t_xmin is uncommitted in tuple to be updated");
 
 				/*
-				 * If tuple is being updated by other (sub)transaction then we have to
-				 * wait for its commit/abort, or die trying.
+				 * If tuple is being updated by other (sub)transaction then we
+				 * have to wait for its commit/abort, or die trying.
 				 */
 				if (SnapshotDirty.subxid != InvalidSubTransactionId &&
 					TransactionIdIsValid(SnapshotDirty.xmax))
@@ -278,7 +279,7 @@ retry:
 						case LockWaitSkip:
 							if (!ConditionalSubXactLockTableWait(SnapshotDirty.xmax,
 																 SnapshotDirty.subxid))
-								return result;		/* skip instead of waiting */
+								return result;	/* skip instead of waiting */
 							break;
 						case LockWaitError:
 							if (ConditionalSubXactLockTableWait(SnapshotDirty.xmax,
@@ -290,7 +291,7 @@ retry:
 
 							break;
 					}
-					continue;		/* loop back to repeat zheap_fetch */
+					continue;	/* loop back to repeat zheap_fetch */
 				}
 				else if (TransactionIdIsValid(SnapshotDirty.xmax))
 				{
@@ -303,7 +304,7 @@ retry:
 							break;
 						case LockWaitSkip:
 							if (!ConditionalXactLockTableWait(SnapshotDirty.xmax))
-								return result;		/* skip instead of waiting */
+								return result;	/* skip instead of waiting */
 							break;
 						case LockWaitError:
 							if (!ConditionalXactLockTableWait(SnapshotDirty.xmax))
@@ -313,30 +314,33 @@ retry:
 												RelationGetRelationName(relation))));
 							break;
 					}
-					continue;		/* loop back to repeat zheap_fetch */
+					continue;	/* loop back to repeat zheap_fetch */
 				}
 
 				/*
-				 * If tuple was inserted by our own transaction, we have to check
-				 * cmin against es_output_cid: cmin >= current CID means our
-				 * command cannot see the tuple, so we should ignore it. Otherwise
-				 * zheap_lock_tuple() will throw an error, and so would any later
-				 * attempt to update or delete the tuple.  (We need not check cmax
-				 * because ZHeapTupleSatisfiesDirty will consider a tuple deleted
-				 * by our transaction dead, regardless of cmax.) We just checked
-				 * that priorXmax == xmin, so we can test that variable instead of
-				 * doing ZHeapTupleHeaderGetXid again.
+				 * If tuple was inserted by our own transaction, we have to
+				 * check cmin against es_output_cid: cmin >= current CID means
+				 * our command cannot see the tuple, so we should ignore it.
+				 * Otherwise zheap_lock_tuple() will throw an error, and so
+				 * would any later attempt to update or delete the tuple.  (We
+				 * need not check cmax because ZHeapTupleSatisfiesDirty will
+				 * consider a tuple deleted by our transaction dead,
+				 * regardless of cmax.) We just checked that priorXmax ==
+				 * xmin, so we can test that variable instead of doing
+				 * ZHeapTupleHeaderGetXid again.
 				 */
 				if (TransactionIdIsCurrentTransactionId(priorXmax))
 				{
-					CommandId tup_cid;
+					CommandId	tup_cid;
 
 					LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
 					/*
-					 * Fixme -If the tuple is updated such that its transaction slot
-					 * has been changed, then we will never be able to get the correct
-					 * tuple from undo.  To avoid, that we need to get the latest tuple
-					 * from page rather than relying on it's in-memory copy.  See
+					 * Fixme -If the tuple is updated such that its
+					 * transaction slot has been changed, then we will never
+					 * be able to get the correct tuple from undo.  To avoid,
+					 * that we need to get the latest tuple from page rather
+					 * than relying on it's in-memory copy.  See
 					 * ValidateTuplesXact.
 					 */
 					tup_cid = ZHeapTupleGetCid(tuple, buffer, InvalidUndoRecPtr,
@@ -345,7 +349,7 @@ retry:
 					{
 						hufd->cmax = tup_cid;
 						UnlockReleaseBuffer(buffer);
-						// ZBORKED: is this correct?
+						/* ZBORKED: is this correct? */
 						return HeapTupleSelfUpdated;
 					}
 					LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
@@ -358,8 +362,8 @@ retry:
 			}
 
 			/*
-			 * If we don't get any tuple, the latest version of the row must have
-			 * been deleted, so we need do nothing.
+			 * If we don't get any tuple, the latest version of the row must
+			 * have been deleted, so we need do nothing.
 			 */
 			if (tuple == NULL)
 			{
@@ -367,7 +371,10 @@ retry:
 				return HeapTupleDeleted;
 			}
 
-			/* Ensure that the tuple is same as what we are expecting as above. */
+			/*
+			 * Ensure that the tuple is same as what we are expecting as
+			 * above.
+			 */
 			if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax, true))
 			{
 				if (BufferIsValid(buffer))
@@ -393,9 +400,9 @@ retry:
 								   NULL, true, InvalidSnapshot);
 
 			/*
-			 * As we still hold a snapshot to which priorXmax is not visible, neither
-			 * the transaction slot on tuple can be marked as frozen nor the
-			 * corresponding undo be discarded.
+			 * As we still hold a snapshot to which priorXmax is not visible,
+			 * neither the transaction slot on tuple can be marked as frozen
+			 * nor the corresponding undo be discarded.
 			 */
 			Assert(TransactionIdIsValid(priorXmax));
 
@@ -408,7 +415,8 @@ retry:
 
 	slot->tts_tableOid = RelationGetRelid(relation);
 	ExecStoreZTuple(tuple, slot, buffer, false);
-	ReleaseBuffer(buffer); // FIXME: invent option to just transfer pin?
+	//FIXME:invent option to just transfer pin ?
+	ReleaseBuffer(buffer);
 
 	return result;
 }
@@ -468,11 +476,11 @@ zheapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot sn
 	Buffer		buffer;
 	Page		page;
 	ItemId		lp;
-	ItemPointer	tid;
-	ZHeapTupleData	zhtup;
-	ZHeapTuple tup;
-	Oid tableoid;
-	bool res;
+	ItemPointer tid;
+	ZHeapTupleData zhtup;
+	ZHeapTuple	tup;
+	Oid			tableoid;
+	bool		res;
 
 	Assert(TTS_IS_ZHEAP(slot));
 	Assert(zslot->tuple);
@@ -487,8 +495,8 @@ zheapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot sn
 	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
 
 	/*
-	 * Since the current transaction has inserted/updated the tuple, it
-	 * can't be deleted.
+	 * Since the current transaction has inserted/updated the tuple, it can't
+	 * be deleted.
 	 */
 	Assert(ItemIdIsNormal(lp));
 
@@ -530,7 +538,7 @@ zheapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot sn
 	return res;
 }
 
-static IndexFetchTableData*
+static IndexFetchTableData *
 zheapam_begin_index_fetch(Relation rel)
 {
 	IndexFetchHeapData *hscan = palloc0(sizeof(IndexFetchHeapData));
@@ -544,7 +552,7 @@ zheapam_begin_index_fetch(Relation rel)
 
 
 static void
-zheapam_reset_index_fetch(IndexFetchTableData* scan)
+zheapam_reset_index_fetch(IndexFetchTableData *scan)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
 
@@ -558,7 +566,7 @@ zheapam_reset_index_fetch(IndexFetchTableData* scan)
 }
 
 static void
-zheapam_end_index_fetch(IndexFetchTableData* scan)
+zheapam_end_index_fetch(IndexFetchTableData *scan)
 {
 	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
 
@@ -608,15 +616,15 @@ zheapam_fetch_follow(struct IndexFetchTableData *scan,
  */
 static double
 IndexBuildZHeapRangeScan(Relation heapRelation,
-						Relation indexRelation,
-						IndexInfo *indexInfo,
-						bool allow_sync,
-						bool anyvisible,
-						BlockNumber start_blockno,
-						BlockNumber numblocks,
-						IndexBuildCallback callback,
-						void *callback_state,
-						TableScanDesc sscan)
+						 Relation indexRelation,
+						 IndexInfo *indexInfo,
+						 bool allow_sync,
+						 bool anyvisible,
+						 BlockNumber start_blockno,
+						 BlockNumber numblocks,
+						 IndexBuildCallback callback,
+						 void *callback_state,
+						 TableScanDesc sscan)
 {
 	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
 	bool		is_system_catalog;
@@ -702,11 +710,11 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 		else
 			snapshot = SnapshotAny;
 
-		sscan = table_beginscan_strat(heapRelation,	/* relation */
-									  snapshot,	/* snapshot */
+		sscan = table_beginscan_strat(heapRelation, /* relation */
+									  snapshot, /* snapshot */
 									  0,	/* number of keys */
-									  NULL,	/* scan key */
-									  true,	/* buffer access strategy OK */
+									  NULL, /* scan key */
+									  true, /* buffer access strategy OK */
 									  allow_sync);	/* syncscan OK? */
 		scan = (ZHeapScanDesc) sscan;
 	}
@@ -755,7 +763,7 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 	while ((zheapTuple = zheap_getnext(sscan, ForwardScanDirection)) != NULL)
 	{
 		bool		tupleIsAlive;
-		ZHeapTuple		targztuple = NULL;
+		ZHeapTuple	targztuple = NULL;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -789,9 +797,10 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 					tupleIsAlive = true;
 					break;
 				case HEAPTUPLE_RECENTLY_DEAD:
+
 					/*
 					 * If tuple is recently deleted then we must index it
-					 * anyway to preserve MVCC semantics. (Pre-existing
+					 * anyway to preserve MVCC semantics. (Preexisting
 					 * transactions could try to use the index after we finish
 					 * building it, and may need to see such tuples.)
 					 */
@@ -930,7 +939,7 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 					break;
 				default:
 					elog(ERROR, "unexpected ZHeapTupleSatisfiesOldestXmin result");
-					indexIt = tupleIsAlive = false;		/* keep compiler quiet */
+					indexIt = tupleIsAlive = false; /* keep compiler quiet */
 					break;
 			}
 
@@ -974,16 +983,16 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 
 		/*
 		 * For the current tuple, extract all the attributes we use in this
-		 * index, and note which are null.  This also performs evaluation
-		 * of any expressions needed.
+		 * index, and note which are null.  This also performs evaluation of
+		 * any expressions needed.
 		 *
-		 * NOTE: We can't free the zheap tuple fetched by the scan method before
-		 * next iteration since this tuple is also referenced by scan->rs_cztup.
-		 * which is used by zheap scan API's to fetch the next tuple. But, for
-		 * forming and creating the index, we've to store the correct version of
-		 * the tuple in the slot. Hence, after forming the index and calling the
-		 * callback function, we restore the zheap tuple fetched by the scan
-		 * method in the slot.
+		 * NOTE: We can't free the zheap tuple fetched by the scan method
+		 * before next iteration since this tuple is also referenced by
+		 * scan->rs_cztup which is used by zheap scan API's to fetch the next
+		 * tuple. But, for forming and creating the index, we've to store the
+		 * correct version of the tuple in the slot. Hence, after forming the
+		 * index and calling the callback function, we restore the zheap tuple
+		 * fetched by the scan method in the slot.
 		 */
 		zslot->tuple = targztuple;
 		FormIndexDatum(indexInfo,
@@ -993,9 +1002,9 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 					   isnull);
 
 		/*
-		 * FIXME: buildCallback functions accepts heaptuple as an argument. But,
-		 * it needs only the tid. So, we set t_self for the zheap tuple and call
-		 * the AM's callback.
+		 * FIXME: buildCallback functions accepts heaptuple as an argument.
+		 * But, it needs only the tid. So, we set t_self for the zheap tuple
+		 * and call the AM's callback.
 		 */
 		heapTuple->t_self = zheapTuple->t_self;
 
@@ -1006,8 +1015,7 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 		zslot->tuple = zheapTuple;
 
 		/*
-		 * For SnapshotAny, targztuple is locally palloc'd above. So,
-		 * free it.
+		 * For SnapshotAny, targztuple is locally palloc'd above. So, free it.
 		 */
 		if (snapshot == SnapshotAny && targztuple != NULL)
 			pfree(targztuple);
@@ -1038,10 +1046,10 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
  */
 static void
 validate_index_zheapscan(Relation heapRelation,
-						Relation indexRelation,
-						IndexInfo *indexInfo,
-						Snapshot snapshot,
-						ValidateIndexState *state)
+						 Relation indexRelation,
+						 IndexInfo *indexInfo,
+						 Snapshot snapshot,
+						 ValidateIndexState * state)
 {
 	TableScanDesc sscan;
 	HeapScanDesc scan;
@@ -1083,12 +1091,12 @@ validate_index_zheapscan(Relation heapRelation,
 	 * here, because it's critical that we read from block zero forward to
 	 * match the sorted TIDs.
 	 */
-	sscan = table_beginscan_strat(heapRelation,	/* relation */
-								   snapshot,	/* snapshot */
-								   0,	/* number of keys */
-								   NULL,	/* scan key */
-								   true,	/* buffer access strategy OK */
-								   false);	/* syncscan not OK */
+	sscan = table_beginscan_strat(heapRelation, /* relation */
+								  snapshot, /* snapshot */
+								  0,	/* number of keys */
+								  NULL, /* scan key */
+								  true, /* buffer access strategy OK */
+								  false);	/* syncscan not OK */
 	scan = (HeapScanDesc) sscan;
 
 	/*
@@ -1143,7 +1151,7 @@ validate_index_zheapscan(Relation heapRelation,
 		}
 
 		/*
-		 * If the tuplesort has overshot *and* we didn't see a match earlier,
+		 * If the tuple sort has overshot *and* we didn't see a match earlier,
 		 * then this tuple is missing from the index, so insert it.
 		 */
 		if ((tuplesort_empty ||
@@ -1224,13 +1232,13 @@ zheapam_scan_analyze_next_block(TableScanDesc sscan, BlockNumber blockno, Buffer
 	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
 
 	/*
-	 * We must maintain a pin on the target page's buffer to ensure that
-	 * the maxoffset value stays good (else concurrent VACUUM might delete
-	 * tuples out from under us).  Hence, pin the page until we are done
-	 * looking at it.  We also choose to hold sharelock on the buffer
-	 * throughout --- we could release and re-acquire sharelock for each
-	 * tuple, but since we aren't doing much work per tuple, the extra
-	 * lock traffic is probably better avoided.
+	 * We must maintain a pin on the target page's buffer to ensure that the
+	 * maxoffset value stays good (else concurrent VACUUM might delete tuples
+	 * out from under us).  Hence, pin the page until we are done looking at
+	 * it.  We also choose to hold sharelock on the buffer throughout --- we
+	 * could release and re-acquire sharelock for each tuple, but since we
+	 * aren't doing much work per tuple, the extra lock traffic is probably
+	 * better avoided.
 	 */
 	scan->rs_cblock = blockno;
 	scan->rs_cindex = FirstOffsetNumber;
@@ -1271,16 +1279,15 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 	{
 		ItemId		itemid;
 		ZHeapTuple	targtuple;
-		Size        targztuple_len;
+		Size		targztuple_len;
 		bool		sample_it = false;
 		TransactionId xid;
 
 		itemid = PageGetItemId(targpage, scan->rs_cindex);
 
 		/*
-		 * For zheap, we need to count delete committed rows towards
-		 * dead rows which would have been same, if the tuple was
-		 * present in heap.
+		 * For zheap, we need to count delete committed rows towards dead rows
+		 * which would have been same, if the tuple was present in heap.
 		 */
 		if (ItemIdIsDeleted(itemid))
 		{
@@ -1289,10 +1296,10 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 		}
 
 		/*
-		 * We ignore unused and redirect line pointers.  DEAD line
-		 * pointers should be counted as dead, because we need vacuum to
-		 * run to get rid of them.  Note that this rule agrees with the
-		 * way that heap_page_prune() counts things.
+		 * We ignore unused and redirect line pointers.  DEAD line pointers
+		 * should be counted as dead, because we need vacuum to run to get rid
+		 * of them.  Note that this rule agrees with the way that
+		 * heap_page_prune() counts things.
 		 */
 		if (!ItemIdIsNormal(itemid))
 		{
@@ -1330,23 +1337,22 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 			case HEAPTUPLE_INSERT_IN_PROGRESS:
 
 				/*
-				 * Insert-in-progress rows are not counted.  We assume
-				 * that when the inserting transaction commits or aborts,
-				 * it will send a stats message to increment the proper
-				 * count.  This works right only if that transaction ends
-				 * after we finish analyzing the table; if things happen
-				 * in the other order, its stats update will be
-				 * overwritten by ours.  However, the error will be large
-				 * only if the other transaction runs long enough to
-				 * insert many tuples, so assuming it will finish after us
-				 * is the safer option.
+				 * Insert-in-progress rows are not counted.  We assume that
+				 * when the inserting transaction commits or aborts, it will
+				 * send a stats message to increment the proper count.  This
+				 * works right only if that transaction ends after we finish
+				 * analyzing the table; if things happen in the other order,
+				 * its stats update will be overwritten by ours.  However, the
+				 * error will be large only if the other transaction runs long
+				 * enough to insert many tuples, so assuming it will finish
+				 * after us is the safer option.
 				 *
-				 * A special case is that the inserting transaction might
-				 * be our own.  In this case we should count and sample
-				 * the row, to accommodate users who load a table and
-				 * analyze it in one transaction.  (pgstat_report_analyze
-				 * has to adjust the numbers we send to the stats
-				 * collector to make this come out right.)
+				 * A special case is that the inserting transaction might be
+				 * our own.  In this case we should count and sample the row,
+				 * to accommodate users who load a table and analyze it in one
+				 * transaction.  (pgstat_report_analyze has to adjust the
+				 * numbers we send to the stats collector to make this come
+				 * out right.)
 				 */
 				if (TransactionIdIsCurrentTransactionId(xid))
 				{
@@ -1358,15 +1364,15 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 			case HEAPTUPLE_DELETE_IN_PROGRESS:
 
 				/*
-				 * We count delete-in-progress rows as still live, using
-				 * the same reasoning given above; but we don't bother to
-				 * include them in the sample.
+				 * We count delete-in-progress rows as still live, using the
+				 * same reasoning given above; but we don't bother to include
+				 * them in the sample.
 				 *
-				 * If the delete was done by our own transaction, however,
-				 * we must count the row as dead to make
-				 * pgstat_report_analyze's stats adjustments come out
-				 * right.  (Note: this works out properly when the row was
-				 * both inserted and deleted in our xact.)
+				 * If the delete was done by our own transaction, however, we
+				 * must count the row as dead to make pgstat_report_analyze's
+				 * stats adjustments come out right.  (Note: this works out
+				 * properly when the row was both inserted and deleted in our
+				 * xact.)
 				 */
 				if (TransactionIdIsCurrentTransactionId(xid))
 					*deadrows += 1;
@@ -1497,8 +1503,8 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 	Page		page;
 	bool		all_visible = false;
 	OffsetNumber maxoffset;
-	uint8       vmstatus;
-	Buffer      vmbuffer = InvalidBuffer;
+	uint8		vmstatus;
+	Buffer		vmbuffer = InvalidBuffer;
 
 	ExecClearTuple(slot);
 
@@ -1551,10 +1557,10 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 
 			if (!pagemode)
 			{
-				ItemId      itemid;
-				bool        visible;
-				ZHeapTuple loctup = NULL;
-				Size        loctup_len;
+				ItemId		itemid;
+				bool		visible;
+				ZHeapTuple	loctup = NULL;
+				Size		loctup_len;
 				ItemPointerData tid;
 
 				/* Skip invalid tuple pointers. */
@@ -1574,8 +1580,8 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 				loctup->t_self = tid;
 
 				/*
-				 * We always need to make a copy of zheap tuple as once we release
-				 * the buffer an in-place update can change the tuple.
+				 * We always need to make a copy of zheap tuple as once we
+				 * release the buffer an in-place update can change the tuple.
 				 */
 				memcpy(loctup->t_data,
 					   ((ZHeapTupleHeader) PageGetItem((Page) page, itemid)),
@@ -1601,8 +1607,8 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 				 * the called function.
 				 *
 				 * Note that, it's possible that tuple is updated in-place and
-				 * we're seeing some prior version of that. We handle that case
-				 * in ZHeapTupleHasSerializableConflictOut.
+				 * we're seeing some prior version of that. We handle that
+				 * case in ZHeapTupleHasSerializableConflictOut.
 				 */
 				CheckForSerializableConflictOut(visible, scan->rs_scan.rs_rd, (void *) &tid,
 												scan->rs_cbuf, scan->rs_scan.rs_snapshot);
@@ -1635,8 +1641,8 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 		else
 		{
 			/*
-			 * If we get here, it means we've exhausted the items on this page and
-			 * it's time to move to the next.
+			 * If we get here, it means we've exhausted the items on this page
+			 * and it's time to move to the next.
 			 */
 			if (!pagemode)
 				LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
@@ -1664,9 +1670,9 @@ zheapam_relation_nontransactional_truncate(Relation rel)
 
 static void
 zheap_copy_for_cluster(Relation OldHeap, Relation NewHeap, Relation OldIndex,
-					 bool use_sort,
-					 TransactionId OldestXmin, TransactionId FreezeXid, MultiXactId MultiXactCutoff,
-					 double *num_tuples, double *tups_vacuumed, double *tups_recently_dead)
+					   bool use_sort,
+					   TransactionId OldestXmin, TransactionId FreezeXid, MultiXactId MultiXactCutoff,
+					   double *num_tuples, double *tups_vacuumed, double *tups_recently_dead)
 {
 	RewriteZheapState rwstate;
 	IndexScanDesc indexScan;
@@ -1710,8 +1716,8 @@ zheap_copy_for_cluster(Relation OldHeap, Relation NewHeap, Relation OldIndex,
 	/*
 	 * Prepare to scan the OldHeap.
 	 *
-	 * We don't have a way to copy visibility information in zheap, so we
-	 * just copy LIVE tuples.  See comments atop rewritezheap.c
+	 * We don't have a way to copy visibility information in zheap, so we just
+	 * copy LIVE tuples.  See comments atop rewritezheap.c
 	 *
 	 * While scanning, we skip meta and tpd pages (done by *getnext API's)
 	 * which is okay because we mark the tuples as frozen.  However, when we
@@ -1829,7 +1835,7 @@ zheapam_set_new_filenode(Relation rel, char persistence,
 	ZheapInitMetaPage(rel, MAIN_FORKNUM, false);
 
 	/*
-	 * f required, set up an init fork for an unlogged table so that it can be
+	 * If required, set up an init fork for an unlogged table so that it can be
 	 * correctly reinitialized on restart.  An immediate sync is required even
 	 * if the page has been logged, because the write did not go through
 	 * shared_buffers and therefore a concurrent checkpoint may have moved the
@@ -1885,12 +1891,13 @@ zheapam_relation_copy_data(Relation rel, RelFileNode newrnode)
 				(rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED &&
 				 forkNum == INIT_FORKNUM))
 				log_smgrcreate(&newrnode, forkNum);
+
 			/*
 			 * In zheap, other forks don't have any undo operation associated
 			 * with them.  Hence, we don't need to undergo the costly process
-			 * of calling copy_zrelation_data where we read the buffers, perform
-			 * undo actions and then copy them.  We can simply copy the buffers
-			 * at smgr level.
+			 * of calling copy_zrelation_data where we read the buffers,
+			 * perform undo actions and then copy them.  We can simply copy
+			 * the buffers at smgr level.
 			 */
 			RelationCopyStorage(rel->rd_smgr, dstrel, forkNum,
 								rel->rd_rel->relpersistence);
@@ -1927,32 +1934,30 @@ zheapam_estimate_rel_size(Relation rel, int32 *attr_widths,
 		relpages--;
 
 	/*
-	 * HACK: if the relation has never yet been vacuumed, use a
-	 * minimum size estimate of 10 pages.  The idea here is to avoid
-	 * assuming a newly-created table is really small, even if it
-	 * currently is, because that may not be true once some data gets
-	 * loaded into it.  Once a vacuum or analyze cycle has been done
-	 * on it, it's more reasonable to believe the size is somewhat
-	 * stable.
+	 * HACK: if the relation has never yet been vacuumed, use a minimum size
+	 * estimate of 10 pages.  The idea here is to avoid assuming a
+	 * newly-created table is really small, even if it currently is, because
+	 * that may not be true once some data gets loaded into it.  Once a vacuum
+	 * or analyze cycle has been done on it, it's more reasonable to believe
+	 * the size is somewhat stable.
 	 *
-	 * (Note that this is only an issue if the plan gets cached and
-	 * used again after the table has been filled.  What we're trying
-	 * to avoid is using a nestloop-type plan on a table that has
-	 * grown substantially since the plan was made.  Normally,
-	 * autovacuum/autoanalyze will occur once enough inserts have
-	 * happened and cause cached-plan invalidation; but that doesn't
-	 * happen instantaneously, and it won't happen at all for cases
+	 * (Note that this is only an issue if the plan gets cached and used again
+	 * after the table has been filled.  What we're trying to avoid is using a
+	 * nestloop-type plan on a table that has grown substantially since the
+	 * plan was made.  Normally, autovacuum/autoanalyze will occur once enough
+	 * inserts have happened and cause cached-plan invalidation; but that
+	 * doesn't happen instantaneously, and it won't happen at all for cases
 	 * such as temporary tables.)
 	 *
-	 * We approximate "never vacuumed" by "has relpages = 0", which
-	 * means this will also fire on genuinely empty relations.  Not
-	 * great, but fortunately that's a seldom-seen case in the real
-	 * world, and it shouldn't degrade the quality of the plan too
-	 * much anyway to err in this direction.
+	 * We approximate "never vacuumed" by "has relpages = 0", which means this
+	 * will also fire on genuinely empty relations.  Not great, but
+	 * fortunately that's a seldom-seen case in the real world, and it
+	 * shouldn't degrade the quality of the plan too much anyway to err in
+	 * this direction.
 	 *
-	 * If the table has inheritance children, we don't apply this
-	 * heuristic. Totally empty parent tables are quite common, so we should
-	 * be willing to believe that they are empty.
+	 * If the table has inheritance children, we don't apply this heuristic.
+	 * Totally empty parent tables are quite common, so we should be willing
+	 * to believe that they are empty.
 	 */
 	if (curpages < 10 &&
 		relpages == 0 &&
@@ -1975,19 +1980,17 @@ zheapam_estimate_rel_size(Relation rel, int32 *attr_widths,
 	else
 	{
 		/*
-		 * When we have no data because the relation was truncated,
-		 * estimate tuple width from attribute data types.  We assume
-		 * here that the pages are completely full, which is OK for
-		 * tables (since they've presumably not been vacuumed yet) but
-		 * is probably an overestimate for indexes.  Fortunately
-		 * get_relation_info() can clamp the overestimate to the
-		 * parent table's size.
+		 * When we have no data because the relation was truncated, estimate
+		 * tuple width from attribute data types.  We assume here that the
+		 * pages are completely full, which is OK for tables (since they've
+		 * presumably not been vacuumed yet) but is probably an overestimate
+		 * for indexes.  Fortunately get_relation_info() can clamp the
+		 * overestimate to the parent table's size.
 		 *
-		 * Note: this code intentionally disregards alignment
-		 * considerations, because (a) that would be gilding the lily
-		 * considering how crude the estimate is, and (b) it creates
-		 * platform dependencies in the default plans which are kind
-		 * of a headache for regression testing.
+		 * Note: this code intentionally disregards alignment considerations,
+		 * because (a) that would be gilding the lily considering how crude
+		 * the estimate is, and (b) it creates platform dependencies in the
+		 * default plans which are kind of a headache for regression testing.
 		 */
 		int32		tuple_width;
 
@@ -2000,10 +2003,10 @@ zheapam_estimate_rel_size(Relation rel, int32 *attr_widths,
 	*tuples = rint(density * (double) curpages);
 
 	/*
-	 * We use relallvisible as-is, rather than scaling it up like we
-	 * do for the pages and tuples counts, on the theory that any
-	 * pages added since the last VACUUM are most likely not marked
-	 * all-visible.  But costsize.c wants it converted to a fraction.
+	 * We use relallvisible as-is, rather than scaling it up like we do for
+	 * the pages and tuples counts, on the theory that any pages added since
+	 * the last VACUUM are most likely not marked all-visible.  But costsize.c
+	 * wants it converted to a fraction.
 	 */
 	if (relallvisible == 0 || curpages <= 0)
 		*allvisfrac = 0;
