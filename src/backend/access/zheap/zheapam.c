@@ -196,7 +196,7 @@ xid_infomask_changed(uint16 new_infomask, uint16 old_infomask)
  * additionaly this function inserts an undo record and updates the undo
  * pointer in page header or in TPD entry for this page.
  *
- * XXX - Visibility map and page is all visible checks are required to support
+ * Visibility map and page is all-visible checks are required to support
  * index-only scans on zheap.
  */
 void
@@ -268,8 +268,8 @@ reacquire_buffer:
 		 * but we do that by releasing the buffer lock.
 		 *
 		 * We don't yet know the offset number of the inserting tuple so just
-		 * pass the max offset number + 1 so that if it need to get slot from
-		 * the TPD it can ensure that the TPD has sufficient map entries.
+		 * pass the 'max_offset_number + 1' so that if it need to get slot
+		 * from the TPD it can ensure that the TPD has sufficient map entries.
 		 */
 		trans_slot_id = PageReserveTransactionSlot(relation,
 												   buffer,
@@ -373,10 +373,11 @@ reacquire_buffer:
 	}
 
 	/*
-	 * If there is a valid vmbuffer get its status.  The vmbuffer will not be
-	 * valid if operated page is newly extended, see
-	 * RelationGetBufferForZTuple. Also, anyway by default vm status bits are
-	 * clear for those pages hence no need to clear it again!
+	 * Get the page visibility status from visibility map.  If the page is
+	 * all-visible, we need to clear it after inserting the tuple.  Note that,
+	 * for newly added pages (vm buffer will be invalid, see
+	 * RelationGetBufferForZTuple), vm status must be clear, so we don't need
+	 * to do anything for them.
 	 */
 	if (BufferIsValid(vmbuffer))
 		vm_status = visibilitymap_get_status(relation,
@@ -572,18 +573,6 @@ prepare_xlog:
 		UnlockReleaseUndoBuffers();
 	}
 	UnlockReleaseTPDBuffers();
-
-	/*
-	 * If tuple is cachable, mark it for invalidation from the caches in case
-	 * we abort.  Note it is OK to do this after releasing the buffer, because
-	 * the zheaptup data structure is all in local memory, not in the shared
-	 * buffer.
-	 *
-	 * Fixme - Cache invalidation API expects HeapTup, so either we need an
-	 * eqvivalent API for ZHeapTup or need to teach cache invalidation API's
-	 * to work with both the formats.
-	 */
-	/* CacheInvalidateHeapTuple(relation, zheaptup, NULL); */
 
 	/* Note: speculative insertions are counted too, even if aborted later */
 	pgstat_count_heap_insert(relation, 1);
@@ -3293,11 +3282,6 @@ reacquire_buffer:
 	if (newbuf != buffer)
 		LockBuffer(newbuf, BUFFER_LOCK_UNLOCK);
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-
-	/*
-	 * Fixme - need to support cache invalidation API's for zheaptuples.
-	 */
-	/* CacheInvalidateHeapTuple(relation, &oldtup, heaptup); */
 
 	if (BufferIsValid(vmbuffer_new))
 		ReleaseBuffer(vmbuffer_new);
@@ -6130,7 +6114,7 @@ ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 int
 GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 					   uint32 *epoch, TransactionId *xid,
-					   UndoRecPtr * urec_ptr, bool NoTPDBufLock, bool TPDSlot)
+					   UndoRecPtr *urec_ptr, bool NoTPDBufLock, bool TPDSlot)
 {
 	ZHeapPageOpaque opaque;
 	Page		page;
@@ -6300,7 +6284,7 @@ PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id, uint32 epoch,
  */
 int
 PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
-						 TransactionId xid, UndoRecPtr * urec_ptr,
+						 TransactionId xid, UndoRecPtr *urec_ptr,
 						 bool keepTPDBufLock, bool locktpd,
 						 bool *tpd_page_locked)
 {
@@ -6386,7 +6370,7 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
  */
 void
 PageGetTransactionSlotInfo(Buffer buf, int slot_no, uint32 *epoch,
-						   TransactionId *xid, UndoRecPtr * urec_ptr,
+						   TransactionId *xid, UndoRecPtr *urec_ptr,
 						   bool keepTPDBufLock)
 {
 	ZHeapPageOpaque opaque;
@@ -6440,8 +6424,8 @@ MultiPageReserveTransSlot(Relation relation,
 						  OffsetNumber oldbuf_offnum,
 						  OffsetNumber newbuf_offnum,
 						  uint32 epoch, TransactionId xid,
-						  UndoRecPtr * oldbuf_prev_urecptr,
-						  UndoRecPtr * newbuf_prev_urecptr,
+						  UndoRecPtr *oldbuf_prev_urecptr,
+						  UndoRecPtr *newbuf_prev_urecptr,
 						  int *oldbuf_trans_slot_id,
 						  int *newbuf_trans_slot_id,
 						  bool *lock_reacquired)
@@ -6674,7 +6658,7 @@ GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf)
 int
 PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 						   uint32 epoch, TransactionId xid,
-						   UndoRecPtr * urec_ptr, bool *lock_reacquired,
+						   UndoRecPtr *urec_ptr, bool *lock_reacquired,
 						   bool always_extend, bool use_aborted_slot,
 						   bool *slot_reused_or_TPD_slot)
 {
@@ -8043,13 +8027,16 @@ reacquire_buffer:
 		}
 
 		/*
-		 * If there is a valid vmbuffer get its status.  The vmbuffer will not
-		 * be valid if operated page is newly extended, see
-		 * RelationGetBufferForZTupleand. Also, anyway by default vm status
-		 * bits are clear for those pages hence no need to clear it again!
+		 * Get the page visibility status from visibility map.  If the page is
+		 * all-visible, we need to clear it after inserting the tuple.  Note
+		 * that, for newly added pages (vm buffer will be invalid, see
+		 * RelationGetBufferForZTuple), vm status must be clear, so we don't
+		 * need to do anything for them.
 		 */
-		vm_status = visibilitymap_get_status(relation,
-											 BufferGetBlockNumber(buffer), &vmbuffer);
+		if (BufferIsValid(vmbuffer))
+			vm_status = visibilitymap_get_status(relation,
+												 BufferGetBlockNumber(buffer),
+												 &vmbuffer);
 
 		/*
 		 * Lock the TPD page before starting critical section.  We might need
@@ -8374,20 +8361,6 @@ reacquire_buffer:
 	 * buffer when making the call.
 	 */
 	CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
-
-	/*
-	 * If tuples are cachable, mark them for invalidation from the caches in
-	 * case we abort.  Note it is OK to do this after releasing the buffer,
-	 * because the heaptuples data structure is all in local memory, not in
-	 * the shared buffer.
-	 */
-	if (IsCatalogRelation(relation))
-	{
-		/*
-		 * for (i = 0; i < ntuples; i++) CacheInvalidateHeapTuple(relation,
-		 * zheaptuples[i], NULL);
-		 */
-	}
 
 	/*
 	 * Copy t_self fields back to the caller's original tuples. This does
