@@ -524,7 +524,7 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
  *	It returns the prior committed version of the tuple, if available. Else,
  *	returns NULL.
  *
- *	The caller must send a palloc'ed tuple. This function can get a tuple
+ *	The caller must send a palloc'd tuple. This function can get a tuple
  *	from undo to return in which case it will free the memory passed by
  *	the caller.
  *
@@ -1620,7 +1620,7 @@ check_trans_slot:
  *	xid - returns the xid that has modified the visible tuple.
  *	subxid - returns the subtransaction id, if any, that has modified the
  *	visible tuple.  We fetch the subxid from undo only when it is required,
- *	i.e when the caller would wait on it to finish.
+ *	i.e. when the caller would wait on it to finish.
  *	cid - returns the cid of visible tuple.
  *	single_locker_xid - returns the xid of a single in-progress locker, if any.
  *	single_locker_trans_slot - returns the transaction slot of a single
@@ -1795,7 +1795,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 				 * check for lock conflicts or perform rollback if necessary.
 				 *
 				 * If the single locker is our current transaction, then also
-				 * we return beging updated.
+				 * we return being updated.
 				 */
 				return HeapTupleBeingUpdated;
 			}
@@ -2316,7 +2316,7 @@ ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer,
  *	xid is an output parameter. It is set to the latest committed/in-progress
  *	xid that inserted/modified the tuple.
  *	If the latest transaction for the tuple aborted, we fetch a prior committed
- *	version of the tuple and return the prior comitted xid and status as
+ *	version of the tuple and return the prior committed xid and status as
  *	HEAPTUPLE_LIVE.
  *	If the latest transaction for the tuple aborted and it also inserted
  *	the tuple, we return the aborted transaction id and status as
@@ -2459,7 +2459,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple *ztuple, TransactionId OldestXmin,
  * ZHeapTupleSatisfiesNonVacuumable
  *
  *	True if tuple might be visible to some transaction; false if it's
- *	surely dead to everyone, ie, vacuumable.
+ *	surely dead to everyone, i.e. vacuumable.
  *
  *	This is an interface to ZHeapTupleSatisfiesOldestXmin that meets the
  *	SnapshotSatisfiesFunc API, so it can be used through a Snapshot.
@@ -2482,7 +2482,7 @@ ZHeapTupleSatisfiesNonVacuumable(ZHeapTuple ztup, Snapshot snapshot,
  *
  * For aborted transactions, we don't fetch any prior committed version of the
  * tuple. Instead, we return ZHEAPTUPLE_ABORT_IN_PROGRESS and return the aborted
- * xid. The caller should avoid such tuple for any kind of prunning/vacuuming.
+ * xid. The caller should avoid such tuple for any kind of pruning/vacuuming.
  */
 ZHTSV_Result
 ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
@@ -2665,7 +2665,7 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 	if (ItemIdIsDeleted(lp))
 	{
 		/*
-		 * If the tuple is still visible to us, then we've a conflict. Becasue,
+		 * If the tuple is still visible to us, then we've a conflict. Because,
 		 * the transaction that deleted the tuple already got committed.
 		 */
 		if (visible)
@@ -2701,7 +2701,7 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 			if (tuple_inplace_updated)
 			{
 				/*
-				 * If xid is invalid, then we konw that slot is frozen and
+				 * If xid is invalid, then we know that slot is frozen and
 				 * tuple will be visible so we can return false.
 				 */
 				if (*xid == InvalidTransactionId)

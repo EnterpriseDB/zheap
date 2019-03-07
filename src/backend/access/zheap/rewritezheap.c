@@ -37,7 +37,7 @@
  * storing in new heap.  This is not a good idea as we lose all the
  * visibility information of tuples, but OTOH, the same can't be copied
  * from the original tuple as that is maintained in undo and we don't have
- * facility to modify undorecords.
+ * facility to modify undo records.
  *
  * One idea to capture the visibility information is that we should write a
  * special undo record such that it stores previous version's visibility
@@ -181,7 +181,7 @@ end_zheap_rewrite(RewriteZheapState state)
 	 * obvious that we have to do it even if we did WAL-log the pages. The
 	 * reason is the same as in tablecmds.c's copy_relation_data(): we're
 	 * writing data that's not in shared buffers, and so a CHECKPOINT
-	 * occurring during the rewriteheap operation won't have fsync'd data we
+	 * occurring during the rewritezheap operation won't have fsync'd data we
 	 * wrote before the checkpoint.
 	 */
 	if (RelationNeedsWAL(state->rs_new_rel))

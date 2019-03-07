@@ -348,7 +348,7 @@ TPDPageRepairFragmentation(Page page, Page tmppage, OffsetNumber target_offnum,
 	 * It's worth the trouble to be more paranoid here than in most places,
 	 * because we are about to reshuffle data in (what is usually) a shared
 	 * disk buffer.  If we aren't careful then corrupted pointers, lengths,
-	 * etc could cause us to clobber adjacent disk buffers, spreading the data
+	 * etc. could cause us to clobber adjacent disk buffers, spreading the data
 	 * loss further.  So, check everything.
 	 */
 	if (pd_lower < SizeOfPageHeaderData ||

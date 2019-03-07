@@ -67,7 +67,7 @@ zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer, ItemPointer tid)
 
 	/*
 	 * This function is used for trigger to retrieve previous version of the
-	 * tuple from undolog. Since, the transaction that is updating the tuple
+	 * tuple from undolog. Since the transaction that is updating the tuple
 	 * is still in progress, neither undo record can be discarded nor it's
 	 * transaction slot can be reused.
 	 */
@@ -296,7 +296,7 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup,
 				 * XXX One way to save deallocation and allocation of memory
 				 * is to only make a copy of prior version of tuple when it is
 				 * determined that the version is visible to current snapshot.
-				 * In practise, we don't need to traverse many prior versions,
+				 * In practice, we don't need to traverse many prior versions,
 				 * so let's be tidy.
 				 */
 				undo_tup_len = *((uint32 *) &urec->uur_tuple.data[offset]);
@@ -649,7 +649,7 @@ zbuffer_exec_pending_rollback(Relation rel, Buffer buf, BlockNumber *tpd_blkno)
 		/* If the transaction is aborted, apply undo actions */
 		if (TransactionIdIsValid(xid) && TransactionIdDidAbort(xid))
 		{
-			/* Remember if we've rolled back a transactio from a TPD-slot. */
+			/* Remember if we've rolled back a transaction from a TPD-slot. */
 			if ((slot_no >= ZHEAP_PAGE_TRANS_SLOTS - 1) &&
 				BlockNumberIsValid(*tpd_blkno))
 				any_tpd_slot_rolled_back = true;
@@ -830,7 +830,7 @@ zheap_undo_actions(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 	/*
 	 * If undo action has been already applied for this page then skip the
 	 * process altogether.  If we didn't find a slot corresponding to xid, we
-	 * consider the transaction is already rolledback.
+	 * consider the transaction is already rolled back.
 	 *
 	 * The logno of slot's undo record pointer must be same as the logno of
 	 * undo record to be applied.
@@ -894,7 +894,7 @@ zheap_undo_actions(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 
 					/*
 					 * If a dead item is found, ensure that it is from
-					 * specualtive abort case only.
+					 * speculative abort case only.
 					 */
 					if (ItemIdIsDead(lp))
 					{
@@ -1142,7 +1142,7 @@ zheap_undo_actions(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 
 					/*
 					 * We always need to retain the strongest locker
-					 * information on the the tuple (as part of infomask and
+					 * information on the tuple (as part of infomask and
 					 * infomask2), if there are multiple lockers on a tuple.
 					 * This is because the conflict detection mechanism works
 					 * based on strongest locker.  See

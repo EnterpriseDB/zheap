@@ -141,7 +141,7 @@ zheap_xlog_insert(XLogReaderState *record)
 	 */
 	if (XLogRecGetInfo(record) & XLOG_ZHEAP_INIT_PAGE)
 	{
-		/* It is asked for page init, insert should not have tpd slot. */
+		/* It has asked for page init, insert should not have tpd slot. */
 		Assert(!(xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT));
 		buffer = XLogInitBufferForRedo(record, 0);
 		page = BufferGetPage(buffer);
@@ -385,7 +385,7 @@ zheap_xlog_delete(XLogReaderState *record)
 	}
 
 	/*
-	 * For sub-tranasctions, we store the dummy contains subxact token in the
+	 * For sub-transactions, we store the dummy contains subxact token in the
 	 * undorecord so that, the size of undorecord in DO function matches with
 	 * the size of undorecord in REDO function. This ensures that, for
 	 * sub-transactions, the assert condition used later in this
@@ -689,7 +689,7 @@ zheap_xlog_update(XLogReaderState *record)
 		}
 
 		/*
-		 * For sub-tranasctions, we store the dummy contains subxact token in the
+		 * For sub-transactions, we store the dummy contains subxact token in the
 		 * undorecord so that, the size of undorecord in DO function matches with
 		 * the size of undorecord in REDO function. This ensures that, for
 		 * sub-transactions, the assert condition used later in this
@@ -737,7 +737,7 @@ zheap_xlog_update(XLogReaderState *record)
 		}
 
 		/*
-		 * For sub-tranasctions, we store the dummy contains subxact token in the
+		 * For sub-transactions, we store the dummy contains subxact token in the
 		 * undorecord so that, the size of undorecord in DO function matches with
 		 * the size of undorecord in REDO function. This ensures that, for
 		 * sub-transactions, the assert condition used later in this
@@ -959,7 +959,7 @@ zheap_xlog_update(XLogReaderState *record)
 
 			if (newlen < oldtup.t_len)
 			{
-				/* new tuple is smaller, a prunable cadidate */
+				/* new tuple is smaller, a prunable candidate */
 				Assert (oldpage == newpage);
 				ZPageSetPrunable(newpage, XLogRecGetXid(record));
 			}
@@ -984,7 +984,7 @@ zheap_xlog_update(XLogReaderState *record)
 		MarkBufferDirty(newbuffer);
 	}
 
-	/* replay the record for tpd buffer corresponding to oldbuf */
+	/* replay the record for tpd buffer corresponding to old buffer */
 	if (XLogRecHasBlockRef(record, 2))
 	{
 		if (XLogReadTPDBuffer(record, 2) == BLK_NEEDS_REDO)
@@ -1032,7 +1032,7 @@ zheap_xlog_update(XLogReaderState *record)
 		}
 	}
 
-	/* replay the record for tpd buffer corresponding to newbuf */
+	/* replay the record for tpd buffer corresponding to new buffer */
 	if (XLogRecHasBlockRef(record, 3))
 	{
 		if (XLogReadTPDBuffer(record, 3) == BLK_NEEDS_REDO)
@@ -1383,7 +1383,7 @@ zheap_xlog_lock(XLogReaderState *record)
 	}
 
 	/*
-	 * For sub-tranasctions, we store the dummy contains subxact token in the
+	 * For sub-transactions, we store the dummy contains subxact token in the
 	 * undorecord so that, the size of undorecord in DO function matches with
 	 * the size of undorecord in REDO function. This ensures that, for
 	 * sub-transactions, the assert condition used later in this
@@ -1511,7 +1511,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 
 	if (isinit)
 	{
-		/* It is asked for page init, insert should not have tpd slot. */
+		/* It has asked for page init, insert should not have tpd slot. */
 		Assert(!(xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT));
 		buffer = XLogInitBufferForRedo(record, 0);
 		page = BufferGetPage(buffer);
@@ -2029,7 +2029,7 @@ zheap_xlog_unused(XLogReaderState *record)
 		}
 
 		/*
-		 * The flag is used to prevent re-evaluation of itemId, clearing the
+		 * The flag is used to prevent re-evaluation of itemid, clearing the
 		 * set transaction slot information by ZPageRepairFragmentation.
 		 */
 		if (uncnt > 0)
