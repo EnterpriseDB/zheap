@@ -87,7 +87,7 @@ static void log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 				 int old_tup_trans_slot_id, int trans_slot_id,
 				 int new_trans_slot_id, bool inplace_update,
 				 bool all_visible_cleared, bool new_all_visible_cleared,
-				 xl_undolog_meta * undometa);
+				 xl_undolog_meta *undometa);
 static HTSU_Result zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 						 TransactionId xid, LockTupleMode mode, LockOper lockopr,
 						 CommandId cid, bool *rollback_and_relocked);
@@ -191,7 +191,7 @@ xid_infomask_changed(uint16 new_infomask, uint16 old_infomask)
  * zheap_insert - insert tuple into a zheap
  *
  * The functionality related to heap is quite similar to heap_insert,
- * additionaly this function inserts an undo record and updates the undo
+ * additionally this function inserts an undo record and updates the undo
  * pointer in page header or in TPD entry for this page.
  *
  * Visibility map and page is all-visible checks are required to support
@@ -395,7 +395,7 @@ reacquire_buffer:
 		PageHasFreeLinePointers((PageHeader) page))
 		TPDPageLock(relation, buffer);
 
-	/* NO EREPORT(ERROR) from here till changes are logged */
+	/* No ereport(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
 
 	if (!(options & HEAP_INSERT_FROZEN))
@@ -582,7 +582,7 @@ prepare_xlog:
 		tup->t_self = zheaptup->t_self;
 
 		/*
-		 * Since, in ZHeap we have speculative flag in the tuple header only,
+		 * Since in ZHeap we have speculative flag in the tuple header only,
 		 * copy the speculative flag to the new tuple if required.
 		 */
 		if (ZHeapTupleHeaderIsSpeculative(zheaptup->t_data))
@@ -593,7 +593,7 @@ prepare_xlog:
 }
 
 /*
- *	simple_zheap_delete - delete a zheap tuple
+ * simple_zheap_delete - delete a zheap tuple
  *
  * This routine may be used to delete a tuple when concurrent updates of
  * the target tuple are not expected (for example, because we have a lock
@@ -1400,9 +1400,7 @@ zheap_tuple_updated:
 
 	MarkBufferDirty(buffer);
 
-	/*
-	 * Do xlog stuff
-	 */
+	/* do xlog stuff */
 	if (RelationNeedsWAL(relation))
 	{
 		ZHeapTupleHeader zhtuphdr = NULL;
@@ -1528,7 +1526,7 @@ prepare_xlog:
 	else if (ZHeapTupleHasExternal(&zheaptup))
 		ztoast_delete(relation, &zheaptup, false);
 
-	/* Now we can release the buffer */
+	/* now we can release the buffer */
 	ReleaseBuffer(buffer);
 	UnlockReleaseTPDBuffers();
 
@@ -1547,7 +1545,7 @@ prepare_xlog:
  * zheap_update - update a tuple
  *
  * This function either updates the tuple in-place or it deletes the old
- * tuple and new tuple for non-in-place updates.  Additionaly this function
+ * tuple and new tuple for non-in-place updates.  Additionally this function
  * inserts an undo record and updates the undo pointer in page header or in
  * TPD entry for this page.
  *
@@ -2307,7 +2305,7 @@ zheap_tuple_updated:
 	{
 		bool		pruned;
 
-		/* Here, we pass delta space required to accomodate the new tuple. */
+		/* Here, we pass delta space required to accommodate the new tuple. */
 		pruned = zheap_page_prune_opt(relation, buffer, old_offnum,
 									  (newtupsize - oldtupsize));
 
@@ -2326,8 +2324,8 @@ zheap_tuple_updated:
 	pagefree = PageGetZHeapFreeSpace(page);
 
 	/*
-	 * Incase of the non in-place update we also need to reserve a map for the
-	 * new tuple.
+	 * In case of the non in-place update we also need to reserve a map for
+	 * the new tuple.
 	 */
 	if (!use_inplace_update)
 		max_offset += 1;
@@ -2392,11 +2390,11 @@ zheap_tuple_updated:
 	 * will lead to undo access during tuple visibility checks and that sucks
 	 * the performance.  To avoid accessing undo, we perform non-inplace
 	 * updates so as to distribute the tuple across pages so that we don't
-	 * face scaracity of transaction slots on the page.  However, we must have
+	 * face scarcity of transaction slots on the page.  However, we must have
 	 * a hard limit for this optimization, else the number of blocks will
-	 * increase unboundedly.
+	 * increase without any bound.
 	 *
-	 * Note that the similar optimization apllies when we use TPD slots as
+	 * Note that the similar optimization applies when we use TPD slots as
 	 * that will also lead to another hop during visibility checks.
 	 */
 	if (slot_reused_or_TPD_slot)
@@ -2440,7 +2438,7 @@ zheap_tuple_updated:
 
 	/*
 	 * updated tuple doesn't fit on current page or the toaster needs to be
-	 * activated or transaction slot has been resued.
+	 * activated or transaction slot has been reused.
 	 */
 	Assert(!slot_reused_or_TPD_slot || !use_inplace_update);
 	if (slot_reused_or_TPD_slot ||
@@ -2544,7 +2542,7 @@ zheap_tuple_updated:
 		/*
 		 * For lockers, we only set the slot on tuple when the lock mode is
 		 * LockForUpdate and the tuple doesn't have multilocker flag.  In that
-		 * case, pass set_tpd_map_slot as true, flase otherwise.  In this case
+		 * case, pass set_tpd_map_slot as true, false otherwise.  In this case
 		 * the lockmode is always LockForUpdate.
 		 */
 		PageSetUNDO(undorecord, buffer, trans_slot_id,
@@ -2561,9 +2559,7 @@ zheap_tuple_updated:
 
 		MarkBufferDirty(buffer);
 
-		/*
-		 * Do xlog stuff
-		 */
+		/* do xlog stuff */
 		if (RelationNeedsWAL(relation))
 		{
 			xl_zheap_lock xlrec;
@@ -2792,7 +2788,7 @@ reacquire_buffer:
 		 * position could be changes, so need to refresh the tuple position.
 		 *
 		 * XXX Though the length of the tuple wouldn't have changed, but there
-		 * is no harm in refrehsing it for the sake of consistency of code.
+		 * is no harm in refreshing it for the sake of consistency of code.
 		 */
 		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 		oldtup.t_len = ItemIdGetLength(lp);
@@ -3015,7 +3011,7 @@ reacquire_buffer:
 
 	/*
 	 * We can't rely on any_multi_locker_member_alive to clear the multi
-	 * locker bit, if the the lock on the buffer is released inbetween.
+	 * locker bit, if the lock on the buffer is released in between.
 	 */
 	if (buffer == newbuf)
 	{
@@ -3079,7 +3075,7 @@ reacquire_buffer:
 
 	/*
 	 * If the page is new, then there will no valid vmbuffer_new and the
-	 * visisbilitymap is reset already, hence, need not to clear anything.
+	 * visibilitymap is reset already, hence, need not to clear anything.
 	 */
 	if (newbuf != buffer && BufferIsValid(vmbuffer_new))
 		vm_status_new = visibilitymap_get_status(relation,
@@ -3296,7 +3292,7 @@ reacquire_buffer:
 		 * If we've performed non-inplace update because of
 		 * slot_reused_or_TPD_slot optimization, we shouldn't increase the
 		 * update stats else, it'll trigger autovacuum unnecessarily. But, we
-		 * want to autoanalyze the table peridically.  Hence, we increase the
+		 * want to autoanalyze the table periodically.  Hence, we increase the
 		 * insert count.
 		 */
 		if (!slot_reused_or_TPD_slot)
@@ -4078,7 +4074,7 @@ check_tup_satisfies_update:
 			TransactionId current_tup_xid;
 
 			/*
-			 * ... but if the xid changed in the meantime, start over
+			 * If the xid changed in the meantime, start over.
 			 *
 			 * Also take care of cases when page is pruned after we release
 			 * the buffer lock. For this we check if ItemId is not deleted and
@@ -4834,7 +4830,7 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 		{
 			/*
 			 * if we fail to find the updated version of the tuple, it's
-			 * because it was vacuumed/pruned/rolledback away after its
+			 * because it was vacuumed/pruned/rolled back away after its
 			 * creator transaction aborted.  So behave as if we got to the end
 			 * of the chain, and there's no further tuple to lock: return
 			 * success to caller.
@@ -5379,7 +5375,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	/*
 	 * For lockers, we only set the slot on tuple when the lock mode is
 	 * LockForUpdate and the tuple doesn't have multilocker flag.  In that
-	 * case, pass set_tpd_map_slot as true, flase otherwise.
+	 * case, pass set_tpd_map_slot as true, false otherwise.
 	 */
 	PageSetUNDO(undorecord, buf, trans_slot_id,
 				(!ZHeapTupleHasMultiLockers(new_infomask) &&
@@ -5392,9 +5388,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 
 	MarkBufferDirty(buf);
 
-	/*
-	 * Do xlog stuff
-	 */
+	/* do xlog stuff */
 	if (RelationNeedsWAL(rel))
 	{
 		xl_zheap_lock xlrec;
@@ -5695,6 +5689,7 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 		if (single_locker_xid != add_to_xid)
 		{
 			new_infomask |= ZHEAP_MULTI_LOCKERS;
+
 			/*
 			 * If the tuple has multilocker and we're locking the tuple for
 			 * update, we insert multilocker type of undo instead of
@@ -5796,7 +5791,7 @@ zheap_finish_speculative(Relation relation, ZHeapTuple tuple)
 
 	zhtup = (ZHeapTupleHeader) PageGetItem(page, lp);
 
-	/* NO EREPORT(ERROR) from here till changes are logged */
+	/* No ereport(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
 
 	Assert(ZHeapTupleHeaderIsSpeculative(tuple->t_data));
@@ -6268,7 +6263,7 @@ PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id, uint32 epoch,
  *			xid.
  *
  * If the slot is not in the TPD page but the caller has asked to lock the TPD
- * buffer than do so.  tpd_page_locked will be set to true if the required page
+ * buffer then do so.  tpd_page_locked will be set to true if the required page
  * is locked, false, otherwise.
  */
 int
@@ -6599,7 +6594,7 @@ retry_tpd_lock:
 	}
 
 	/*
-	 * We should definetly get the slot for old page as we have reserved it
+	 * We should definitely get the slot for old page as we have reserved it
 	 * previously, but it is possible that it might have moved to TPD in which
 	 * case it's value will be previous_slot_number + 1.
 	 */
@@ -6635,7 +6630,7 @@ GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf)
  *	This function returns transaction slot number if either the page already
  *	has some slot that contains the transaction info or there is an empty
  *	slot or it manages to reuse some existing slot or it manages to get the
- *  slot in TPD; otherwise retruns InvalidXactSlotId.
+ *  slot in TPD; otherwise returns InvalidXactSlotId.
  *
  *  Note that we always return array location of slot plus one as zeroth slot
  *  number is reserved for frozen slot number (ZHTUP_SLOT_FROZEN).
@@ -6771,7 +6766,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 		}
 
 		/*
-		 * After freezing transaction slots, we should get atleast one free
+		 * After freezing transaction slots, we should get at least one free
 		 * slot.
 		 */
 		Assert(false);
@@ -6825,7 +6820,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
  * zheap_freeze_or_invalidate_tuples - Clear the slot information or set
  *									   invalid_xact flags.
  *
- * 	Process all the tuples on the page and match their trasaction slot with
+ * 	Process all the tuples on the page and match their transaction slot with
  *	the input slot array, if tuple is pointing to the slot then set the tuple
  *  slot as ZHTUP_SLOT_FROZEN if is frozen is true otherwise set
  *  ZHEAP_INVALID_XACT_SLOT flag on the tuple
@@ -6922,7 +6917,7 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 						Assert(ItemIdHasPendingXact(itemid));
 
 						/*
-						 * The pending xact must be commited if the
+						 * The pending xact must be committed if the
 						 * corresponding slot is being marked as frozen.  So,
 						 * clear the pending xact and transaction slot
 						 * information from itemid.
@@ -6962,7 +6957,7 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 						Assert(ItemIdHasPendingXact(itemid));
 
 						/*
-						 * The pending xact is commited.  So, clear the
+						 * The pending xact is committed.  So, clear the
 						 * pending xact and transaction slot information from
 						 * itemid.
 						 */
@@ -7063,7 +7058,7 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
  *	to perform.
  *	(b) if the xid is committed, then ensure to mark a special flag on the
  *	tuples that are modified by that xid on the current page.
- *	(c) if the xid is rolledback, then ensure that rollback is performed or
+ *	(c) if the xid is rolled back, then ensure that rollback is performed or
  *	at least undo actions for this page have been replayed.
  *
  *	For committed/aborted transactions, we simply clear the xid from the
@@ -7090,7 +7085,7 @@ GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
  *	all-visible).
  *
  *	This also ensures that we are consistent with how other operations work in
- *	zheap i.e the tuple always reflect the current state.
+ *	zheap i.e. the tuple always reflect the current state.
  *
  *	We don't need any special handling for the tuples that are locked by
  *	multiple transactions (aka tuples that have MULTI_LOCKERS bit set).
@@ -7241,7 +7236,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		MarkBufferDirty(buf);
 
 		/*
-		 * Xlog Stuff
+		 * xlog Stuff
 		 *
 		 * Log all the frozen_slots number for which we need to clear the
 		 * transaction slot information.  Also, note down the latest xid
@@ -7412,15 +7407,16 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		 * heap page slots as we might need to require them during the
 		 * processing of undo actions.  We can optimize it by passing some
 		 * flag, but that seems over complication as we anyway need to release
-		 * and reaquire the lock on TPD buffers after processing the undo
+		 * and reacquire the lock on TPD buffers after processing the undo
 		 * actions.
 		 *
 		 * It is okay to release all the TPD buffers here as the callers will
 		 * anyway reacquire the lock heap and tpd buffers again.
 		 *
-		 * Instead of just unlocking the TPD buffer like heap buffer its ok to
-		 * unlock and release, because next time while trying to reserve the
-		 * slot if we get the slot in TPD then anyway we will pin it again.
+		 * Instead of just unlocking the TPD buffer like heap buffer its okay
+		 * to unlock and release, because next time while trying to reserve
+		 * the slot if we get the slot in TPD then anyway we will pin it
+		 * again.
 		 *
 		 * Releasing all TPD buffers can release the TPD buffer which was not
 		 * used for current heap page (in case of non-in-place updates via
@@ -7468,7 +7464,7 @@ cleanup:
 /*
  * ZHeapTupleGetCid - Retrieve command id from tuple's undo record.
  *
- * It is expected that the caller of this function has atleast read lock
+ * It is expected that the caller of this function has at least read lock
  * on the buffer.
  */
 CommandId
@@ -7551,7 +7547,7 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 /*
  * ZHeapTupleGetCtid - Retrieve tuple id from tuple's undo record.
  *
- * It is expected that caller of this function has atleast read lock
+ * It is expected that caller of this function has at least read lock
  * on the buffer and we call it only for non-inplace-updated tuples.
  */
 void
@@ -7566,7 +7562,7 @@ ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 /*
  * ZHeapTupleGetSubXid - Retrieve subtransaction id from tuple's undo record.
  *
- * It is expected that caller of this function has atleast read lock.
+ * It is expected that caller of this function has at least read lock.
  *
  * Note that we don't handle ZHEAP_INVALID_XACT_SLOT as this function is only
  * called for in-progress transactions.  If we need to call it for some other
@@ -7647,7 +7643,7 @@ ZHeapTupleGetSubXid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
  * ZHeapTupleGetSpecToken - Retrieve speculative token from tuple's undo
  *			record.
  *
- * It is expected that caller of this function has atleast read lock
+ * It is expected that caller of this function has at least read lock
  * on the buffer.
  */
 void
@@ -7680,7 +7676,7 @@ ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
  *
  * This is similar to ZHeapTupleGetCid with a difference that here we use
  * transaction slot to fetch the appropriate undo record.  It is expected that
- * the caller of this function has atleast read lock on the buffer.
+ * the caller of this function has at least read lock on the buffer.
  */
 CommandId
 ZHeapPageGetCid(Buffer buf, int trans_slot, uint32 epoch, TransactionId xid,
@@ -7716,7 +7712,7 @@ ZHeapPageGetCid(Buffer buf, int trans_slot, uint32 epoch, TransactionId xid,
 /*
  * ZHeapPageGetCtid - Retrieve tuple id from tuple's undo record.
  *
- * It is expected that caller of this function has atleast read lock.
+ * It is expected that caller of this function has at least read lock.
  */
 void
 ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
@@ -7772,9 +7768,9 @@ fetch_next:
 }
 
 /*
- * ZHeapTupleHeaderAdvanceLatestRemovedXid - Advance the latestremovexid, if
- * tuple is deleted by a transaction greater than latestremovexid.  This is
- * required to generate conflicts on Hot Standby.
+ * ZHeapTupleHeaderAdvanceLatestRemovedXid - Advance the latestRemovedXid, if
+ * tuple is deleted by a transaction greater than latestRemovedXid.  This is
+ * required to generate conflicts on hot standby.
  *
  * If we change this function then we need a similar change in
  * *_xlog_vacuum_get_latestRemovedXid functions as well.
@@ -7805,7 +7801,7 @@ ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
 }
 
 /*
- *	zheap_multi_insert	- insert multiple tuple into a zheap
+ * zheap_multi_insert	- insert multiple tuple into a zheap
  *
  * Similar to heap_multi_insert(), but inserts zheap tuples.
  */
@@ -8041,7 +8037,7 @@ reacquire_buffer:
 			PageHasFreeLinePointers((PageHeader) page))
 			TPDPageLock(relation, buffer);
 
-		/* NO EREPORT(ERROR) from here till changes are logged */
+		/* No ereport(ERROR) from here till changes are logged */
 		START_CRIT_SECTION();
 
 		/*
@@ -8252,7 +8248,7 @@ reacquire_buffer:
 				xlrec->flags |= XLZ_INSERT_LAST_IN_MULTI;
 
 			/*
-			 * If the page was previously empty, we can reinit the page
+			 * If the page was previously empty, we can reinitialize the page
 			 * instead of restoring the whole thing.
 			 */
 			init = (ItemPointerGetOffsetNumber(&(zheaptuples[ndone]->t_self)) == FirstOffsetNumber &&
@@ -8457,7 +8453,7 @@ zheap_get_latest_tid(Relation relation,
 		infomask = tp->t_data->t_infomask;
 
 		/*
-		 * Ensure that the tuple is same as what we are expecting.  If the the
+		 * Ensure that the tuple is same as what we are expecting.  If the
 		 * current or any prior version of tuple doesn't contain the effect of
 		 * priorXmax, then the slot must have been recycled and reused for an
 		 * unrelated tuple.  This implies that the latest version of the row
@@ -8862,7 +8858,7 @@ zheap_compute_xid_horizon_for_tuples(Relation rel,
 	/*
 	 * Sort to avoid repeated lookups for the same page, and to make it more
 	 * likely to access items in an efficient order. In particular this
-	 * ensures thaf if there are multiple pointers to the same page, they all
+	 * ensures that if there are multiple pointers to the same page, they all
 	 * get processed looking up and locking the page just once.
 	 */
 	qsort((void *) tids, nitems, sizeof(ItemPointerData),
