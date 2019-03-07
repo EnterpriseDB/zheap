@@ -1191,7 +1191,8 @@ zheap_getnextslot(TableScanDesc sscan, ScanDirection direction,
 
 	pgstat_count_heap_getnext(scan->rs_scan.rs_rd);
 
-	return ExecStoreZTuple(zhtup, slot, scan->rs_cbuf, false);
+	return ExecStoreZTuple(zhtup, slot, scan->rs_cbuf,
+						scan->rs_scan.rs_pageatatime ? false : true);
 }
 
 bool
