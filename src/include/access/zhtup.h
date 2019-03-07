@@ -153,7 +153,7 @@ typedef ZHeapTupleData * ZHeapTuple;
 											 * attributes */
 #define ZHEAP_XACT_SLOT				0xF800	/* 5 bits (12, 13, 14, 15 and 16)
 											 * for transaction slot */
-#define	ZHEAP_XACT_SLOT_MASK		0x000B	/* 11 - mask to retrieve
+#define	ZHEAP_XACT_SLOT_SHIFT		0x000B	/* 11 - mask to retrieve
 											 * transaction slot */
 
 #define ZHeapTupleHasExternal(tuple) \
@@ -206,7 +206,7 @@ typedef ZHeapTupleData * ZHeapTuple;
 
 #define ZHeapTupleHeaderGetXactSlot(tup) \
 ( \
-	(((tup)->t_infomask2 & ZHEAP_XACT_SLOT) >> ZHEAP_XACT_SLOT_MASK) \
+	(((tup)->t_infomask2 & ZHEAP_XACT_SLOT) >> ZHEAP_XACT_SLOT_SHIFT) \
 )
 
 static inline
@@ -221,7 +221,7 @@ ZHeapTupleHeaderSetXactSlot(ZHeapTupleHeader tup, int slotno)
 		slotno = ZHEAP_PAGE_TRANS_SLOTS;
 
 	(tup)->t_infomask2 = ((tup)->t_infomask2 & ~ZHEAP_XACT_SLOT) |
-		(slotno << ZHEAP_XACT_SLOT_MASK);
+		(slotno << ZHEAP_XACT_SLOT_SHIFT);
 }
 
 #define ZHeapTupleHeaderSetMovedPartitions(tup) \
