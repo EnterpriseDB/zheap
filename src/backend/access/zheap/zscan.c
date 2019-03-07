@@ -1421,6 +1421,11 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	if (ItemIdIsDeleted(lp))
 	{
 		resulttup = ZHeapGetVisibleTuple(offnum, snapshot, buffer, all_dead);
+		if (resulttup)
+			PredicateLockTid(relation, &(resulttup->t_self), snapshot,
+							 IsSerializableXact() ?
+							 zheap_fetchinsertxid(resulttup, buffer) :
+							 InvalidTransactionId);
 	}
 	else
 	{
@@ -1441,13 +1446,26 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 
 		/* If it's visible per the snapshot, we must return it */
 		resulttup = ZHeapTupleSatisfies(loctup, snapshot, buffer, NULL);
-	}
 
-	if (resulttup)
-		PredicateLockTid(relation, &(resulttup->t_self), snapshot,
-						 IsSerializableXact() ?
-						 zheap_fetchinsertxid(resulttup, buffer) :
-						 InvalidTransactionId);
+		if (resulttup)
+		{
+			/*
+			 * To fetch the xmin (aka transaction that has inserted the tuple),
+			 * we need to use the transaction slot of the tuple in the page
+			 * instead of the tuple from undo, otherwise, it might traverse the
+			 * wrong chain.
+			 */
+			loctup_tmp.t_tableOid = RelationGetRelid(relation);
+			loctup_tmp.t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lp);
+			loctup_tmp.t_len = ItemIdGetLength(lp);
+			loctup_tmp.t_self = *tid;
+
+			PredicateLockTid(relation, &(loctup_tmp.t_self), snapshot,
+							 IsSerializableXact() ?
+							 zheap_fetchinsertxid(&loctup_tmp, buffer) :
+							 InvalidTransactionId);
+		}
+	}
 
 	/*
 	 * If any prior version is visible, we pass latest visible as true. The
