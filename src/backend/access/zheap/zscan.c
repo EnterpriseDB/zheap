@@ -367,7 +367,7 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 
 	if (page == ZHEAP_METAPAGE)
 	{
-		/* needs to be udpated to keep track of scan position */
+		/* needs to be updated to keep track of scan position */
 		scan->rs_cblock = page;
 		return false;
 	}
@@ -743,8 +743,8 @@ get_next_page:
 			if (page == ZHEAP_METAPAGE)
 			{
 				/*
-				 * Since, we're skipping the metapage, we should update the scan
-				 * location if sync scan is enabled.
+				 * Since we're skipping the metapage, we should update the
+				 * scan location if sync scan is enabled.
 				 */
 				if (scan->rs_base.rs_syncscan)
 					ss_report_location(scan->rs_base.rs_rd, page);
@@ -1072,8 +1072,8 @@ get_next_page:
 			if (page == ZHEAP_METAPAGE)
 			{
 				/*
-				 * Since, we're skipping the metapage, we should update the scan
-				 * location if sync scan is enabled.
+				 * Since we're skipping the metapage, we should update the
+				 * scan location if sync scan is enabled.
 				 */
 				if (scan->rs_base.rs_syncscan)
 					ss_report_location(scan->rs_base.rs_rd, page);
@@ -1170,7 +1170,7 @@ zheap_getnext(TableScanDesc sscan, ScanDirection direction)
 
 	/*
 	 * The key will be passed only for catalog table scans and catalog tables
-	 * are always a heap table!. So incase of zheap it should be set to NULL.
+	 * are always a heap table!. So in case of zheap it should be set to NULL.
 	 */
 	Assert (scan->rs_base.rs_key == NULL);
 
@@ -1212,7 +1212,7 @@ zheap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *
 
 	/*
 	 * The key will be passed only for catalog table scans and catalog tables
-	 * are always a heap table!. So incase of zheap it should be set to NULL.
+	 * are always a heap table!. So in case of zheap it should be set to NULL.
 	 */
 	Assert (scan->rs_base.rs_key == NULL);
 

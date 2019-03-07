@@ -351,7 +351,7 @@ loop:
 	 * In addition to whatever extension we performed above, we always add at
 	 * least one block to satisfy our own request.
 	 *
-	 * XXX This does an lseek - rather expensive - but at the moment it is the
+	 * XXX This does a rather expensive lseek, but at the moment it is the
 	 * only way to accurately determine how many blocks are in a relation.  Is
 	 * it worth keeping an accurate file length in shared memory someplace,
 	 * rather than relying on the kernel to do it for us?

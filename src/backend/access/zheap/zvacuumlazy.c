@@ -12,7 +12,7 @@
  *
  * The vacuum progress checker also uses only two phases - the vacuuming heap
  * and the vacuuming index. The scanning heap phase is not used because it is
- * not a seperate pass in zheap but a part of the first pass.
+ * not a separate pass in zheap but a part of the first pass.
  *
  * The other important aspect that is ensured in this system is that we don't
  * item ids that are marked as unused to be reused till the transaction that
@@ -68,7 +68,7 @@ static TransactionId OldestXmin;
 static BufferAccessStrategy vac_strategy;
 
 /*
- * Guesstimation of number of dead tuples per page.  This is used to
+ * Guesstimate the number of dead tuples per page.  This is used to
  * provide an upper limit to memory allocated when vacuuming small
  * tables.
  */
@@ -400,7 +400,7 @@ reacquire_slot:
 
 prepare_xlog:
 		/*
-		 * WAL-LOG undolog meta data if this is the fisrt WAL after the
+		 * WAL-LOG undolog meta data if this is the first WAL after the
 		 * checkpoint.
 		 */
 		LogUndoMetaData(&undometa);
@@ -554,7 +554,7 @@ MarkPagesAsAllVisible(Relation rel, LVRelStats *vacrelstats,
  *		pointers that are marked unused in the first-pass of heap.
  *
  *		If there are no indexes then we can reclaim line pointers without
- *		writting any undo;
+ *		writing any undo;
  */
 static void
 lazy_scan_zheap(Relation onerel, VacuumParams *params,  LVRelStats *vacrelstats,
@@ -808,7 +808,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params,  LVRelStats *vacrelstats,
 		if (PageIsNew(page))
 		{
 			/*
-			 * An all-zeroes page could be left over if a backend extends the
+			 * An all-zeros page could be left over if a backend extends the
 			 * relation but crashes before initializing the page, or when
 			 * bulk-extending the relation (which creates a number of empty
 			 * pages at the tail end of the relation, but enters them into the
@@ -901,7 +901,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params,  LVRelStats *vacrelstats,
 				TPDPagePrune(onerel, buf, vac_strategy, InvalidOffsetNumber, 0,
 							 true, NULL, NULL);
 				/*
-				 * Remember the location of the last page with nonremovable
+				 * Remember the location of the last page with non-removable
 				 * tuples.
 				 */
 				if (!PageIsEmpty(page))
@@ -988,7 +988,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params,  LVRelStats *vacrelstats,
 			/* Deleted items mustn't be touched */
 			if (ItemIdIsDeleted(itemid))
 			{
-				hastup = true;	/* this page won't be truncatable */
+				hastup = true;	/* this page cannot be truncated */
 				all_visible = false;
 				continue;
 			}
@@ -1151,7 +1151,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params,  LVRelStats *vacrelstats,
 
 		UnlockReleaseBuffer(buf);
 
-		/* Remember the location of the last page with nonremovable tuples */
+		/* Remember the location of the last page with non-removable tuples */
 		if (hastup)
 			vacrelstats->nonempty_pages = blkno + 1;
 
@@ -1375,7 +1375,7 @@ lazy_vacuum_zheap_rel(Relation onerel, VacuumParams *params,
 	 * tuple density") unless there's some actual evidence for the latter.
 	 *
 	 * We can use either tupcount_pages or scanned_pages for the check
-	 * described above as both the valuse should be same.  However, we use
+	 * described above as both the values should be same.  However, we use
 	 * earlier so as to be consistent with heap.
 	 *
 	 * Fixme: We do need to update relallvisible as in heap once we start

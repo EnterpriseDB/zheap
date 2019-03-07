@@ -12,7 +12,7 @@
  * between the tuple header and the tuple data as we always make a copy of the
  * tuple to support in-place updates.  Likewise, we ideally don't need any
  * alignment padding between tuples. However, there are places in zheap code
- * where we access tuple header directly from the page (ex. zheap_delete,
+ * where we access tuple header directly from the page (e.g. zheap_delete,
  * zheap_update, etc.) for which we want them to be aligned at two-byte
  * boundary).
  *
@@ -42,7 +42,7 @@
  * hidden assumption that tuple header is MAXALIGNED which is not true
  * for zheap.  For example, if the first attribute requires alignment
  * (say it is four-byte varlena), then the code would assume the offset
- * is aligned incase we start with zero offset for first attribute.  So,
+ * is aligned in case we start with zero offset for first attribute.  So,
  * always start with the actual byte from where the first attribute starts.
  */
 Size
@@ -66,7 +66,7 @@ zheap_compute_data_size(TupleDesc tupleDesc, Datum *values, bool *isnull,
 
 		if (atti->attbyval)
 		{
-			/* byval attributes are stored unaligned in zheap. */
+			/* The attbyval attributes are stored unaligned in zheap. */
 			data_length += atti->attlen;
 		}
 		else if (ATT_IS_PACKABLE(atti) &&
@@ -102,7 +102,7 @@ zheap_compute_data_size(TupleDesc tupleDesc, Datum *values, bool *isnull,
 
 /*
  * zheap_fill_tuple
- *		Load data portion of a tuple from values/isnull arrays
+ *		Load data portion of a tuple from values/isnull arrays.
  *
  * We also fill the null bitmap (if any) and set the infomask bits
  * that reflect the tuple's data contents.
@@ -233,7 +233,7 @@ zheap_fill_tuple(TupleDesc tupleDesc,
 		}
 		else if (att->attlen == -2)
 		{
-			/* cstring ... never needs alignment */
+			/* cstring never needs alignment */
 			*infomask |= ZHEAP_HASVARWIDTH;
 			Assert(att->attalign == 'c');
 			data_length = strlen(DatumGetCString(values[i])) + 1;
@@ -256,7 +256,7 @@ zheap_fill_tuple(TupleDesc tupleDesc,
 
 /*
  * zheap_form_tuple
- *		construct a tuple from the given values[] and isnull[] arrays.
+ *		Construct a tuple from the given values[] and isnull[] arrays.
  *
  *	This is similar to heap_form_tuple except for tuple header.  Currently,
  *	we don't do anything special for Datum tuples, but eventually we need
@@ -345,7 +345,8 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 }
 
 /*
- * zheap_deform_tuple - similar to heap_deform_tuple, but for zheap tuples.
+ * zheap_deform_tuple
+ * 		Similar to heap_deform_tuple, but for zheap tuples.
  *
  * Note that for zheap, cached offsets are not used and we always start
  * deforming with the actual byte from where the first attribute starts.  See
@@ -444,7 +445,8 @@ zheap_freetuple(ZHeapTuple zhtup)
 }
 
 /*
- * znocachegetattr - This is same as nocachegetattr except that it takes
+ * znocachegetattr
+ * 		This is same as nocachegetattr except that it takes
  * ZHeapTuple as input.
  *
  * Note that for zheap, cached offsets are not used and we always start
@@ -520,13 +522,11 @@ znocachegetattr(ZHeapTuple tuple,
 	return ret_datum;
 }
 
-/* ----------------
- *		zheap_getsysattr
- *
+/*
+ * zheap_getsysattr
  *		Fetch the value of a system attribute for a tuple.
  *
  * This provides same information as heap_getsysattr, but for zheap tuple.
- * ----------------
  */
 Datum
 zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
@@ -604,9 +604,9 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 	return result;
 }
 
-/* ---------------------
- *		zheap_attisnull  - returns TRUE if zheap tuple attribute is not present
- * ---------------------
+/*
+ * zheap_attisnull
+ * 		Returns TRUE if zheap tuple attribute is not present.
  */
 bool
 zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc)
@@ -652,8 +652,8 @@ zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc)
 }
 
 /*
- * Check if the specified attribute's value is same in both given tuples.
- * Subroutine for ZHeapDetermineModifiedColumns.
+ * zheap_tuple_attr_equals
+ * 		Subroutine for ZHeapDetermineModifiedColumns to check if the specified attribute value is same in both given tuples.
  */
 bool
 zheap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
@@ -787,7 +787,8 @@ tts_zheap_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 }
 
 /*
- * Materialize the heap tuple contained in the given slot into its own memory
+ * tts_zheap_materialize
+ * 		Materialize the zheap tuple contained in the given slot into its own memory.
  * context.
  */
 static void
@@ -876,7 +877,8 @@ tts_zheap_copy_heap_tuple(TupleTableSlot *slot)
 }
 
 /*
- * Return a minimal tuple constructed from the contents of the slot.
+ * tts_zheap_copy_minimal_tuple
+ *		Return a minimal tuple constructed from the contents of the slot.
  *
  * We always return a new minimal tuple so no copy, per say, is needed.
  *
@@ -998,7 +1000,8 @@ slot_deform_ztuple(TupleTableSlot *slot, ZHeapTuple tuple, uint32 *offp, int nat
 }
 
 /*
- * ExecGetZHeapTupleFromSlot - fetch ZHeapTuple repersenting the slot's
+ * ExecGetZHeapTupleFromSlot
+ *   Fetch ZHeapTuple representing the slot's
  *	content.
  */
 ZHeapTuple
@@ -1027,8 +1030,8 @@ ExecGetZHeapTupleFromSlot(TupleTableSlot *slot)
 	return zslot->tuple;
 }
 
-/* --------------------------------
- *		ExecStoreZTuple
+/*
+ * ExecStoreZTuple
  *
  *		This function is same as ExecStoreTuple except that it used to store a
  *		physical zheap tuple into a specified slot in the tuple table.
@@ -1088,8 +1091,7 @@ zheap_to_heap(ZHeapTuple ztuple, TupleDesc tupDesc)
 
 /*
  * zheap_to_heap
- *
- * convert zheap tuple to a minimal tuple
+ *		Convert zheap tuple to a minimal tuple.
  */
 MinimalTuple
 zheap_to_minimal(ZHeapTuple ztuple, TupleDesc tupDesc)
@@ -1109,8 +1111,7 @@ zheap_to_minimal(ZHeapTuple ztuple, TupleDesc tupDesc)
 
 /*
  * heap_to_zheap
- *
- * convert heap tuple to zheap tuple
+ *		Convert heap tuple to zheap tuple.
  */
 ZHeapTuple
 heap_to_zheap(HeapTuple tuple, TupleDesc tupDesc)
@@ -1130,14 +1131,12 @@ heap_to_zheap(HeapTuple tuple, TupleDesc tupDesc)
 	return ztuple;
 }
 
-/* ----------------
- *		zheap_copytuple
- *
- *		returns a copy of an entire tuple
+/*
+ *zheap_copytuple
+ *		Returns a copy of an entire tuple.
  *
  * The ZHeapTuple struct, tuple header, and tuple data are all allocated
  * as a single palloc() block.
- * ----------------
  */
 ZHeapTuple
 zheap_copytuple(ZHeapTuple tuple)
