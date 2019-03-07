@@ -30,7 +30,7 @@ static void
 zheap_xlog_insert(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	xl_undo_header	*xlundohdr = (xl_undo_header *) XLogRecGetData(record);
+	xl_undo_header *xlundohdr = (xl_undo_header *) XLogRecGetData(record);
 	xl_zheap_insert *xlrec;
 	Buffer		buffer;
 	Page		page;
@@ -40,7 +40,7 @@ zheap_xlog_insert(XLogReaderState *record)
 		char		data[MaxZHeapTupleSize];
 	}			tbuf;
 	ZHeapTupleHeader zhtup;
-	UnpackedUndoRecord	undorecord;
+	UnpackedUndoRecord undorecord;
 	UndoRecPtr	urecptr = InvalidUndoRecPtr;
 	xl_zheap_header xlhdr;
 	uint32		newlen;
@@ -48,11 +48,11 @@ zheap_xlog_insert(XLogReaderState *record)
 	BlockNumber blkno;
 	ItemPointerData target_tid;
 	XLogRedoAction action;
-	int			*tpd_trans_slot_id = NULL;
+	int		   *tpd_trans_slot_id = NULL;
 	FullTransactionId fxid = XLogRecGetFullXid(record);
 	TransactionId xid = XidFromFullTransactionId(fxid);
-	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
-	bool	skip_undo;
+	uint32		xid_epoch = EpochFromFullTransactionId(fxid);
+	bool		skip_undo;
 
 	xlrec = (xl_zheap_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
 	if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
@@ -78,8 +78,8 @@ zheap_xlog_insert(XLogReaderState *record)
 	}
 
 	/*
-	 * We can skip inserting undo records if the tuples are to be marked
-	 * as frozen.
+	 * We can skip inserting undo records if the tuples are to be marked as
+	 * frozen.
 	 */
 	skip_undo = (xlrec->flags & XLZ_INSERT_IS_FROZEN);
 
@@ -102,26 +102,26 @@ zheap_xlog_insert(XLogReaderState *record)
 		undorecord.uur_tuple.len = 0;
 
 		/*
-		 * For speculative insertions, we store the dummy speculative token in the
-		 * undorecord so that, the size of undorecord in DO function matches with
-		 * the size of undorecord in REDO function. This ensures that, for INSERT
-		 * ... ON CONFLICT statements, the assert condition used later in this
-		 * function to ensure that the undo pointer in DO and REDO function remains
-		 * the same is true. However, it might not be useful in the REDO function as
-		 * it is just required in the master node to detect conflicts for insert ...
-		 * on conflict.
+		 * For speculative insertions, we store the dummy speculative token in
+		 * the undorecord so that, the size of undorecord in DO function
+		 * matches with the size of undorecord in REDO function. This ensures
+		 * that, for INSERT ... ON CONFLICT statements, the assert condition
+		 * used later in this function to ensure that the undo pointer in DO
+		 * and REDO function remains the same is true. However, it might not
+		 * be useful in the REDO function as it is just required in the master
+		 * node to detect conflicts for insert ... on conflict.
 		 *
-		 * Fixme - Once we have undo consistency checker that we can remove the
-		 * assertion as well dummy speculative token.
+		 * Fixme - Once we have undo consistency checker that we can remove
+		 * the assertion as well dummy speculative token.
 		 */
 		if (xlrec->flags & XLZ_INSERT_IS_SPECULATIVE)
 		{
-			uint32 dummy_specToken = 1;
+			uint32		dummy_specToken = 1;
 
 			initStringInfo(&undorecord.uur_payload);
 			appendBinaryStringInfo(&undorecord.uur_payload,
-				(char *)&dummy_specToken,
-				sizeof(uint32));
+								   (char *) &dummy_specToken,
+								   sizeof(uint32));
 		}
 		else
 			undorecord.uur_payload.len = 0;
@@ -131,8 +131,8 @@ zheap_xlog_insert(XLogReaderState *record)
 		InsertPreparedUndo();
 
 		/*
-		 * undo should be inserted at same location as it was during the actual
-		 * insert (DO operation).
+		 * undo should be inserted at same location as it was during the
+		 * actual insert (DO operation).
 		 */
 
 		Assert(urecptr == xlundohdr->urec_ptr);
@@ -245,24 +245,24 @@ static void
 zheap_xlog_delete(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	xl_undo_header	*xlundohdr = (xl_undo_header *) XLogRecGetData(record);
-	Size	recordlen = XLogRecGetDataLen(record);
+	xl_undo_header *xlundohdr = (xl_undo_header *) XLogRecGetData(record);
+	Size		recordlen = XLogRecGetDataLen(record);
 	xl_zheap_delete *xlrec;
 	Buffer		buffer;
 	Page		page;
-	ZHeapTupleData	zheaptup;
-	UnpackedUndoRecord	undorecord;
+	ZHeapTupleData zheaptup;
+	UnpackedUndoRecord undorecord;
 	UndoRecPtr	urecptr;
 	RelFileNode target_node;
 	BlockNumber blkno;
 	ItemPointerData target_tid;
 	XLogRedoAction action;
 	Relation	reln;
-	ItemId	lp = NULL;
+	ItemId		lp = NULL;
 	FullTransactionId fxid = XLogRecGetFullXid(record);
 	TransactionId xid = XidFromFullTransactionId(fxid);
-	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
-	int		*tpd_trans_slot_id = NULL;
+	uint32		xid_epoch = EpochFromFullTransactionId(fxid);
+	int		   *tpd_trans_slot_id = NULL;
 	bool		hasPayload = false;
 
 	xlrec = (xl_zheap_delete *) ((char *) xlundohdr + SizeOfUndoHeader);
@@ -315,22 +315,22 @@ zheap_xlog_delete(XLogReaderState *record)
 		{
 			ZHeapTupleHeaderData hdr;
 			char		data[MaxZHeapTupleSize];
-		} tbuf;
+		}			tbuf;
 		ZHeapTupleHeader zhtup;
-		Size	datalen;
+		Size		datalen;
 
 		if (xlrec->flags & XLZ_DELETE_CONTAINS_TPD_SLOT)
 		{
 			data = (char *) xlrec + SizeOfZHeapDelete +
-											sizeof(*tpd_trans_slot_id);
+				sizeof(*tpd_trans_slot_id);
 			datalen = recordlen - SizeOfUndoHeader - SizeOfZHeapDelete -
-							SizeOfZHeapHeader - sizeof(*tpd_trans_slot_id);
+				SizeOfZHeapHeader - sizeof(*tpd_trans_slot_id);
 		}
 		else
 		{
 			data = (char *) xlrec + SizeOfZHeapDelete;
 			datalen = recordlen - SizeOfUndoHeader - SizeOfZHeapDelete -
-											SizeOfZHeapHeader;
+				SizeOfZHeapHeader;
 		}
 		memcpy((char *) &xlhdr, data, SizeOfZHeapHeader);
 		data += SizeOfZHeapHeader;
@@ -392,9 +392,9 @@ zheap_xlog_delete(XLogReaderState *record)
 	 * For sub-transactions, we store the dummy contains subxact token in the
 	 * undorecord so that, the size of undorecord in DO function matches with
 	 * the size of undorecord in REDO function. This ensures that, for
-	 * sub-transactions, the assert condition used later in this
-	 * function to ensure that the undo pointer in DO and REDO function remains
-	 * the same is true.
+	 * sub-transactions, the assert condition used later in this function to
+	 * ensure that the undo pointer in DO and REDO function remains the same
+	 * is true.
 	 */
 	if (xlrec->flags & XLZ_DELETE_CONTAINS_SUBXACT)
 	{
@@ -407,8 +407,8 @@ zheap_xlog_delete(XLogReaderState *record)
 		}
 
 		appendBinaryStringInfo(&undorecord.uur_payload,
-								(char *) &dummy_subXactToken,
-								sizeof(SubTransactionId));
+							   (char *) &dummy_subXactToken,
+							   sizeof(SubTransactionId));
 	}
 
 	if (!hasPayload)
@@ -422,7 +422,7 @@ zheap_xlog_delete(XLogReaderState *record)
 	 * undo should be inserted at same location as it was during the actual
 	 * insert (DO operation).
 	 */
-	Assert (urecptr == xlundohdr->urec_ptr);
+	Assert(urecptr == xlundohdr->urec_ptr);
 
 	if (action == BLK_NEEDS_REDO)
 	{
@@ -479,37 +479,43 @@ static void
 zheap_xlog_update(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	xl_undo_header	*xlundohdr;
-	xl_undo_header	*xlnewundohdr = NULL;
+	xl_undo_header *xlundohdr;
+	xl_undo_header *xlnewundohdr = NULL;
 	xl_zheap_header xlhdr;
-	Size	recordlen;
+	Size		recordlen;
 	Size		freespace = 0;
 	xl_zheap_update *xlrec;
-	Buffer		oldbuffer, newbuffer;
-	Page		oldpage, newpage;
-	ZHeapTupleData	oldtup;
+	Buffer		oldbuffer,
+				newbuffer;
+	Page		oldpage,
+				newpage;
+	ZHeapTupleData oldtup;
 	ZHeapTupleHeader newtup;
 	union
 	{
 		ZHeapTupleHeaderData hdr;
 		char		data[MaxZHeapTupleSize];
-	} tbuf;
-	UnpackedUndoRecord	undorecord, newundorecord;
+	}			tbuf;
+	UnpackedUndoRecord undorecord,
+				newundorecord;
 	UndoRecPtr	urecptr = InvalidUndoRecPtr;
 	UndoRecPtr	newurecptr = InvalidUndoRecPtr;
 	RelFileNode rnode;
-	BlockNumber oldblk, newblk;
-	ItemPointerData oldtid, newtid;
-	XLogRedoAction oldaction, newaction;
+	BlockNumber oldblk,
+				newblk;
+	ItemPointerData oldtid,
+				newtid;
+	XLogRedoAction oldaction,
+				newaction;
 	Relation	reln;
-	ItemId	lp = NULL;
+	ItemId		lp = NULL;
 	FullTransactionId fxid = XLogRecGetFullXid(record);
 	TransactionId xid = XidFromFullTransactionId(fxid);
-	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
-	int			*old_tup_trans_slot_id = NULL;
-	int			*new_trans_slot_id = NULL;
+	uint32		xid_epoch = EpochFromFullTransactionId(fxid);
+	int		   *old_tup_trans_slot_id = NULL;
+	int		   *new_trans_slot_id = NULL;
 	int			trans_slot_id;
-	bool	inplace_update;
+	bool		inplace_update;
 
 	xlundohdr = (xl_undo_header *) XLogRecGetData(record);
 	xlrec = (xl_zheap_update *) ((char *) xlundohdr + SizeOfUndoHeader);
@@ -584,8 +590,8 @@ zheap_xlog_update(XLogReaderState *record)
 	if (xlrec->flags & XLZ_HAS_UPDATE_UNDOTUPLE)
 	{
 		ZHeapTupleHeader zhtup;
-		Size	datalen;
-		char	*data;
+		Size		datalen;
+		char	   *data;
 
 		/* There is an additional undo header for non-inplace-update. */
 		if (inplace_update)
@@ -594,7 +600,7 @@ zheap_xlog_update(XLogReaderState *record)
 			{
 				data = (char *) ((char *) old_tup_trans_slot_id + sizeof(*old_tup_trans_slot_id));
 				datalen = recordlen - SizeOfUndoHeader - SizeOfZHeapUpdate -
-							sizeof(*old_tup_trans_slot_id) - SizeOfZHeapHeader;
+					sizeof(*old_tup_trans_slot_id) - SizeOfZHeapHeader;
 			}
 			else
 			{
@@ -614,19 +620,19 @@ zheap_xlog_update(XLogReaderState *record)
 			else if (new_trans_slot_id)
 			{
 				datalen = recordlen - (2 * SizeOfUndoHeader) - SizeOfZHeapUpdate -
-						sizeof(*new_trans_slot_id) - SizeOfZHeapHeader;
+					sizeof(*new_trans_slot_id) - SizeOfZHeapHeader;
 				data = (char *) ((char *) new_trans_slot_id + sizeof(*new_trans_slot_id));
 			}
 			else if (old_tup_trans_slot_id)
 			{
 				datalen = recordlen - (2 * SizeOfUndoHeader) - SizeOfZHeapUpdate -
-						sizeof(*old_tup_trans_slot_id) - SizeOfZHeapHeader;
+					sizeof(*old_tup_trans_slot_id) - SizeOfZHeapHeader;
 				data = (char *) xlnewundohdr + SizeOfUndoHeader;
 			}
 			else
 			{
 				datalen = recordlen - (2 * SizeOfUndoHeader) - SizeOfZHeapUpdate -
-									SizeOfZHeapHeader;
+					SizeOfZHeapHeader;
 				data = (char *) xlnewundohdr + SizeOfUndoHeader;
 			}
 		}
@@ -680,9 +686,9 @@ zheap_xlog_update(XLogReaderState *record)
 
 	if (inplace_update)
 	{
-		bool	hasPayload = false;
+		bool		hasPayload = false;
 
-		undorecord.uur_type =  UNDO_INPLACE_UPDATE;
+		undorecord.uur_type = UNDO_INPLACE_UPDATE;
 		if (old_tup_trans_slot_id)
 		{
 			Assert(*old_tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS);
@@ -694,12 +700,12 @@ zheap_xlog_update(XLogReaderState *record)
 		}
 
 		/*
-		 * For sub-transactions, we store the dummy contains subxact token in the
-		 * undorecord so that, the size of undorecord in DO function matches with
-		 * the size of undorecord in REDO function. This ensures that, for
-		 * sub-transactions, the assert condition used later in this
-		 * function to ensure that the undo pointer in DO and REDO function remains
-		 * the same is true.
+		 * For sub-transactions, we store the dummy contains subxact token in
+		 * the undorecord so that, the size of undorecord in DO function
+		 * matches with the size of undorecord in REDO function. This ensures
+		 * that, for sub-transactions, the assert condition used later in this
+		 * function to ensure that the undo pointer in DO and REDO function
+		 * remains the same is true.
 		 */
 		if (xlrec->flags & XLZ_UPDATE_CONTAINS_SUBXACT)
 		{
@@ -724,7 +730,7 @@ zheap_xlog_update(XLogReaderState *record)
 	}
 	else
 	{
-		UnpackedUndoRecord	undorec[2];
+		UnpackedUndoRecord undorec[2];
 
 		undorecord.uur_type = UNDO_UPDATE;
 		initStringInfo(&undorecord.uur_payload);
@@ -742,12 +748,12 @@ zheap_xlog_update(XLogReaderState *record)
 		}
 
 		/*
-		 * For sub-transactions, we store the dummy contains subxact token in the
-		 * undorecord so that, the size of undorecord in DO function matches with
-		 * the size of undorecord in REDO function. This ensures that, for
-		 * sub-transactions, the assert condition used later in this
-		 * function to ensure that the undo pointer in DO and REDO function remains
-		 * the same is true.
+		 * For sub-transactions, we store the dummy contains subxact token in
+		 * the undorecord so that, the size of undorecord in DO function
+		 * matches with the size of undorecord in REDO function. This ensures
+		 * that, for sub-transactions, the assert condition used later in this
+		 * function to ensure that the undo pointer in DO and REDO function
+		 * remains the same is true.
 		 */
 		if (xlrec->flags & XLZ_UPDATE_CONTAINS_SUBXACT)
 		{
@@ -796,14 +802,14 @@ zheap_xlog_update(XLogReaderState *record)
 		newurecptr = PrepareUndoInsert(&newundorecord, fxid, UNDO_PERMANENT,
 									   record, NULL);
 
-		Assert (newurecptr == xlnewundohdr->urec_ptr);
+		Assert(newurecptr == xlnewundohdr->urec_ptr);
 	}
 
 	/*
 	 * undo should be inserted at same location as it was during the actual
 	 * insert (DO operation).
 	 */
-	Assert (urecptr == xlundohdr->urec_ptr);
+	Assert(urecptr == xlundohdr->urec_ptr);
 
 	InsertPreparedUndo();
 
@@ -956,8 +962,8 @@ zheap_xlog_update(XLogReaderState *record)
 		if (inplace_update)
 		{
 			/*
-			 * For inplace updates, we copy the entire data portion including the
-			 * tuple header.
+			 * For inplace updates, we copy the entire data portion including
+			 * the tuple header.
 			 */
 			ItemIdChangeLen(lp, newlen);
 			memcpy((char *) oldtup.t_data, (char *) newtup, newlen);
@@ -965,7 +971,7 @@ zheap_xlog_update(XLogReaderState *record)
 			if (newlen < oldtup.t_len)
 			{
 				/* new tuple is smaller, a prunable candidate */
-				Assert (oldpage == newpage);
+				Assert(oldpage == newpage);
 				ZPageSetPrunable(newpage, XLogRecGetXid(record));
 			}
 
@@ -976,14 +982,15 @@ zheap_xlog_update(XLogReaderState *record)
 		else
 		{
 			if (ZPageAddItem(newbuffer, NULL, (Item) newtup, newlen, xlrec->new_offnum,
-						 true, true, true) == InvalidOffsetNumber)
+							 true, true, true) == InvalidOffsetNumber)
 				elog(PANIC, "failed to add tuple");
 			PageSetUNDO((newbuffer == oldbuffer) ? undorecord : newundorecord,
 						newbuffer, trans_slot_id, false, xid_epoch, xid,
 						newurecptr, NULL, 0);
 		}
 
-		freespace = PageGetHeapFreeSpace(newpage); /* needed to update FSM below */
+		freespace = PageGetHeapFreeSpace(newpage);	/* needed to update FSM
+													 * below */
 
 		PageSetLSN(newpage, lsn);
 		MarkBufferDirty(newbuffer);
@@ -995,7 +1002,7 @@ zheap_xlog_update(XLogReaderState *record)
 		if (XLogReadTPDBuffer(record, 2) == BLK_NEEDS_REDO)
 		{
 			OffsetNumber usedoff[2];
-			int			 ucnt;
+			int			ucnt;
 
 			if (!inplace_update && newbuffer == oldbuffer)
 			{
@@ -1083,9 +1090,9 @@ zheap_xlog_update(XLogReaderState *record)
 	FreeFakeRelcacheEntry(reln);
 
 	/*
-	 * Update the freespace.  We don't need to update it for inplace updates as
-	 * they won't freeup any space or consume any extra space assuming the new
-	 * tuple is about the same size as the old one.  See heap_xlog_update.
+	 * Update the freespace.  We don't need to update it for inplace updates
+	 * as they won't freeup any space or consume any extra space assuming the
+	 * new tuple is about the same size as the old one.  See heap_xlog_update.
 	 */
 	if (newaction == BLK_NEEDS_REDO && !inplace_update && freespace < BLCKSZ / 5)
 		XLogRecordPageWithFreeSpace(rnode, newblk, freespace);
@@ -1098,13 +1105,14 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 	Buffer		buffer;
 	Page		page;
 	xl_zheap_freeze_xact_slot *xlrec =
-			(xl_zheap_freeze_xact_slot *) XLogRecGetData(record);
-	XLogRedoAction action, tpdaction = -1;
-	int	   *frozen;
-	int		i;
-	bool	hasTPDSlot = false;
+	(xl_zheap_freeze_xact_slot *) XLogRecGetData(record);
+	XLogRedoAction action,
+				tpdaction = -1;
+	int		   *frozen;
+	int			i;
+	bool		hasTPDSlot = false;
 
-	/* There must be some frozen slots.*/
+	/* There must be some frozen slots. */
 	Assert(xlrec->nFrozen > 0);
 
 	/*
@@ -1137,17 +1145,18 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 
 	if (action == BLK_NEEDS_REDO)
 	{
-		ZHeapPageOpaque	opaque;
-		int		slot_no;
+		ZHeapPageOpaque opaque;
+		int			slot_no;
+
 		if (hasTPDSlot)
 		{
 			zheap_freeze_or_invalidate_tuples(buffer, xlrec->nFrozen, frozen,
-				true, true);
+											  true, true);
 		}
 		else
 		{
 			zheap_freeze_or_invalidate_tuples(buffer, xlrec->nFrozen, frozen,
-				true, false);
+											  true, false);
 			opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 
 			/* Initialize the frozen slots. */
@@ -1170,7 +1179,7 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 		/* Initialize the frozen slots. */
 		for (i = 0; i < xlrec->nFrozen; i++)
 		{
-			int	tpd_slot_id;
+			int			tpd_slot_id;
 
 			/* Calculate the actual slot no. */
 			tpd_slot_id = frozen[i] + ZHEAP_PAGE_TRANS_SLOTS + 1;
@@ -1198,14 +1207,15 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 	Page		page;
 	char	   *data = XLogRecGetData(record);
 	uint16		nCompletedSlots;
-	XLogRedoAction action, tpdaction = -1;
-	int	   *completed_slots;
-	int		i;
-	bool	hasTPDSlot = false;
+	XLogRedoAction action,
+				tpdaction = -1;
+	int		   *completed_slots;
+	int			i;
+	bool		hasTPDSlot = false;
 
 	nCompletedSlots = *(uint16 *) data;
 
-	/* There must be some frozen slots.*/
+	/* There must be some frozen slots. */
 	Assert(nCompletedSlots > 0);
 
 	completed_slots = (int *) ((char *) data + sizeof(uint16));
@@ -1220,8 +1230,8 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 
 	if (action == BLK_NEEDS_REDO)
 	{
-		ZHeapPageOpaque	opaque;
-		int		slot_no;
+		ZHeapPageOpaque opaque;
+		int			slot_no;
 
 		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 
@@ -1250,12 +1260,12 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 	}
 	if (tpdaction == BLK_NEEDS_REDO)
 	{
-		TransInfo *tpd_slots;
+		TransInfo  *tpd_slots;
 
 		/*
-		 * Read TPD slot array. So that we can keep the slot urec_ptr
-		 * intact while clearing the transaction id from the slot.  In recovery,
-		 * we should not clear the TPD location.
+		 * Read TPD slot array. So that we can keep the slot urec_ptr intact
+		 * while clearing the transaction id from the slot.  In recovery, we
+		 * should not clear the TPD location.
 		 */
 		tpd_slots = TPDPageGetTransactionSlots(NULL, buffer,
 											   InvalidOffsetNumber,
@@ -1265,7 +1275,7 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 
 		for (i = 0; i < nCompletedSlots; i++)
 		{
-			int tpd_slot_id;
+			int			tpd_slot_id;
 
 			/* Calculate the actual slot no. */
 			tpd_slot_id = completed_slots[i] + ZHEAP_PAGE_TRANS_SLOTS + 1;
@@ -1288,27 +1298,27 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 static void
 zheap_xlog_lock(XLogReaderState *record)
 {
-	XLogRecPtr  lsn = record->EndRecPtr;
-	xl_undo_header  *xlundohdr = (xl_undo_header *) XLogRecGetData(record);
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_undo_header *xlundohdr = (xl_undo_header *) XLogRecGetData(record);
 	xl_zheap_lock *xlrec;
-	Buffer      buffer;
-	Page        page;
-	ZHeapTupleData  zheaptup;
-	char		*tup_hdr;
-	UnpackedUndoRecord  undorecord;
-	UndoRecPtr  urecptr;
+	Buffer		buffer;
+	Page		page;
+	ZHeapTupleData zheaptup;
+	char	   *tup_hdr;
+	UnpackedUndoRecord undorecord;
+	UndoRecPtr	urecptr;
 	RelFileNode target_node;
 	BlockNumber blkno;
 	ItemPointerData target_tid;
 	XLogRedoAction action;
-	Relation    reln;
-	ItemId  lp = NULL;
+	Relation	reln;
+	ItemId		lp = NULL;
 	FullTransactionId fxid = XLogRecGetFullXid(record);
 	TransactionId xid = XidFromFullTransactionId(fxid);
-	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
-	int		*trans_slot_for_urec = NULL;
-	int		*tup_trans_slot_id = NULL;
-	int		undo_slot_no;
+	uint32		xid_epoch = EpochFromFullTransactionId(fxid);
+	int		   *trans_slot_for_urec = NULL;
+	int		   *tup_trans_slot_id = NULL;
+	int			undo_slot_no;
 
 	xlrec = (xl_zheap_lock *) ((char *) xlundohdr + SizeOfUndoHeader);
 
@@ -1368,7 +1378,7 @@ zheap_xlog_lock(XLogReaderState *record)
 	if (xlrec->flags & XLZ_LOCK_TRANS_SLOT_FOR_UREC)
 	{
 		trans_slot_for_urec = (int *) ((char *) tup_hdr +
-							SizeofZHeapTupleHeader + sizeof(LockTupleMode));
+									   SizeofZHeapTupleHeader + sizeof(LockTupleMode));
 		if (xlrec->trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 			appendBinaryStringInfo(&undorecord.uur_payload,
 								   (char *) &(xlrec->trans_slot_id),
@@ -1377,10 +1387,11 @@ zheap_xlog_lock(XLogReaderState *record)
 	else if (xlrec->flags & XLZ_LOCK_CONTAINS_TPD_SLOT)
 	{
 		tup_trans_slot_id = (int *) ((char *) tup_hdr +
-							SizeofZHeapTupleHeader + sizeof(LockTupleMode));
+									 SizeofZHeapTupleHeader + sizeof(LockTupleMode));
+
 		/*
-		 * We must have logged the tuple's original transaction slot if it is a TPD
-		 * slot.
+		 * We must have logged the tuple's original transaction slot if it is
+		 * a TPD slot.
 		 */
 		Assert(*tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS);
 		appendBinaryStringInfo(&undorecord.uur_payload,
@@ -1392,9 +1403,9 @@ zheap_xlog_lock(XLogReaderState *record)
 	 * For sub-transactions, we store the dummy contains subxact token in the
 	 * undorecord so that, the size of undorecord in DO function matches with
 	 * the size of undorecord in REDO function. This ensures that, for
-	 * sub-transactions, the assert condition used later in this
-	 * function to ensure that the undo pointer in DO and REDO function remains
-	 * the same is true.
+	 * sub-transactions, the assert condition used later in this function to
+	 * ensure that the undo pointer in DO and REDO function remains the same
+	 * is true.
 	 */
 	if (xlrec->flags & XLZ_LOCK_CONTAINS_SUBXACT)
 	{
@@ -1413,7 +1424,7 @@ zheap_xlog_lock(XLogReaderState *record)
 	 * undo should be inserted at same location as it was during the actual
 	 * insert (DO operation).
 	 */
-	Assert (urecptr == xlundohdr->urec_ptr);
+	Assert(urecptr == xlundohdr->urec_ptr);
 
 	if (trans_slot_for_urec)
 		undo_slot_no = *trans_slot_for_urec;
@@ -1465,7 +1476,7 @@ static void
 zheap_xlog_multi_insert(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	xl_undo_header	*xlundohdr;
+	xl_undo_header *xlundohdr;
 	xl_zheap_multi_insert *xlrec;
 	RelFileNode rnode;
 	BlockNumber blkno;
@@ -1478,22 +1489,22 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	}			tbuf;
 	ZHeapTupleHeader zhtup;
 	uint32		newlen;
-	UnpackedUndoRecord	*undorecord = NULL;
+	UnpackedUndoRecord *undorecord = NULL;
 	UndoRecPtr	urecptr = InvalidUndoRecPtr,
-						prev_urecptr = InvalidUndoRecPtr;
+				prev_urecptr = InvalidUndoRecPtr;
 	int			i;
 	int			nranges;
 	int			ucnt = 0;
-	OffsetNumber	usedoff[MaxOffsetNumber];
+	OffsetNumber usedoff[MaxOffsetNumber];
 	bool		isinit = (XLogRecGetInfo(record) & XLOG_ZHEAP_INIT_PAGE) != 0;
 	XLogRedoAction action;
-	char		*ranges_data;
-	int			*tpd_trans_slot_id = NULL;
+	char	   *ranges_data;
+	int		   *tpd_trans_slot_id = NULL;
 	Size		ranges_data_size = 0;
 	FullTransactionId fxid = XLogRecGetFullXid(record);
 	TransactionId xid = XidFromFullTransactionId(fxid);
-	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
-	ZHeapFreeOffsetRanges	*zfree_offset_ranges;
+	uint32		xid_epoch = EpochFromFullTransactionId(fxid);
+	ZHeapFreeOffsetRanges *zfree_offset_ranges;
 	bool		skip_undo;
 
 	xlundohdr = (xl_undo_header *) XLogRecGetData(record);
@@ -1540,17 +1551,17 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	Assert(nranges > 0);
 	for (i = 0; i < nranges; i++)
 	{
-		memcpy(&zfree_offset_ranges->startOffset[i],(char *) ranges_data, sizeof(OffsetNumber));
+		memcpy(&zfree_offset_ranges->startOffset[i], (char *) ranges_data, sizeof(OffsetNumber));
 		ranges_data += sizeof(OffsetNumber);
-		memcpy(&zfree_offset_ranges->endOffset[i],(char *) ranges_data, sizeof(OffsetNumber));
+		memcpy(&zfree_offset_ranges->endOffset[i], (char *) ranges_data, sizeof(OffsetNumber));
 		ranges_data += sizeof(OffsetNumber);
 	}
 
 	/*
-	 * We can skip inserting undo records if the tuples are to be marked
-	 * as frozen.
+	 * We can skip inserting undo records if the tuples are to be marked as
+	 * frozen.
 	 */
-	skip_undo= (xlrec->flags & XLZ_INSERT_IS_FROZEN);
+	skip_undo = (xlrec->flags & XLZ_INSERT_IS_FROZEN);
 	if (!skip_undo)
 	{
 		undorecord = (UnpackedUndoRecord *) palloc(nranges * sizeof(UnpackedUndoRecord));
@@ -1597,10 +1608,10 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			 nranges, blkno);
 
 		/*
-		 * undo should be inserted at same location as it was during the actual
-		 * insert (DO operation).
+		 * undo should be inserted at same location as it was during the
+		 * actual insert (DO operation).
 		 */
-		Assert (urecptr == xlundohdr->urec_ptr);
+		Assert(urecptr == xlundohdr->urec_ptr);
 
 		InsertPreparedUndo();
 	}
@@ -1617,8 +1628,8 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	{
 		char	   *tupdata;
 		char	   *endptr;
-		int		trans_slot_id = 0;
-		int		prev_trans_slot_id PG_USED_FOR_ASSERTS_ONLY;
+		int			trans_slot_id = 0;
+		int			prev_trans_slot_id PG_USED_FOR_ASSERTS_ONLY;
 		Size		len;
 		OffsetNumber offnum;
 		int			j = 0;
@@ -1707,7 +1718,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		}
 
 		if (!skip_undo)
-			PageSetUNDO(undorecord[nranges-1], buffer, trans_slot_id, false,
+			PageSetUNDO(undorecord[nranges - 1], buffer, trans_slot_id, false,
 						xid_epoch, xid, urecptr, NULL, 0);
 
 		PageSetLSN(page, lsn);
@@ -1734,8 +1745,8 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			{
 				for (i = 0; i < nranges; i++)
 				{
-					OffsetNumber	start_off,
-									end_off;
+					OffsetNumber start_off,
+								end_off;
 
 					start_off = ((OffsetNumber *) undorecord[i].uur_payload.data)[0];
 					end_off = ((OffsetNumber *) undorecord[i].uur_payload.data)[1];
@@ -1785,8 +1796,8 @@ zheap_xlog_clean(XLogReaderState *record)
 	RelFileNode rnode;
 	BlockNumber blkno;
 	XLogRedoAction action;
-	OffsetNumber	*target_offnum;
-	Size			*space_required;
+	OffsetNumber *target_offnum;
+	Size	   *space_required;
 
 	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
 
@@ -1809,7 +1820,7 @@ zheap_xlog_clean(XLogReaderState *record)
 										   &buffer);
 	if (action == BLK_NEEDS_REDO)
 	{
-		Page		page = (Page)BufferGetPage(buffer);
+		Page		page = (Page) BufferGetPage(buffer);
 		OffsetNumber *end;
 		OffsetNumber *deleted;
 		OffsetNumber *nowdead;
@@ -1850,8 +1861,8 @@ zheap_xlog_clean(XLogReaderState *record)
 
 		if (xlrec->flags & XLZ_CLEAN_ALLOW_PRUNING)
 		{
-			bool	pruned PG_USED_FOR_ASSERTS_ONLY = false;
-			Page	tmppage = NULL;
+			bool		pruned PG_USED_FOR_ASSERTS_ONLY = false;
+			Page		tmppage = NULL;
 
 			/*
 			 * We prepare the temporary copy of the page so that during page
@@ -1872,7 +1883,8 @@ zheap_xlog_clean(XLogReaderState *record)
 			pfree(tmppage);
 		}
 
-		freespace = PageGetZHeapFreeSpace(page); /* needed to update FSM below */
+		freespace = PageGetZHeapFreeSpace(page);	/* needed to update FSM
+													 * below */
 
 		/*
 		 * Note: we don't worry about updating the page's prunability hints.
@@ -1950,14 +1962,15 @@ static void
 zheap_xlog_unused(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	xl_undo_header	*xlundohdr;
+	xl_undo_header *xlundohdr;
 	xl_zheap_unused *xlrec;
-	UnpackedUndoRecord	undorecord;
+	UnpackedUndoRecord undorecord;
 	UndoRecPtr	urecptr;
 	FullTransactionId fxid = XLogRecGetFullXid(record);
 	TransactionId xid = XidFromFullTransactionId(fxid);
-	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
-	uint16	i, uncnt;
+	uint32		xid_epoch = EpochFromFullTransactionId(fxid);
+	uint16		i,
+				uncnt;
 	Buffer		buffer;
 	OffsetNumber *unused;
 	Size		freespace = 0;
@@ -1978,9 +1991,9 @@ zheap_xlog_unused(XLogReaderState *record)
 	 * We're about to remove tuples. In Hot Standby mode, ensure that there's
 	 * no queries running for which the removed tuples are still visible.
 	 *
-	 * Not all ZHEAP_UNUSED records remove tuples with xids, so we only want to
-	 * conflict on the records that cause MVCC failures for user queries. If
-	 * latestRemovedXid is invalid, skip conflict processing.
+	 * Not all ZHEAP_UNUSED records remove tuples with xids, so we only want
+	 * to conflict on the records that cause MVCC failures for user queries.
+	 * If latestRemovedXid is invalid, skip conflict processing.
 	 */
 	if (InHotStandby && TransactionIdIsValid(xlrec->latestRemovedXid))
 		ResolveRecoveryConflictWithSnapshot(xlrec->latestRemovedXid, rnode);
@@ -2001,7 +2014,7 @@ zheap_xlog_unused(XLogReaderState *record)
 	undorecord.uur_tuple.len = 0;
 	undorecord.uur_payload.len = uncnt * sizeof(OffsetNumber);
 	undorecord.uur_payload.data =
-			(char *) palloc(uncnt * sizeof(OffsetNumber));
+		(char *) palloc(uncnt * sizeof(OffsetNumber));
 	memcpy(undorecord.uur_payload.data,
 		   (char *) unused,
 		   undorecord.uur_payload.len);
@@ -2014,7 +2027,7 @@ zheap_xlog_unused(XLogReaderState *record)
 	 * undo should be inserted at same location as it was during the actual
 	 * insert (DO operation).
 	 */
-	Assert (urecptr == xlundohdr->urec_ptr);
+	Assert(urecptr == xlundohdr->urec_ptr);
 
 	/*
 	 * If we have a full-page image, restore it (using a cleanup lock) and
@@ -2048,8 +2061,8 @@ zheap_xlog_unused(XLogReaderState *record)
 
 		if (xlrec->flags & XLZ_UNUSED_ALLOW_PRUNING)
 		{
-			bool	pruned PG_USED_FOR_ASSERTS_ONLY = false;
-			Page	tmppage = NULL;
+			bool		pruned PG_USED_FOR_ASSERTS_ONLY = false;
+			Page		tmppage = NULL;
 
 			/*
 			 * We prepare the temporary copy of the page so that during page
@@ -2069,7 +2082,8 @@ zheap_xlog_unused(XLogReaderState *record)
 			pfree(tmppage);
 		}
 
-		freespace = PageGetZHeapFreeSpace(page); /* needed to update FSM below */
+		freespace = PageGetZHeapFreeSpace(page);	/* needed to update FSM
+													 * below */
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
@@ -2129,7 +2143,8 @@ zheap_xlog_visible(XLogReaderState *record)
 	/*
 	 * If there are any Hot Standby transactions running that have an xmin
 	 * horizon old enough that this page isn't all-visible for them, they
-	 * might incorrectly decide that an index-only scan can skip a zheap fetch.
+	 * might incorrectly decide that an index-only scan can skip a zheap
+	 * fetch.
 	 *
 	 * NB: It might be better to throw some kind of "soft" conflict here that
 	 * forces any index-only scan that is in flight to perform zheap fetches,
@@ -2243,7 +2258,7 @@ zheap2_redo(XLogReaderState *record)
 void
 zheap_mask(char *pagedata, BlockNumber blkno)
 {
-	Page		page = (Page)pagedata;
+	Page		page = (Page) pagedata;
 
 	mask_page_lsn_and_checksum(page);
 
@@ -2253,6 +2268,7 @@ zheap_mask(char *pagedata, BlockNumber blkno)
 	if (PageGetSpecialSize(page) == MAXALIGN(BLCKSZ))
 	{
 		ZHeapMetaPage metap PG_USED_FOR_ASSERTS_ONLY;
+
 		metap = ZHeapPageGetMeta(page);
 		/* It's a meta-page, no need to mask further. */
 		Assert(metap->zhm_magic == ZHEAP_MAGIC);
