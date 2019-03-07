@@ -303,9 +303,9 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, int *trans_slot,
 		 * considered as all visible which is not true.
 		 */
 		if ((TransactionIdIsValid(xid) &&
-			 TransactionIdPrecedes(xid, pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))) ||
-			 UndoLogIsDiscarded(urec_ptr) ||
-			 ((snapshot != InvalidSnapshot)&& !XidInMVCCSnapshot(xid, snapshot)))
+			 (TransactionIdPrecedes(xid, pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)) ||
+			 (snapshot != InvalidSnapshot && !XidInMVCCSnapshot(xid, snapshot)))) ||
+			 UndoLogIsDiscarded(urec_ptr))
 			goto slot_is_frozen;
 
 		xid = InvalidTransactionId;
