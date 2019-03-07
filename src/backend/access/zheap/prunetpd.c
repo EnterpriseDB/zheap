@@ -26,12 +26,12 @@ typedef struct TPDPruneState
 	OffsetNumber nowunused[MaxTPDTuplesPerPage];
 } TPDPruneState;
 
-static void TPDEntryPrune(Buffer buf, OffsetNumber offnum, TPDPruneState *prstate,
-				Size *space_freed);
+static void TPDEntryPrune(Buffer buf, OffsetNumber offnum, TPDPruneState * prstate,
+			  Size *space_freed);
 static XLogRecPtr LogTPDClean(Relation rel, Buffer tpdbuf,
-					OffsetNumber *nowunused, int nunused,
-					OffsetNumber target_offnum, Size space_required);
-static int TPDPruneEntirePage(Relation rel, Buffer tpdbuf);
+			OffsetNumber *nowunused, int nunused,
+			OffsetNumber target_offnum, Size space_required);
+static int	TPDPruneEntirePage(Relation rel, Buffer tpdbuf);
 
 /*
  * TPDPagePrune - Prune the TPD page.
@@ -49,19 +49,21 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
 			 OffsetNumber target_offnum, Size space_required, bool can_free,
 			 bool *update_tpd_inplace, bool *tpd_e_pruned)
 {
-	Page	tpdpage, tmppage = NULL;
-	TPDPageOpaque	tpdopaque;
-	TPDPruneState	prstate;
-	OffsetNumber	offnum, maxoff;
-	ItemId	itemId;
-	uint64	epoch_xid;
-	uint64	epoch;
-	Size	space_freed;
+	Page		tpdpage,
+				tmppage = NULL;
+	TPDPageOpaque tpdopaque;
+	TPDPruneState prstate;
+	OffsetNumber offnum,
+				maxoff;
+	ItemId		itemId;
+	uint64		epoch_xid;
+	uint64		epoch;
+	Size		space_freed;
 
 	prstate.nunused = 0;
 	tpdpage = BufferGetPage(tpdbuf);
 
-	/* Initialise the out variables. */
+	/* Initialize the out variables. */
 	if (update_tpd_inplace)
 		*update_tpd_inplace = false;
 	if (tpd_e_pruned)
@@ -85,7 +87,7 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
 	for (offnum = FirstOffsetNumber;
 		 offnum <= maxoff;
 		 offnum = OffsetNumberNext(offnum))
-	{	
+	{
 		itemId = PageGetItemId(tpdpage, offnum);
 
 		/* Nothing to do if slot is empty. */
@@ -109,8 +111,8 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
 		return 0;
 
 	/*
-	 * We prepare the temporary copy of the page so that during page
-	 * repair fragmentation we can use it to copy the actual tuples.
+	 * We prepare the temporary copy of the page so that during page repair
+	 * fragmentation we can use it to copy the actual tuples.
 	 */
 	if (prstate.nunused > 0 || OffsetNumberIsValid(target_offnum))
 		tmppage = PageGetTempPageCopy(tpdpage);
@@ -131,10 +133,10 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
 		TPDPagePruneExecute(tpdbuf, prstate.nowunused, prstate.nunused);
 
 		/*
-		 * Finally, repair any fragmentation, and update the page's hint bit about
-		 * whether it has free pointers.  It is quite possible that there are no
-		 * prunable items on the page in which case it will rearrange the page to
-		 * make the space at the required offset.
+		 * Finally, repair any fragmentation, and update the page's hint bit
+		 * about whether it has free pointers.  It is quite possible that
+		 * there are no prunable items on the page in which case it will
+		 * rearrange the page to make the space at the required offset.
 		 */
 		TPDPageRepairFragmentation(tpdpage, tmppage, target_offnum,
 								   space_required);
@@ -147,9 +149,9 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
 		 * XXX Unlike heap pruning, we don't need to remember latestRemovedXid
 		 * for the purpose of generating conflicts on standby.  We use
 		 * oldestXidHavingUndo as the horizon to prune the TPD entries which
-		 * means all the prior undo must have discarded and during undo discard
-		 * we already generate such xid (see undolog_xlog_discard) which should
-		 * serve our purpose as this WAL must reach after that.
+		 * means all the prior undo must have discarded and during undo
+		 * discard we already generate such xid (see undolog_xlog_discard)
+		 * which should serve our purpose as this WAL must reach after that.
 		 */
 		if (RelationNeedsWAL(rel))
 		{
@@ -175,23 +177,21 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
 free_tpd_page:
 	if (can_free && PageIsEmpty(tpdpage))
 	{
-		Size	freespace;
+		Size		freespace;
 
-		/*
-		 * If the page is empty, we have certainly pruned all the tpd
-		 * entries.
-		 */
+		/* If the page is empty, we have certainly pruned all the tpd entries. */
 		if (tpd_e_pruned)
 			*tpd_e_pruned = true;
+
 		/*
-		 * We can reuse empty page as either a heap page or a TPD
-		 * page, so no need to consider opaque space.
+		 * We can reuse empty page as either a heap page or a TPD page, so no
+		 * need to consider opaque space.
 		 */
 		freespace = BLCKSZ - SizeOfPageHeaderData;
 
 		/*
-		 * TPD page is empty, remove it from TPD used page list and
-		 * record it in FSM.
+		 * TPD page is empty, remove it from TPD used page list and record it
+		 * in FSM.
 		 */
 		if (TPDFreePage(rel, tpdbuf, strategy))
 			RecordPageWithFreeSpace(rel, BufferGetBlockNumber(tpdbuf),
@@ -213,16 +213,18 @@ static void
 TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
 			  Size *space_freed)
 {
-	Page	tpdpage;
-	TPDEntryHeaderData	tpd_e_hdr;
-	TransInfo	*trans_slots;
-	ItemId	itemId;
-	Size	size_tpd_e_slots, size_tpd_e_map;
-	Size	size_tpd_entry;
-	int		num_trans_slots, slot_no;
-	int		loc_trans_slots;
-	uint16	tpd_e_offset;
-	bool	prune_entry = true;
+	Page		tpdpage;
+	TPDEntryHeaderData tpd_e_hdr;
+	TransInfo  *trans_slots;
+	ItemId		itemId;
+	Size		size_tpd_e_slots,
+				size_tpd_e_map;
+	Size		size_tpd_entry;
+	int			num_trans_slots,
+				slot_no;
+	int			loc_trans_slots;
+	uint16		tpd_e_offset;
+	bool		prune_entry = true;
 
 	tpdpage = BufferGetPage(tpdbuf);
 	itemId = PageGetItemId(tpdpage, offnum);
@@ -255,24 +257,25 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
 
 	for (slot_no = 0; slot_no < num_trans_slots; slot_no++)
 	{
-		uint64	epoch_xid;
-		TransactionId	xid;
-		uint64	epoch;
+		uint64		epoch_xid;
+		TransactionId xid;
+		uint64		epoch;
 		UndoRecPtr	urec_ptr = trans_slots[slot_no].urec_ptr;
 
 		epoch = trans_slots[slot_no].xid_epoch;
 		xid = trans_slots[slot_no].xid;
 		epoch_xid = MakeEpochXid(epoch, xid);
+
 		/*
-		 * Check whether transaction slot can be considered frozen?
-		 * If both transaction id and undo record pointer are invalid or
-		 * xid is invalid and its undo has been discarded or xid is older than
-		 * the oldest xid with undo.
+		 * Check whether transaction slot can be considered frozen? If both
+		 * transaction id and undo record pointer are invalid or xid is
+		 * invalid and its undo has been discarded or xid is older than the
+		 * oldest xid with undo.
 		 */
 		if ((!TransactionIdIsValid(xid) &&
-			(!UndoRecPtrIsValid(urec_ptr) || UndoLogIsDiscarded(urec_ptr))) ||
+			 (!UndoRecPtrIsValid(urec_ptr) || UndoLogIsDiscarded(urec_ptr))) ||
 			(TransactionIdIsValid(xid) &&
-	 		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)))
+			 epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)))
 			continue;
 		else
 		{
@@ -286,7 +289,7 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
 prune_tpd_entry:
 	if (prune_entry)
 	{
-		Assert (prstate->nunused < MaxTPDTuplesPerPage);
+		Assert(prstate->nunused < MaxTPDTuplesPerPage);
 		prstate->nowunused[prstate->nunused] = offnum;
 		prstate->nunused++;
 
@@ -303,9 +306,9 @@ prune_tpd_entry:
 void
 TPDPagePruneExecute(Buffer tpdbuf, OffsetNumber *nowunused, int nunused)
 {
-	Page	tpdpage;
+	Page		tpdpage;
 	OffsetNumber *offnum;
-	int		i;
+	int			i;
 
 	tpdpage = BufferGetPage(tpdbuf);
 
@@ -323,7 +326,7 @@ TPDPagePruneExecute(Buffer tpdbuf, OffsetNumber *nowunused, int nunused)
 /*
  * TPDPageRepairFragmentation - Frees fragmented space on a tpd page.
  *
- * It doesn't remove unused line pointers because some heappage might
+ * It doesn't remove unused line pointers because some heap page might
  * still point to the line pointer.  If we remove the line pointer, then
  * the same space could be occupied by actual TPD entry in which case somebody
  * trying to access that line pointer will get unpredictable behavior.
@@ -348,8 +351,8 @@ TPDPageRepairFragmentation(Page page, Page tmppage, OffsetNumber target_offnum,
 	 * It's worth the trouble to be more paranoid here than in most places,
 	 * because we are about to reshuffle data in (what is usually) a shared
 	 * disk buffer.  If we aren't careful then corrupted pointers, lengths,
-	 * etc. could cause us to clobber adjacent disk buffers, spreading the data
-	 * loss further.  So, check everything.
+	 * etc. could cause us to clobber adjacent disk buffers, spreading the
+	 * data loss further.  So, check everything.
 	 */
 	if (pd_lower < SizeOfPageHeaderData ||
 		pd_lower > pd_upper ||
@@ -383,7 +386,7 @@ TPDPageRepairFragmentation(Page page, Page tmppage, OffsetNumber target_offnum,
 									itemidptr->itemoff)));
 				if (i == target_offnum)
 					itemidptr->alignedlen = ItemIdGetLength(lp) +
-														space_required;
+						space_required;
 				else
 					itemidptr->alignedlen = ItemIdGetLength(lp);
 				totallen += itemidptr->alignedlen;
@@ -432,8 +435,8 @@ LogTPDClean(Relation rel, Buffer tpdbuf,
 			OffsetNumber *nowunused, int nunused,
 			OffsetNumber target_offnum, Size space_required)
 {
-	XLogRecPtr      recptr;
-	xl_tpd_clean	xl_rec;
+	XLogRecPtr	recptr;
+	xl_tpd_clean xl_rec;
 
 	/* Caller should not call me on a non-WAL-logged relation */
 	Assert(RelationNeedsWAL(rel));
@@ -455,11 +458,11 @@ LogTPDClean(Relation rel, Buffer tpdbuf,
 	XLogRegisterBuffer(0, tpdbuf, REGBUF_STANDARD);
 
 	/*
-	 * The OffsetNumber array is not actually in the buffer, but we pretend
-	 * it is.  When XLogInsert stores the whole buffer, the offset array need
-	 * not be stored too.  Note that even if the array is empty, we want to
-	 * expose the buffer as a candidate for whole-page storage, since this
-	 * record type implies a defragmentation operation even if no item pointers
+	 * The OffsetNumber array is not actually in the buffer, but we pretend it
+	 * is.  When XLogInsert stores the whole buffer, the offset array need not
+	 * be stored too.  Note that even if the array is empty, we want to expose
+	 * the buffer as a candidate for whole-page storage, since this record
+	 * type implies a defragmentation operation even if no item pointers
 	 * changed state.
 	 */
 	if (nunused > 0)
@@ -477,8 +480,8 @@ LogTPDClean(Relation rel, Buffer tpdbuf,
 static int
 TPDPruneEntirePage(Relation rel, Buffer tpdbuf)
 {
-	Page	page = BufferGetPage(tpdbuf);
-	int		entries_removed = PageGetMaxOffsetNumber(page);
+	Page		page = BufferGetPage(tpdbuf);
+	int			entries_removed = PageGetMaxOffsetNumber(page);
 
 	START_CRIT_SECTION();
 
@@ -490,7 +493,7 @@ TPDPruneEntirePage(Relation rel, Buffer tpdbuf)
 
 	if (RelationNeedsWAL(rel))
 	{
-		XLogRecPtr      recptr;
+		XLogRecPtr	recptr;
 
 		XLogBeginInsert();
 
