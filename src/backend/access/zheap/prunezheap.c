@@ -59,13 +59,13 @@ typedef struct
 static int zheap_prune_item(Relation relation, Buffer buffer,
 				 OffsetNumber rootoffnum, TransactionId OldestXmin,
 				 ZPruneState *prstate, int *space_freed);
-static void zheap_prune_record_prunable(ZPruneState * prstate,
+static void zheap_prune_record_prunable(ZPruneState *prstate,
 							TransactionId xid);
-static void zheap_prune_record_dead(ZPruneState * prstate, OffsetNumber offnum);
-static void zheap_prune_record_deleted(ZPruneState * prstate,
+static void zheap_prune_record_dead(ZPruneState *prstate, OffsetNumber offnum);
+static void zheap_prune_record_deleted(ZPruneState *prstate,
 						   OffsetNumber offnum);
 
-/*
+ /*
  * Optionally prune and repair fragmentation in the specified page.
  *
  * Caller must have exclusive lock on the page.
@@ -74,7 +74,7 @@ static void zheap_prune_record_deleted(ZPruneState * prstate,
  * or RECENTLY_DEAD (see ZHeapTupleSatisfiesOldestXmin).
  *
  * This is an opportunistic function.  It will perform housekeeping only if
- * the page has effect of transaction thas has modified data which can be
+ * the page has effect of transaction that has modified data which can be
  * pruned.
  *
  * Note: This is called only when we need some space in page to perform the
@@ -89,12 +89,12 @@ bool
 zheap_page_prune_opt(Relation relation, Buffer buffer,
 					 OffsetNumber offnum, Size space_required)
 {
-	Page	page;
+	Page		page;
 	TransactionId OldestXmin;
 	TransactionId ignore = InvalidTransactionId;
-	Size	pagefree;
-	bool	force_prune = false;
-	bool	pruned;
+	Size		pagefree;
+	bool		force_prune = false;
+	bool		pruned;
 
 	page = BufferGetPage(buffer);
 
@@ -153,8 +153,8 @@ zheap_page_prune_opt(Relation relation, Buffer buffer,
 		return false;
 
 	zheap_page_prune_guts(relation, buffer, OldestXmin, offnum,
-									 space_required, true, force_prune,
-									 &ignore, &pruned);
+						  space_required, true, force_prune,
+						  &ignore, &pruned);
 	if (pruned)
 		return true;
 
@@ -232,15 +232,15 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 	 */
 	if (force_prune && !ZPageIsPrunable(page))
 	{
-		; /* no need to scan */
+		;						/* no need to scan */
 	}
 	else
 	{
 		/* Scan the page */
 		maxoff = PageGetMaxOffsetNumber(page);
 		for (offnum = FirstOffsetNumber;
-			offnum <= maxoff;
-			offnum = OffsetNumberNext(offnum))
+			 offnum <= maxoff;
+			 offnum = OffsetNumberNext(offnum))
 		{
 			ItemId		itemid;
 
@@ -248,7 +248,10 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 			if (prstate.marked[offnum])
 				continue;
 
-			/* Nothing to do if slot is empty, already dead or marked as deleted */
+			/*
+			 * Nothing to do if slot is empty, already dead or marked as
+			 * deleted.
+			 */
 			itemid = PageGetItemId(page, offnum);
 			if (!ItemIdIsUsed(itemid) || ItemIdIsDead(itemid) ||
 				ItemIdIsDeleted(itemid))
@@ -256,9 +259,9 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 
 			/* Process this item */
 			ndeleted += zheap_prune_item(relation, buffer, offnum,
-				OldestXmin,
-				&prstate,
-				&space_freed);
+										 OldestXmin,
+										 &prstate,
+										 &space_freed);
 		}
 	}
 
@@ -303,7 +306,7 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 
 	if (execute_pruning)
 	{
-		bool	has_pruned = false;
+		bool		has_pruned = false;
 
 		/*
 		 * Apply the planned item changes, then repair page fragmentation, and
@@ -315,11 +318,11 @@ zheap_page_prune_guts(Relation relation, Buffer buffer,
 								 prstate.nowunused, prstate.nunused);
 
 		/*
-		 * Finally, repair any fragmentation, and update the page's hint bit about
+		 * Finally, repair any fragmentation, and update the page's hint bit
 		 * whether it has free pointers.
 		 */
 		ZPageRepairFragmentation(buffer, tmppage, target_offnum,
-								 space_required, false, &has_pruned , false);
+								 space_required, false, &has_pruned, false);
 
 		/*
 		 * Update the page's pd_prune_xid field to either zero, or the lowest
@@ -554,10 +557,11 @@ zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 			break;
 
 		case ZHEAPTUPLE_ABORT_IN_PROGRESS:
+
 			/*
 			 * We can simply skip the tuple if it has inserted/operated by
-			 * some aborted transaction and its rollback is still pending. It'll
-			 * be taken care of by future prune calls.
+			 * some aborted transaction and its rollback is still pending.
+			 * It'll be taken care of by future prune calls.
 			 */
 			break;
 		default:
@@ -642,8 +646,8 @@ log_zheap_clean(Relation reln, Buffer buffer, OffsetNumber target_offnum,
 				OffsetNumber *nowdead, int ndead, OffsetNumber *nowunused,
 				int nunused, TransactionId latestRemovedXid, bool pruned)
 {
-	XLogRecPtr      recptr;
-	xl_zheap_clean	xl_rec;
+	XLogRecPtr	recptr;
+	xl_zheap_clean xl_rec;
 
 	/* Caller should not call me on a non-WAL-logged relation */
 	Assert(RelationNeedsWAL(reln));
@@ -678,15 +682,15 @@ log_zheap_clean(Relation reln, Buffer buffer, OffsetNumber target_offnum,
 	 */
 	if (ndeleted > 0)
 		XLogRegisterBufData(0, (char *) nowdeleted,
-					ndeleted * sizeof(OffsetNumber) * 2);
+							ndeleted * sizeof(OffsetNumber) * 2);
 
 	if (ndead > 0)
 		XLogRegisterBufData(0, (char *) nowdead,
-					ndead * sizeof(OffsetNumber));
+							ndead * sizeof(OffsetNumber));
 
 	if (nunused > 0)
 		XLogRegisterBufData(0, (char *) nowunused,
-					nunused * sizeof(OffsetNumber));
+							nunused * sizeof(OffsetNumber));
 
 	recptr = XLogInsert(RM_ZHEAP_ID, XLOG_ZHEAP_CLEAN);
 
@@ -751,15 +755,15 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 						 bool NoTPDBufLock, bool *pruned, bool unused_set)
 {
 	Page		page = BufferGetPage(buffer);
-	Offset		pd_lower = ((PageHeader)page)->pd_lower;
-	Offset		pd_upper = ((PageHeader)page)->pd_upper;
-	Offset		pd_special = ((PageHeader)page)->pd_special;
+	Offset		pd_lower = ((PageHeader) page)->pd_lower;
+	Offset		pd_upper = ((PageHeader) page)->pd_upper;
+	Offset		pd_special = ((PageHeader) page)->pd_special;
 	itemIdSortData itemidbase[MaxZHeapTuplesPerPage];
 	itemIdSort	itemidptr;
 	ItemId		lp;
-	TransactionId	xid;
-	uint32			epoch;
-	UndoRecPtr		urec_ptr;
+	TransactionId xid;
+	uint32		epoch;
+	UndoRecPtr	urec_ptr;
 	int			nline,
 				nstorage,
 				nunused;
@@ -770,8 +774,8 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 	 * It's worth the trouble to be more paranoid here than in most places,
 	 * because we are about to reshuffle data in (what is usually) a shared
 	 * disk buffer.  If we aren't careful then corrupted pointers, lengths,
-	 * etc. could cause us to clobber adjacent disk buffers, spreading the data
-	 * loss further.  So, check everything.
+	 * etc. could cause us to clobber adjacent disk buffers, spreading the
+	 * data loss further.  So, check everything.
 	 */
 	if (pd_lower < SizeOfPageHeaderData ||
 		pd_lower > pd_upper ||
@@ -779,20 +783,20 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 		pd_special > BLCKSZ ||
 		pd_special != MAXALIGN(pd_special))
 		ereport(ERROR,
-		(errcode(ERRCODE_DATA_CORRUPTED),
-			errmsg("corrupted page pointers: lower = %u, upper = %u, special = %u",
-				pd_lower, pd_upper, pd_special)));
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("corrupted page pointers: lower = %u, upper = %u, special = %u",
+						pd_lower, pd_upper, pd_special)));
 
 	nline = PageGetMaxOffsetNumber(page);
 
 	/*
 	 * If there are any tuples which are inplace updated by any open
 	 * transactions we shall not compactify the page contents, otherwise,
-	 * rollback of those transactions will not be possible.  There could be
-	 * a case, where within a transaction tuple is first inplace updated
-	 * and then, either updated or deleted. So for now avoid compaction if
-	 * there are any tuples which are marked inplace updated, updated or
-	 * deleted by an open transaction.
+	 * rollback of those transactions will not be possible.  There could be a
+	 * case, where within a transaction tuple is first inplace updated and
+	 * then, either updated or deleted. So for now avoid compaction if there
+	 * are any tuples which are marked inplace updated, updated or deleted by
+	 * an open transaction.
 	 */
 	for (i = FirstOffsetNumber; i <= nline; i++)
 	{
@@ -816,22 +820,24 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 					continue;
 
 				/*
-				 * XXX There is possibility that the updater's slot got reused by a
-				 * locker in such a case the INVALID_XACT will be moved to lockers
-				 * undo.  Now, we will find that the tuple has in-place update flag
-				 * but it doesn't have INVALID_XACT flag and the slot transaction is
-				 * also running, in such case we will not prune this page.  Ideally
-				 * if the multi-locker is set we can get the actual transaction and
-				 * check the status of the transaction.
+				 * XXX There is possibility that the updater's slot got reused
+				 * by a locker in such a case the INVALID_XACT will be moved
+				 * to lockers undo.  Now, we will find that the tuple has
+				 * in-place update flag but it doesn't have INVALID_XACT flag
+				 * and the slot transaction is also running, in such case we
+				 * will not prune this page.  Ideally if the multi-locker is
+				 * set we can get the actual transaction and check the status
+				 * of the transaction.
 				 */
 				trans_slot = GetTransactionSlotInfo(buffer, i, trans_slot,
 													&epoch, &xid, &urec_ptr,
 													NoTPDBufLock, false);
+
 				/*
-				 * It is quite possible that the item is showing some
-				 * valid transaction slot, but actual slot has been frozen.
-				 * This can happen when the slot belongs to TPD entry and
-				 * the corresponding TPD entry is pruned.
+				 * It is quite possible that the item is showing some valid
+				 * transaction slot, but actual slot has been frozen. This can
+				 * happen when the slot belongs to TPD entry and the
+				 * corresponding TPD entry is pruned.
 				 */
 				if (trans_slot == ZHTUP_SLOT_FROZEN)
 					continue;
@@ -856,12 +862,13 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 			{
 				itemidptr->offsetindex = i - 1;
 				itemidptr->itemoff = ItemIdGetOffset(lp);
-				if (unlikely(itemidptr->itemoff < (int)pd_upper ||
-					itemidptr->itemoff >= (int)pd_special))
+				if (unlikely(itemidptr->itemoff < (int) pd_upper ||
+							 itemidptr->itemoff >= (int) pd_special))
 					ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-						errmsg("corrupted item pointer: %u",
-							itemidptr->itemoff)));
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("corrupted item pointer: %u",
+									itemidptr->itemoff)));
+
 				/*
 				 * We need to save additional space for the target offset, so
 				 * that we can save the space for new tuple.
@@ -880,25 +887,25 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 
 			/*
 			 * We allow Unused entries to be reused only if there is no
-			 * transaction information for the entry or the transaction
-			 * is committed.
+			 * transaction information for the entry or the transaction is
+			 * committed.
 			 */
 			if (ItemIdHasPendingXact(lp))
 			{
-				int		trans_slot;
+				int			trans_slot;
 
 				/*
-				 * If unused_set is true, it means that itemIds are already set
-				 * unused with transaction slot information by the caller and
-				 * we should not clear it.
+				 * If unused_set is true, it means that itemIds are already
+				 * set unused with transaction slot information by the caller
+				 * and we should not clear it.
 				 */
 				if (unused_set)
 					continue;
 				trans_slot = ItemIdGetTransactionSlot(lp);
 
 				/*
-				 * Here, we are relying on the transaction information in
-				 * slot as if the corresponding slot has been reused, then
+				 * Here, we are relying on the transaction information in slot
+				 * as if the corresponding slot has been reused, then
 				 * transaction information from the entry would have been
 				 * cleared.  See PageFreezeTransSlots.
 				 */
@@ -908,6 +915,7 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 														&epoch, &xid,
 														&urec_ptr, NoTPDBufLock,
 														false);
+
 					/*
 					 * It is quite possible that the item is showing some
 					 * valid transaction slot, but actual slot has been
@@ -929,16 +937,16 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 	if (nstorage == 0)
 	{
 		/* Page is completely empty, so just reset it quickly */
-		((PageHeader)page)->pd_upper = pd_special;
+		((PageHeader) page)->pd_upper = pd_special;
 	}
 	else
 	{
 		/* Need to compact the page the hard way */
-		if (totallen > (Size)(pd_special - pd_lower))
+		if (totallen > (Size) (pd_special - pd_lower))
 			ereport(ERROR,
-			(errcode(ERRCODE_DATA_CORRUPTED),
-				errmsg("corrupted item lengths: total %u, available space %u",
-				(unsigned int)totallen, pd_special - pd_lower)));
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("corrupted item lengths: total %u, available space %u",
+							(unsigned int) totallen, pd_special - pd_lower)));
 
 		compactify_ztuples(itemidbase, nstorage, page, tmppage);
 	}
