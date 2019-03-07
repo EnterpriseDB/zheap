@@ -34,12 +34,12 @@ List *
 ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 								   UndoRecPtr urec_ptr)
 {
-	ZHeapTuple		undo_tup;
-	UnpackedUndoRecord	*urec = NULL;
-	ZMultiLockMember		*mlmember;
-	List	*multilockmembers = NIL;
-	int trans_slot_id = -1;
-	uint8	uur_type;
+	ZHeapTuple	undo_tup;
+	UnpackedUndoRecord *urec = NULL;
+	ZMultiLockMember *mlmember;
+	List	   *multilockmembers = NIL;
+	int			trans_slot_id = -1;
+	uint8		uur_type;
 
 	undo_tup = zhtup;
 	do
@@ -74,7 +74,7 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 		/* don't free the tuple passed by caller */
 		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id, NULL,
 										   (undo_tup) == (zhtup) ? false : true,
-											NULL);
+										   NULL);
 
 		if (uur_type == UNDO_XID_LOCK_ONLY ||
 			uur_type == UNDO_XID_LOCK_FOR_UPDATE ||
@@ -117,8 +117,8 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 		if (trans_slot_id == ZHTUP_SLOT_FROZEN)
 		{
 			/*
-			 * We are done, once the undo record suggests that prior
-			 * record is already discarded.
+			 * We are done, once the undo record suggests that prior record is
+			 * already discarded.
 			 *
 			 * Note that we record the lock mode for all these cases because
 			 * the lock mode stored in undo tuple is for the current
@@ -156,30 +156,31 @@ List *
 ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 					 bool nobuflock)
 {
-	ZHeapTuple		undo_tup;
-	UnpackedUndoRecord	*urec = NULL;
-	UndoRecPtr		urec_ptr;
-	ZMultiLockMember		*mlmember;
-	List	*multilockmembers = NIL;
-	TransInfo *trans_slots = NULL;
-	TransactionId	xid;
-	SubTransactionId	subxid = InvalidSubTransactionId;
-	uint64	epoch_xid;
-	uint32	epoch;
-	int		prev_trans_slot_id,
-			trans_slot_id;
-	uint8	uur_type;
-	int		slot_no;
-	int		total_trans_slots = 0;
-	BlockNumber	tpd_blkno = InvalidBlockNumber;
+	ZHeapTuple	undo_tup;
+	UnpackedUndoRecord *urec = NULL;
+	UndoRecPtr	urec_ptr;
+	ZMultiLockMember *mlmember;
+	List	   *multilockmembers = NIL;
+	TransInfo  *trans_slots = NULL;
+	TransactionId xid;
+	SubTransactionId subxid = InvalidSubTransactionId;
+	uint64		epoch_xid;
+	uint32		epoch;
+	int			prev_trans_slot_id,
+				trans_slot_id;
+	uint8		uur_type;
+	int			slot_no;
+	int			total_trans_slots = 0;
+	BlockNumber tpd_blkno = InvalidBlockNumber;
 
 	if (nobuflock)
 	{
-		ItemId	lp;
+		ItemId		lp;
 
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		lp = PageGetItemId(BufferGetPage(buf),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self));
+
 		/*
 		 * It is quite possible that once we reacquire the lock on buffer,
 		 * some other backend would have deleted the tuple and in such case,
@@ -203,11 +204,12 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 	for (slot_no = 0; slot_no < total_trans_slots; slot_no++)
 	{
-		bool	first_urp = true;
+		bool		first_urp = true;
+
 		epoch = trans_slots[slot_no].xid_epoch;
 		xid = trans_slots[slot_no].xid;
 
-		epoch_xid = MakeEpochXid((uint64)epoch, xid);
+		epoch_xid = MakeEpochXid((uint64) epoch, xid);
 
 		/*
 		 * We need to process the undo chain only for in-progress
@@ -222,9 +224,9 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 		/*
 		 * If the page contains TPD slots and it's not pruned, the last slot
-		 * contains the information about the corresponding TPD entry.
-		 * Hence, if current slot refers to some TPD slot, we should skip
-		 * the last slot in the page by increasing the slot index by 1.
+		 * contains the information about the corresponding TPD entry. Hence,
+		 * if current slot refers to some TPD slot, we should skip the last
+		 * slot in the page by increasing the slot index by 1.
 		 */
 		if ((trans_slot_id >= ZHEAP_PAGE_TRANS_SLOTS) &&
 			BlockNumberIsValid(tpd_blkno))
@@ -240,12 +242,12 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			 * that undo record pointer is sane by acquiring rewind lock so
 			 * that undo worker can't rewind it concurrently.
 			 *
-			 * It is sufficient to verify the first undo record of slot as
-			 * the previous one's can't be re-wounded.
+			 * It is sufficient to verify the first undo record of slot as the
+			 * previous one's can't be re-wounded.
 			 *
 			 * If we already have a buf LOCK, then there is no need to verify
-			 * undo record pointer as rollback can't rewind till the undo actions
-			 * are applied.
+			 * undo record pointer as rollback can't rewind till the undo
+			 * actions are applied.
 			 */
 			if (nobuflock && first_urp)
 			{
@@ -263,8 +265,8 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				/*
 				 * We can release the buffer lock after reading the slot
 				 * information as we already hold the rewind lock, so the undo
-				 * can't be re-winded.  Although, it can be discarded but we have
-				 * handling for the same.
+				 * can't be re-winded.  Although, it can be discarded but we
+				 * have handling for the same.
 				 */
 				trans_slot_id = GetTransactionSlotInfo(buf,
 													   InvalidOffsetNumber,
@@ -277,14 +279,14 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 				/* Release the buffer lock */
 				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-				epoch_xid = MakeEpochXid((uint64)epoch, xid);
+				epoch_xid = MakeEpochXid((uint64) epoch, xid);
 
 				/*
 				 * We need to process the undo chain only for in-progress
 				 * transactions.
 				 */
 				if (epoch_xid < pg_atomic_read_u64(
-							&ProcGlobal->oldestXidWithEpochHavingUndo))
+												   &ProcGlobal->oldestXidWithEpochHavingUndo))
 				{
 					LWLockRelease(&log->rewind_lock);
 					break;
@@ -312,8 +314,9 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			ZHeapTupleGetSubXid(undo_tup, buf, urec_ptr, &subxid);
 
 			/*
-			 * Exclude undo records inserted by my own transaction.  We neither
-			 * need to check conflicts with them nor need to wait for them.
+			 * Exclude undo records inserted by my own transaction.  We
+			 * neither need to check conflicts with them nor need to wait for
+			 * them.
 			 */
 			if (TransactionIdEquals(urec->uur_xid, GetTopTransactionIdIfAny()))
 			{
@@ -336,8 +339,8 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 			/* don't free the tuple passed by caller */
 			undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
-										NULL, (undo_tup) == (zhtup) ? false : true,
-										BufferGetPage(buf));
+											   NULL, (undo_tup) == (zhtup) ? false : true,
+											   BufferGetPage(buf));
 
 			if (uur_type == UNDO_XID_LOCK_ONLY ||
 				uur_type == UNDO_XID_LOCK_FOR_UPDATE ||
@@ -443,9 +446,9 @@ ZMultiLockMembersWait(Relation rel, List *mlmembers, ZHeapTuple zhtup,
 	foreach(lc, mlmembers)
 	{
 		ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
-		TransactionId	memxid = mlmember->xid;
-		SubTransactionId	memsubxid = mlmember->subxid;
-		LockTupleMode	memmode = mlmember->mode;
+		TransactionId memxid = mlmember->xid;
+		SubTransactionId memsubxid = mlmember->subxid;
+		LockTupleMode memmode = mlmember->mode;
 
 		if (TransactionIdIsCurrentTransactionId(memxid))
 		{
@@ -564,7 +567,7 @@ ZIsAnyMultiLockMemberRunning(List *mlmembers, ZHeapTuple zhtup, Buffer buf)
 	foreach(lc, mlmembers)
 	{
 		ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
-		TransactionId	memxid = mlmember->xid;
+		TransactionId memxid = mlmember->xid;
 
 		if (TransactionIdIsInProgress(memxid))
 		{
@@ -606,7 +609,7 @@ IsZMultiLockListMember(List *members, ZMultiLockMember *mlmember)
  *	are present in list1 list
  */
 bool
-ZMultiLockMembersSame(List *list1, List	*list2)
+ZMultiLockMembersSame(List *list1, List *list2)
 {
 	ListCell   *lc;
 
@@ -653,8 +656,8 @@ ZGetMultiLockInfo(uint16 old_infomask, TransactionId tup_xid,
 		*new_infomask |= ZHEAP_MULTI_LOCKERS;
 
 		/*
-		 * Acquire the strongest of both and keep the transaction slot of
-		 * the stronger lock.
+		 * Acquire the strongest of both and keep the transaction slot of the
+		 * stronger lock.
 		 */
 		if (*mode < old_mode)
 		{
@@ -705,20 +708,20 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				   TransactionId *xid_out, CommandId *cid_out,
 				   UndoRecPtr *urec_ptr_out)
 {
-	UnpackedUndoRecord	*urec = NULL;
-	UndoRecPtr		urec_ptr;
-	UndoRecPtr		save_urec_ptr = InvalidUndoRecPtr;
-	TransInfo *trans_slots = NULL;
-	TransactionId	xid;
+	UnpackedUndoRecord *urec = NULL;
+	UndoRecPtr	urec_ptr;
+	UndoRecPtr	save_urec_ptr = InvalidUndoRecPtr;
+	TransInfo  *trans_slots = NULL;
+	TransactionId xid;
 	CommandId	cid = InvalidCommandId;
-	uint64	epoch;
-	uint64	epoch_xid;
-	int		trans_slot_id;
-	uint8	uur_type;
-	int		slot_no;
-	int		total_trans_slots = 0;
-	bool	found = false;
-	BlockNumber	tpd_blkno;
+	uint64		epoch;
+	uint64		epoch_xid;
+	int			trans_slot_id;
+	uint8		uur_type;
+	int			slot_no;
+	int			total_trans_slots = 0;
+	bool		found = false;
+	BlockNumber tpd_blkno;
 
 	trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots,
 											  &tpd_blkno);
@@ -742,7 +745,7 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 		do
 		{
-			UndoRecPtr out_urec_ptr PG_USED_FOR_ASSERTS_ONLY;
+			UndoRecPtr	out_urec_ptr PG_USED_FOR_ASSERTS_ONLY;
 
 			out_urec_ptr = InvalidUndoRecPtr;
 			urec = UndoFetchRecord(urec_ptr,
@@ -753,8 +756,8 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 								   ZHeapSatisfyUndoRecord);
 
 			/*
-			 * We couldn't find any undo record for the tuple corresponding
-			 * to current slot.
+			 * We couldn't find any undo record for the tuple corresponding to
+			 * current slot.
 			 */
 			if (urec == NULL)
 			{
@@ -766,8 +769,8 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			cid = urec->uur_cid;
 
 			/*
-			 * If the current transaction has locked the tuple, then we don't need
-			 * to process the undo records.
+			 * If the current transaction has locked the tuple, then we don't
+			 * need to process the undo records.
 			 */
 			if (TransactionIdEquals(urec->uur_xid, GetTopTransactionIdIfAny()))
 			{
@@ -796,8 +799,8 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			if (xid != urec->uur_xid)
 			{
 				/*
-				 * We are done, once the undo record suggests that prior
-				 * tuple version is modified by a different transaction.
+				 * We are done, once the undo record suggests that prior tuple
+				 * version is modified by a different transaction.
 				 */
 				break;
 			}
@@ -820,10 +823,11 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			trans_slot_id = slot_no + 1;
 
 			/*
-			 * If the page contains TPD slots and it's not pruned, the last slot
-			 * contains the information about the corresponding TPD entry.
-			 * Hence, if current slot refers to some TPD slot, we should skip
-			 * the last slot in the page by increasing the slot index by 1.
+			 * If the page contains TPD slots and it's not pruned, the last
+			 * slot contains the information about the corresponding TPD
+			 * entry. Hence, if current slot refers to some TPD slot, we
+			 * should skip the last slot in the page by increasing the slot
+			 * index by 1.
 			 */
 			if ((trans_slot_id >= ZHEAP_PAGE_TRANS_SLOTS) &&
 				BlockNumberIsValid(tpd_blkno))
