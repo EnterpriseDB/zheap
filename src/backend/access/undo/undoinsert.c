@@ -31,7 +31,7 @@
  * the transaction header with this new logs location.  We will also keep
  * a back pointer to the last undo record of previous log in the first record
  * of new log, so that we can traverse the previous record during rollback.
- * Incase, this is not the first record in new log (aka new log already
+ * In case, this is not the first record in new log (aka new log already
  * contains some other transactions data), we also update that transactions
  * next start header with this new undo records location.  This will allow us
  * to connect transaction's undo records across logs when the same transaction

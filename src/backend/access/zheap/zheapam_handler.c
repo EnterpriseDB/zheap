@@ -60,7 +60,7 @@
 extern void ss_report_location(Relation rel, BlockNumber location);
 
 /* ----------------------------------------------------------------
- *				storage AM support routines for heapam
+ *				storage AM support routines for zheapam
  * ----------------------------------------------------------------
  */
 
@@ -159,7 +159,7 @@ zheapam_delete(Relation relation, ItemPointer tid, CommandId cid,
  *
  *	relation - table containing tuple
  *	tid - TID of tuple to lock
- *	snapshot - snapshot indentifying required version (used for assert check only)
+ *	snapshot - snapshot identifying required version (used for assert check only)
  *	slot - tuple to be returned
  *	cid - current command ID (used for visibility test, and stored into
  *		  tuple's cmax if lock is successful)
@@ -255,7 +255,7 @@ retry:
 			if (zheap_fetch(relation, &SnapshotDirty, tid, &tuple, &buffer, true))
 			{
 				/*
-				 * Ensure that the tuple is same as what we are expecting.  If the
+				 * Ensure that the tuple is same as what we are expecting.  If
 				 * the current or any prior version of tuple doesn't contain the
 				 * effect of priorXmax, then the slot must have been recycled and
 				 * reused for an unrelated tuple.  This implies that the latest
@@ -692,11 +692,11 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 	 * SnapshotAny because we must retrieve all tuples and do our own time
 	 * qual checks (because we have to index RECENTLY_DEAD tuples). In a
 	 * concurrent build, or during bootstrap, we take a regular MVCC snapshot
-	 * and index whatever's live according to that.
+	 * and index whatever is live according to that.
 	 */
 	OldestXmin = InvalidTransactionId;
 
-	/* okay to ignore lazy VACUUMs here */
+	/* It is okay to ignore lazy vacuums here */
 	if (!IsBootstrapProcessingMode() && !indexInfo->ii_Concurrent)
 		OldestXmin = GetOldestXmin(heapRelation, PROCARRAY_FLAGS_VACUUM);
 
@@ -805,7 +805,7 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 				case HEAPTUPLE_RECENTLY_DEAD:
 					/*
 					 * If tuple is recently deleted then we must index it
-					 * anyway to preserve MVCC semantics.  (Pre-existing
+					 * anyway to preserve MVCC semantics. (Pre-existing
 					 * transactions could try to use the index after we finish
 					 * building it, and may need to see such tuples.)
 					 */
@@ -1020,7 +1020,7 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 		zslot->tuple = zheapTuple;
 
 		/*
-		 * For SnapshotAny, targztuple is locally palloced above. So,
+		 * For SnapshotAny, targztuple is locally palloc'd above. So,
 		 * free it.
 		 */
 		if (snapshot == SnapshotAny && targztuple != NULL)
@@ -1456,7 +1456,7 @@ nextblock:
 
 			if (blockno >= scan->rs_nblocks)
 			{
-				/* wrap to begining of rel, might not have started at 0 */
+				/* wrap to beginning of rel, might not have started at 0 */
 				blockno = 0;
 			}
 
@@ -1844,7 +1844,7 @@ zheapam_set_new_filenode(Relation rel, char persistence,
 
 	Assert(rel->rd_rel->relkind != 'p');
 
-	/* initialize the metapage for zheap */
+	/* initialize the meta page for zheap */
 	ZheapInitMetaPage(rel, MAIN_FORKNUM, false);
 
 	/*
@@ -1931,7 +1931,7 @@ zheapam_estimate_rel_size(Relation rel, int32 *attr_widths,
 	BlockNumber relallvisible;
 	double		density;
 
-	/* it has storage, ok to call the smgr */
+	/* it has storage, okay to call the smgr */
 	curpages = RelationGetNumberOfBlocks(rel);
 
 	/* coerce values in pg_class to more desirable types */
@@ -1939,7 +1939,7 @@ zheapam_estimate_rel_size(Relation rel, int32 *attr_widths,
 	reltuples = (double) rel->rd_rel->reltuples;
 	relallvisible = (BlockNumber) rel->rd_rel->relallvisible;
 
-	/* subtract one page to account for the metapage */
+	/* subtract one page to account for the meta page */
 	if (curpages > 0)
 		curpages--;
 	if (relpages > 0)
@@ -1995,9 +1995,9 @@ zheapam_estimate_rel_size(Relation rel, int32 *attr_widths,
 	{
 		/*
 		 * When we have no data because the relation was truncated,
-		 * estimate tuple width from attribute datatypes.  We assume
+		 * estimate tuple width from attribute data types.  We assume
 		 * here that the pages are completely full, which is OK for
-		 * tables (since they've presumably not been VACUUMed yet) but
+		 * tables (since they've presumably not been vacuumed yet) but
 		 * is probably an overestimate for indexes.  Fortunately
 		 * get_relation_info() can clamp the overestimate to the
 		 * parent table's size.

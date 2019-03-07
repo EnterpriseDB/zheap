@@ -12,7 +12,7 @@
  *
  * In Zheap, we can reclaim space on following operations
  * a. non-inplace updates, when committed or rolled back.
- * b. inplace updates that reduces the tuple length, when commited.
+ * b. inplace updates that reduces the tuple length, when committed.
  * c. deletes, when committed.
  * d. inserts, when rolled back.
  *
@@ -770,7 +770,7 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 	 * It's worth the trouble to be more paranoid here than in most places,
 	 * because we are about to reshuffle data in (what is usually) a shared
 	 * disk buffer.  If we aren't careful then corrupted pointers, lengths,
-	 * etc could cause us to clobber adjacent disk buffers, spreading the data
+	 * etc. could cause us to clobber adjacent disk buffers, spreading the data
 	 * loss further.  So, check everything.
 	 */
 	if (pd_lower < SizeOfPageHeaderData ||

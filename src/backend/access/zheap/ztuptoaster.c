@@ -56,9 +56,9 @@ static void ztoast_delete_datum(Relation rel, Datum value, bool is_speculative);
 static Datum ztoast_save_datum(Relation rel, Datum value,
 				 struct varlena *oldexternal, int options);
 
-/* ----------
- * ztoast_insert_or_update -
- * Just like toast_insert_or_update but for zheap relations.
+/*
+ * ztoast_insert_or_update
+ *		Just like toast_insert_or_update but for zheap relations.
  */
 
 ZHeapTuple
@@ -596,7 +596,7 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 
 /*
  * ztoast_save_datum
- * Just like toast_save_datum but for zheap relations.
+ *		Just like toast_save_datum but for zheap relations.
  */
 static Datum
 ztoast_save_datum(Relation rel, Datum value,
@@ -927,11 +927,9 @@ ztoast_delete_datum(Relation rel, Datum value, bool is_speculative)
 	heap_close(toastrel, RowExclusiveLock);
 }
 
-/* ----------
- * ztoast_delete -
- *
- *	Cascaded delete toast-entries on DELETE
- * ----------
+/*
+ * ztoast_delete
+ *		Cascaded delete toast-entries on DELETE
  */
 void
 ztoast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative)

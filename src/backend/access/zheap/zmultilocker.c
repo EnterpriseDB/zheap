@@ -11,7 +11,7 @@
  *	  src/backend/access/zheap/zmultilocker.c
  *
  * NOTES
- *	  This file contains functions for the multi locker facilit1y of zheap.
+ *	  This file contains functions for the multi locker facility of zheap.
  *
  *-------------------------------------------------------------------------
  */
@@ -117,7 +117,7 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 		if (trans_slot_id == ZHTUP_SLOT_FROZEN)
 		{
 			/*
-			 * We are done, once the the undo record suggests that prior
+			 * We are done, once the undo record suggests that prior
 			 * record is already discarded.
 			 *
 			 * Note that we record the lock mode for all these cases because
@@ -236,7 +236,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 			/*
 			 * After we release the buffer lock, the transaction can be
-			 * rolled-back and undo record poiner can be re-winded.  Ensure
+			 * rolled-back and undo record pointer can be re-winded.  Ensure
 			 * that undo record pointer is sane by acquiring rewind lock so
 			 * that undo worker can't rewind it concurrently.
 			 *
@@ -384,7 +384,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				trans_slot_id != prev_trans_slot_id)
 			{
 				/*
-				 * We are done, once the the undo record suggests that prior
+				 * We are done, once the undo record suggests that prior
 				 * record is already discarded or the prior record belongs to
 				 * a different transaction slot chain.
 				 */
@@ -529,7 +529,7 @@ ConditionalZMultiLockMembersWait(Relation rel, List *mlmembers,
  *
  * Unlike heap, we don't consider current transaction's lockers to decide
  * if the lockers of multi lock are running. In heap, any lock taken by
- * subtransaction is recorded separetly in the multixact, so that it can
+ * subtransaction is recorded separately in the multixact, so that it can
  * detect if the subtransaction is rolled back. Now as the lock information
  * is tracked at subtransaction level, we can't ignore the lockers for
  * subtransactions of current top-level transaction. For zheap, rollback to
@@ -547,7 +547,7 @@ ZIsAnyMultiLockMemberRunning(List *mlmembers, ZHeapTuple zhtup, Buffer buf)
 	bufhdr = GetBufferDescriptor(buf - 1);
 
 	/*
-	 * Local buffers can't be accesed by other sessions.
+	 * Local buffers can't be accessed by other sessions.
 	 */
 	if (BufferIsLocal(buf))
 		return false;
@@ -580,7 +580,7 @@ ZIsAnyMultiLockMemberRunning(List *mlmembers, ZHeapTuple zhtup, Buffer buf)
 
 /*
  * IsZMultiLockListMember - Returns true iff mlmember is a member of list
- *	mlmembers.  Equality is determined by comparing all the variables of
+ *	members.  Equality is determined by comparing all the variables of
  *	member.
  */
 static bool
@@ -796,7 +796,7 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			if (xid != urec->uur_xid)
 			{
 				/*
-				 * We are done, once the the undo record suggests that prior
+				 * We are done, once the undo record suggests that prior
 				 * tuple version is modified by a different transaction.
 				 */
 				break;

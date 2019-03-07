@@ -445,7 +445,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	/*
 	 * If there are more than fifty percent of empty slots available,
 	 * then we don't extend the number of transaction slots in new TPD
-	 * entry.  Otherwise also, we extend the slots quite conservately
+	 * entry.  Otherwise also, we extend the slots quite conservatively
 	 * to avoid space wastage.
 	 */
 	if (*reserved_slot_no != InvalidXactSlotId)
@@ -470,7 +470,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	/*
 	 * The transaction slots in TPD entry are in addition to the
 	 * maximum slots in the heap page. The one-byte offset-map can
-	 * store maximum upto 255 transaction slot number.
+	 * store maximum up to 255 transaction slot number.
 	 */
 	if (max_reqd_slots + ZHEAP_PAGE_TRANS_SLOTS < 256)
 		new_size_tpd_e_map = max_reqd_map_entries * sizeof(uint8);
@@ -593,7 +593,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	/*
 	 * The transaction slots in TPD entry are in addition to the
 	 * maximum slots in the heap page. The one-byte offset-map can
-	 * store maximum upto 255 transaction slot number.
+	 * store maximum up to 255 transaction slot number.
 	 */
 	if (max_reqd_slots + ZHEAP_PAGE_TRANS_SLOTS < 256)
 		tpd_e_header.tpe_flags = TPE_ONE_BYTE;
@@ -841,7 +841,7 @@ TPDPageAddEntry(Page tpdpage, char *tpd_entry, Size size,
 	/*
 	 * Compute new lower and upper pointers for page, see if it'll fit.
 	 *
-	 * Note: do arithmetic as signed ints, to avoid mistakes if, say,
+	 * Note: do arithmetic as signed int, to avoid mistakes if, say,
 	 * alignedSize > pd_upper.
 	 */
 	if (offnum == limit)
@@ -1024,7 +1024,7 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 	 * We must acquire the cleanup lock here to wait for backends that have
 	 * already read this buffer and might be in the process of deciding
 	 * whether this is a valid TPD page (aka it contain valid TPD entries).
-	 * All of them must reach a conclution, that there is no valid TPD entry
+	 * All of them must reach a conclusion, that there is no valid TPD entry
 	 * in this page as we have already pruned all TPD entries from this page
 	 * by this time.  If we don't wait here for other backends who have
 	 * already read this page, then it is possible that by the time they try
@@ -1038,7 +1038,7 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 	 * in a single operation like in case of non-in-place updates).
 	 *
 	 * For new backends that come to access this as a TPD page after we
-	 * acquire cleanup lock here would definetely see this as a invalid
+	 * acquire cleanup lock here would definitely see this as a invalid
 	 * TPD page (no valid TPD entries).
 	 *
 	 * One can imagine that after we release the lock, vacuum or some other
@@ -1050,9 +1050,9 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 	LockBufferForCleanup(buf);
 
 	/*
-	 * After reaquiring the lock, check whether page is still empty, if
+	 * After re-acquiring the lock, check whether page is still empty, if
 	 * not, then we don't need to do anything.  As of now, there is no
-	 * possiblity that the empty page in the chain can be reused, however,
+	 * possibility that the empty page in the chain can be reused, however,
 	 * in future, we can use it.
 	 */
 	page = BufferGetPage(buf);
@@ -1079,9 +1079,9 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 
 		/*
-		 * After reaquiring the lock, check whether page is still empty, if
+		 * After re-acquiring the lock, check whether page is still empty, if
 		 * not, then we don't need to do anything.  As of now, there is no
-		 * possiblity that the empty page in the chain can be reused, however,
+		 * possibility that the empty page in the chain can be reused, however,
 		 * in future, we can use it.
 		 */
 		page = BufferGetPage(buf);
@@ -1288,7 +1288,7 @@ TPDEntryUpdate(Relation relation, Buffer tpd_buf, uint16 tpd_e_offset,
  * This function takes care of inserting the new tpd entry to a page and
  * allows to mark old entry as deleted when requested.  The typical actions
  * performed in this function are (a) add a TPD entry in the newly allocated
- * or an existing TPD page, (b) update the metapage to indicate the addion of
+ * or an existing TPD page, (b) update the metapage to indicate the addition of
  * a new page (if allocated) and for updating zhm_last_used_tpd_page, (c) mark
  * the old TPD entry as prunable, (c) update the new offset number of TPD
  * entry in heap page. Finally write a WAL entry and corresponding replay
@@ -1301,8 +1301,8 @@ TPDEntryUpdate(Relation relation, Buffer tpd_buf, uint16 tpd_e_offset,
  * locks the last used tpd page buffer, then locks the metapage buffer and then
  * the newly allocated page buffer.  This locking can never lead to deadlock as
  * old buffer block will always be lesser (or equal) than last buffer block.
- * However, if anytime, we change our startegy such that after acquiring
- * metapage lock, we try to acquire lock on any existing page, then we might
+ * However, if anytime we change our strategy such that after acquiring
+ * metapage lock we try to acquire lock on any existing page, then we might
  * need to reconsider our locking order.
  *
  * always_extend, this parameter indicates whether we can use FSM to get the
@@ -1577,7 +1577,7 @@ recheck_meta:
 		xlrec.flags = 0;
 
 		/*
-		 * If we are adding TPD entry to a new page, we will reinit the page
+		 * If we are adding TPD entry to a new page, we will reinitialize the page
 		 * during replay.
 		 */
 		if (add_new_tpd_page)
@@ -1651,7 +1651,7 @@ recheck_meta:
  *		transaction slot in that entry.
  *
  * To allocate a new TPD entry, we first check if there is a space in any
- * existing TPD page starting from the last used TPD page and incase we
+ * existing TPD page starting from the last used TPD page and in case we
  * don't find any such page, then allocate a new TPD page and add it to the
  * existing list of TPD pages.
  *
@@ -1726,7 +1726,7 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 
 			/*
 			 * Prune the TPD page to make space for new TPD entries.  After
-			 * pruning, check again to see if the TPD entry can be accomodated
+			 * pruning, check again to see if the TPD entry can be accommodated
 			 * on the page. We can't afford to free the page while pruning as
 			 * we need to use it to insert the TPD entry.
 			 */
@@ -1773,9 +1773,9 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 	ReleaseBuffer(metabuf);
 
 	/*
-	 * Here, we don't release the tpdbuffer in which we have added the newly
-	 * allocated TPD entry as that will be relased once we update the required
-	 * trasaction slot info in it.  The caller will later call TPDPageSetUndo
+	 * Here, we don't release the tpd buffer in which we have added the newly
+	 * allocated TPD entry as that will be released once we update the required
+	 * transaction slot info in it.  The caller will later call TPDPageSetUndo
 	 * to update the required information.
 	 */
 
@@ -1800,7 +1800,7 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
  *
  * It is quite possible that the TPD entry containing required transaction slot
  * information got pruned away (as all the transaction entries are all-visible)
- * by the time caller tries to enquire about it.  See atop
+ * by the time caller tries to inquire about it.  See atop
  * TPDPageGetTransactionSlotInfo for more details on how we deal with pruned
  * TPD entries.
  *
@@ -1992,7 +1992,7 @@ failed_and_buf_not_locked:
  * TPDPageIsValid - To verify TPD page is pruned or not.
  *
  * If TPD buffer is pruned and clean_tpd_loc is true then this will clear TPD
- * location from haep page.
+ * location from zheap page.
  *
  * Returns false, if the page is pruned, otherwise return true.
  */
@@ -2222,7 +2222,7 @@ extend_entry_if_required:
  *		if exists, otherwise, return InvalidXactSlotId.
  *
  * This is similar to the TPDPageReserveTransSlot except that here we find the
- * exisiting transaction slot instead of reserving a new one.
+ * existing transaction slot instead of reserving a new one.
  *
  * keepTPDBufLock - This indicates whether we need to retain the lock on TPD
  * buffer if we are able to reserve a transaction slot.
@@ -2307,7 +2307,7 @@ TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
  *
  * It is quite possible that the TPD entry containing required transaction slot
  * information got pruned away (as all the transaction entries are all-visible)
- * by the time caller tries to enquire about it.  One might expect that if the
+ * by the time caller tries to inquire about it.  One might expect that if the
  * TPD entry is pruned, the corresponding affected tuples should be updated to
  * reflect the same, however, we don't do that due to multiple reasons (a) we
  * don't access heap pages from TPD layer, it can lead to deadlock, (b) it
@@ -2434,16 +2434,16 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 	/*
 	 * Check whether TPD entry can exist on page?
 	 *
-	 * Ideally, we can clear the TPD location from the heap page (aka pass
-	 * claen_tpd_loc as true), but for that, we need to have an exclusive lock
+	 * Ideally, we can clear the TPD location from the zheap page (aka pass
+	 * clean_tpd_loc as true), but for that, we need to have an exclusive lock
 	 * on the heap page.  As this API can be called with a shared lock on a
 	 * heap page, we can't perform that action.
 	 *
 	 * XXX If it ever turns out to be a performance problem, we can release the
-	 * current lock and acuire the exclusive lock on heap page.  Also we need
+	 * current lock and acquire the exclusive lock on heap page.  Also we need
 	 * to ensure that the lock on TPD page also needs to be released and
 	 * reacquired as we always follow the protocol of acquiring the lock on
-	 * heap page first and then on TPD page, doing it otherway can lead to
+	 * heap page first and then on TPD page, doing it other way can lead to
 	 * undetected deadlock.
 	 */
 	valid = TPDPageIsValid(NULL, heapbuf, NULL, tpdbuffer, tpdItemOff,
@@ -2877,7 +2877,7 @@ TPDPageSetOffsetMap(Buffer heapbuf, char *tpd_offset_map)
  *
  * Caller is responsible for WAL logging this operation and release the TPD
  * buffers.  We have thought of WAL logging this as a separate operation, but
- * that won't work as the undorecord pointer can be bogus during WAL replay;
+ * that won't work as the undo record pointer can be bogus during WAL replay;
  * that is because we regenerate the undo during WAL replay and it is quite
  * possible that the system crashes after flushing this WAL record but before
  * flushing WAL of actual heap operation.  Similarly, doing it after heap
