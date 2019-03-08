@@ -8041,6 +8041,8 @@ reacquire_buffer:
 			vm_status = visibilitymap_get_status(relation,
 												 BufferGetBlockNumber(buffer),
 												 &vmbuffer);
+		else
+			vm_status = 0;
 
 		/*
 		 * Lock the TPD page before starting critical section.  We might need
