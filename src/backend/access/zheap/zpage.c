@@ -32,7 +32,7 @@
  * accommodated on a page and alignment for each item (Ideally, we don't need
  * to align space between tuples as we always make the copy of tuple to
  * support in-place updates.  However, there are places in zheap code where
- * we access tuple header directly from page (ex. zheap_delete, zheap_update,
+ * we access tuple header directly from page (e.g. zheap_delete, zheap_update,
  * etc.) for which we them to be aligned at two-byte boundary). It
  * additionally handles the itemids that are marked as unused, but still
  * can't be reused.

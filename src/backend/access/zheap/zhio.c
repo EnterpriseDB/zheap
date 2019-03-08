@@ -122,8 +122,8 @@ RelationGetBufferForZTuple(Relation relation, Size len,
 			BlockNumber nblocks = RelationGetNumberOfBlocks(relation);
 
 			/*
-			 * In zheap, first page is always a meta page, so we need to
-			 * skip it for tuple insertions.
+			 * In zheap, first page is always a meta page, so we need to skip
+			 * it for tuple insertions.
 			 */
 			if (nblocks > ZHEAP_METAPAGE + 1)
 				targetBlock = nblocks - 1;
@@ -180,9 +180,9 @@ loop:
 			tpdPage = CheckBufferHasTPDPage(buffer);
 
 			/*
-			 * Not a zheap page, exit and extend the relation.  We can continue
-			 * and try getting another page from FSM, but not sure if we can
-			 * succeed as we might again get same page.
+			 * Not a zheap page, exit and extend the relation.  We can
+			 * continue and try getting another page from FSM, but not sure if
+			 * we can succeed as we might again get same page.
 			 */
 			if (tpdPage)
 			{
@@ -195,29 +195,29 @@ loop:
 		if (!tpdPage)
 		{
 			/*
-			 * We now have the target page (and the other buffer, if any) pinned
-			 * and locked.  However, since our initial PageIsAllVisible checks
-			 * were performed before acquiring the lock, the results might now be
-			 * out of date, either for the selected victim buffer, or for the
-			 * other buffer passed by the caller.  In that case, we'll need to
-			 * give up our locks, go get the pin(s) we failed to get earlier, and
-			 * re-lock.  That's pretty painful, but hopefully shouldn't happen
-			 * often.
+			 * We now have the target page (and the other buffer, if any)
+			 * pinned and locked.  However, since our initial PageIsAllVisible
+			 * checks were performed before acquiring the lock, the results
+			 * might now be out of date, either for the selected victim
+			 * buffer, or for the other buffer passed by the caller.  In that
+			 * case, we'll need to give up our locks, go get the pin(s) we
+			 * failed to get earlier, and re-lock.  That's pretty painful, but
+			 * hopefully shouldn't happen often.
 			 *
-			 * Note that there's a small possibility that we didn't pin the page
-			 * above but still have the correct page pinned anyway, either because
-			 * we've already made a previous pass through this loop, or because
-			 * caller passed us the right page anyway.
+			 * Note that there's a small possibility that we didn't pin the
+			 * page above but still have the correct page pinned anyway,
+			 * either because we've already made a previous pass through this
+			 * loop, or because caller passed us the right page anyway.
 			 *
-			 * Note also that it's possible that by the time we get the pin and
-			 * retake the buffer locks, the visibility map bit will have been
-			 * cleared by some other backend anyway.  In that case, we'll have
-			 * done a bit of extra work for no gain, but there's no real harm
-			 * done.
+			 * Note also that it's possible that by the time we get the pin
+			 * and retake the buffer locks, the visibility map bit will have
+			 * been cleared by some other backend anyway.  In that case, we'll
+			 * have done a bit of extra work for no gain, but there's no real
+			 * harm done.
 			 *
 			 * Fixme: GetVisibilityMapPins use PageIsAllVisible which is not
-			 * required for zheap, so either we need to rewrite that function or
-			 * somehow avoid the usage of that call.
+			 * required for zheap, so either we need to rewrite that function
+			 * or somehow avoid the usage of that call.
 			 */
 			if (otherBuffer == InvalidBuffer || buffer <= otherBuffer)
 				GetVisibilityMapPins(relation, buffer, otherBuffer,
@@ -229,15 +229,16 @@ loop:
 									 vmbuffer);
 
 			/*
-			 * Now we can check to see if there's enough free space here. If so,
-			 * we're done.
+			 * Now we can check to see if there's enough free space here. If
+			 * so, we're done.
 			 */
 			page = BufferGetPage(buffer);
 
 			/*
-			 * Initialize page, it'll be used soon.  We could avoid dirtying the
-			 * buffer here, and rely on the caller to do so whenever it puts a
-			 * tuple onto the page, but there seems not much benefit in doing so.
+			 * Initialize page, it'll be used soon.  We could avoid dirtying
+			 * the buffer here, and rely on the caller to do so whenever it
+			 * puts a tuple onto the page, but there seems not much benefit in
+			 * doing so.
 			 */
 			if (PageIsNew(page))
 			{
@@ -297,6 +298,7 @@ loop:
 	needLock = !RELATION_IS_LOCAL(relation);
 
 recheck:
+
 	/*
 	 * If we need the lock but are not able to acquire it immediately, we'll
 	 * consider extending the relation by multiple blocks at a time to manage
@@ -346,8 +348,8 @@ recheck:
 
 	/*
 	 * We can be certain that locking the otherBuffer first is OK, since it
-	 * must have a lower page number.  We don't lock other buffer while holding
-	 * extension lock.  See comments below.
+	 * must have a lower page number.  We don't lock other buffer while
+	 * holding extension lock.  See comments below.
 	 */
 	if (otherBuffer != InvalidBuffer && !needLock)
 		LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
@@ -383,8 +385,9 @@ recheck:
 
 	/*
 	 * We don't acquire lock on otherBuffer while holding extension lock as it
-	 * can create a deadlock against extending TPD entry where we take extension
-	 * lock while holding the heap buffer lock.  See TPDAllocatePageAndAddEntry.
+	 * can create a deadlock against extending TPD entry where we take
+	 * extension lock while holding the heap buffer lock.  See
+	 * TPDAllocatePageAndAddEntry.
 	 */
 	if (needLock &&
 		otherBuffer != InvalidBuffer &&
@@ -394,12 +397,12 @@ recheck:
 		LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		recheck = true;
-	}	
+	}
 	if (len > PageGetZHeapFreeSpace(page))
 	{
 		if (recheck)
 			goto recheck;
-		
+
 		/* We should not get here given the test at the top */
 		elog(PANIC, "tuple is too big: size %zu", len);
 	}
@@ -426,8 +429,8 @@ recheck:
 static bool
 CheckBufferHasTPDPage(Buffer buffer)
 {
-	bool	tpdPage = false;
-	Page	page = BufferGetPage(buffer);
+	bool		tpdPage = false;
+	Page		page = BufferGetPage(buffer);
 
 	if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
 	{

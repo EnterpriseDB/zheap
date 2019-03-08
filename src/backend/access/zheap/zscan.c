@@ -1192,7 +1192,7 @@ zheap_getnextslot(TableScanDesc sscan, ScanDirection direction,
 	pgstat_count_heap_getnext(scan->rs_scan.rs_rd);
 
 	return ExecStoreZTuple(zhtup, slot, scan->rs_cbuf,
-						scan->rs_scan.rs_pageatatime ? false : true);
+						   scan->rs_scan.rs_pageatatime ? false : true);
 }
 
 bool
@@ -1451,10 +1451,10 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		if (resulttup)
 		{
 			/*
-			 * To fetch the xmin (aka transaction that has inserted the tuple),
-			 * we need to use the transaction slot of the tuple in the page
-			 * instead of the tuple from undo, otherwise, it might traverse the
-			 * wrong chain.
+			 * To fetch the xmin (aka transaction that has inserted the
+			 * tuple), we need to use the transaction slot of the tuple in the
+			 * page instead of the tuple from undo, otherwise, it might
+			 * traverse the wrong chain.
 			 */
 			loctup_tmp.t_tableOid = RelationGetRelid(relation);
 			loctup_tmp.t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lp);
