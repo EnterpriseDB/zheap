@@ -27,12 +27,12 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_tpd_allocate_entry *xlrec;
-	Buffer	tpdbuffer;
-	Buffer	heap_page_buffer;
-	Buffer	metabuf = InvalidBuffer;
-	Buffer	last_used_buf = InvalidBuffer;
-	Buffer	old_tpd_buf = InvalidBuffer;
-	Page	tpdpage;
+	Buffer		tpdbuffer;
+	Buffer		heap_page_buffer;
+	Buffer		metabuf = InvalidBuffer;
+	Buffer		last_used_buf = InvalidBuffer;
+	Buffer		old_tpd_buf = InvalidBuffer;
+	Page		tpdpage;
 	TPDPageOpaque tpdopaque;
 	XLogRedoAction action;
 
@@ -53,9 +53,9 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 		action = XLogReadBufferForRedo(record, 0, &tpdbuffer);
 	if (action == BLK_NEEDS_REDO)
 	{
-		char	*tpd_entry;
-		Size	size_tpd_entry;
-		OffsetNumber	offnum;
+		char	   *tpd_entry;
+		Size		size_tpd_entry;
+		OffsetNumber offnum;
 
 		tpd_entry = XLogRecGetBlockData(record, 0, &size_tpd_entry);
 		tpdpage = BufferGetPage(tpdbuffer);
@@ -78,8 +78,9 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 	else if (action == BLK_RESTORED)
 	{
 		/*
-		 * Note that we still update the page even if it was restored from a full
-		 * page image, because the special space is not included in the image.
+		 * Note that we still update the page even if it was restored from a
+		 * full page image, because the special space is not included in the
+		 * image.
 		 */
 		tpdpage = BufferGetPage(tpdbuffer);
 
@@ -102,7 +103,7 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 	/* replay the record for meta page */
 	if (XLogRecHasBlockRef(record, 2))
 	{
-		xl_zheap_metadata	*xlrecmeta;
+		xl_zheap_metadata *xlrecmeta;
 		char	   *ptr;
 		Size		len;
 
@@ -125,13 +126,15 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 		if (XLogRecHasBlockRef(record, 3))
 		{
 			action = XLogReadBufferForRedo(record, 3, &last_used_buf);
+
 			/*
-			 * Note that we still update the page even if it was restored from a full
-			 * page image, because the special space is not included in the image.
+			 * Note that we still update the page even if it was restored from
+			 * a full page image, because the special space is not included in
+			 * the image.
 			 */
 			if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
 			{
-				Page	last_used_page;
+				Page		last_used_page;
 				TPDPageOpaque last_tpdopaque;
 
 				last_used_page = BufferGetPage(last_used_buf);
@@ -141,23 +144,23 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 				/* old and last tpd buffer are same. */
 				if (xlrec->flags & XLOG_OLD_TPD_BUF_EQ_LAST_TPD_BUF)
 				{
-					TPDEntryHeader	old_tpd_entry;
-					Page	otpdpage;
-					char	*data;
-					OffsetNumber	*off_num;
-					Size	datalen PG_USED_FOR_ASSERTS_ONLY;
-					ItemId	old_item_id;
+					TPDEntryHeader old_tpd_entry;
+					Page		otpdpage;
+					char	   *data;
+					OffsetNumber *off_num;
+					Size		datalen PG_USED_FOR_ASSERTS_ONLY;
+					ItemId		old_item_id;
 
 					if (action == BLK_NEEDS_REDO)
 					{
 						data = XLogRecGetBlockData(record, 3, &datalen);
 
-						off_num = (OffsetNumber *)data;
+						off_num = (OffsetNumber *) data;
 						Assert(datalen == sizeof(OffsetNumber));
 
 						otpdpage = BufferGetPage(last_used_buf);
 						old_item_id = PageGetItemId(otpdpage, *off_num);
-						old_tpd_entry = (TPDEntryHeader)PageGetItem(otpdpage, old_item_id);
+						old_tpd_entry = (TPDEntryHeader) PageGetItem(otpdpage, old_item_id);
 						old_tpd_entry->tpe_flags |= TPE_DELETED;
 					}
 
@@ -176,12 +179,12 @@ tpd_xlog_allocate_entry(XLogReaderState *record)
 		 */
 		if (XLogRecHasBlockRef(record, 4))
 		{
-			TPDEntryHeader	old_tpd_entry;
-			Page	otpdpage;
-			char	*data;
-			OffsetNumber	*off_num;
-			Size	datalen PG_USED_FOR_ASSERTS_ONLY;
-			ItemId	old_item_id;
+			TPDEntryHeader old_tpd_entry;
+			Page		otpdpage;
+			char	   *data;
+			OffsetNumber *off_num;
+			Size		datalen PG_USED_FOR_ASSERTS_ONLY;
+			ItemId		old_item_id;
 
 			action = XLogReadBufferForRedo(record, 4, &old_tpd_buf);
 
@@ -222,7 +225,7 @@ static void
 tpd_xlog_inplace_update_entry(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	Buffer	tpdbuf;
+	Buffer		tpdbuf;
 	XLogRedoAction action;
 
 	/*
@@ -235,9 +238,9 @@ tpd_xlog_inplace_update_entry(XLogReaderState *record)
 	{
 		Page		tpdpage = (Page) BufferGetPage(tpdbuf);
 		ItemId		item_id;
-		OffsetNumber	*off_num;
-		char		*data;
-		char		*new_tpd_entry;
+		OffsetNumber *off_num;
+		char	   *data;
+		char	   *new_tpd_entry;
 		Size		datalen,
 					size_new_tpd_entry;
 		uint16		tpd_e_offset;
@@ -269,7 +272,7 @@ tpd_xlog_clean(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	xl_tpd_clean *xlrec = (xl_tpd_clean *) XLogRecGetData(record);
-	Buffer	tpdbuf;
+	Buffer		tpdbuf;
 	XLogRedoAction action;
 
 	/*
@@ -284,9 +287,9 @@ tpd_xlog_clean(XLogReaderState *record)
 		Page		tmppage;
 		OffsetNumber *end;
 		OffsetNumber *nowunused;
-		OffsetNumber	*target_offnum;
+		OffsetNumber *target_offnum;
 		OffsetNumber tmp_target_off;
-		Size			*space_required;
+		Size	   *space_required;
 		Size		tmp_spc_rqd;
 		Size		datalen;
 		int			nunused;
@@ -310,7 +313,10 @@ tpd_xlog_clean(XLogReaderState *record)
 
 		if (nunused >= 0)
 		{
-			/* Update all item pointers per the record, and repair fragmentation */
+			/*
+			 * Update all item pointers per the record, and repair
+			 * fragmentation.
+			 */
 			TPDPagePruneExecute(tpdbuf, nowunused, nunused);
 		}
 
@@ -339,11 +345,11 @@ static void
 tpd_xlog_clear_location(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	Buffer	buffer;
+	Buffer		buffer;
 
 	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
 	{
-		Page	page = (Page) BufferGetPage(buffer);
+		Page		page = (Page) BufferGetPage(buffer);
 
 		ClearTPDLocation(buffer);
 		MarkBufferDirty(buffer);
@@ -360,14 +366,14 @@ static void
 tpd_xlog_free_page(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	RelFileNode		rnode;
+	RelFileNode rnode;
 	xl_tpd_free_page *xlrec = (xl_tpd_free_page *) XLogRecGetData(record);
-	Buffer	buffer = InvalidBuffer,
-			prevbuf = InvalidBuffer,
-			nextbuf = InvalidBuffer,
-			metabuf = InvalidBuffer;
-	BlockNumber		blkno;
-	Page	page;
+	Buffer		buffer = InvalidBuffer,
+				prevbuf = InvalidBuffer,
+				nextbuf = InvalidBuffer,
+				metabuf = InvalidBuffer;
+	BlockNumber blkno;
+	Page		page;
 	XLogRedoAction action;
 	Size		freespace;
 
@@ -376,13 +382,14 @@ tpd_xlog_free_page(XLogReaderState *record)
 		action = XLogReadBufferForRedo(record, 0, &prevbuf);
 
 		/*
-		 * Note that we still update the page even if it was restored from a full
-		 * page image, because the special space is not included in the image.
+		 * Note that we still update the page even if it was restored from a
+		 * full page image, because the special space is not included in the
+		 * image.
 		 */
 		if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
 		{
-			TPDPageOpaque	prevtpdopaque;
-			Page	prevpage = (Page) BufferGetPage(prevbuf);
+			TPDPageOpaque prevtpdopaque;
+			Page		prevpage = (Page) BufferGetPage(prevbuf);
 
 			prevtpdopaque = (TPDPageOpaque) PageGetSpecialPointer(prevpage);
 			prevtpdopaque->tpd_nextblkno = xlrec->nextblkno;
@@ -402,7 +409,7 @@ tpd_xlog_free_page(XLogReaderState *record)
 	 */
 	if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
 	{
-		TPDPageOpaque	tpdopaque;
+		TPDPageOpaque tpdopaque;
 
 		tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(page);
 
@@ -425,8 +432,8 @@ tpd_xlog_free_page(XLogReaderState *record)
 
 		if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
 		{
-			TPDPageOpaque	nexttpdopaque;
-			Page	nextpage = (Page) BufferGetPage(nextbuf);
+			TPDPageOpaque nexttpdopaque;
+			Page		nextpage = (Page) BufferGetPage(nextbuf);
 
 			nexttpdopaque = (TPDPageOpaque) PageGetSpecialPointer(nextpage);
 			nexttpdopaque->tpd_prevblkno = xlrec->prevblkno;
@@ -438,7 +445,7 @@ tpd_xlog_free_page(XLogReaderState *record)
 
 	if (XLogRecHasBlockRef(record, 3))
 	{
-		xl_zheap_metadata	*xlrecmeta;
+		xl_zheap_metadata *xlrecmeta;
 		char	   *ptr;
 		Size		len;
 
@@ -475,11 +482,11 @@ static void
 tpd_xlog_clean_all_entries(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	Buffer	buffer;
+	Buffer		buffer;
 
 	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
 	{
-		Page	page = (Page) BufferGetPage(buffer);
+		Page		page = (Page) BufferGetPage(buffer);
 
 		((PageHeader) page)->pd_lower = SizeOfPageHeaderData;
 		((PageHeader) page)->pd_upper = ((PageHeader) page)->pd_special;

@@ -201,30 +201,29 @@ loop:
 		else
 		{
 			/*
-			 * We now have the target page (and the other buffer, if any) pinned
-			 * and locked.  However, since our initial PageIsAllVisible checks
-			 * were performed before acquiring the lock, the results might now be
-			 * out of date, either for the selected victim buffer, or for the
-			 * other buffer passed by the caller.  In that case, we'll need to
-			 * give up our locks, go get the pin(s) we failed to get earlier, and
-			 * re-lock.  That's pretty painful, but hopefully shouldn't happen
-			 * often.
+			 * We now have the target page (and the other buffer, if any)
+			 * pinned and locked.  However, since our initial PageIsAllVisible
+			 * checks were performed before acquiring the lock, the results
+			 * might now be out of date, either for the selected victim
+			 * buffer, or for the other buffer passed by the caller.  In that
+			 * case, we'll need to give up our locks, go get the pin(s) we
+			 * failed to get earlier, and re-lock.  That's pretty painful, but
+			 * hopefully shouldn't happen often.
 			 *
-			 * Note that there's a small possibility that we didn't pin the page
-			 * above but still have the correct page pinned anyway, either because
-			 * we've already made a previous pass through this loop, or because
-			 * caller passed us the right page anyway.
+			 * Note that there's a small possibility that we didn't pin the
+			 * page above but still have the correct page pinned anyway,
+			 * either because we've already made a previous pass through this
+			 * loop, or because caller passed us the right page anyway.
 			 *
-			 * Note also that it's possible that by the time we get the pin and
-			 * retake the buffer locks, the visibility map bit will have been
-			 * cleared by some other backend anyway.  In that case, we'll have
-			 * done a bit of extra work for no gain, but there's no real harm
-			 * done.
+			 * Note also that it's possible that by the time we get the pin
+			 * and retake the buffer locks, the visibility map bit will have
+			 * been cleared by some other backend anyway.  In that case, we'll
+			 * have done a bit of extra work for no gain, but there's no real
+			 * harm done.
 			 *
-			 * ZBORKED:
-			 * Fixme: GetVisibilityMapPins use PageIsAllVisible which is not
-			 * required for zheap, so either we need to rewrite that function or
-			 * somehow avoid the usage of that call.
+			 * ZBORKED: Fixme: GetVisibilityMapPins use PageIsAllVisible which
+			 * is not required for zheap, so either we need to rewrite that
+			 * function or somehow avoid the usage of that call.
 			 */
 			if (otherBuffer == InvalidBuffer || targetBlock <= otherBlock)
 				GetVisibilityMapPins(relation, buffer, otherBuffer,
@@ -236,16 +235,16 @@ loop:
 									 vmbuffer);
 
 			/*
-			 * Now we can check to see if there's enough free space here. If so,
-			 * we're done.
+			 * Now we can check to see if there's enough free space here. If
+			 * so, we're done.
 			 */
 			page = BufferGetPage(buffer);
 
 			/*
-			 * If necessary initialize page, it'll be used soon.  We could avoid
-			 * dirtying the buffer here, and rely on the caller to do so whenever
-			 * it puts a tuple onto the page, but there seems not much benefit in
-			 * doing so.
+			 * If necessary initialize page, it'll be used soon.  We could
+			 * avoid dirtying the buffer here, and rely on the caller to do so
+			 * whenever it puts a tuple onto the page, but there seems not
+			 * much benefit in doing so.
 			 */
 			if (PageIsNew(page))
 			{
@@ -260,8 +259,8 @@ loop:
 				RelationSetTargetBlock(relation, targetBlock);
 
 				/*
-				 * In case we used an in-memory map of available blocks, reset it
-				 * for next use.
+				 * In case we used an in-memory map of available blocks, reset
+				 * it for next use.
 				 */
 				FSMClearLocalMap();
 
@@ -450,8 +449,8 @@ loop:
 static bool
 CheckBufferHasTPDPage(Buffer buffer)
 {
-	bool	tpdPage = false;
-	Page	page = BufferGetPage(buffer);
+	bool		tpdPage = false;
+	Page		page = BufferGetPage(buffer);
 
 	if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
 	{

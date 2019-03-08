@@ -75,8 +75,8 @@ zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer, ItemPointer tid)
 
 	/*
 	 * This function is used for trigger to retrieve previous version of the
-	 * tuple from undolog. Since the transaction that is updating the tuple
-	 * is still in progress, neither undo record can be discarded nor it's
+	 * tuple from undolog. Since the transaction that is updating the tuple is
+	 * still in progress, neither undo record can be discarded nor it's
 	 * transaction slot can be reused.
 	 */
 	Assert(urec != NULL);
@@ -100,7 +100,7 @@ bool
 zheap_fetch_undo(Relation relation,
 				 Snapshot snapshot,
 				 ItemPointer tid,
-				 ZHeapTuple * tuple,
+				 ZHeapTuple *tuple,
 				 Buffer *userbuf,
 				 Relation stats_relation)
 {
@@ -581,9 +581,9 @@ zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no,
 	phdr = (PageHeader) page;
 
 	/*
-	 * If the caller reaquired the lock before calling this function, rollback
-	 * could have been performed by some other backend or the undo-worker.  In
-	 * that case, the TPD entry can be pruned away.
+	 * If the caller reacquired the lock before calling this function,
+	 * rollback could have been performed by some other backend or the
+	 * undo-worker.  In that case, the TPD entry can be pruned away.
 	 */
 	if (slot_no >= ZHEAP_PAGE_TRANS_SLOTS && !ZHeapPageHasTPDSlot(phdr))
 		return false;
@@ -598,10 +598,10 @@ zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no,
 										 true);
 
 	/*
-	 * If the caller reaquired the lock before calling this function, rollback
-	 * could have been performed by some other backend or the undo-worker.  In
-	 * that case, the TPD slot can be frozen since the TPD entry can be pruned
-	 * away.
+	 * If the caller reacquired the lock before calling this function,
+	 * rollback could have been performed by some other backend or the
+	 * undo-worker.  In that case, the TPD slot can be frozen since the TPD
+	 * entry can be pruned away.
 	 */
 	Assert(out_slot_no != ZHTUP_SLOT_FROZEN ||
 		   (ZHeapPageHasTPDSlot(phdr) && slot_no >= ZHEAP_PAGE_TRANS_SLOTS));
@@ -750,7 +750,7 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
  *				When we are performing undo actions for prepared transactions,
  *				or for rollback to savepoint, we need not to lock as we already
  *				have the lock on the table. In cases like error or when
- *				rollbacking from the undo worker we need to have proper locks.
+ *				rolling back from the undo worker we need to have proper locks.
  *
  *	returns true, if successfully applied the undo actions, otherwise, false.
  */

@@ -290,8 +290,8 @@ raw_zheap_insert(RewriteZheapState state, ZHeapTuple tup)
 	else if (ZHeapTupleHasExternal(tup) || tup->t_len > TOAST_TUPLE_THRESHOLD)
 	{
 		/*
-		 * As of now, we copy only LIVE tuples in zheap, so we can mark them as
-		 * frozen.
+		 * As of now, we copy only LIVE tuples in zheap, so we can mark them
+		 * as frozen.
 		 */
 		heaptup = ztoast_insert_or_update(state->rs_new_rel, tup, NULL,
 										  ZHEAP_INSERT_FROZEN |
@@ -309,9 +309,9 @@ raw_zheap_insert(RewriteZheapState state, ZHeapTuple tup)
 	 */
 	if (len > MaxZHeapTupleSize)
 		ereport(ERROR,
-		(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-			errmsg("row is too big: size %zu, maximum size %zu",
-				len, MaxZHeapTupleSize)));
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("row is too big: size %zu, maximum size %zu",
+						len, MaxZHeapTupleSize)));
 
 	/* Compute desired extra freespace due to fillfactor option */
 	saveFreeSpace = RelationGetTargetPageFreeSpace(state->rs_new_rel,

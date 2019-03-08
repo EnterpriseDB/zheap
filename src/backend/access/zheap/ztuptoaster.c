@@ -54,7 +54,7 @@
 
 static void ztoast_delete_datum(Relation rel, Datum value, bool is_speculative);
 static Datum ztoast_save_datum(Relation rel, Datum value,
-				 struct varlena *oldexternal, int options);
+				  struct varlena *oldexternal, int options);
 
 /*
  * ztoast_insert_or_update
@@ -63,7 +63,7 @@ static Datum ztoast_save_datum(Relation rel, Datum value,
 
 ZHeapTuple
 ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
-					   int options)
+						int options)
 {
 	ZHeapTuple	result_tuple;
 	TupleDesc	tupleDesc;
@@ -341,7 +341,7 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 			old_value = toast_values[i];
 			toast_action[i] = 'p';
 			toast_values[i] = ztoast_save_datum(rel, toast_values[i],
-											   toast_oldexternal[i], options);
+												toast_oldexternal[i], options);
 			if (toast_free[i])
 				pfree(DatumGetPointer(old_value));
 			toast_free[i] = true;
@@ -356,7 +356,7 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 	 */
 	while (zheap_compute_data_size(tupleDesc,
 								   toast_values, toast_isnull, hoff) > maxDataLen &&
-								   rel->rd_rel->reltoastrelid != InvalidOid)
+		   rel->rd_rel->reltoastrelid != InvalidOid)
 	{
 		int			biggest_attno = -1;
 		int32		biggest_size = MAXALIGN(TOAST_POINTER_SIZE);
@@ -394,7 +394,7 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 		old_value = toast_values[i];
 		toast_action[i] = 'p';
 		toast_values[i] = ztoast_save_datum(rel, toast_values[i],
-										   toast_oldexternal[i], options);
+											toast_oldexternal[i], options);
 		if (toast_free[i])
 			pfree(DatumGetPointer(old_value));
 		toast_free[i] = true;
@@ -508,7 +508,7 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 		old_value = toast_values[i];
 		toast_action[i] = 'p';
 		toast_values[i] = ztoast_save_datum(rel, toast_values[i],
-										   toast_oldexternal[i], options);
+											toast_oldexternal[i], options);
 		if (toast_free[i])
 			pfree(DatumGetPointer(old_value));
 		toast_free[i] = true;
@@ -565,12 +565,12 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 
 		/* Copy over the data, and fill the null bitmap if needed */
 		zheap_fill_tuple(tupleDesc,
-						toast_values,
-						toast_isnull,
-						(char *) new_data + new_header_len,
-						new_data_len,
-						&(new_data->t_infomask),
-						has_nulls ? new_data->t_bits : NULL);
+						 toast_values,
+						 toast_isnull,
+						 (char *) new_data + new_header_len,
+						 new_data_len,
+						 &(new_data->t_infomask),
+						 has_nulls ? new_data->t_bits : NULL);
 	}
 	else
 		result_tuple = newtup;
@@ -600,7 +600,7 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
  */
 static Datum
 ztoast_save_datum(Relation rel, Datum value,
-				 struct varlena *oldexternal, int options)
+				  struct varlena *oldexternal, int options)
 {
 	Relation	toastrel;
 	Relation   *toastidxs;
@@ -638,7 +638,7 @@ ztoast_save_datum(Relation rel, Datum value,
 	toasttupDesc = toastrel->rd_att;
 
 	/* The toast table of zheap table should also be of zheap type */
-	Assert (RelationStorageIsZHeap(toastrel));
+	Assert(RelationStorageIsZHeap(toastrel));
 
 	/* Open all the toast indexes and look for the valid one */
 	validIndex = toast_open_indexes(toastrel,
@@ -884,7 +884,7 @@ ztoast_delete_datum(Relation rel, Datum value, bool is_speculative)
 	toastrel = heap_open(toast_pointer.va_toastrelid, RowExclusiveLock);
 
 	/* The toast table of zheap table should also be of zheap type */
-	Assert (RelationStorageIsZHeap(toastrel));
+	Assert(RelationStorageIsZHeap(toastrel));
 
 	/* Fetch valid relation used for process */
 	validIndex = toast_open_indexes(toastrel,
