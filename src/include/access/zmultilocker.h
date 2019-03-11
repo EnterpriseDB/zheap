@@ -25,9 +25,9 @@
 			(tupleLockExtraInfo[lockmode].hwlock)
 
 extern List *ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup,
-							int trans_slot, UndoRecPtr urec_ptr);
+								   int trans_slot, UndoRecPtr urec_ptr);
 extern List *ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
-								  bool nobuflock);
+					 bool nobuflock);
 extern bool ZMultiLockMembersWait(Relation rel, List *mlmembers,
 					  ZHeapTuple zhtup, Buffer buf, TransactionId update_xact,
 					  LockTupleMode required_mode, bool nowait, XLTW_Oper oper,
@@ -37,8 +37,8 @@ extern bool ConditionalZMultiLockMembersWait(Relation rel, List *mlmembers,
 								 LockTupleMode required_mode, int *remaining,
 								 bool *upd_xact_aborted);
 extern bool ZIsAnyMultiLockMemberRunning(List *mlmembers, ZHeapTuple zhtup,
-					Buffer buf);
-extern bool ZMultiLockMembersSame(List *old_members, List* new_members);
+							 Buffer buf);
+extern bool ZMultiLockMembersSame(List *old_members, List *new_members);
 extern void ZGetMultiLockInfo(uint16 old_infomask, TransactionId tup_xid,
 				  int tup_trans_slot, TransactionId add_to_xid,
 				  uint16 *new_infomask, int *new_trans_slot,
@@ -49,15 +49,16 @@ extern bool GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				   TransactionId *xid_out, CommandId *cid_out,
 				   UndoRecPtr *urec_ptr_out);
 
-static inline LockTupleMode get_old_lock_mode(uint16 infomask)
+static inline LockTupleMode
+get_old_lock_mode(uint16 infomask)
 {
-	LockTupleMode	old_lock_mode;
+	LockTupleMode old_lock_mode;
 
 	/*
 	 * Normally, if the tuple is not marked as locked only, it should not
-	 * contain any locker information. But, during rollback of (in-)update/delete,
-	 * we retain the multilocker information. See execute_undo_actions_page for
-	 * details.
+	 * contain any locker information. But, during rollback of
+	 * (in-)update/delete, we retain the multilocker information. See
+	 * execute_undo_actions_page for details.
 	 */
 	if (ZHEAP_XID_IS_LOCKED_ONLY(infomask) || !IsZHeapTupleModified(infomask))
 	{
@@ -87,4 +88,4 @@ static inline LockTupleMode get_old_lock_mode(uint16 infomask)
 	return old_lock_mode;
 }
 
-#endif   /* ZMULTILOCKER_H */
+#endif							/* ZMULTILOCKER_H */

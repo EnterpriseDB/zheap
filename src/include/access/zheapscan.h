@@ -24,7 +24,7 @@ typedef struct ZHeapScanDescData
 	TableScanDescData rs_scan;	/* */
 
 	/* scan current state */
-	bool		rs_inited;		/* false = scan not init'd yet */
+	bool		rs_inited;		/* false = scan not initialized yet */
 	BlockNumber rs_cblock;		/* current block # in scan, if any */
 	Buffer		rs_cbuf;		/* current buffer in scan, if any */
 
@@ -34,7 +34,7 @@ typedef struct ZHeapScanDescData
 
 	ZHeapTuple	rs_cztup;		/* current tuple in scan, if any */
 
-	int			rs_cindex;		/* current tuple's index in vistuples */
+	int			rs_cindex;		/* current tuple's index in visztuples */
 	int			rs_ntuples;		/* number of visible tuples on page */
 
 	ZHeapTuple	rs_visztuples[MaxZHeapTuplesPerPage];
@@ -65,7 +65,7 @@ extern ZHeapTuple zheap_search_buffer(ItemPointer tid, Relation relation,
 extern bool zheap_search(ItemPointer tid, Relation relation, Snapshot snapshot,
 			 bool *all_dead);
 extern bool zheap_fetch(Relation relation, Snapshot snapshot,
-			ItemPointer tid, ZHeapTuple * tuple, Buffer *userbuf,
+			ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
 			bool keep_buf, Relation stats_relation);
 
 #endif							/* ZHEAPSCAN_H */

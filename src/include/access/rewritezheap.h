@@ -20,13 +20,13 @@
 typedef struct RewriteZheapStateData *RewriteZheapState;
 
 extern RewriteZheapState begin_zheap_rewrite(Relation OldHeap, Relation NewHeap,
-				   TransactionId OldestXmin, TransactionId FreezeXid,
-				   MultiXactId MultiXactCutoff, bool use_wal);
+											 TransactionId OldestXmin, TransactionId FreezeXid,
+											 MultiXactId MultiXactCutoff, bool use_wal);
 extern void end_zheap_rewrite(RewriteZheapState state);
 extern void reform_and_rewrite_ztuple(ZHeapTuple tuple, TupleDesc oldTupDesc,
-	TupleDesc newTupDesc, Datum *values, bool *isnull,
-	RewriteZheapState rwstate);
+						  TupleDesc newTupDesc, Datum *values, bool *isnull,
+						  RewriteZheapState rwstate);
 extern void rewrite_zheap_tuple(RewriteZheapState state, ZHeapTuple oldTuple,
-				   ZHeapTuple newTuple);
+					ZHeapTuple newTuple);
 
 #endif							/* REWRITE_ZHEAP_H */
