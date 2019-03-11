@@ -30,7 +30,7 @@ typedef struct ZHeapScanDescData
 	/* rs_numblocks is usually InvalidBlockNumber, meaning "scan whole rel" */
 
 	/* scan current state */
-	bool		rs_inited;		/* false = scan not init'd yet */
+	bool		rs_inited;		/* false = scan not initialized yet */
 	BlockNumber rs_cblock;		/* current block # in scan, if any */
 	Buffer		rs_cbuf;		/* current buffer in scan, if any */
 
@@ -40,7 +40,7 @@ typedef struct ZHeapScanDescData
 
 	ZHeapTuple	rs_cztup;		/* current tuple in scan, if any */
 
-	int			rs_cindex;		/* current tuple's index in vistuples */
+	int			rs_cindex;		/* current tuple's index in visztuples */
 	int			rs_ntuples;		/* number of visible tuples on page */
 
 	ZHeapTuple	rs_visztuples[MaxZHeapTuplesPerPage];
@@ -49,9 +49,9 @@ typedef struct ZHeapScanDescData
 typedef struct ZHeapScanDescData *ZHeapScanDesc;
 
 extern TableScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,
-									 int nkeys, ScanKey key, ParallelTableScanDesc parallel_scan,
-									 bool allow_strat, bool allow_sync, bool allow_pagemode,
-									 bool is_bitmapscan, bool is_samplescan, bool temp_snap);
+				int nkeys, ScanKey key, ParallelTableScanDesc parallel_scan,
+				bool allow_strat, bool allow_sync, bool allow_pagemode,
+				bool is_bitmapscan, bool is_samplescan, bool temp_snap);
 extern void zheap_endscan(TableScanDesc sscan);
 extern void zheap_rescan(TableScanDesc scan, ScanKey key, bool set_params,
 			 bool allow_strat, bool allow_sync, bool allow_pagemode);
@@ -61,7 +61,7 @@ extern void zheap_update_snapshot(TableScanDesc scan, Snapshot snapshot);
 extern bool zheapgetpage(TableScanDesc scan, BlockNumber page);
 extern ZHeapTuple zheap_getnext(TableScanDesc scan, ScanDirection direction);
 extern bool zheap_getnextslot(TableScanDesc scan, ScanDirection direction,
-							  struct TupleTableSlot *slot);
+				  struct TupleTableSlot *slot);
 
 struct TBMIterateResult;
 extern bool zheap_scan_bitmap_next_block(TableScanDesc sscan, struct TBMIterateResult *tbmres);

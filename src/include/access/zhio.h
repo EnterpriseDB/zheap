@@ -20,8 +20,8 @@
 
 
 extern Buffer RelationGetBufferForZTuple(Relation relation, Size len,
-						  Buffer otherBuffer, int options,
-						  BulkInsertState bistate,
-						  Buffer *vmbuffer, Buffer *vmbuffer_other);
+						   Buffer otherBuffer, int options,
+						   BulkInsertState bistate,
+						   Buffer *vmbuffer, Buffer *vmbuffer_other);
 
 #endif							/* ZHIO_H */

@@ -37,7 +37,7 @@
  * Additional bits used from page header for zheap specific pages.
  * See PageHeaderData.  We have considered to store these special flags
  * in zheap specific pages, but the pages have different structures for
- * special space which makes it inconvineint to store these flags.
+ * special space which makes it inconvenient to store these flags.
  */
 #define PD_PAGE_HAS_TPD_SLOT				0x0008
 
@@ -49,7 +49,7 @@
 )
 
 /*
- * We need tansactionid and undo pointer to retrieve the undo information
+ * We need TransactionId and undo pointer to retrieve the undo information
  * for a particular transaction.  Xid's epoch is primarily required to check
  * if the xid is from current epoch.
  */
@@ -71,7 +71,7 @@ typedef ZHeapPageOpaqueData * ZHeapPageOpaque;
 										 * sizeof(TransInfo))
 typedef struct ZHeapMetaPageData
 {
-	uint32		zhm_magic;		/* magic no. for zheap tables */
+	uint32		zhm_magic;		/* magic number for zheap tables */
 	uint32		zhm_version;	/* version ID */
 	uint32		zhm_first_used_tpd_page;
 	uint32		zhm_last_used_tpd_page;
@@ -123,7 +123,7 @@ extern void zheap_finish_speculative(Relation relation, ItemPointer tid);
 extern void zheap_abort_speculative(Relation relation, ItemPointer tid);
 extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
 						   OffsetNumber offset, uint32 epoch,
-						   TransactionId xid, UndoRecPtr * ureptr,
+						   TransactionId xid, UndoRecPtr *ureptr,
 						   bool *lock_reacquired,
 						   bool extend_if_required,
 						   bool use_aborted_slot,
@@ -133,18 +133,18 @@ extern void MultiPageReserveTransSlot(Relation relation,
 						  OffsetNumber oldbuf_offnum,
 						  OffsetNumber newbuf_offnum,
 						  uint32 epoch, TransactionId xid,
-						  UndoRecPtr * oldbuf_prev_urecptr,
-						  UndoRecPtr * newbuf_prev_urecptr,
+						  UndoRecPtr *oldbuf_prev_urecptr,
+						  UndoRecPtr *newbuf_prev_urecptr,
 						  int *oldbuf_trans_slot_id,
 						  int *newbuf_trans_slot_id,
 						  bool *lock_reacquired);
 extern int PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
-						 TransactionId xid, UndoRecPtr * urec_ptr,
+						 TransactionId xid, UndoRecPtr *urec_ptr,
 						 bool keepTPDBufLock, bool locktpd,
 						 bool *tpd_page_locked);
 extern void PageGetTransactionSlotInfo(Buffer buf, int slot_no,
 						   uint32 *epoch, TransactionId *xid,
-						   UndoRecPtr * urec_ptr,
+						   UndoRecPtr *urec_ptr,
 						   bool keepTPDBufLock);
 extern TransInfo * GetTransactionsSlotsForPage(Relation rel, Buffer buf,
 											   int *total_trans_slots,
@@ -231,9 +231,9 @@ extern bool zheap_fetch_undo(Relation relation, Snapshot snapshot,
 				 Relation stats_relation);
 extern ZHeapTuple zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer,
 										ItemPointer tid);
-extern bool ZHeapSatisfyUndoRecord(UnpackedUndoRecord * uurec, BlockNumber blkno,
+extern bool ZHeapSatisfyUndoRecord(UnpackedUndoRecord *uurec, BlockNumber blkno,
 					   OffsetNumber offset, TransactionId xid);
-extern ZHeapTuple CopyTupleFromUndoRecord(UnpackedUndoRecord * urec,
+extern ZHeapTuple CopyTupleFromUndoRecord(UnpackedUndoRecord *urec,
 										  ZHeapTuple zhtup, int *trans_slot_id,
 										  CommandId *cid, bool free_zhtup,
 										  Page page);
@@ -248,10 +248,11 @@ extern void zbuffer_exec_pending_rollback(Relation rel, Buffer buf,
 struct VacuumParams;
 extern void lazy_vacuum_zheap_rel(Relation onerel, struct VacuumParams *params,
 					  BufferAccessStrategy bstrategy);
+
 /* in zheap/zundo.c */
 extern bool zheap_undo_actions(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
-							   TransactionId xid, BlockNumber blkno,
-							   bool blk_chain_complete, bool rellock);
+				   TransactionId xid, BlockNumber blkno,
+				   bool blk_chain_complete, bool rellock);
 
 
 #endif							/* ZHEAP_H */

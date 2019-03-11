@@ -72,9 +72,9 @@ typedef struct xl_zheap_metadata
 /* common undo record related info */
 typedef struct xl_undo_header
 {
-	Oid			reloid;	/* relation OID*/
-	uint64		blkprev;	/* byte offset of previous undo for block */
-	UndoRecPtr	urec_ptr;	/* undo location for undo tuple */
+	Oid			reloid;			/* relation OID */
+	uint64		blkprev;		/* byte offset of previous undo for block */
+	UndoRecPtr	urec_ptr;		/* undo location for undo tuple */
 } xl_undo_header;
 
 #define SizeOfUndoHeader	(offsetof(xl_undo_header, urec_ptr) + sizeof(UndoRecPtr))
@@ -129,12 +129,12 @@ typedef struct xl_zheap_insert
 typedef struct xl_zheap_delete
 {
 	/* info related to undo record */
-	TransactionId prevxid;			/* transaction id that has modified the tuple
-									 * written in undo record for delete operation */
+	TransactionId prevxid;		/* transaction id that has modified the tuple
+								 * written in undo record for delete operation */
 
 	/* zheap related info */
 	OffsetNumber offnum;		/* deleted tuple's offset */
-	uint16		infomask;	/* lock mode */
+	uint16		infomask;		/* lock mode */
 	uint16		trans_slot_id;	/* transaction slot id */
 	uint8		flags;
 } xl_zheap_delete;
@@ -173,8 +173,8 @@ typedef struct xl_zheap_delete
 typedef struct xl_zheap_update
 {
 	/* info related to undo record */
-	TransactionId prevxid;			/* transaction id that has modified the tuple
-									 * written in undo record for delete operation */
+	TransactionId prevxid;		/* transaction id that has modified the tuple
+								 * written in undo record for delete operation */
 	/* zheap related info */
 	OffsetNumber old_offnum;	/* old tuple's offset */
 	uint16		old_infomask;	/* infomask bits to set on old tuple */
@@ -188,8 +188,8 @@ typedef struct xl_zheap_update
 /* This is what we need to know for freezing transaction slots */
 typedef struct xl_zheap_freeze_xact_slot
 {
-	TransactionId	lastestFrozenXid;	/* latest frozen xid */
-	uint16			nFrozen;	/* number of transaction slots to freeze */
+	TransactionId lastestFrozenXid; /* latest frozen xid */
+	uint16		nFrozen;		/* number of transaction slots to freeze */
 } xl_zheap_freeze_xact_slot;
 
 #define SizeOfZHeapFreezeXactSlot	(offsetof(xl_zheap_freeze_xact_slot, nFrozen) + sizeof(uint16))
@@ -206,12 +206,12 @@ typedef struct xl_zheap_freeze_xact_slot
 typedef struct xl_zheap_lock
 {
 	/* info related to undo record */
-	TransactionId   prev_xid;
+	TransactionId prev_xid;
 	/* zheap related info */
-	OffsetNumber    offnum;		/* locked tuple's offset */
-	uint16	infomask;	/* lock mode */
-	uint16   trans_slot_id;		/* transaction slot id */
-	uint8	flags;
+	OffsetNumber offnum;		/* locked tuple's offset */
+	uint16		infomask;		/* lock mode */
+	uint16		trans_slot_id;	/* transaction slot id */
+	uint8		flags;
 } xl_zheap_lock;
 
 #define SizeOfZHeapLock    (offsetof(xl_zheap_lock, flags) + sizeof(uint8))
@@ -263,9 +263,9 @@ typedef struct xl_zheap_clean
 {
 
 	TransactionId latestRemovedXid;
-	uint16          ndeleted;
-	uint16          ndead;
-	uint8			flags;
+	uint16		ndeleted;
+	uint16		ndead;
+	uint8		flags;
 	/* OFFSET NUMBERS are in the block reference 0 */
 } xl_zheap_clean;
 
@@ -277,9 +277,9 @@ typedef struct xl_zheap_unused
 {
 
 	TransactionId latestRemovedXid;
-	uint16          nunused;
-	uint8			trans_slot_id;
-	uint8			flags;
+	uint16		nunused;
+	uint8		trans_slot_id;
+	uint8		flags;
 	/* OFFSET NUMBERS are in the block reference 0 */
 } xl_zheap_unused;
 
@@ -296,8 +296,8 @@ typedef struct xl_zheap_unused
 typedef struct xl_zheap_confirm
 {
 	OffsetNumber offnum;		/* confirmed tuple's offset on page */
-	uint8		 flags;
-	uint8		 trans_slot_id;
+	uint8		flags;
+	uint8		trans_slot_id;
 } xl_zheap_confirm;
 
 #define SizeOfZHeapConfirm	(offsetof(xl_zheap_confirm, flags) + sizeof(uint8))
@@ -308,7 +308,7 @@ typedef struct xl_zheap_confirm
 typedef struct xl_zheap_visible
 {
 	TransactionId cutoff_xid;
-	BlockNumber	heapBlk;
+	BlockNumber heapBlk;
 	uint8		flags;
 } xl_zheap_visible;
 
@@ -322,4 +322,4 @@ extern void zheap_mask(char *pagedata, BlockNumber blkno);
 extern void zheap2_desc(StringInfo buf, XLogReaderState *record);
 extern const char *zheap2_identify(uint8 info);
 
-#endif   /* ZHEAP_XLOG_H */
+#endif							/* ZHEAP_XLOG_H */
