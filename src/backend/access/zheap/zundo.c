@@ -1504,7 +1504,7 @@ RestoreXactFromUndoRecord(UnpackedUndoRecord *urec, Buffer buffer,
 								urec->uur_offset);
 
 		/* Here, we updated TPD offset map, so need to log. */
-		if (*is_tpd_map_updated)
+		if (is_tpd_map_updated)
 			*is_tpd_map_updated = true;
 	}
 
