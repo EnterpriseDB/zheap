@@ -30,8 +30,8 @@ static void
 zheap_xlog_insert(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	xl_undo_header *xlundohdr = (xl_undo_header *) XLogRecGetData(record);
-	xl_zheap_insert *xlrec;
+	xl_undo_header *xlundohdr;
+	xl_zheap_insert *xlrec = (xl_zheap_insert *) XLogRecGetData(record);
 	Buffer		buffer;
 	Page		page;
 	union
@@ -54,8 +54,20 @@ zheap_xlog_insert(XLogReaderState *record)
 	uint32		xid_epoch = EpochFromFullTransactionId(fxid);
 	bool		skip_undo;
 
-	xlrec = (xl_zheap_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
-	if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
+	/*
+	 * We can skip inserting undo records if the tuples are to be marked as
+	 * frozen.
+	 */
+	skip_undo = (xlrec->flags & XLZ_INSERT_IS_FROZEN);
+
+	if (!skip_undo)
+	{
+		xlundohdr = (xl_undo_header *) ((char *) xlrec + SizeOfZHeapInsert);
+
+		if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
+			tpd_trans_slot_id = (int *) ((char *) xlundohdr + SizeOfUndoHeader);
+	}
+	else if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
 		tpd_trans_slot_id = (int *) ((char *) xlrec + SizeOfZHeapInsert);
 
 	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
@@ -77,30 +89,8 @@ zheap_xlog_insert(XLogReaderState *record)
 		FreeFakeRelcacheEntry(reln);
 	}
 
-	/*
-	 * We can skip inserting undo records if the tuples are to be marked as
-	 * frozen.
-	 */
-	skip_undo = (xlrec->flags & XLZ_INSERT_IS_FROZEN);
-
 	if (!skip_undo)
 	{
-		/* prepare an undo record */
-		undorecord.uur_rmid = RM_ZHEAP_ID;
-		undorecord.uur_type = UNDO_INSERT;
-		undorecord.uur_info = 0;
-		undorecord.uur_prevlen = 0;
-		undorecord.uur_reloid = xlundohdr->reloid;
-		undorecord.uur_prevxid = FrozenTransactionId;
-		undorecord.uur_xid = xid;
-		undorecord.uur_cid = FirstCommandId;
-		undorecord.uur_fork = MAIN_FORKNUM;
-		undorecord.uur_blkprev = xlundohdr->blkprev;
-		undorecord.uur_block = ItemPointerGetBlockNumber(&target_tid);
-		undorecord.uur_offset = ItemPointerGetOffsetNumber(&target_tid);
-		undorecord.uur_payload.len = 0;
-		undorecord.uur_tuple.len = 0;
-
 		/*
 		 * For speculative insertions, we store the dummy speculative token in
 		 * the undorecord so that, the size of undorecord in DO function
@@ -111,23 +101,20 @@ zheap_xlog_insert(XLogReaderState *record)
 		 * be useful in the REDO function as it is just required in the master
 		 * node to detect conflicts for insert ... on conflict.
 		 *
-		 * Fixme - Once we have undo consistency checker that we can remove
-		 * the assertion as well dummy speculative token.
+		 * XXX - Once we have undo consistency checker that we can remove the
+		 * assertion as well as the dummy speculative token.
 		 */
-		if (xlrec->flags & XLZ_INSERT_IS_SPECULATIVE)
-		{
-			uint32		dummy_specToken = 1;
+		uint32		dummy_specToken = 1;
 
-			initStringInfo(&undorecord.uur_payload);
-			appendBinaryStringInfo(&undorecord.uur_payload,
-								   (char *) &dummy_specToken,
-								   sizeof(uint32));
-		}
-		else
-			undorecord.uur_payload.len = 0;
-
-		urecptr = PrepareUndoInsert(&undorecord, fxid, UNDO_PERMANENT, record,
-									NULL);
+		/* prepare an undo record */
+		urecptr = zheap_prepare_undoinsert(xlundohdr->reloid,
+										   ItemPointerGetBlockNumber(&target_tid),
+										   ItemPointerGetOffsetNumber(&target_tid),
+										   xlundohdr->blkprev, fxid,
+										   FirstCommandId, dummy_specToken,
+										   UNDO_PERMANENT,
+										   xlrec->flags & XLZ_INSERT_IS_SPECULATIVE ? true : false,
+										   &undorecord, record, NULL);
 		InsertPreparedUndo();
 
 		/*
