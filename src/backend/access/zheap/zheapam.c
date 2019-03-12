@@ -5378,8 +5378,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	 * case, pass set_tpd_map_slot as true, false otherwise.
 	 */
 	PageSetUNDO(undorecord, buf, trans_slot_id,
-				(!ZHeapTupleHasMultiLockers(new_infomask) &&
-				 (lockopr == LockForUpdate)) ? true : false,
+				(undorecord.uur_type == UNDO_XID_LOCK_FOR_UPDATE),
 				epoch, xid, urecptr, NULL, 0);
 
 	ZHeapTupleHeaderSetXactSlot(zhtup->t_data, new_trans_slot_id);
@@ -5420,7 +5419,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 
 		if (hasSubXactLock)
 			xlrec.flags |= XLZ_LOCK_CONTAINS_SUBXACT;
-		if (lockopr == LockForUpdate)
+		if (undorecord.uur_type == UNDO_XID_LOCK_FOR_UPDATE)
 			xlrec.flags |= XLZ_LOCK_FOR_UPDATE;
 
 prepare_xlog:
