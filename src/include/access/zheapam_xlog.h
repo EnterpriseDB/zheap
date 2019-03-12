@@ -314,6 +314,45 @@ typedef struct xl_zheap_visible
 
 #define SizeOfZHeapVisible (offsetof(xl_zheap_visible, flags) + sizeof(uint8))
 
+/*
+ * WAL record definitions for zundo.c's WAL operations
+ */
+#define XLOG_ZUNDO_PAGE				0x00
+#define XLOG_ZUNDO_RESET_SLOT		0x10
+
+/*
+ * xl_undoaction_page flag values, 8 bits are available.
+ */
+#define XLU_PAGE_CONTAINS_TPD_SLOT			(1<<0)
+#define XLU_PAGE_CLEAR_VISIBILITY_MAP		(1<<1)
+#define XLU_CONTAINS_TPD_OFFSET_MAP			(1<<2)
+#define XLU_INIT_PAGE						(1<<3)
+
+/* This is what we need to know about delete */
+typedef struct xl_zundo_page
+{
+	UndoRecPtr	urec_ptr;
+	TransactionId xid;
+	int			trans_slot_id;	/* transaction slot id */
+} xl_zundo_page;
+
+#define SizeOfZUndoPage	(offsetof(xl_zundo_page, trans_slot_id) + sizeof(int))
+
+/*
+ * xl_undoaction_reset_slot flag values, 8 bits are available.
+ */
+#define XLU_RESET_CONTAINS_TPD_SLOT			(1<<0)
+
+/* This is what we need to know about delete */
+typedef struct xl_zundo_reset_slot
+{
+	UndoRecPtr	urec_ptr;
+	int			trans_slot_id;	/* transaction slot id */
+	uint8		flags;
+} xl_zundo_reset_slot;
+
+#define SizeOfZUndoResetSlot	(offsetof(xl_zundo_reset_slot, flags) + sizeof(uint8))
+
 extern void zheap_redo(XLogReaderState *record);
 extern void zheap_desc(StringInfo buf, XLogReaderState *record);
 extern const char *zheap_identify(uint8 info);
@@ -321,5 +360,8 @@ extern void zheap2_redo(XLogReaderState *record);
 extern void zheap_mask(char *pagedata, BlockNumber blkno);
 extern void zheap2_desc(StringInfo buf, XLogReaderState *record);
 extern const char *zheap2_identify(uint8 info);
+extern void zundo_redo(XLogReaderState *record);
+extern void zundo_desc(StringInfo buf, XLogReaderState *record);
+extern const char *zundo_identify(uint8 info);
 
 #endif							/* ZHEAP_XLOG_H */
