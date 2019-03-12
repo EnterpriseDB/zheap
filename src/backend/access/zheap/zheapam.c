@@ -10,10 +10,6 @@
  * IDENTIFICATION
  *	  src/backend/access/heap/zheapam.c
  *
- *
- * INTERFACE ROUTINES
- *		zheap_insert	- insert zheap tuple into a relation
- *
  * NOTES
  *	  This file contains the zheap_ routines which implement
  *	  the POSTGRES zheap access method used for relations backed
@@ -78,16 +74,6 @@ extern bool synchronize_seqscans;
 static int	GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf);
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
 									   int options);
-static Bitmapset *ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
-							  ZHeapTuple oldtup, ZHeapTuple newtup);
-static void log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
-				 UnpackedUndoRecord newundorecord, UndoRecPtr urecptr,
-				 UndoRecPtr newurecptr, Buffer oldbuf, Buffer newbuf,
-				 ZHeapTuple oldtup, ZHeapTuple newtup,
-				 int old_tup_trans_slot_id, int trans_slot_id,
-				 int new_trans_slot_id, bool inplace_update,
-				 bool all_visible_cleared, bool new_all_visible_cleared,
-				 xl_undolog_meta *undometa);
 static HTSU_Result zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 						 TransactionId xid, LockTupleMode mode, LockOper lockopr,
 						 CommandId cid, bool *rollback_and_relocked);
@@ -104,6 +90,19 @@ static void compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf,
 						 int trans_slot, TransactionId single_locker_xid,
 						 LockTupleMode mode, LockOper lockoper,
 						 uint16 *result_infomask, int *result_trans_slot);
+static void log_zheap_insert(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
+				 UndoRecPtr urecptr, UndoRecPtr prev_urecptr, xl_undolog_meta * undometa,
+				 int options, int trans_slot_id, bool skip_undo, bool all_visible_cleared);
+static void log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
+				 UnpackedUndoRecord newundorecord, UndoRecPtr urecptr,
+				 UndoRecPtr newurecptr, Buffer oldbuf, Buffer newbuf,
+				 ZHeapTuple oldtup, ZHeapTuple newtup,
+				 int old_tup_trans_slot_id, int trans_slot_id,
+				 int new_trans_slot_id, bool inplace_update,
+				 bool all_visible_cleared, bool new_all_visible_cleared,
+				 xl_undolog_meta * undometa);
+static Bitmapset *ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
+							  ZHeapTuple oldtup, ZHeapTuple newtup);
 static inline void CheckAndLockTPDPage(Relation relation, int new_trans_slot_id,
 					int old_trans_slot_id, Buffer newbuf,
 					Buffer oldbuf);
@@ -190,12 +189,12 @@ xid_infomask_changed(uint16 new_infomask, uint16 old_infomask)
 /*
  * zheap_insert - insert tuple into a zheap
  *
- * The functionality related to heap is quite similar to heap_insert,
- * additionally this function inserts an undo record and updates the undo
- * pointer in page header or in TPD entry for this page.
+ * The functionality related to the heap is quite similar to heap_insert.
+ * Additionally this function inserts an undo record and updates the undo
+ * pointer in the page header or in TPD entry for this page.
  *
- * Visibility map and page is all-visible checks are required to support
- * index-only scans on zheap.
+ * We do need to clear the visibility map bit for this page if it is not
+ * cleared already.
  */
 void
 zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
@@ -231,10 +230,10 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	}
 
 	/*
-	 * Assign an OID, and toast the tuple if necessary.
+	 * Fill in tuple header fields and toast the tuple if necessary.
 	 *
-	 * Note: below this point, heaptup is the data we actually intend to store
-	 * into the relation; tup is the caller's original untoasted data.
+	 * Note: below this point, zheaptup is the data we actually intend to
+	 * store into the relation; tup is the caller's original untoasted data.
 	 */
 	zheaptup = zheap_prepare_insert(relation, tup, options);
 
@@ -317,56 +316,14 @@ reacquire_buffer:
 	CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
 
 	if (!skip_undo)
-	{
-		/*
-		 * Prepare an undo record.  Unlike other operations, insert operation
-		 * doesn't have a prior version to store in undo, so ideally, we don't
-		 * need to store any additional information like
-		 * UREC_INFO_PAYLOAD_CONTAINS_SLOT for TPD entries.  However, for the
-		 * sake of consistency with inserts via non-inplace updates, we keep
-		 * the additional information in this operation.  Also, we need such
-		 * an information in future where we need to know more information for
-		 * undo tuples and it would be good for forensic purpose as well.
-		 */
-		undorecord.uur_rmid = RM_ZHEAP_ID;
-		undorecord.uur_type = UNDO_INSERT;
-		undorecord.uur_info = 0;
-		undorecord.uur_prevlen = 0;
-		undorecord.uur_reloid = relation->rd_id;
-		undorecord.uur_prevxid = FrozenTransactionId;
-		undorecord.uur_xid = xid;
-		undorecord.uur_cid = cid;
-		undorecord.uur_fork = MAIN_FORKNUM;
-		undorecord.uur_blkprev = prev_urecptr;
-		undorecord.uur_block = BufferGetBlockNumber(buffer);
-		undorecord.uur_tuple.len = 0;
-
-		/*
-		 * Store the speculative insertion token in undo, so that we can
-		 * retrieve it during visibility check of the speculatively inserted
-		 * tuples.
-		 *
-		 * Note that we don't need to WAL log this value as this is a
-		 * temporary information required only on master node to detect
-		 * conflicts for Insert .. On Conflict.
-		 */
-		if (options & HEAP_INSERT_SPECULATIVE)
-		{
-			undorecord.uur_payload.len = sizeof(uint32);
-			initStringInfo(&undorecord.uur_payload);
-			appendBinaryStringInfo(&undorecord.uur_payload,
-								   (char *) &specToken,
-								   sizeof(uint32));
-		}
-		else
-			undorecord.uur_payload.len = 0;
-
-		urecptr = PrepareUndoInsert(&undorecord,
-									InvalidTransactionId,
-									UndoPersistenceForRelation(relation),
-									NULL,
-									&undometa);
-	}
+		urecptr = zheap_prepare_undoinsert(relation->rd_id,
+										   BufferGetBlockNumber(buffer),
+										   InvalidOffsetNumber,
+										   prev_urecptr, xid, cid,
+										   specToken,
+										   UndoPersistenceForRelation(relation),
+										   (options & HEAP_INSERT_SPECULATIVE) ? true : false,
+										   &undorecord, NULL, &undometa);
 
 	/*
 	 * Get the page visibility status from visibility map.  If the page is
@@ -425,136 +382,9 @@ reacquire_buffer:
 
 	/* XLOG stuff */
 	if (RelationNeedsWAL(relation))
-	{
-		xl_undo_header xlundohdr;
-		xl_zheap_insert xlrec;
-		xl_zheap_header xlhdr;
-		XLogRecPtr	recptr;
-		Page		page = BufferGetPage(buffer);
-		uint8		info = XLOG_ZHEAP_INSERT;
-		int			bufflags = 0;
-		XLogRecPtr	RedoRecPtr;
-		bool		doPageWrites;
-
-		/*
-		 * If this is a catalog, we need to transmit combocids to properly
-		 * decode, so log that as well.
-		 */
-		if (RelationIsAccessibleInLogicalDecoding(relation))
-		{
-			/*
-			 * Fixme: This won't work as it needs to access cmin/cmax which we
-			 * probably needs to retrieve from TPD or UNDO.
-			 */
-			/* log_heap_new_cid(relation, zheaptup); */
-		}
-
-		/*
-		 * If this is the single and first tuple on page, we can reinit the
-		 * page instead of restoring the whole thing.  Set flag, and hide
-		 * buffer references from XLogInsert.
-		 */
-		if (ItemPointerGetOffsetNumber(&(zheaptup->t_self)) == FirstOffsetNumber &&
-			PageGetMaxOffsetNumber(page) == FirstOffsetNumber)
-		{
-			info |= XLOG_ZHEAP_INIT_PAGE;
-			bufflags |= REGBUF_WILL_INIT;
-		}
-
-		/*
-		 * Store the information required to generate undo record during
-		 * replay.
-		 */
-		xlundohdr.reloid = relation->rd_id;
-		xlundohdr.urec_ptr = urecptr;
-		xlundohdr.blkprev = prev_urecptr;
-
-		/* Heap related part. */
-		xlrec.offnum = ItemPointerGetOffsetNumber(&zheaptup->t_self);
-		xlrec.flags = 0;
-
-		if (all_visible_cleared)
-			xlrec.flags |= XLZ_INSERT_ALL_VISIBLE_CLEARED;
-		if (options & HEAP_INSERT_SPECULATIVE)
-			xlrec.flags |= XLZ_INSERT_IS_SPECULATIVE;
-		if (skip_undo)
-			xlrec.flags |= XLZ_INSERT_IS_FROZEN;
-		Assert(ItemPointerGetBlockNumber(&zheaptup->t_self) == BufferGetBlockNumber(buffer));
-
-		/*
-		 * For logical decoding, we need the tuple even if we're doing a full
-		 * page write, so make sure it's included even if we take a full-page
-		 * image. (XXX We could alternatively store a pointer into the FPW).
-		 *
-		 * Fixme - Current zheap doesn't support logical decoding, once it is
-		 * supported, we need to test and remove this Fixme.
-		 */
-		if (RelationIsLogicallyLogged(relation))
-		{
-			xlrec.flags |= XLZ_INSERT_CONTAINS_NEW_TUPLE;
-			bufflags |= REGBUF_KEEP_DATA;
-		}
-
-prepare_xlog:
-		if (!skip_undo)
-		{
-			/*
-			 * LOG undolog meta if this is the first WAL after the checkpoint.
-			 */
-			LogUndoMetaData(&undometa);
-		}
-
-		GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
-
-		XLogBeginInsert();
-		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
-		XLogRegisterData((char *) &xlrec, SizeOfZHeapInsert);
-		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-		{
-			/*
-			 * We can't have a valid transaction slot when we are skipping
-			 * undo.
-			 */
-			Assert(!skip_undo);
-			xlrec.flags |= XLZ_INSERT_CONTAINS_TPD_SLOT;
-			XLogRegisterData((char *) &trans_slot_id, sizeof(trans_slot_id));
-		}
-
-		xlhdr.t_infomask2 = zheaptup->t_data->t_infomask2;
-		xlhdr.t_infomask = zheaptup->t_data->t_infomask;
-		xlhdr.t_hoff = zheaptup->t_data->t_hoff;
-
-		/*
-		 * note we mark xlhdr as belonging to buffer; if XLogInsert decides to
-		 * write the whole page to the xlog, we don't need to store
-		 * xl_heap_header in the xlog.
-		 */
-		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD | bufflags);
-		XLogRegisterBufData(0, (char *) &xlhdr, SizeOfZHeapHeader);
-		/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
-		XLogRegisterBufData(0,
-							(char *) zheaptup->t_data + SizeofZHeapTupleHeader,
-							zheaptup->t_len - SizeofZHeapTupleHeader);
-		if (xlrec.flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
-			(void) RegisterTPDBuffer(page, 1);
-		RegisterUndoLogBuffers(2);
-
-		/* filtering by origin on a row level is much more efficient */
-		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
-
-		recptr = XLogInsertExtended(RM_ZHEAP_ID, info, RedoRecPtr,
-									doPageWrites);
-		if (recptr == InvalidXLogRecPtr)
-		{
-			ResetRegisteredTPDBuffers();
-			goto prepare_xlog;
-		}
-
-		PageSetLSN(page, recptr);
-		if (xlrec.flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
-			TPDPageSetLSN(page, recptr);
-		UndoLogBuffersSetLSN(recptr);
-	}
+		log_zheap_insert(relation, buffer, zheaptup, urecptr, prev_urecptr,
+						 &undometa, options, trans_slot_id, skip_undo,
+						 all_visible_cleared);
 
 	END_CRIT_SECTION();
 
@@ -638,8 +468,8 @@ simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot)
  * additionaly this function inserts an undo record and updates the undo
  * pointer in page header or in TPD entry for this page.
  *
- * XXX - Visibility map and page is all visible checks are required to support
- * index-only scans on zheap.
+ * We do need to clear the visibility map bit for this page if it is not
+ * cleared already.
  */
 HTSU_Result
 zheap_delete(Relation relation, ItemPointer tid,
@@ -1549,8 +1379,8 @@ prepare_xlog:
  * inserts an undo record and updates the undo pointer in page header or in
  * TPD entry for this page.
  *
- * XXX - Visibility map and page is all visible needs to be maintained for
- * index-only scans on zheap.
+ * We do need to clear the visibility map bit for this page if it is not
+ * cleared already.
  *
  * For input and output values, see heap_update.
  */
@@ -3318,306 +3148,6 @@ reacquire_buffer:
 
 	bms_free(key_attrs);
 	return HeapTupleMayBeUpdated;
-}
-
-/*
- * log_zheap_update - Perform XLogInsert for a zheap-update operation.
- *
- * We need to store enough information in the WAL record so that undo records
- * can be regenerated at the WAL replay time.
- *
- * Caller must already have modified the buffer(s) and marked them dirty.
- */
-static void
-log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
-				 UnpackedUndoRecord newundorecord, UndoRecPtr urecptr,
-				 UndoRecPtr newurecptr, Buffer oldbuf, Buffer newbuf,
-				 ZHeapTuple oldtup, ZHeapTuple newtup,
-				 int old_tup_trans_slot_id, int trans_slot_id,
-				 int new_trans_slot_id, bool inplace_update,
-				 bool all_visible_cleared, bool new_all_visible_cleared,
-				 xl_undolog_meta * undometa)
-{
-	xl_undo_header xlundohdr,
-				xlnewundohdr;
-	xl_zheap_header xlundotuphdr,
-				xlhdr;
-	xl_zheap_update xlrec;
-	ZHeapTuple	difftup;
-	ZHeapTupleHeader zhtuphdr;
-	uint16		prefix_suffix[2];
-	uint16		prefixlen = 0,
-				suffixlen = 0;
-	XLogRecPtr	recptr;
-	XLogRecPtr	RedoRecPtr;
-	bool		doPageWrites;
-	char	   *oldp = NULL;
-	char	   *newp = NULL;
-	int			oldlen,
-				newlen;
-	uint32		totalundotuplen;
-	Size		dataoff;
-	int			bufflags = REGBUF_STANDARD;
-	uint8		info = XLOG_ZHEAP_UPDATE;
-
-	totalundotuplen = *((uint32 *) &undorecord.uur_tuple.data[0]);
-	dataoff = sizeof(uint32) + sizeof(ItemPointerData) + sizeof(Oid);
-	zhtuphdr = (ZHeapTupleHeader) & undorecord.uur_tuple.data[dataoff];
-
-	if (inplace_update)
-	{
-		/*
-		 * For inplace updates the old tuple is in undo record and the new
-		 * tuple is replaced in page where old tuple was present.
-		 */
-		oldp = (char *) zhtuphdr + zhtuphdr->t_hoff;
-		oldlen = totalundotuplen - zhtuphdr->t_hoff;
-		newp = (char *) oldtup->t_data + oldtup->t_data->t_hoff;
-		newlen = oldtup->t_len - oldtup->t_data->t_hoff;
-
-		difftup = oldtup;
-	}
-	else if (oldbuf == newbuf)
-	{
-		oldp = (char *) oldtup->t_data + oldtup->t_data->t_hoff;
-		oldlen = oldtup->t_len - oldtup->t_data->t_hoff;
-		newp = (char *) newtup->t_data + newtup->t_data->t_hoff;
-		newlen = newtup->t_len - newtup->t_data->t_hoff;
-
-		difftup = newtup;
-	}
-	else
-	{
-		difftup = newtup;
-	}
-
-	/*
-	 * See log_heap_update to know under what some circumstances we can use
-	 * prefix-suffix compression.
-	 */
-	if (oldbuf == newbuf && !XLogCheckBufferNeedsBackup(newbuf))
-	{
-		Assert(oldp != NULL && newp != NULL);
-
-		/* Check for common prefix between undo and old tuple */
-		for (prefixlen = 0; prefixlen < Min(oldlen, newlen); prefixlen++)
-		{
-			if (oldp[prefixlen] != newp[prefixlen])
-				break;
-		}
-
-		/*
-		 * Storing the length of the prefix takes 2 bytes, so we need to save
-		 * at least 3 bytes or there's no point.
-		 */
-		if (prefixlen < 3)
-			prefixlen = 0;
-
-		/* Same for suffix */
-		for (suffixlen = 0; suffixlen < Min(oldlen, newlen) - prefixlen; suffixlen++)
-		{
-			if (oldp[oldlen - suffixlen - 1] != newp[newlen - suffixlen - 1])
-				break;
-		}
-		if (suffixlen < 3)
-			suffixlen = 0;
-	}
-
-	/*
-	 * Store the information required to generate undo record during replay.
-	 */
-	xlundohdr.reloid = undorecord.uur_reloid;
-	xlundohdr.urec_ptr = urecptr;
-	xlundohdr.blkprev = undorecord.uur_blkprev;
-
-	xlrec.prevxid = undorecord.uur_prevxid;
-	xlrec.old_offnum = ItemPointerGetOffsetNumber(&oldtup->t_self);
-	xlrec.old_infomask = oldtup->t_data->t_infomask;
-	xlrec.old_trans_slot_id = trans_slot_id;
-	xlrec.new_offnum = ItemPointerGetOffsetNumber(&difftup->t_self);
-	xlrec.flags = 0;
-	if (all_visible_cleared)
-		xlrec.flags |= XLZ_UPDATE_OLD_ALL_VISIBLE_CLEARED;
-	if (new_all_visible_cleared)
-		xlrec.flags |= XLZ_UPDATE_NEW_ALL_VISIBLE_CLEARED;
-	if (prefixlen > 0)
-		xlrec.flags |= XLZ_UPDATE_PREFIX_FROM_OLD;
-	if (suffixlen > 0)
-		xlrec.flags |= XLZ_UPDATE_SUFFIX_FROM_OLD;
-	if (undorecord.uur_info & UREC_INFO_PAYLOAD_CONTAINS_SUBXACT)
-		xlrec.flags |= XLZ_UPDATE_CONTAINS_SUBXACT;
-
-	if (!inplace_update)
-	{
-		Page		page = BufferGetPage(newbuf);
-
-		xlrec.flags |= XLZ_NON_INPLACE_UPDATE;
-
-		xlnewundohdr.reloid = newundorecord.uur_reloid;
-		xlnewundohdr.urec_ptr = newurecptr;
-		xlnewundohdr.blkprev = newundorecord.uur_blkprev;
-
-		Assert(newtup);
-		/* If new tuple is the single and first tuple on page... */
-		if (ItemPointerGetOffsetNumber(&(newtup->t_self)) == FirstOffsetNumber &&
-			PageGetMaxOffsetNumber(page) == FirstOffsetNumber)
-		{
-			info |= XLOG_ZHEAP_INIT_PAGE;
-			bufflags |= REGBUF_WILL_INIT;
-		}
-	}
-
-	/*
-	 * If full_page_writes is enabled, and the buffer image is not included in
-	 * the WAL then we can rely on the tuple in the page to regenerate the
-	 * undo tuple during recovery.  For detail comments related to handling of
-	 * full_page_writes get changed at run time, refer comments in
-	 * zheap_delete.
-	 */
-prepare_xlog:
-	/* LOG undolog meta if this is the first WAL after the checkpoint. */
-	LogUndoMetaData(undometa);
-
-	GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
-	if (!doPageWrites || XLogCheckBufferNeedsBackup(oldbuf))
-	{
-		xlrec.flags |= XLZ_HAS_UPDATE_UNDOTUPLE;
-
-		xlundotuphdr.t_infomask2 = zhtuphdr->t_infomask2;
-		xlundotuphdr.t_infomask = zhtuphdr->t_infomask;
-		xlundotuphdr.t_hoff = zhtuphdr->t_hoff;
-	}
-
-	XLogBeginInsert();
-	XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
-	XLogRegisterData((char *) &xlrec, SizeOfZHeapUpdate);
-	if (old_tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-	{
-		xlrec.flags |= XLZ_UPDATE_OLD_CONTAINS_TPD_SLOT;
-		XLogRegisterData((char *) &old_tup_trans_slot_id,
-						 sizeof(old_tup_trans_slot_id));
-	}
-	if (!inplace_update)
-	{
-		XLogRegisterData((char *) &xlnewundohdr, SizeOfUndoHeader);
-		if (new_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-		{
-			xlrec.flags |= XLZ_UPDATE_NEW_CONTAINS_TPD_SLOT;
-			XLogRegisterData((char *) &new_trans_slot_id,
-							 sizeof(new_trans_slot_id));
-		}
-	}
-	if (xlrec.flags & XLZ_HAS_UPDATE_UNDOTUPLE)
-	{
-		XLogRegisterData((char *) &xlundotuphdr, SizeOfZHeapHeader);
-		/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
-		XLogRegisterData((char *) zhtuphdr + SizeofZHeapTupleHeader,
-						 totalundotuplen - SizeofZHeapTupleHeader);
-	}
-
-	XLogRegisterBuffer(0, newbuf, bufflags);
-	if (oldbuf != newbuf)
-	{
-		uint8		block_id;
-
-		XLogRegisterBuffer(1, oldbuf, REGBUF_STANDARD);
-		block_id = 2;
-		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-			block_id = RegisterTPDBuffer(BufferGetPage(oldbuf), block_id);
-		if (new_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-			RegisterTPDBuffer(BufferGetPage(newbuf), block_id);
-	}
-	else
-	{
-		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-		{
-			/*
-			 * Block id '1' is reserved for oldbuf if that is different from
-			 * newbuf.
-			 */
-			RegisterTPDBuffer(BufferGetPage(oldbuf), 2);
-		}
-	}
-	RegisterUndoLogBuffers(5);
-
-	/*
-	 * Prepare WAL data for the new tuple.
-	 */
-	if (prefixlen > 0 || suffixlen > 0)
-	{
-		if (prefixlen > 0 && suffixlen > 0)
-		{
-			prefix_suffix[0] = prefixlen;
-			prefix_suffix[1] = suffixlen;
-			XLogRegisterBufData(0, (char *) &prefix_suffix, sizeof(uint16) * 2);
-		}
-		else if (prefixlen > 0)
-		{
-			XLogRegisterBufData(0, (char *) &prefixlen, sizeof(uint16));
-		}
-		else
-		{
-			XLogRegisterBufData(0, (char *) &suffixlen, sizeof(uint16));
-		}
-	}
-
-	xlhdr.t_infomask2 = difftup->t_data->t_infomask2;
-	xlhdr.t_infomask = difftup->t_data->t_infomask;
-	xlhdr.t_hoff = difftup->t_data->t_hoff;
-	Assert(SizeofZHeapTupleHeader + prefixlen + suffixlen <= difftup->t_len);
-
-	/*
-	 * PG73FORMAT: write bitmap [+ padding] [+ oid] + data
-	 *
-	 * The 'data' doesn't include the common prefix or suffix.
-	 */
-	XLogRegisterBufData(0, (char *) &xlhdr, SizeOfZHeapHeader);
-	if (prefixlen == 0)
-	{
-		XLogRegisterBufData(0,
-							((char *) difftup->t_data) + SizeofZHeapTupleHeader,
-							difftup->t_len - SizeofZHeapTupleHeader - suffixlen);
-	}
-	else
-	{
-		/*
-		 * Have to write the null bitmap and data after the common prefix as
-		 * two separate rdata entries.
-		 */
-		/* bitmap [+ padding] [+ oid] */
-		if (difftup->t_data->t_hoff - SizeofZHeapTupleHeader > 0)
-		{
-			XLogRegisterBufData(0,
-								((char *) difftup->t_data) + SizeofZHeapTupleHeader,
-								difftup->t_data->t_hoff - SizeofZHeapTupleHeader);
-		}
-
-		/* data after common prefix */
-		XLogRegisterBufData(0,
-							((char *) difftup->t_data) + difftup->t_data->t_hoff + prefixlen,
-							difftup->t_len - difftup->t_data->t_hoff - prefixlen - suffixlen);
-	}
-
-	/* filtering by origin on a row level is much more efficient */
-	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
-
-	recptr = XLogInsertExtended(RM_ZHEAP_ID, info, RedoRecPtr, doPageWrites);
-	if (recptr == InvalidXLogRecPtr)
-	{
-		ResetRegisteredTPDBuffers();
-		goto prepare_xlog;
-	}
-
-	if (newbuf != oldbuf)
-	{
-		PageSetLSN(BufferGetPage(newbuf), recptr);
-		if (new_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-			TPDPageSetLSN(BufferGetPage(newbuf), recptr);
-	}
-	PageSetLSN(BufferGetPage(oldbuf), recptr);
-	if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-		TPDPageSetLSN(BufferGetPage(oldbuf), recptr);
-	UndoLogBuffersSetLSN(recptr);
 }
 
 /*
@@ -6048,6 +5578,510 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 	}
 
 	return result;
+}
+
+/*
+ * zheap_prepare_undoinsert - prepare the undo record for zheap insert
+ *	operation.
+ *
+ * Returns the undo record pointer (aka location) where the undo record
+ * will be inserted in undo log.  This function prepares and allocates
+ * additional memory required for undorecord.  The caller can modify the
+ * record fields, but can't allocate any new memory for it.
+ */
+UndoRecPtr
+zheap_prepare_undoinsert(Oid reloid, BlockNumber blkno, OffsetNumber offnum,
+						 UndoRecPtr prev_urecptr, TransactionId xid,
+						 CommandId cid, uint32 specToken,
+						 UndoPersistence undo_persistence, bool specIns,
+						 UnpackedUndoRecord *undorecord,
+						 XLogReaderState *xlog_record,
+						 xl_undolog_meta * undometa)
+{
+	UndoRecPtr	urecptr = InvalidUndoRecPtr;
+
+	/*
+	 * Prepare an undo record.  Unlike other operations, insert operation
+	 * doesn't have a prior version to store in undo, so we don't need to
+	 * store any additional information like UREC_INFO_PAYLOAD_CONTAINS_SLOT
+	 * for TPD entries.
+	 */
+	undorecord->uur_rmid = RM_ZHEAP_ID;
+	undorecord->uur_type = UNDO_INSERT;
+	undorecord->uur_info = 0;
+	undorecord->uur_prevlen = 0;
+	undorecord->uur_reloid = reloid;
+	undorecord->uur_prevxid = FrozenTransactionId;
+	undorecord->uur_xid = xid;
+	undorecord->uur_cid = cid;
+	undorecord->uur_fork = MAIN_FORKNUM;
+	undorecord->uur_blkprev = prev_urecptr;
+	undorecord->uur_block = blkno;
+	undorecord->uur_offset = offnum;
+	undorecord->uur_tuple.len = 0;
+
+	/*
+	 * Store the speculative insertion token in undo, so that we can retrieve
+	 * it during visibility check of the speculatively inserted tuples.
+	 *
+	 * Note that we don't need to WAL log this value as this is a temporary
+	 * information required only on master node to detect conflicts for Insert
+	 * .. On Conflict.
+	 */
+	if (specIns)
+	{
+		undorecord->uur_payload.len = sizeof(uint32);
+		initStringInfo(&undorecord->uur_payload);
+		appendBinaryStringInfo(&undorecord->uur_payload,
+							   (char *) &specToken,
+							   sizeof(uint32));
+	}
+	else
+		undorecord->uur_payload.len = 0;
+
+	urecptr = PrepareUndoInsert(undorecord,
+								xid,
+								undo_persistence,
+								xlog_record,
+								undometa);
+
+	return urecptr;
+}
+
+/*
+ * log_zheap_insert - Perform XLogInsert for a zheap-insert operation.
+ *
+ * We need to store enough information in the WAL record so that undo records
+ * can be regenerated at the WAL replay time.
+ *
+ * Caller must already have modified the buffer(s) and marked them dirty.
+ */
+static void
+log_zheap_insert(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
+				 UndoRecPtr urecptr, UndoRecPtr prev_urecptr,
+				 xl_undolog_meta * undometa, int options, int trans_slot_id,
+				 bool skip_undo, bool all_visible_cleared)
+{
+	xl_undo_header xlundohdr;
+	xl_zheap_insert xlrec;
+	xl_zheap_header xlhdr;
+	XLogRecPtr	recptr;
+	Page		page = BufferGetPage(buffer);
+	uint8		info = XLOG_ZHEAP_INSERT;
+	int			bufflags = 0;
+	XLogRecPtr	RedoRecPtr;
+	bool		doPageWrites;
+
+	/* zheap doesn't support catalog relations. */
+	Assert(!RelationIsAccessibleInLogicalDecoding(relation));
+
+	/*
+	 * If this is the single and first tuple on page, we can reinit the page
+	 * instead of restoring the whole thing.  Set flag, and hide buffer
+	 * references from XLogInsert.
+	 */
+	if (ItemPointerGetOffsetNumber(&(zheaptup->t_self)) == FirstOffsetNumber &&
+		PageGetMaxOffsetNumber(page) == FirstOffsetNumber)
+	{
+		info |= XLOG_ZHEAP_INIT_PAGE;
+		bufflags |= REGBUF_WILL_INIT;
+	}
+
+	/*
+	 * Store the information required to generate undo record during replay if
+	 * required.
+	 */
+	if (!skip_undo)
+	{
+		xlundohdr.reloid = relation->rd_id;
+		xlundohdr.urec_ptr = urecptr;
+		xlundohdr.blkprev = prev_urecptr;
+	}
+
+	/* Heap related part. */
+	xlrec.offnum = ItemPointerGetOffsetNumber(&zheaptup->t_self);
+	xlrec.flags = 0;
+
+	if (all_visible_cleared)
+		xlrec.flags |= XLZ_INSERT_ALL_VISIBLE_CLEARED;
+	if (options & HEAP_INSERT_SPECULATIVE)
+		xlrec.flags |= XLZ_INSERT_IS_SPECULATIVE;
+	if (skip_undo)
+		xlrec.flags |= XLZ_INSERT_IS_FROZEN;
+	Assert(ItemPointerGetBlockNumber(&zheaptup->t_self) == BufferGetBlockNumber(buffer));
+
+	/*
+	 * For logical decoding, we need the tuple even if we're doing a full page
+	 * write, so make sure it's included even if we take a full-page image.
+	 * (XXX We could alternatively store a pointer into the FPW).
+	 */
+	if (RelationIsLogicallyLogged(relation))
+	{
+		xlrec.flags |= XLZ_INSERT_CONTAINS_NEW_TUPLE;
+		bufflags |= REGBUF_KEEP_DATA;
+	}
+
+prepare_xlog:
+	if (!skip_undo)
+	{
+		/*
+		 * LOG undolog meta if this is the first WAL after the checkpoint.
+		 */
+		LogUndoMetaData(undometa);
+	}
+
+	GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
+
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlrec, SizeOfZHeapInsert);
+
+	/* Register undo data only if required. */
+	if (!skip_undo)
+		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
+
+	if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+	{
+		/*
+		 * We can't have a valid transaction slot when we are skipping undo.
+		 */
+		Assert(!skip_undo);
+		xlrec.flags |= XLZ_INSERT_CONTAINS_TPD_SLOT;
+		XLogRegisterData((char *) &trans_slot_id, sizeof(trans_slot_id));
+	}
+
+	xlhdr.t_infomask2 = zheaptup->t_data->t_infomask2;
+	xlhdr.t_infomask = zheaptup->t_data->t_infomask;
+	xlhdr.t_hoff = zheaptup->t_data->t_hoff;
+
+	/*
+	 * note we mark xlhdr as belonging to buffer; if XLogInsert decides to
+	 * write the whole page to the xlog, we don't need to store xl_heap_header
+	 * in the xlog.
+	 */
+	XLogRegisterBuffer(0, buffer, REGBUF_STANDARD | bufflags);
+	XLogRegisterBufData(0, (char *) &xlhdr, SizeOfZHeapHeader);
+	/* write bitmap + data */
+	XLogRegisterBufData(0,
+						(char *) zheaptup->t_data + SizeofZHeapTupleHeader,
+						zheaptup->t_len - SizeofZHeapTupleHeader);
+	if (xlrec.flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
+		(void) RegisterTPDBuffer(page, 1);
+	RegisterUndoLogBuffers(2);
+
+	/* filtering by origin on a row level is much more efficient */
+	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
+
+	recptr = XLogInsertExtended(RM_ZHEAP_ID, info, RedoRecPtr, doPageWrites);
+	if (recptr == InvalidXLogRecPtr)
+	{
+		ResetRegisteredTPDBuffers();
+		goto prepare_xlog;
+	}
+
+	PageSetLSN(page, recptr);
+	if (xlrec.flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
+		TPDPageSetLSN(page, recptr);
+	UndoLogBuffersSetLSN(recptr);
+}
+
+/*
+ * log_zheap_update - Perform XLogInsert for a zheap-update operation.
+ *
+ * We need to store enough information in the WAL record so that undo records
+ * can be regenerated at the WAL replay time.
+ *
+ * Caller must already have modified the buffer(s) and marked them dirty.
+ */
+static void
+log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
+				 UnpackedUndoRecord newundorecord, UndoRecPtr urecptr,
+				 UndoRecPtr newurecptr, Buffer oldbuf, Buffer newbuf,
+				 ZHeapTuple oldtup, ZHeapTuple newtup,
+				 int old_tup_trans_slot_id, int trans_slot_id,
+				 int new_trans_slot_id, bool inplace_update,
+				 bool all_visible_cleared, bool new_all_visible_cleared,
+				 xl_undolog_meta * undometa)
+{
+	xl_undo_header xlundohdr,
+				xlnewundohdr;
+	xl_zheap_header xlundotuphdr,
+				xlhdr;
+	xl_zheap_update xlrec;
+	ZHeapTuple	difftup;
+	ZHeapTupleHeader zhtuphdr;
+	uint16		prefix_suffix[2];
+	uint16		prefixlen = 0,
+				suffixlen = 0;
+	XLogRecPtr	recptr;
+	XLogRecPtr	RedoRecPtr;
+	bool		doPageWrites;
+	char	   *oldp = NULL;
+	char	   *newp = NULL;
+	int			oldlen,
+				newlen;
+	uint32		totalundotuplen;
+	Size		dataoff;
+	int			bufflags = REGBUF_STANDARD;
+	uint8		info = XLOG_ZHEAP_UPDATE;
+
+	totalundotuplen = *((uint32 *) &undorecord.uur_tuple.data[0]);
+	dataoff = sizeof(uint32) + sizeof(ItemPointerData) + sizeof(Oid);
+	zhtuphdr = (ZHeapTupleHeader) & undorecord.uur_tuple.data[dataoff];
+
+	if (inplace_update)
+	{
+		/*
+		 * For inplace updates the old tuple is in undo record and the new
+		 * tuple is replaced in page where old tuple was present.
+		 */
+		oldp = (char *) zhtuphdr + zhtuphdr->t_hoff;
+		oldlen = totalundotuplen - zhtuphdr->t_hoff;
+		newp = (char *) oldtup->t_data + oldtup->t_data->t_hoff;
+		newlen = oldtup->t_len - oldtup->t_data->t_hoff;
+
+		difftup = oldtup;
+	}
+	else if (oldbuf == newbuf)
+	{
+		oldp = (char *) oldtup->t_data + oldtup->t_data->t_hoff;
+		oldlen = oldtup->t_len - oldtup->t_data->t_hoff;
+		newp = (char *) newtup->t_data + newtup->t_data->t_hoff;
+		newlen = newtup->t_len - newtup->t_data->t_hoff;
+
+		difftup = newtup;
+	}
+	else
+	{
+		difftup = newtup;
+	}
+
+	/*
+	 * See log_heap_update to know under what some circumstances we can use
+	 * prefix-suffix compression.
+	 */
+	if (oldbuf == newbuf && !XLogCheckBufferNeedsBackup(newbuf))
+	{
+		Assert(oldp != NULL && newp != NULL);
+
+		/* Check for common prefix between undo and old tuple */
+		for (prefixlen = 0; prefixlen < Min(oldlen, newlen); prefixlen++)
+		{
+			if (oldp[prefixlen] != newp[prefixlen])
+				break;
+		}
+
+		/*
+		 * Storing the length of the prefix takes 2 bytes, so we need to save
+		 * at least 3 bytes or there's no point.
+		 */
+		if (prefixlen < 3)
+			prefixlen = 0;
+
+		/* Same for suffix */
+		for (suffixlen = 0; suffixlen < Min(oldlen, newlen) - prefixlen; suffixlen++)
+		{
+			if (oldp[oldlen - suffixlen - 1] != newp[newlen - suffixlen - 1])
+				break;
+		}
+		if (suffixlen < 3)
+			suffixlen = 0;
+	}
+
+	/*
+	 * Store the information required to generate undo record during replay.
+	 */
+	xlundohdr.reloid = undorecord.uur_reloid;
+	xlundohdr.urec_ptr = urecptr;
+	xlundohdr.blkprev = undorecord.uur_blkprev;
+
+	xlrec.prevxid = undorecord.uur_prevxid;
+	xlrec.old_offnum = ItemPointerGetOffsetNumber(&oldtup->t_self);
+	xlrec.old_infomask = oldtup->t_data->t_infomask;
+	xlrec.old_trans_slot_id = trans_slot_id;
+	xlrec.new_offnum = ItemPointerGetOffsetNumber(&difftup->t_self);
+	xlrec.flags = 0;
+	if (all_visible_cleared)
+		xlrec.flags |= XLZ_UPDATE_OLD_ALL_VISIBLE_CLEARED;
+	if (new_all_visible_cleared)
+		xlrec.flags |= XLZ_UPDATE_NEW_ALL_VISIBLE_CLEARED;
+	if (prefixlen > 0)
+		xlrec.flags |= XLZ_UPDATE_PREFIX_FROM_OLD;
+	if (suffixlen > 0)
+		xlrec.flags |= XLZ_UPDATE_SUFFIX_FROM_OLD;
+	if (undorecord.uur_info & UREC_INFO_PAYLOAD_CONTAINS_SUBXACT)
+		xlrec.flags |= XLZ_UPDATE_CONTAINS_SUBXACT;
+
+	if (!inplace_update)
+	{
+		Page		page = BufferGetPage(newbuf);
+
+		xlrec.flags |= XLZ_NON_INPLACE_UPDATE;
+
+		xlnewundohdr.reloid = newundorecord.uur_reloid;
+		xlnewundohdr.urec_ptr = newurecptr;
+		xlnewundohdr.blkprev = newundorecord.uur_blkprev;
+
+		Assert(newtup);
+		/* If new tuple is the single and first tuple on page... */
+		if (ItemPointerGetOffsetNumber(&(newtup->t_self)) == FirstOffsetNumber &&
+			PageGetMaxOffsetNumber(page) == FirstOffsetNumber)
+		{
+			info |= XLOG_ZHEAP_INIT_PAGE;
+			bufflags |= REGBUF_WILL_INIT;
+		}
+	}
+
+	/*
+	 * If full_page_writes is enabled, and the buffer image is not included in
+	 * the WAL then we can rely on the tuple in the page to regenerate the
+	 * undo tuple during recovery.  For detail comments related to handling of
+	 * full_page_writes get changed at run time, refer comments in
+	 * zheap_delete.
+	 */
+prepare_xlog:
+	/* LOG undolog meta if this is the first WAL after the checkpoint. */
+	LogUndoMetaData(undometa);
+
+	GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
+	if (!doPageWrites || XLogCheckBufferNeedsBackup(oldbuf))
+	{
+		xlrec.flags |= XLZ_HAS_UPDATE_UNDOTUPLE;
+
+		xlundotuphdr.t_infomask2 = zhtuphdr->t_infomask2;
+		xlundotuphdr.t_infomask = zhtuphdr->t_infomask;
+		xlundotuphdr.t_hoff = zhtuphdr->t_hoff;
+	}
+
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
+	XLogRegisterData((char *) &xlrec, SizeOfZHeapUpdate);
+	if (old_tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+	{
+		xlrec.flags |= XLZ_UPDATE_OLD_CONTAINS_TPD_SLOT;
+		XLogRegisterData((char *) &old_tup_trans_slot_id,
+						 sizeof(old_tup_trans_slot_id));
+	}
+	if (!inplace_update)
+	{
+		XLogRegisterData((char *) &xlnewundohdr, SizeOfUndoHeader);
+		if (new_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+		{
+			xlrec.flags |= XLZ_UPDATE_NEW_CONTAINS_TPD_SLOT;
+			XLogRegisterData((char *) &new_trans_slot_id,
+							 sizeof(new_trans_slot_id));
+		}
+	}
+	if (xlrec.flags & XLZ_HAS_UPDATE_UNDOTUPLE)
+	{
+		XLogRegisterData((char *) &xlundotuphdr, SizeOfZHeapHeader);
+		/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
+		XLogRegisterData((char *) zhtuphdr + SizeofZHeapTupleHeader,
+						 totalundotuplen - SizeofZHeapTupleHeader);
+	}
+
+	XLogRegisterBuffer(0, newbuf, bufflags);
+	if (oldbuf != newbuf)
+	{
+		uint8		block_id;
+
+		XLogRegisterBuffer(1, oldbuf, REGBUF_STANDARD);
+		block_id = 2;
+		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+			block_id = RegisterTPDBuffer(BufferGetPage(oldbuf), block_id);
+		if (new_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+			RegisterTPDBuffer(BufferGetPage(newbuf), block_id);
+	}
+	else
+	{
+		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+		{
+			/*
+			 * Block id '1' is reserved for oldbuf if that is different from
+			 * newbuf.
+			 */
+			RegisterTPDBuffer(BufferGetPage(oldbuf), 2);
+		}
+	}
+	RegisterUndoLogBuffers(5);
+
+	/*
+	 * Prepare WAL data for the new tuple.
+	 */
+	if (prefixlen > 0 || suffixlen > 0)
+	{
+		if (prefixlen > 0 && suffixlen > 0)
+		{
+			prefix_suffix[0] = prefixlen;
+			prefix_suffix[1] = suffixlen;
+			XLogRegisterBufData(0, (char *) &prefix_suffix, sizeof(uint16) * 2);
+		}
+		else if (prefixlen > 0)
+		{
+			XLogRegisterBufData(0, (char *) &prefixlen, sizeof(uint16));
+		}
+		else
+		{
+			XLogRegisterBufData(0, (char *) &suffixlen, sizeof(uint16));
+		}
+	}
+
+	xlhdr.t_infomask2 = difftup->t_data->t_infomask2;
+	xlhdr.t_infomask = difftup->t_data->t_infomask;
+	xlhdr.t_hoff = difftup->t_data->t_hoff;
+	Assert(SizeofZHeapTupleHeader + prefixlen + suffixlen <= difftup->t_len);
+
+	/*
+	 * PG73FORMAT: write bitmap [+ padding] [+ oid] + data
+	 *
+	 * The 'data' doesn't include the common prefix or suffix.
+	 */
+	XLogRegisterBufData(0, (char *) &xlhdr, SizeOfZHeapHeader);
+	if (prefixlen == 0)
+	{
+		XLogRegisterBufData(0,
+							((char *) difftup->t_data) + SizeofZHeapTupleHeader,
+							difftup->t_len - SizeofZHeapTupleHeader - suffixlen);
+	}
+	else
+	{
+		/*
+		 * Have to write the null bitmap and data after the common prefix as
+		 * two separate rdata entries.
+		 */
+		/* bitmap [+ padding] [+ oid] */
+		if (difftup->t_data->t_hoff - SizeofZHeapTupleHeader > 0)
+		{
+			XLogRegisterBufData(0,
+								((char *) difftup->t_data) + SizeofZHeapTupleHeader,
+								difftup->t_data->t_hoff - SizeofZHeapTupleHeader);
+		}
+
+		/* data after common prefix */
+		XLogRegisterBufData(0,
+							((char *) difftup->t_data) + difftup->t_data->t_hoff + prefixlen,
+							difftup->t_len - difftup->t_data->t_hoff - prefixlen - suffixlen);
+	}
+
+	/* filtering by origin on a row level is much more efficient */
+	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
+
+	recptr = XLogInsertExtended(RM_ZHEAP_ID, info, RedoRecPtr, doPageWrites);
+	if (recptr == InvalidXLogRecPtr)
+	{
+		ResetRegisteredTPDBuffers();
+		goto prepare_xlog;
+	}
+
+	if (newbuf != oldbuf)
+	{
+		PageSetLSN(BufferGetPage(newbuf), recptr);
+		if (new_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+			TPDPageSetLSN(BufferGetPage(newbuf), recptr);
+	}
+	PageSetLSN(BufferGetPage(oldbuf), recptr);
+	if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+		TPDPageSetLSN(BufferGetPage(oldbuf), recptr);
+	UndoLogBuffersSetLSN(recptr);
 }
 
 /*
