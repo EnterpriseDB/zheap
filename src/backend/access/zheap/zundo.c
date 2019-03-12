@@ -21,10 +21,10 @@
 
 #include "access/table.h"
 #include "access/tpd.h"
-#include "access/undoaction_xlog.h"
 #include "access/undorecord.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
+#include "access/zheapam_xlog.h"
 #include "access/zheapscan.h"
 #include "miscadmin.h"
 #include "postmaster/undoloop.h"
@@ -690,6 +690,155 @@ zbuffer_exec_pending_rollback(Relation rel, Buffer buf, BlockNumber *tpd_blkno)
 }
 
 /*
+ * process_and_execute_undo_actions_page
+ *
+ * Collect all the undo for the input buffer and execute.  Here, we don't know
+ * the to_urecptr and we can not collect from undo meta data also like we do in
+ * execute_undo_actions, because we might be applying undo of some old
+ * transaction and may be from different undo log as well.
+ *
+ * from_urecptr - undo record pointer from where to start applying the undo.
+ * rel			- relation descriptor for which undo to be applied.
+ * buffer		- buffer for which unto to be processed.
+ * epoch		- epoch of the xid passed.
+ * xid			- aborted transaction id whose effects needs to be reverted.
+ * slot_no		- transaction slot number of xid.
+ */
+void
+process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
+									  Buffer buffer, uint32 epoch,
+									  TransactionId xid, int slot_no)
+{
+	UnpackedUndoRecord *uur = NULL;
+	UndoRecPtr	urec_ptr = from_urecptr;
+	List	   *luinfo = NIL;
+	Page		page;
+	UndoRecInfo *urec_info;
+	bool		actions_applied = false;
+
+	/*
+	 * Process and collect the undo for the block until we reach the first
+	 * record of the transaction.
+	 *
+	 * Fixme: This can lead to unbounded use of memory, so we should collect
+	 * the undo in chunks based on work_mem or some other memory unit.
+	 */
+	do
+	{
+		/* Fetch the undo record for given undo_recptr. */
+		uur = UndoFetchRecord(urec_ptr, InvalidBlockNumber,
+							  InvalidOffsetNumber, InvalidTransactionId,
+							  NULL, NULL);
+
+		/*
+		 * If the record is already discarded by undo worker, or the xid we
+		 * want to rollback has already applied its undo actions then just
+		 * cleanup the slot and exit.
+		 */
+		if (uur == NULL || uur->uur_xid != xid)
+		{
+			if (uur != NULL)
+				UndoRecordRelease(uur);
+			break;
+		}
+
+		/* Prepare an undo element. */
+		urec_info = palloc(sizeof(UndoRecInfo));
+		urec_info->urp = urec_ptr;
+		urec_info->uur = uur;
+
+		/* Collect the undo records. */
+		luinfo = lappend(luinfo, urec_info);
+		urec_ptr = uur->uur_blkprev;
+
+		/*
+		 * If we have exhausted the undo chain for the slot, then we are done.
+		 */
+		if (!UndoRecPtrIsValid(urec_ptr))
+			break;
+	} while (true);
+
+	if (list_length(luinfo))
+		actions_applied = execute_undo_actions_page(luinfo, urec_ptr,
+													rel->rd_id, xid,
+													BufferGetBlockNumber(buffer),
+													true,
+													false);
+	/* Release undo records and undo elements */
+	while (luinfo)
+	{
+		UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
+
+		UndoRecordRelease(urec_info->uur);
+		pfree(urec_info);
+		luinfo = list_delete_first(luinfo);
+	}
+
+	/*
+	 * Clear the transaction id from the slot.  We expect that if the undo
+	 * actions are applied by execute_undo_actions_page then it would have
+	 * cleared the xid, otherwise we will clear it here.
+	 */
+	if (!actions_applied)
+	{
+		int			slot_no;
+
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buffer);
+		slot_no = PageGetTransactionSlotId(rel, buffer, epoch, xid, &urec_ptr,
+										   true, false, NULL);
+
+		/*
+		 * If someone has already cleared the transaction info, then we don't
+		 * need to do anything.
+		 */
+		if (slot_no != InvalidXactSlotId)
+		{
+			START_CRIT_SECTION();
+
+			/* Clear the epoch and xid from the slot. */
+			PageSetTransactionSlotInfo(buffer, slot_no, 0,
+									   InvalidTransactionId, urec_ptr);
+			MarkBufferDirty(buffer);
+
+			/* XLOG stuff */
+			if (RelationNeedsWAL(rel))
+			{
+				XLogRecPtr	recptr;
+				xl_zundo_reset_slot xlrec;
+
+				xlrec.flags = 0;
+				xlrec.urec_ptr = urec_ptr;
+				xlrec.trans_slot_id = slot_no;
+
+				XLogBeginInsert();
+
+				XLogRegisterData((char *) &xlrec, SizeOfZUndoResetSlot);
+				XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+
+				/* Register tpd buffer if the slot belongs to tpd page. */
+				if (slot_no > ZHEAP_PAGE_TRANS_SLOTS)
+				{
+					xlrec.flags |= XLU_RESET_CONTAINS_TPD_SLOT;
+					RegisterTPDBuffer(page, 1);
+				}
+
+				recptr = XLogInsert(RM_ZUNDO_ID, XLOG_ZUNDO_RESET_SLOT);
+
+				PageSetLSN(page, recptr);
+				if (xlrec.flags & XLU_RESET_CONTAINS_TPD_SLOT)
+					TPDPageSetLSN(page, recptr);
+			}
+
+			END_CRIT_SECTION();
+		}
+
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		UnlockReleaseTPDBuffers();
+	}
+}
+
+/*
  * undo_action_insert - perform the undo action for insert
  *
  *	This will mark the tuple as dead so that the future access to it can't see
@@ -1177,12 +1326,12 @@ zheap_undo_actions(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 		/* Log the TPD details, if the transaction slot belongs to TPD. */
 		if (flags & XLU_PAGE_CONTAINS_TPD_SLOT)
 		{
-			xl_undoaction_page xlrec;
+			xl_zundo_page xlrec;
 
 			xlrec.urec_ptr = urec_ptr;
 			xlrec.xid = xid;
 			xlrec.trans_slot_id = slot_no;
-			XLogRegisterData((char *) &xlrec, SizeOfUndoActionPage);
+			XLogRegisterData((char *) &xlrec, SizeOfZUndoPage);
 		}
 
 		/*
@@ -1205,7 +1354,7 @@ zheap_undo_actions(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 			RegisterTPDBuffer(page, 1);
 		}
 
-		recptr = XLogInsert(RM_UNDOACTION_ID, XLOG_UNDO_PAGE);
+		recptr = XLogInsert(RM_ZUNDO_ID, XLOG_ZUNDO_PAGE);
 
 		PageSetLSN(page, recptr);
 		if (flags & XLU_PAGE_CONTAINS_TPD_SLOT ||

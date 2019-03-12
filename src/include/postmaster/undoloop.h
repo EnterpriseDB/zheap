@@ -93,6 +93,10 @@ extern List *RollbackHTGetDBList(void);
 extern bool ConditionTransactionUndoActionLock(TransactionId xid);
 extern void TransactionUndoActionLockRelease(TransactionId xid);
 
+extern bool execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr,
+						  Oid reloid, TransactionId xid, BlockNumber blkno,
+						  bool blk_chain_complete, bool norellock);
+
 /* To discard the logs in single user mode. */
 extern void UndoLogDiscardAll(void);
 #endif   /* _UNDOLOOP_H */

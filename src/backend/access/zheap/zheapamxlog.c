@@ -2182,6 +2182,149 @@ zheap_xlog_visible(XLogReaderState *record)
 		UnlockReleaseBuffer(vmbuffer);
 }
 
+/*
+ * replay of undo page operation
+ */
+static void
+zheap_undo_xlog_page(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer		buf;
+	xl_zundo_page *xlrec = NULL;
+	char	   *offsetmap = NULL,
+			   *data = NULL;
+	XLogRedoAction action;
+	uint8	   *flags = (uint8 *) XLogRecGetData(record);
+
+	if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT ||
+		*flags & XLU_CONTAINS_TPD_OFFSET_MAP)
+	{
+		data = (char *) flags + sizeof(uint8);
+		if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
+		{
+			xlrec = (xl_zundo_page *) data;
+			data += sizeof(xl_zundo_page);
+		}
+		if (*flags & XLU_CONTAINS_TPD_OFFSET_MAP)
+			offsetmap = data;
+	}
+
+	if (XLogReadBufferForRedo(record, 0, &buf) != BLK_RESTORED)
+		elog(ERROR, "Undo page record did not contain a full-page image");
+
+	/* replay the record for tpd buffer */
+	if (XLogRecHasBlockRef(record, 1))
+	{
+		uint32		xid_epoch = 0;
+
+		/*
+		 * We need to replay the record for TPD only when this record contains
+		 * slot from TPD.
+		 */
+		Assert(*flags & XLU_PAGE_CONTAINS_TPD_SLOT ||
+			   *flags & XLU_CONTAINS_TPD_OFFSET_MAP);
+		action = XLogReadTPDBuffer(record, 1);
+		if (action == BLK_NEEDS_REDO)
+		{
+			if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
+			{
+				if (TransactionIdIsValid(xlrec->xid))
+				{
+					FullTransactionId fxid = XLogRecGetFullXid(record);
+					xid_epoch = EpochFromFullTransactionId(fxid);
+				}
+				TPDPageSetTransactionSlotInfo(buf, xlrec->trans_slot_id,
+											  xid_epoch,
+											  xlrec->xid, xlrec->urec_ptr);
+			}
+
+			if (offsetmap)
+				TPDPageSetOffsetMap(buf, offsetmap);
+
+			TPDPageSetLSN(BufferGetPage(buf), lsn);
+		}
+	}
+
+	if (*flags & XLU_PAGE_CLEAR_VISIBILITY_MAP)
+	{
+		Relation	reln;
+		Buffer		vmbuffer = InvalidBuffer;
+		RelFileNode target_node;
+		BlockNumber blkno;
+
+		XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
+		reln = CreateFakeRelcacheEntry(target_node);
+		visibilitymap_pin(reln, blkno, &vmbuffer);
+		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);
+		ReleaseBuffer(vmbuffer);
+		FreeFakeRelcacheEntry(reln);
+	}
+
+	/*
+	 * Reset Page only at the end if asked, page level flag
+	 * PD_PAGE_HAS_TPD_SLOT and TPD slot are needed before that TPD routines.
+	 */
+	if (*flags & XLU_INIT_PAGE)
+		ZheapInitPage(BufferGetPage(buf), (Size) BLCKSZ);
+
+	UnlockReleaseBuffer(buf);
+	UnlockReleaseTPDBuffers();
+}
+
+/*
+ * replay of undo reset slot operation
+ */
+static void
+zheap_undo_xlog_reset_xid(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_zundo_reset_slot *xlrec = (xl_zundo_reset_slot *) XLogRecGetData(record);
+	Buffer		buf;
+	XLogRedoAction action;
+
+	action = XLogReadBufferForRedo(record, 0, &buf);
+
+	/*
+	 * Reseting the TPD slot is handled separately so only handle the page
+	 * slot here.
+	 */
+	if (action == BLK_NEEDS_REDO &&
+		xlrec->trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS)
+	{
+		Page		page;
+		ZHeapPageOpaque opaque;
+		int			slot_no = xlrec->trans_slot_id;
+
+		page = BufferGetPage(buf);
+		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+		opaque->transinfo[slot_no - 1].xid_epoch = 0;
+		opaque->transinfo[slot_no - 1].xid = InvalidTransactionId;
+		opaque->transinfo[slot_no - 1].urec_ptr = xlrec->urec_ptr;
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buf);
+	}
+
+	/* replay the record for tpd buffer */
+	if (XLogRecHasBlockRef(record, 1))
+	{
+		Assert(xlrec->flags & XLU_RESET_CONTAINS_TPD_SLOT);
+		action = XLogReadTPDBuffer(record, 1);
+		if (action == BLK_NEEDS_REDO)
+		{
+			TPDPageSetTransactionSlotInfo(buf, xlrec->trans_slot_id,
+										  0, InvalidTransactionId,
+										  xlrec->urec_ptr);
+			TPDPageSetLSN(BufferGetPage(buf), lsn);
+		}
+	}
+
+	if (BufferIsValid(buf))
+		UnlockReleaseBuffer(buf);
+	UnlockReleaseTPDBuffers();
+}
+
 void
 zheap_redo(XLogReaderState *record)
 {
@@ -2238,6 +2381,25 @@ zheap2_redo(XLogReaderState *record)
 			elog(PANIC, "zheap2_redo: unknown op code %u", info);
 	}
 }
+
+void
+zundo_redo(XLogReaderState *record)
+{
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+
+	switch (info)
+	{
+		case XLOG_ZUNDO_PAGE:
+			zheap_undo_xlog_page(record);
+			break;
+		case XLOG_ZUNDO_RESET_SLOT:
+			zheap_undo_xlog_reset_xid(record);
+			break;
+		default:
+			elog(PANIC, "zundo_redo: unknown op code %u", info);
+	}
+}
+
 
 /*
  * Mask a zheap page before performing consistency checks on it.
