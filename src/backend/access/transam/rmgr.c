@@ -22,6 +22,7 @@
 #include "access/undolog_xlog.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
+#include "catalog/storage_undo.h"
 #include "catalog/storage_xlog.h"
 #include "commands/dbcommands_xlog.h"
 #include "commands/sequence.h"

@@ -359,6 +359,10 @@ extractPageInfo(XLogReaderState *record)
 		 * system. No need to do anything special here.
 		 */
 	}
+	else if (rmid == RM_SMGR_ID && rminfo == XLOG_SMGR_PRECREATE)
+	{
+		/* We can safely ignore these because ... TODO */
+	}
 	else if (rmid == RM_SMGR_ID && rminfo == XLOG_SMGR_CREATE)
 	{
 		/*
