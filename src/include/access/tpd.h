@@ -37,7 +37,7 @@ typedef TPDPageOpaqueData *TPDPageOpaque;
 /* TPD entry information */
 #define INITIAL_TRANS_SLOTS_IN_TPD_ENTRY	8	
 /*
- * Number of item to trasaction slot mapping entries in addition to max
+ * Number of item to transaction slot mapping entries in addition to max
  * itemid's in heap page.  This is required to support newer inserts on the
  * page, otherwise, we might immediately need to allocate a new bigger TPD
  * entry.

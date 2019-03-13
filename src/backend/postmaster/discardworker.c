@@ -132,7 +132,7 @@ DiscardWorkerMain(Datum main_arg)
 			 * If we got some undo logs to discard or discarded something,
 			 * then reset the wait_time as we have got work to do.
 			 * Note that if there are some undologs that cannot be discarded,
-			 * then above condition will remain unsatisified till oldestXmin
+			 * then above condition will remain unsatisfied till oldestXmin
 			 * remains unchanged and the wait_time will not reset in that case.
 			 */
 			if (!hibernate)
