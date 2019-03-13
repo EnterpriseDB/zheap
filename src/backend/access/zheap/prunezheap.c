@@ -65,7 +65,7 @@ static void zheap_prune_record_dead(ZPruneState *prstate, OffsetNumber offnum);
 static void zheap_prune_record_deleted(ZPruneState *prstate,
 						   OffsetNumber offnum);
 
- /*
+/*
  * Optionally prune and repair fragmentation in the specified page.
  *
  * Caller must have exclusive lock on the page.

@@ -36,7 +36,7 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, "off %u, blkprev %lu", xlrec->offnum, xlundohdr->blkprev);
 	}
-	else if(info == XLOG_ZHEAP_MULTI_INSERT)
+	else if (info == XLOG_ZHEAP_MULTI_INSERT)
 	{
 		xl_undo_header *xlundohdr = (xl_undo_header *) rec;
 		xl_zheap_multi_insert *xlrec = (xl_zheap_multi_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
@@ -73,7 +73,7 @@ zheap_desc(StringInfo buf, XLogReaderState *record)
 	}
 	else if (info == XLOG_ZHEAP_INVALID_XACT_SLOT)
 	{
-		uint16  nCompletedSlots = *(uint16 *) rec;
+		uint16		nCompletedSlots = *(uint16 *) rec;
 
 		appendStringInfo(buf, "completed_slots %u", nCompletedSlots);
 	}

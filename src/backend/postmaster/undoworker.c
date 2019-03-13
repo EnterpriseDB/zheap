@@ -162,7 +162,7 @@ WaitForUndoWorkerAttach(UndoApplyWorker *worker,
 static Oid
 slot_get_dbid(int slot)
 {
-	Oid dbid;
+	Oid			dbid;
 
 	/* Block concurrent access. */
 	LWLockAcquire(UndoWorkerLock, LW_EXCLUSIVE);
@@ -558,7 +558,7 @@ UndoLauncherMain(Datum main_arg)
 		foreach(l, dblist)
 		{
 			UndoApplyWorker *w;
-			Oid	dbid = lfirst_oid(l);
+			Oid			dbid = lfirst_oid(l);
 
 			LWLockAcquire(UndoWorkerLock, LW_SHARED);
 			w = undo_worker_find(dbid);
@@ -615,8 +615,8 @@ retry:
 void
 UndoWorkerMain(Datum main_arg)
 {
-	int		worker_slot = DatumGetInt32(main_arg);
-	Oid		dbid;
+	int			worker_slot = DatumGetInt32(main_arg);
+	Oid			dbid;
 
 	dbid = slot_get_dbid(worker_slot);
 
