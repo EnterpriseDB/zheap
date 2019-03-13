@@ -18,15 +18,15 @@
 #include "storage/buf.h"
 
 extern void lazy_vacuum_index(Relation indrel, IndexBulkDeleteResult **stats,
-							  LVRelStats *vacrelstats,
-							  BufferAccessStrategy vac_strategy, int elevel);
+				  LVRelStats *vacrelstats,
+				  BufferAccessStrategy vac_strategy, int elevel);
 extern void lazy_cleanup_index(Relation indrel, IndexBulkDeleteResult *stats,
-							   LVRelStats *vacrelstats,
-							   BufferAccessStrategy vac_strategy, int elevel);
+				   LVRelStats *vacrelstats,
+				   BufferAccessStrategy vac_strategy, int elevel);
 extern bool should_attempt_truncation(Relation rel, LVRelStats *vacrelstats);
 extern void lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats,
-							   BufferAccessStrategy vac_strategy, int elevel);
+				   BufferAccessStrategy vac_strategy, int elevel);
 extern void lazy_record_dead_tuple(LVRelStats *vacrelstats,
-								   ItemPointer itemptr);
+					   ItemPointer itemptr);
 
 #endif							/* VACUUMBLK_H */

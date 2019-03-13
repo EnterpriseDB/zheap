@@ -36,4 +36,4 @@ extern void undoaction_redo(XLogReaderState *record);
 extern void undoaction_desc(StringInfo buf, XLogReaderState *record);
 extern const char *undoaction_identify(uint8 info);
 
-#endif   /* UNDOACTION_XLOG_H */
+#endif							/* UNDOACTION_XLOG_H */

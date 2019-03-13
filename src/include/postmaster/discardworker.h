@@ -22,4 +22,4 @@
 extern void DiscardWorkerMain(Datum main_arg) pg_attribute_noreturn();
 extern void DiscardWorkerRegister(void);
 
-#endif   /* _DISCARDWORKER_H */
+#endif							/* _DISCARDWORKER_H */

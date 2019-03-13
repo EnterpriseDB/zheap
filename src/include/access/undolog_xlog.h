@@ -30,7 +30,7 @@
 typedef struct xl_undolog_create
 {
 	UndoLogNumber logno;
-	Oid		tablespace;
+	Oid			tablespace;
 	UndoPersistence persistence;
 } xl_undolog_create;
 
@@ -46,7 +46,7 @@ typedef struct xl_undolog_attach
 {
 	TransactionId xid;
 	UndoLogNumber logno;
-	Oid				dbid;
+	Oid			dbid;
 } xl_undolog_attach;
 
 /* Discard space, and possibly destroy or recycle undo log segments. */
@@ -63,10 +63,10 @@ typedef struct xl_undolog_rewind
 {
 	UndoLogNumber logno;
 	UndoLogOffset insert;
-	uint16		  prevlen;
+	uint16		prevlen;
 } xl_undolog_rewind;
 
-extern void undolog_desc(StringInfo buf,XLogReaderState *record);
+extern void undolog_desc(StringInfo buf, XLogReaderState *record);
 extern const char *undolog_identify(uint8 info);
 
 #endif
