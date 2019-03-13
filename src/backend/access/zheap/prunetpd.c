@@ -26,7 +26,7 @@ typedef struct TPDPruneState
 	OffsetNumber nowunused[MaxTPDTuplesPerPage];
 } TPDPruneState;
 
-static void TPDEntryPrune(Buffer buf, OffsetNumber offnum, TPDPruneState * prstate,
+static void TPDEntryPrune(Buffer buf, OffsetNumber offnum, TPDPruneState *prstate,
 			  Size *space_freed);
 static XLogRecPtr LogTPDClean(Relation rel, Buffer tpdbuf,
 			OffsetNumber *nowunused, int nunused,

@@ -72,7 +72,7 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 	}
 	else if (info == XLOG_UNDOLOG_SWITCH)
 	{
-		UndoRecPtr prevlogurp = *(UndoRecPtr *) rec;
+		UndoRecPtr	prevlogurp = *(UndoRecPtr *) rec;
 
 		appendStringInfo(buf, "previous log urp " UndoRecPtrFormat, prevlogurp);
 	}

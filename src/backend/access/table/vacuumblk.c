@@ -55,11 +55,11 @@
 #define PREFETCH_SIZE			((BlockNumber) 32)
 
 static bool lazy_tid_reaped(ItemPointer itemptr, void *state);
-static int vac_cmp_itemptr(const void *left, const void *right);
+static int	vac_cmp_itemptr(const void *left, const void *right);
 static BlockNumber count_nondeletable_pages(Relation onerel,
-							LVRelStats *vacrelstats,
-							BufferAccessStrategy vac_strategy,
-							int elevel);
+						 LVRelStats *vacrelstats,
+						 BufferAccessStrategy vac_strategy,
+						 int elevel);
 
 /*
  *	lazy_vacuum_index() -- vacuum one index relation.
@@ -95,7 +95,7 @@ lazy_vacuum_index(Relation indrel,
 			(errmsg("scanned index \"%s\" to remove %d row versions",
 					RelationGetRelationName(indrel),
 					vacrelstats->num_dead_tuples),
-			errdetail_internal("%s", pg_rusage_show(&ru0))));
+			 errdetail_internal("%s", pg_rusage_show(&ru0))));
 }
 
 /*
@@ -530,11 +530,11 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats,
 			 * there could be some unused items that contain pending xact
 			 * information for the current transaction.  It is okay to
 			 * truncate such pages as even if the transaction rolled back
-			 * after this point, we won't be reclaiming the truncated pages
-			 * or making the unused items back to dead.  We can add Assert
-			 * to check if the pending xact is the current transaction, but to
-			 * do that we need some storage engine specific check which seems
-			 * too much for the purpose for which it is required.
+			 * after this point, we won't be reclaiming the truncated pages or
+			 * making the unused items back to dead.  We can add Assert to
+			 * check if the pending xact is the current transaction, but to do
+			 * that we need some storage engine specific check which seems too
+			 * much for the purpose for which it is required.
 			 */
 			if (ItemIdIsUsed(itemid))
 			{

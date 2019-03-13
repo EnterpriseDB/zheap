@@ -40,7 +40,7 @@ static void undoworker_sigterm_handler(SIGNAL_ARGS);
 
 static bool got_SIGTERM = false;
 static bool hibernate = false;
-static	long		wait_time = MIN_NAPTIME_PER_CYCLE;
+static long wait_time = MIN_NAPTIME_PER_CYCLE;
 
 /* SIGTERM: set flag to exit at next convenient time */
 static void
@@ -105,19 +105,19 @@ DiscardWorkerMain(Datum main_arg)
 	{
 		int			rc;
 
-		TransactionId OldestXmin, oldestXidHavingUndo;
+		TransactionId OldestXmin,
+					oldestXidHavingUndo;
 
 		/*
-		 * It is okay to ignore vacuum transaction here, as we can discard
-		 * the undo of the vacuuming transaction if the transaction is
-		 * committed.  We don't need to hold its undo for the visibility
-		 * purpose.
+		 * It is okay to ignore vacuum transaction here, as we can discard the
+		 * undo of the vacuuming transaction if the transaction is committed.
+		 * We don't need to hold its undo for the visibility purpose.
 		 */
 		OldestXmin = GetOldestXmin(NULL, PROCARRAY_FLAGS_AUTOVACUUM |
-										 PROCARRAY_FLAGS_VACUUM);
+								   PROCARRAY_FLAGS_VACUUM);
 
 		oldestXidHavingUndo = GetXidFromEpochXid(
-				pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+												 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 
 		/*
 		 * Call the discard routine if there oldestXidHavingUndo is lagging
@@ -130,10 +130,10 @@ DiscardWorkerMain(Datum main_arg)
 
 			/*
 			 * If we got some undo logs to discard or discarded something,
-			 * then reset the wait_time as we have got work to do.
-			 * Note that if there are some undologs that cannot be discarded,
-			 * then above condition will remain unsatisfied till oldestXmin
-			 * remains unchanged and the wait_time will not reset in that case.
+			 * then reset the wait_time as we have got work to do. Note that
+			 * if there are some undologs that cannot be discarded, then above
+			 * condition will remain unsatisfied till oldestXmin remains
+			 * unchanged and the wait_time will not reset in that case.
 			 */
 			if (!hibernate)
 				wait_time = MIN_NAPTIME_PER_CYCLE;
@@ -148,16 +148,16 @@ DiscardWorkerMain(Datum main_arg)
 		ResetLatch(&MyProc->procLatch);
 
 		/*
-		 * Increase the wait_time based on the length of inactivity. If wait_time
-		 * is within one second, then increment it by 100 ms at a time. Henceforth,
-		 * increment it one second at a time, till it reaches ten seconds. Never
-		 * increase the wait_time more than ten seconds, it will be too much of
-		 * waiting otherwise.
+		 * Increase the wait_time based on the length of inactivity. If
+		 * wait_time is within one second, then increment it by 100 ms at a
+		 * time. Henceforth, increment it one second at a time, till it
+		 * reaches ten seconds. Never increase the wait_time more than ten
+		 * seconds, it will be too much of waiting otherwise.
 		 */
 		if (rc & WL_TIMEOUT && hibernate)
 		{
 			wait_time += (wait_time < DELAYED_NAPTIME ?
-							MIN_NAPTIME_PER_CYCLE : DELAYED_NAPTIME);
+						  MIN_NAPTIME_PER_CYCLE : DELAYED_NAPTIME);
 			if (wait_time > MAX_NAPTIME_PER_CYCLE)
 				wait_time = MAX_NAPTIME_PER_CYCLE;
 		}
