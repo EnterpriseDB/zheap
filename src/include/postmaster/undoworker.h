@@ -18,12 +18,12 @@
 extern int	UndoWorkerDelay;
 
 /*
- * This function will perform multiple actions based on need. (a) retreive
- * transaction and its corresponding undopoiter from shared memory queue and
+ * This function will perform multiple actions based on need. (a) retrieve
+ * transaction and its corresponding undopointer from shared memory queue and
  * call undoloop to perform undo actions.  After applying all the undo records
  * for a particular transaction, it will increment the tail pointer in undo log.
  * (b) it needs to retrieve transactions which have become all-visible and truncate
- * the associated undo logs or will increment the tail pointer. (c) udjust the
+ * the associated undo logs or will increment the tail pointer. (c) adjust the
  * number of undo workers based on the work required to perform undo actions
  * (it could be size of shared memory queue containing transactions that needs
  * aborts). (d) drop the buffers corresponding to truncated pages (e) Sleep for
