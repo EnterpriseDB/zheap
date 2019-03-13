@@ -3,7 +3,7 @@
  * undoloop.h
  *	  Exports from postmaster/undoloop.c.
  *
- * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  *
  * src/include/postmaster/undoloop.h
  *
