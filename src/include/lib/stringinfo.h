@@ -157,7 +157,7 @@ extern void appendBinaryStringInfoNT(StringInfo str,
  * is required.
  */
 extern bool appendBinaryStringInfoNoExtend(StringInfo str,
-						const char *data, int datalen);
+							   const char *data, int datalen);
 
 /*------------------------
  * enlargeStringInfo

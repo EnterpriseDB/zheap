@@ -146,8 +146,8 @@ extern HeapTuple toast_insert_or_update(Relation rel,
  */
 
 extern ZHeapTuple ztoast_insert_or_update(Relation rel,
-					   ZHeapTuple newtup, ZHeapTuple oldtup,
-					   int options);
+										  ZHeapTuple newtup, ZHeapTuple oldtup,
+										  int options);
 
 /* ----------
  * ztoast_delete -

@@ -53,7 +53,7 @@ extern void RegisterPredicateLockingXid(TransactionId xid);
 extern void PredicateLockRelation(Relation relation, Snapshot snapshot);
 extern void PredicateLockPage(Relation relation, BlockNumber blkno, Snapshot snapshot);
 extern void PredicateLockTid(Relation relation, ItemPointer, Snapshot snapshot,
-							   TransactionId targetxmin);
+				 TransactionId targetxmin);
 extern void PredicateLockPageSplit(Relation relation, BlockNumber oldblkno, BlockNumber newblkno);
 extern void PredicateLockPageCombine(Relation relation, BlockNumber oldblkno, BlockNumber newblkno);
 extern void TransferPredicateLocksToHeapRelation(Relation relation);
@@ -61,7 +61,7 @@ extern void ReleasePredicateLocks(bool isCommit);
 
 /* conflict detection (may also trigger rollback) */
 extern void CheckForSerializableConflictOut(bool valid, Relation relation, void *stup,
-							Buffer buffer, Snapshot snapshot);
+								Buffer buffer, Snapshot snapshot);
 extern void CheckForSerializableConflictIn(Relation relation, ItemPointer tid, Buffer buffer);
 extern void CheckTableForSerializableConflictIn(Relation relation);
 

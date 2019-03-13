@@ -46,12 +46,12 @@ extern bool ResolveCminCmaxDuringDecoding(struct HTAB *tuplecid_data,
 							  CommandId *cmin, CommandId *cmax);
 
 extern bool HeapTupleHasSerializableConflictOut(bool visible,
-												HeapTuple htup, Buffer buffer,
-												TransactionId *xid);
+									HeapTuple htup, Buffer buffer,
+									TransactionId *xid);
 
 extern bool ZHeapTupleHasSerializableConflictOut(bool visible,
-						Relation relation, ItemPointer tid, Buffer buffer,
-						TransactionId *xid);
+									 Relation relation, ItemPointer tid, Buffer buffer,
+									 TransactionId *xid);
 
 /*
  * We don't provide a static SnapshotDirty variable because it would be

@@ -277,7 +277,7 @@ typedef struct StdRdOptions
 	AutoVacOpts autovacuum;		/* autovacuum-related options */
 	bool		user_catalog_table; /* use as an additional catalog relation */
 	int			parallel_workers;	/* max number of parallel workers */
-	int			relstorage_offset;		/* see RELSTORAGE_xxx constants below */
+	int			relstorage_offset;	/* see RELSTORAGE_xxx constants below */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10

@@ -49,7 +49,8 @@ typedef ItemIdData *ItemId;
 #define	ITEMID_XACT_PENDING	0x0003	/* transaction that has marked item as
 									 * unused is pending */
 #define VISIBILTY_MASK	0x007F	/* 7 bits (1..7) for visibility mask */
-#define XACT_SLOT		0x7F80	/* 8 bits (8..15) of offset for transaction slot */
+#define XACT_SLOT		0x7F80	/* 8 bits (8..15) of offset for transaction
+								 * slot */
 #define XACT_SLOT_MASK	0x0007	/* 7 - mask to retrieve transaction slot */
 
 /*
@@ -199,7 +200,8 @@ typedef uint16 ItemLength;
  *		itemId!
  */
 static inline
-void ItemIdSetUnusedExtended(ItemId itemId, int trans_slot)
+void
+ItemIdSetUnusedExtended(ItemId itemId, int trans_slot)
 {
 	/*
 	 * The slots that belongs to TPD entry always point to last slot on the
@@ -212,6 +214,7 @@ void ItemIdSetUnusedExtended(ItemId itemId, int trans_slot)
 	itemId->lp_off = (itemId->lp_off & ~XACT_SLOT) | trans_slot << XACT_SLOT_MASK;
 	itemId->lp_len = 0;
 }
+
 /*
  * ItemIdSetDeadExtended
  *		Set the item identifier to be DEAD, with transaction slot
@@ -222,7 +225,8 @@ void ItemIdSetUnusedExtended(ItemId itemId, int trans_slot)
  */
 
 static inline
-void ItemIdSetDeadExtended(ItemId itemId, int trans_slot)
+void
+ItemIdSetDeadExtended(ItemId itemId, int trans_slot)
 {
 	/*
 	 * The slots that belongs to TPD entry always point to last slot on the
