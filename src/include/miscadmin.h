@@ -170,6 +170,8 @@ extern PGDLLIMPORT struct Latch *MyLatch;
 extern int32 MyCancelKey;
 extern int	MyPMChildSlot;
 
+extern bool applying_subxact_undo;
+
 extern char OutputFileName[];
 extern PGDLLIMPORT char my_exec_path[];
 extern char pkglib_path[];

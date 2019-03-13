@@ -274,8 +274,6 @@ SPI_rollback(void)
 
 	_SPI_current->internal_xact = true;
 
-	SetUndoActionsPtr();
-	CurrentXactPerformUndoActions();
 	AbortCurrentTransaction();
 
 	MemoryContextSwitchTo(oldcontext);
