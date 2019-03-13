@@ -139,9 +139,9 @@ typedef struct SnapshotData
 	TransactionId xmax;			/* all XID >= xmax are invisible to me */
 
 	/*
-	 * This if for the new type of locks for sub-transactions for zheap.
-	 * This is filled in ZHeapTupleSatisfiesDirty, if the tuple is modified
-	 * by a sub-transaction.  This allows us to wait on subtransactions.
+	 * This if for the new type of locks for sub-transactions for zheap. This
+	 * is filled in ZHeapTupleSatisfiesDirty, if the tuple is modified by a
+	 * sub-transaction.  This allows us to wait on subtransactions.
 	 */
 	SubTransactionId subxid;
 

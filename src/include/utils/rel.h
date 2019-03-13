@@ -269,7 +269,7 @@ typedef struct StdRdOptions
 	int			parallel_workers;	/* max number of parallel workers */
 	bool		vacuum_index_cleanup;	/* enables index vacuuming and cleanup */
 	bool		vacuum_truncate;	/* enables vacuum to truncate a relation */
-	int			relstorage_offset;		/* see RELSTORAGE_xxx constants below */
+	int			relstorage_offset;	/* see RELSTORAGE_xxx constants below */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10
