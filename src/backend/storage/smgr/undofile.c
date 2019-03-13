@@ -1,8 +1,8 @@
 /*
- * undofile.h
+ * undofile.c
  *
  * PostgreSQL undo file manager.  This module provides SMGR-compatible
- * interface to the files that back undo logs on the filesystem, so that undo
+ * interface to the files that back undo logs on the file system, so that undo
  * log data can use the shared buffer pool.  Other aspects of undo log
  * management are provided by undolog.c, so the SMGR interfaces not directly
  * concerned with reading, writing and flushing data are unimplemented.

@@ -2,7 +2,7 @@
  *
  * undolog.h
  *
- * PostgreSQL undo log manager.  This module is responsible for lifecycle
+ * PostgreSQL undo log manager.  This module is responsible for life-cycle
  * management of undo logs and backing files, associating undo logs with
  * backends, allocating and managing space within undo logs.
  *
@@ -288,7 +288,7 @@ extern bool DropUndoLogsInTablespace(Oid tablespace);
 /* GUC interfaces. */
 extern void assign_undo_tablespaces(const char *newval, void *extra);
 
-/* Checkpointing interfaces. */
+/* Checkpoint interfaces. */
 extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
 							   XLogRecPtr priorCheckPointRedo);
 
