@@ -727,7 +727,8 @@ retry:
 
 	while (index_getnext_slot(index_scan, ForwardScanDirection, existing_slot))
 	{
-		TransactionId xwait, xid;
+		TransactionId xwait,
+					xid;
 		XLTW_Oper	reason_wait;
 		Datum		existing_values[INDEX_MAX_KEYS];
 		bool		existing_isnull[INDEX_MAX_KEYS];
@@ -780,11 +781,12 @@ retry:
 			DirtySnapshot.xmin : DirtySnapshot.xmax;
 
 		/*
-		 * When a speculative insertion conflict is detected among two in-progress
-		 * transactions, one of the backends must back out first, and then wait,
-		 * while the other one waits without backing out.  It doesn't matter
-		 * which one backs out, so we employ an arbitrary rule that the transaction
-		 * with the higher top XID backs out. (See notes in file header)
+		 * When a speculative insertion conflict is detected among two
+		 * in-progress transactions, one of the backends must back out first,
+		 * and then wait, while the other one waits without backing out.  It
+		 * doesn't matter which one backs out, so we employ an arbitrary rule
+		 * that the transaction with the higher top XID backs out. (See notes
+		 * in file header)
 		 */
 		xid = GetTopTransactionId();
 

@@ -291,12 +291,12 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 	/*
 	 * To determine the last safe xid that can be allocated, we need to
 	 * consider oldestXidHavingUndo because this is a oldest xid whose undo is
-	 * not yet discarded so this is still a valid xid in system.
-	 * The oldestXidHavingUndo will be only valid for zheap storage engine, so
-	 * it won't impact any other storage engine.
+	 * not yet discarded so this is still a valid xid in system. The
+	 * oldestXidHavingUndo will be only valid for zheap storage engine, so it
+	 * won't impact any other storage engine.
 	 */
 	oldestXidHavingUndo = GetXidFromEpochXid(
-						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+											 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 	if (TransactionIdIsValid(oldestXidHavingUndo))
 		oldest_datfrozenxid = Min(oldest_datfrozenxid, oldestXidHavingUndo);
 
@@ -368,10 +368,10 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 	LWLockRelease(XidGenLock);
 
 	/*
-	 * Fixme - The messages in below code need some adjustment for zheap.
-	 * They should reflect that the system needs to discard the undo.  We
-	 * can add it once we have a pluggable storage API which might provide
-	 * us some way to distinguish among differnt storage engines.
+	 * Fixme - The messages in below code need some adjustment for zheap. They
+	 * should reflect that the system needs to discard the undo.  We can add
+	 * it once we have a pluggable storage API which might provide us some way
+	 * to distinguish among differnt storage engines.
 	 */
 
 	/* Log the info */

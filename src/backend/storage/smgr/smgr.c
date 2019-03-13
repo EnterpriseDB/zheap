@@ -91,12 +91,12 @@ static const f_smgr smgrsw[] = {
 	},
 	/* undo logs */
 	{undofile_init, undofile_shutdown, undofile_close, undofile_create,
-	 undofile_exists, undofile_unlink, undofile_extend, undofile_prefetch,
-	 undofile_read, undofile_write, undofile_writeback, undofile_nblocks,
-	 undofile_truncate,
-	 undofile_requestsync,
-	 undofile_immedsync, undofile_preckpt, undofile_sync,
-	 undofile_postckpt
+		undofile_exists, undofile_unlink, undofile_extend, undofile_prefetch,
+		undofile_read, undofile_write, undofile_writeback, undofile_nblocks,
+		undofile_truncate,
+		undofile_requestsync,
+		undofile_immedsync, undofile_preckpt, undofile_sync,
+		undofile_postckpt
 	}
 };
 
@@ -752,7 +752,8 @@ smgrtruncate(SMgrRelation reln, ForkNumber forknum, BlockNumber nblocks)
 /*
  *	smgrrequestsync() -- Enqueue a request for smgrsync() to flush data.
  */
-void smgrrequestsync(RelFileNode rnode, ForkNumber forknum, int segno)
+void
+smgrrequestsync(RelFileNode rnode, ForkNumber forknum, int segno)
 {
 	smgrsw[SmgrWhichForRelFileNode(rnode)].smgr_requestsync(rnode, forknum, segno);
 }

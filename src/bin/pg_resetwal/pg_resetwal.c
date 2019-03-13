@@ -1345,10 +1345,10 @@ WriteEmptyXLOG(void)
 static bool
 FindLatestUndoCheckPointFile(char *latest_undo_checkpoint_file)
 {
-	char **filenames;
-	char **filename;
-	char latest[UNDO_CHECKPOINT_FILENAME_LENGTH + 1];
-	bool result = false;
+	char	  **filenames;
+	char	  **filename;
+	char		latest[UNDO_CHECKPOINT_FILENAME_LENGTH + 1];
+	bool		result = false;
 
 	memset(latest, 0, sizeof(latest));
 
@@ -1356,8 +1356,8 @@ FindLatestUndoCheckPointFile(char *latest_undo_checkpoint_file)
 	filenames = pgfnames("pg_undo");
 
 	/*
-	 * Start reading each file under pg_undo to identify the latest
-	 * modified file and remove the older files that are not required.
+	 * Start reading each file under pg_undo to identify the latest modified
+	 * file and remove the older files that are not required.
 	 */
 	for (filename = filenames; *filename; filename++)
 	{

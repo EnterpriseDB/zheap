@@ -472,8 +472,8 @@ copy_xact_xlog_xid(void)
 	copy_subdir_files("pg_undo", "pg_undo");
 
 	/*
-	 * copy old undo logs to new data dir assuming that the
-	 * undo logs exist in default location i.e. 'base/undo'.
+	 * copy old undo logs to new data dir assuming that the undo logs exist in
+	 * default location i.e. 'base/undo'.
 	 */
 	copy_subdir_files("base/undo", "base/undo");
 

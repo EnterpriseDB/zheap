@@ -8376,10 +8376,11 @@ GetEpochForXid(TransactionId xid)
 	ckptXid = XLogCtl->ckptXid;
 	SpinLockRelease(&XLogCtl->info_lck);
 
-	/* Xid can be on either side when near wrap-around.  Xid is certainly
+	/*
+	 * Xid can be on either side when near wrap-around.  Xid is certainly
 	 * logically later than ckptXid.  So if it's numerically less, it must
-	 * have wrapped into the next epoch.  OTOH, if it is numerically more,
-	 * but logically lesser, then it belongs to previous epoch.
+	 * have wrapped into the next epoch.  OTOH, if it is numerically more, but
+	 * logically lesser, then it belongs to previous epoch.
 	 */
 	if (xid > ckptXid &&
 		TransactionIdPrecedes(xid, ckptXid))
@@ -8832,7 +8833,7 @@ CreateCheckPoint(int flags)
 	LWLockRelease(OidGenLock);
 
 	checkPoint.oldestXidWithEpochHavingUndo =
-			pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
+		pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
 
 	MultiXactGetCheckptMulti(shutdown,
 							 &checkPoint.nextMulti,
@@ -9806,7 +9807,7 @@ xlog_redo(XLogReaderState *record)
 		ControlFile->checkPointCopy.nextXidEpoch = checkPoint.nextXidEpoch;
 		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;
 		ControlFile->checkPointCopy.oldestXidWithEpochHavingUndo =
-									checkPoint.oldestXidWithEpochHavingUndo;
+			checkPoint.oldestXidWithEpochHavingUndo;
 
 		/* Update shared-memory copy of checkpoint XID/epoch */
 		SpinLockAcquire(&XLogCtl->info_lck);
@@ -9815,7 +9816,7 @@ xlog_redo(XLogReaderState *record)
 		SpinLockRelease(&XLogCtl->info_lck);
 
 		ControlFile->checkPointCopy.oldestXidWithEpochHavingUndo =
-									checkPoint.oldestXidWithEpochHavingUndo;
+			checkPoint.oldestXidWithEpochHavingUndo;
 
 		/* Write an undo log metadata snapshot. */
 		CheckPointUndoLogs(checkPoint.redo, ControlFile->checkPointCopy.redo);

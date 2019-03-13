@@ -842,8 +842,8 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	 * once we know where in the WAL the record will be inserted. The CRC does
 	 * not include the record header yet.
 	 *
-	 * Since zheap storage always use TopTransactionId, if this xlog is for the
-	 * zheap then get the TopTransactionId.
+	 * Since zheap storage always use TopTransactionId, if this xlog is for
+	 * the zheap then get the TopTransactionId.
 	 */
 	if (rmid == RM_ZHEAP_ID)
 		rechdr->xl_xid = GetTopTransactionIdIfAny();

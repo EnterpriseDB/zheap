@@ -1485,7 +1485,7 @@ vac_truncate_clog(TransactionId frozenXID,
 	 * won't impact any other storage engine.
 	 */
 	oldestXidHavingUndo = GetXidFromEpochXid(
-						pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+											 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 	if (TransactionIdIsValid(oldestXidHavingUndo))
 		frozenXID = Min(frozenXID, oldestXidHavingUndo);
 

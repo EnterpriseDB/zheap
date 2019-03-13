@@ -290,7 +290,7 @@ visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
 
 	/* For zheap we do not set heapBuf's status hence can be invalid */
 	Assert(RelationStorageIsZHeap(rel) ||
-			(InRecovery || BufferIsValid(heapBuf)));
+		   (InRecovery || BufferIsValid(heapBuf)));
 	Assert(flags & VISIBILITYMAP_VALID_BITS);
 
 	/* Check that we have the right heap page pinned, if present */
@@ -321,9 +321,10 @@ visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
 				{
 					recptr = log_zheap_visible(rel->rd_node, heapBuf, vmBuf,
 											   cutoff_xid, flags);
+
 					/*
-					 * We do not have a page wise visibility flag in zheap.
-					 * So no need to set LSN on zheap page.
+					 * We do not have a page wise visibility flag in zheap. So
+					 * no need to set LSN on zheap page.
 					 */
 				}
 				else
