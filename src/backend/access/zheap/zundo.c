@@ -584,7 +584,7 @@ zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no,
 	 * rollback could have been performed by some other backend or the
 	 * undo-worker.  In that case, the TPD entry can be pruned away.
 	 */
-	if (slot_no >= ZHEAP_PAGE_TRANS_SLOTS && !ZHeapPageHasTPDSlot(phdr))
+	if (slot_no > ZHEAP_PAGE_TRANS_SLOTS && !ZHeapPageHasTPDSlot(phdr))
 		return false;
 
 	out_slot_no = GetTransactionSlotInfo(buffer,
