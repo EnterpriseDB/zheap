@@ -299,8 +299,6 @@ _SPI_rollback(bool chain)
 	if (chain)
 		SaveTransactionCharacteristics();
 
-	SetUndoActionsPtr();
-	CurrentXactPerformUndoActions();
 	AbortCurrentTransaction();
 
 	if (chain)
