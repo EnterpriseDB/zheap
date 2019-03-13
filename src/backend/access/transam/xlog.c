@@ -8752,7 +8752,7 @@ CreateCheckPoint(int flags)
 	LWLockRelease(OidGenLock);
 
 	checkPoint.oldestXidWithEpochHavingUndo =
-			pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
+		pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
 
 	MultiXactGetCheckptMulti(shutdown,
 							 &checkPoint.nextMulti,
@@ -9727,7 +9727,7 @@ xlog_redo(XLogReaderState *record)
 		/* ControlFile->checkPointCopy always tracks the latest ckpt XID */
 		ControlFile->checkPointCopy.nextFullXid = checkPoint.nextFullXid;
 		ControlFile->checkPointCopy.oldestXidWithEpochHavingUndo =
-									checkPoint.oldestXidWithEpochHavingUndo;
+			checkPoint.oldestXidWithEpochHavingUndo;
 
 		/* Update shared-memory copy of checkpoint XID/epoch */
 		SpinLockAcquire(&XLogCtl->info_lck);
@@ -9735,7 +9735,7 @@ xlog_redo(XLogReaderState *record)
 		SpinLockRelease(&XLogCtl->info_lck);
 
 		ControlFile->checkPointCopy.oldestXidWithEpochHavingUndo =
-									checkPoint.oldestXidWithEpochHavingUndo;
+			checkPoint.oldestXidWithEpochHavingUndo;
 
 		/* Write an undo log metadata snapshot. */
 		CheckPointUndoLogs(checkPoint.redo, ControlFile->checkPointCopy.redo);

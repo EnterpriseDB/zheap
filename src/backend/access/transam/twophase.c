@@ -929,11 +929,11 @@ typedef struct TwoPhaseFileHeader
 	TimestampTz origin_timestamp;	/* time of prepare at origin node */
 
 	/*
-	 * We need the locations of start and end undo record pointers when rollbacks
-	 * are to be performed for prepared transactions using zheap relations.
-	 * We need to store these information in file as user might rollback the
-	 * prepared transaction after recovery and for that we need it's start and
-	 * end undo locations.
+	 * We need the locations of start and end undo record pointers when
+	 * rollbacks are to be performed for prepared transactions using zheap
+	 * relations. We need to store these information in file as user might
+	 * rollback the prepared transaction after recovery and for that we need
+	 * it's start and end undo locations.
 	 */
 	UndoRecPtr	start_urec_ptr[UndoPersistenceLevels];
 	UndoRecPtr	end_urec_ptr[UndoPersistenceLevels];
@@ -1485,8 +1485,8 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	int			ndelrels;
 	SharedInvalidationMessage *invalmsgs;
 	int			i;
-	UndoRecPtr start_urec_ptr[UndoPersistenceLevels];
-	UndoRecPtr end_urec_ptr[UndoPersistenceLevels];
+	UndoRecPtr	start_urec_ptr[UndoPersistenceLevels];
+	UndoRecPtr	end_urec_ptr[UndoPersistenceLevels];
 
 	/*
 	 * Validate the GID, and lock the GXACT to ensure that two backends do not
@@ -1529,19 +1529,19 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	memcpy(end_urec_ptr, hdr->end_urec_ptr, sizeof(end_urec_ptr));
 
 	/*
-	 * Perform undo actions, if there are undologs for this transaction.
-	 * We need to perform undo actions while we are still in transaction.
-	 * Never push rollbacks of temp tables to undo worker.
+	 * Perform undo actions, if there are undologs for this transaction. We
+	 * need to perform undo actions while we are still in transaction. Never
+	 * push rollbacks of temp tables to undo worker.
 	 */
 	for (i = 0; i < UndoPersistenceLevels; i++)
 	{
 		if (end_urec_ptr[i] != InvalidUndoRecPtr && !isCommit)
 		{
-			bool	result = false;
+			bool		result = false;
 
 			if (i != UNDO_TEMP)
 			{
-				uint64	rollback_size = 0;
+				uint64		rollback_size = 0;
 
 				rollback_size = end_urec_ptr[i] - start_urec_ptr[i];
 

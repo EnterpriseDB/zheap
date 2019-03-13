@@ -232,7 +232,8 @@ typedef struct TwoPhasePgStatRecord
 	PgStat_Counter tuples_deleted;	/* tuples deleted in xact */
 	PgStat_Counter inserted_pre_trunc;	/* tuples inserted prior to truncate */
 	PgStat_Counter updated_pre_trunc;	/* tuples updated prior to truncate */
-	PgStat_Counter inplace_pre_trunc;	/* tuples inplace updated prior to truncate */
+	PgStat_Counter inplace_pre_trunc;	/* tuples inplace updated prior to
+										 * truncate */
 	PgStat_Counter deleted_pre_trunc;	/* tuples deleted prior to truncate */
 	Oid			t_id;			/* table's OID */
 	bool		t_shared;		/* is it a shared catalog? */
@@ -3650,7 +3651,7 @@ pgstat_get_wait_activity(WaitEventActivity w)
 		case WAIT_EVENT_UNDO_LAUNCHER_MAIN:
 			event_name = "UndoLauncherMain";
 			break;
-		/* no default case, so that compiler will warn */
+			/* no default case, so that compiler will warn */
 	}
 
 	return event_name;

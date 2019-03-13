@@ -307,7 +307,7 @@ XLogReadBufferForRedoBlock(XLogReaderState *record,
 						   bool get_cleanup_lock,
 						   Buffer *buf)
 {
-	int		i;
+	int			i;
 
 	for (i = 0; i <= record->max_block_id; ++i)
 	{
@@ -330,7 +330,7 @@ XLogReadBufferForRedoBlock(XLogReaderState *record,
 		 "could not find block ref rel %u/%u/%u, forknum = %u, block = %u",
 		 rnode.spcNode, rnode.dbNode, rnode.relNode, forknum, blockno);
 
-	return 0; /* silence compiler warnings */
+	return 0;					/* silence compiler warnings */
 }
 
 /*

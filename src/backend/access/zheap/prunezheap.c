@@ -84,7 +84,7 @@ static void zheap_prune_record_deleted(ZPruneState *prstate,
  *
  * Returns true, if we are able to free up the space such that the new tuple
  * can fit into same page, otherwise, false.
- */
+*/
 bool
 zheap_page_prune_opt(Relation relation, Buffer buffer,
 					 OffsetNumber offnum, Size space_required)

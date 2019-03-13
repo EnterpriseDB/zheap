@@ -2552,7 +2552,7 @@ PredicateLockPage(Relation relation, BlockNumber blkno, Snapshot snapshot)
  */
 void
 PredicateLockTid(Relation relation, ItemPointer tid, Snapshot snapshot,
-					TransactionId targetxmin)
+				 TransactionId targetxmin)
 {
 	PREDICATELOCKTARGETTAG tag;
 
@@ -4083,7 +4083,7 @@ CheckForSerializableConflictOut(bool visible, Relation relation,
 	if (RelationStorageIsZHeap(relation))
 	{
 		if (!ZHeapTupleHasSerializableConflictOut(visible, relation,
-												(ItemPointer) stup, buffer, &xid))
+												  (ItemPointer) stup, buffer, &xid))
 			return;
 	}
 	else
