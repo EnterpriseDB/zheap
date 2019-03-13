@@ -415,7 +415,7 @@ retry:
 
 	slot->tts_tableOid = RelationGetRelid(relation);
 	ExecStoreZTuple(tuple, slot, buffer, false);
-	//FIXME:invent option to just transfer pin ?
+	/* FIXME:invent option to just transfer pin ? */
 	ReleaseBuffer(buffer);
 
 	return result;
@@ -545,7 +545,7 @@ zheapam_begin_index_fetch(Relation rel)
 
 	hscan->xs_base.rel = rel;
 	hscan->xs_cbuf = InvalidBuffer;
-	//hscan->xs_continue_hot = false;
+	/* hscan->xs_continue_hot = false; */
 
 	return &hscan->xs_base;
 }
@@ -562,7 +562,7 @@ zheapam_reset_index_fetch(IndexFetchTableData *scan)
 		hscan->xs_cbuf = InvalidBuffer;
 	}
 
-	//hscan->xs_continue_hot = false;
+	/* hscan->xs_continue_hot = false; */
 }
 
 static void
@@ -1832,9 +1832,9 @@ zheapam_set_new_filenode(Relation rel, char persistence,
 	ZheapInitMetaPage(rel, MAIN_FORKNUM, false);
 
 	/*
-	 * If required, set up an init fork for an unlogged table so that it can be
-	 * correctly reinitialized on restart.  An immediate sync is required even
-	 * if the page has been logged, because the write did not go through
+	 * If required, set up an init fork for an unlogged table so that it can
+	 * be correctly reinitialized on restart.  An immediate sync is required
+	 * even if the page has been logged, because the write did not go through
 	 * shared_buffers and therefore a concurrent checkpoint may have moved the
 	 * redo pointer past our xlog record.  Recovery may as well remove it
 	 * while replaying, for example, XLOG_DBASE_CREATE or XLOG_TBLSPC_CREATE

@@ -54,11 +54,11 @@
 #define PREFETCH_SIZE			((BlockNumber) 32)
 
 static bool lazy_tid_reaped(ItemPointer itemptr, void *state);
-static int vac_cmp_itemptr(const void *left, const void *right);
+static int	vac_cmp_itemptr(const void *left, const void *right);
 static BlockNumber count_nondeletable_pages(Relation onerel,
-							LVRelStats *vacrelstats,
-							BufferAccessStrategy vac_strategy,
-							int elevel);
+						 LVRelStats *vacrelstats,
+						 BufferAccessStrategy vac_strategy,
+						 int elevel);
 
 /*
  *	lazy_vacuum_index() -- vacuum one index relation.
@@ -94,7 +94,7 @@ lazy_vacuum_index(Relation indrel,
 			(errmsg("scanned index \"%s\" to remove %d row versions",
 					RelationGetRelationName(indrel),
 					vacrelstats->num_dead_tuples),
-					errdetail_internal("%s", pg_rusage_show(&ru0))));
+			 errdetail_internal("%s", pg_rusage_show(&ru0))));
 }
 
 /*
@@ -149,12 +149,12 @@ lazy_cleanup_index(Relation indrel,
 					RelationGetRelationName(indrel),
 					stats->num_index_tuples,
 					stats->num_pages),
-					errdetail("%.0f index row versions were removed.\n"
-							  "%u index pages have been deleted, %u are currently reusable.\n"
-							  "%s.",
-							  stats->tuples_removed,
-							  stats->pages_deleted, stats->pages_free,
-							  pg_rusage_show(&ru0))));
+			 errdetail("%.0f index row versions were removed.\n"
+					   "%u index pages have been deleted, %u are currently reusable.\n"
+					   "%s.",
+					   stats->tuples_removed,
+					   stats->pages_deleted, stats->pages_free,
+					   pg_rusage_show(&ru0))));
 
 	pfree(stats);
 }
@@ -187,7 +187,7 @@ should_attempt_truncation(LVRelStats *vacrelstats)
 	if (possibly_freeable > 0 &&
 		(possibly_freeable >= REL_TRUNCATE_MINIMUM ||
 		 possibly_freeable >= vacrelstats->rel_pages / REL_TRUNCATE_FRACTION) &&
-		 old_snapshot_threshold < 0)
+		old_snapshot_threshold < 0)
 		return true;
 	else
 		return false;
@@ -237,7 +237,7 @@ lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats,
 			CHECK_FOR_INTERRUPTS();
 
 			if (++lock_retry > (VACUUM_TRUNCATE_LOCK_TIMEOUT /
-				VACUUM_TRUNCATE_LOCK_WAIT_INTERVAL))
+								VACUUM_TRUNCATE_LOCK_WAIT_INTERVAL))
 			{
 				/*
 				 * We failed to establish the lock in the specified number of
@@ -246,7 +246,7 @@ lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats,
 				vacrelstats->lock_waiter_detected = true;
 				ereport(elevel,
 						(errmsg("\"%s\": stopping truncate due to conflicting lock request",
-						 RelationGetRelationName(onerel))));
+								RelationGetRelationName(onerel))));
 				return;
 			}
 
@@ -292,7 +292,7 @@ lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats,
 		 * Okay to truncate.
 		 */
 
-		 /* make sure it's not the metapage */
+		/* make sure it's not the metapage */
 		if (RelationStorageIsZHeap(onerel))
 			Assert(new_rel_pages > 0);
 
@@ -319,8 +319,8 @@ lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats,
 				(errmsg("\"%s\": truncated %u to %u pages",
 						RelationGetRelationName(onerel),
 						old_rel_pages, new_rel_pages),
-						errdetail_internal("%s",
-						pg_rusage_show(&ru0))));
+				 errdetail_internal("%s",
+									pg_rusage_show(&ru0))));
 		old_rel_pages = new_rel_pages;
 	} while (new_rel_pages > vacrelstats->nonempty_pages &&
 			 vacrelstats->lock_waiter_detected);
@@ -376,20 +376,20 @@ static int
 vac_cmp_itemptr(const void *left, const void *right)
 {
 	BlockNumber lblk,
-		rblk;
+				rblk;
 	OffsetNumber loff,
-		roff;
+				roff;
 
-	lblk = ItemPointerGetBlockNumber((ItemPointer)left);
-	rblk = ItemPointerGetBlockNumber((ItemPointer)right);
+	lblk = ItemPointerGetBlockNumber((ItemPointer) left);
+	rblk = ItemPointerGetBlockNumber((ItemPointer) right);
 
 	if (lblk < rblk)
 		return -1;
 	if (lblk > rblk)
 		return 1;
 
-	loff = ItemPointerGetOffsetNumber((ItemPointer)left);
-	roff = ItemPointerGetOffsetNumber((ItemPointer)right);
+	loff = ItemPointerGetOffsetNumber((ItemPointer) left);
+	roff = ItemPointerGetOffsetNumber((ItemPointer) right);
 
 	if (loff < roff)
 		return -1;
@@ -423,14 +423,14 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats,
 	 */
 	blkno = vacrelstats->rel_pages;
 	StaticAssertStmt((PREFETCH_SIZE & (PREFETCH_SIZE - 1)) == 0,
-					  "prefetch size must be power of 2");
+					 "prefetch size must be power of 2");
 	prefetchedUntil = InvalidBlockNumber;
 	while (blkno > vacrelstats->nonempty_pages)
 	{
 		Buffer		buf;
 		Page		page;
 		OffsetNumber offnum,
-					 maxoff;
+					maxoff;
 		bool		hastup;
 
 		/*
@@ -455,8 +455,8 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats,
 				if (LockHasWaitersRelation(onerel, AccessExclusiveLock))
 				{
 					ereport(elevel,
-						    (errmsg("\"%s\": suspending truncate due to conflicting lock request",
-							 RelationGetRelationName(onerel))));
+							(errmsg("\"%s\": suspending truncate due to conflicting lock request",
+									RelationGetRelationName(onerel))));
 
 					vacrelstats->lock_waiter_detected = true;
 					return blkno;
@@ -490,7 +490,7 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats,
 		}
 
 		buf = ReadBufferExtended(onerel, MAIN_FORKNUM, blkno,
-			RBM_NORMAL, vac_strategy);
+								 RBM_NORMAL, vac_strategy);
 
 		/* In this phase we only need shared access to the buffer */
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
@@ -506,8 +506,8 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats,
 		hastup = false;
 		maxoff = PageGetMaxOffsetNumber(page);
 		for (offnum = FirstOffsetNumber;
-			offnum <= maxoff;
-			offnum = OffsetNumberNext(offnum))
+			 offnum <= maxoff;
+			 offnum = OffsetNumberNext(offnum))
 		{
 			ItemId		itemid;
 
@@ -524,11 +524,11 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats,
 			 * there could be some unused items that contain pending xact
 			 * information for the current transaction.  It is okay to
 			 * truncate such pages as even if the transaction rolled back
-			 * after this point, we won't be reclaiming the truncated pages
-			 * or making the unused items back to dead.  We can add Assert
-			 * to check if the pending xact is the current transaction, but to
-			 * do that we need some storage engine specific check which seems
-			 * too much for the purpose for which it is required.
+			 * after this point, we won't be reclaiming the truncated pages or
+			 * making the unused items back to dead.  We can add Assert to
+			 * check if the pending xact is the current transaction, but to do
+			 * that we need some storage engine specific check which seems too
+			 * much for the purpose for which it is required.
 			 */
 			if (ItemIdIsUsed(itemid))
 			{
