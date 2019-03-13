@@ -732,10 +732,10 @@ ConditionalXactLockTableWait(TransactionId xid)
  * then be used to wait for the subtransaction to finish.
  */
 void
-SubXactLockTableInsert(SubTransactionId	subxid)
+SubXactLockTableInsert(SubTransactionId subxid)
 {
 	LOCKTAG		tag;
-	TransactionId	xid;
+	TransactionId xid;
 	ResourceOwner currentOwner;
 
 	/* Acquire lock only if we doesn't already hold that lock. */
@@ -769,10 +769,10 @@ SubXactLockTableInsert(SubTransactionId	subxid)
  * subtransactions in zheap.)
  */
 void
-SubXactLockTableDelete(SubTransactionId	subxid)
+SubXactLockTableDelete(SubTransactionId subxid)
 {
 	LOCKTAG		tag;
-	TransactionId	xid = GetTopTransactionId();
+	TransactionId xid = GetTopTransactionId();
 
 	SET_LOCKTAG_SUBTRANSACTION(tag, xid, subxid);
 
@@ -801,7 +801,7 @@ SubXactLockTableWait(TransactionId xid, SubTransactionId subxid, Relation rel,
 					 ItemPointer ctid, XLTW_Oper oper)
 {
 	LOCKTAG		tag;
-	XactLockTableWaitInfo	info;
+	XactLockTableWaitInfo info;
 	ErrorContextCallback callback;
 
 	/*

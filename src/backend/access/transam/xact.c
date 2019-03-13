@@ -197,9 +197,9 @@ typedef struct TransactionStateData
 	bool		prevXactReadOnly;	/* entry-time xact r/o state */
 	bool		startedInRecovery;	/* did we start in recovery? */
 	bool		didLogXid;		/* has xid been included in WAL record? */
-	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
+	int			parallelModeLevel;		/* Enter/ExitParallelMode counter */
 	bool		chain;			/* start a new block after this one */
-	bool		subXactLock;		/* has lock created for subtransaction? */
+	bool		subXactLock;	/* has lock created for subtransaction? */
 
 	/* start and end undo record location for each persistence level */
 	UndoRecPtr	start_urec_ptr[UndoPersistenceLevels];	/* this is 'to' location */
@@ -207,7 +207,7 @@ typedef struct TransactionStateData
 														 * location */
 	bool		performUndoActions;
 
-	struct TransactionStateData *parent;		/* back link to parent */
+	struct TransactionStateData *parent;	/* back link to parent */
 } TransactionStateData;
 
 typedef TransactionStateData *TransactionState;

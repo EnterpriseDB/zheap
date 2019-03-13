@@ -1435,7 +1435,7 @@ heap_fetch(Relation relation,
 
 	if (valid)
 		PredicateLockTid(relation, &(tuple->t_self), snapshot,
-						   HeapTupleHeaderGetXmin(tuple->t_data));
+						 HeapTupleHeaderGetXmin(tuple->t_data));
 
 	CheckForSerializableConflictOut(valid, relation, (void *) tuple, buffer, snapshot);
 
@@ -1580,7 +1580,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 			{
 				ItemPointerSetOffsetNumber(tid, offnum);
 				PredicateLockTid(relation, &(heapTuple)->t_self, snapshot,
-									HeapTupleHeaderGetXmin(heapTuple->t_data));
+								 HeapTupleHeaderGetXmin(heapTuple->t_data));
 				if (all_dead)
 					*all_dead = false;
 				return true;

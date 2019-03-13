@@ -1388,7 +1388,7 @@ ForgetBuffer(RelFileNode rnode, ForkNumber forkNum, BlockNumber blockNum)
 	if (RelFileNodeEquals(bufHdr->tag.rnode, rnode) &&
 		bufHdr->tag.blockNum == blockNum &&
 		bufHdr->tag.forkNum == forkNum)
-		InvalidateBuffer(bufHdr);		/* releases spinlock */
+		InvalidateBuffer(bufHdr);	/* releases spinlock */
 	else
 		UnlockBufHdr(bufHdr, buf_state);
 }
