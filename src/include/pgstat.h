@@ -168,13 +168,15 @@ typedef struct PgStat_TableXactStatus
 {
 	PgStat_Counter tuples_inserted; /* tuples inserted in (sub)xact */
 	PgStat_Counter tuples_updated;	/* tuples non-inplace updated in (sub)xact */
-	PgStat_Counter tuples_inplace_updated;	/* tuples inplace updated in (sub)xact */
+	PgStat_Counter tuples_inplace_updated;	/* tuples inplace updated in
+											 * (sub)xact */
 	PgStat_Counter tuples_deleted;	/* tuples deleted in (sub)xact */
 	bool		truncated;		/* relation truncated in this (sub)xact */
 	PgStat_Counter inserted_pre_trunc;	/* tuples inserted prior to truncate */
 	PgStat_Counter updated_pre_trunc;	/* tuples updated prior to truncate */
 	PgStat_Counter deleted_pre_trunc;	/* tuples deleted prior to truncate */
-	PgStat_Counter inplace_pre_trunc;	/* tuples inplace updated prior to truncate */
+	PgStat_Counter inplace_pre_trunc;	/* tuples inplace updated prior to
+										 * truncate */
 	int			nest_level;		/* subtransaction nest level */
 	/* links to other structs for same relation: */
 	struct PgStat_TableXactStatus *upper;	/* next higher subxact if any */
