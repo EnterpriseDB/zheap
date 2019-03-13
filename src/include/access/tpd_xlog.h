@@ -44,8 +44,8 @@
 typedef struct xl_tpd_allocate_entry
 {
 	/* tpd entry related info */
-	BlockNumber	prevblk;
-	BlockNumber	nextblk;
+	BlockNumber prevblk;
+	BlockNumber nextblk;
 	OffsetNumber offnum;		/* inserted entry's offset */
 
 	uint8		flags;
@@ -59,7 +59,7 @@ typedef struct xl_tpd_allocate_entry
 
 typedef struct xl_tpd_clean
 {
-	uint8			flags;
+	uint8		flags;
 } xl_tpd_clean;
 
 #define SizeOfTPDClean	(offsetof(xl_tpd_clean, flags) + sizeof(uint8))
@@ -68,8 +68,8 @@ typedef struct xl_tpd_clean
 
 typedef struct xl_tpd_free_page
 {
-	BlockNumber		prevblkno;
-	BlockNumber		nextblkno;
+	BlockNumber prevblkno;
+	BlockNumber nextblkno;
 } xl_tpd_free_page;
 
 #define SizeOfTPDFreePage	(offsetof(xl_tpd_free_page, nextblkno) + sizeof(BlockNumber))
@@ -78,4 +78,4 @@ extern void tpd_redo(XLogReaderState *record);
 extern void tpd_desc(StringInfo buf, XLogReaderState *record);
 extern const char *tpd_identify(uint8 info);
 
-#endif   /* TPD_XLOG_H */
+#endif							/* TPD_XLOG_H */

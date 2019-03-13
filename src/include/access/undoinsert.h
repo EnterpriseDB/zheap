@@ -52,7 +52,7 @@ extern UndoRecPtr UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen, UndoRecP
 extern void UndoRecordOnUndoLogChange(UndoPersistence persistence);
 
 extern void PrepareUpdateUndoActionProgress(XLogReaderState *xlog_record,
-											UndoRecPtr urecptr, int progress);
+								UndoRecPtr urecptr, int progress);
 extern void UndoRecordUpdateTransInfo(int idx);
 
 extern void ResetUndoBuffers(void);
