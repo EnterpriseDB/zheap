@@ -36,4 +36,4 @@ extern Size UndoLauncherShmemSize(void);
 extern void UndoLauncherMain(Datum main_arg);
 extern void UndoWorkerMain(Datum main_arg);
 
-#endif   /* _UNDOWORKER_H */
+#endif							/* _UNDOWORKER_H */

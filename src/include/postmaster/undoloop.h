@@ -33,10 +33,10 @@ TransactionId latestRecentGlobalXmin;
  * user mode.
  */
 extern void execute_undo_actions(UndoRecPtr from_urecptr,
-			UndoRecPtr to_urecptr, bool nopartial, bool rewind, bool rellock);
+					 UndoRecPtr to_urecptr, bool nopartial, bool rewind, bool rellock);
 extern void process_and_execute_undo_actions_page(UndoRecPtr from_urecptr,
-							Relation rel, Buffer buffer, uint32 epoch,
-							TransactionId xid, int slot_no);
+									  Relation rel, Buffer buffer, uint32 epoch,
+									  TransactionId xid, int slot_no);
 
 /*
  * This function will be responsible to truncate the undo logs
@@ -50,7 +50,7 @@ extern void process_and_execute_undo_actions_page(UndoRecPtr from_urecptr,
  * removed.  This function can be invoked by undoworker or after commit in
  * single user mode.
  */
-extern void	recover_undo_pages();
+extern void recover_undo_pages();
 
 /*
  * To increase the efficiency of the zheap system, we create a hash table for
@@ -65,23 +65,23 @@ extern void	recover_undo_pages();
 /* This is the data structure for each hash table entry for rollbacks. */
 typedef struct RollbackHashEntry
 {
-	UndoRecPtr start_urec_ptr;
-	UndoRecPtr end_urec_ptr;
-	Oid		   dbid;
+	UndoRecPtr	start_urec_ptr;
+	UndoRecPtr	end_urec_ptr;
+	Oid			dbid;
 } RollbackHashEntry;
 
 /* undo record information */
 typedef struct UndoRecInfo
 {
-	UndoRecPtr	urp;	/* undo recptr (undo record location). */
-	UnpackedUndoRecord	*uur;	/* actual undo record. */
+	UndoRecPtr	urp;			/* undo recptr (undo record location). */
+	UnpackedUndoRecord *uur;	/* actual undo record. */
 } UndoRecInfo;
 
 extern bool RollbackHTIsFull(void);
 
 /* To push the rollback requests from backend to the respective hash table */
 extern bool PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr,
-							Oid dbid);
+				Oid dbid);
 
 /* To perform the undo actions reading from the hash table */
 extern void RollbackFromHT(Oid dbid);
@@ -99,4 +99,4 @@ extern bool execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr,
 
 /* To discard the logs in single user mode. */
 extern void UndoLogDiscardAll(void);
-#endif   /* _UNDOLOOP_H */
+#endif							/* _UNDOLOOP_H */

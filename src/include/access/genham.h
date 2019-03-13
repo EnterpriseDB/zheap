@@ -36,20 +36,20 @@ typedef enum
 	HEAPTUPLE_DEAD,				/* tuple is dead and deletable */
 	HEAPTUPLE_LIVE,				/* tuple is live (committed, no deleter) */
 	HEAPTUPLE_RECENTLY_DEAD,	/* tuple is dead, but not deletable yet */
-	HEAPTUPLE_INSERT_IN_PROGRESS,		/* inserting xact is still in progress */
+	HEAPTUPLE_INSERT_IN_PROGRESS,	/* inserting xact is still in progress */
 	HEAPTUPLE_DELETE_IN_PROGRESS	/* deleting xact is still in progress */
 } HTSV_Result;
 
 /* Result codes for ZHeapTupleSatisfiesVacuum */
 typedef enum
 {
-	ZHEAPTUPLE_DEAD,				/* tuple is dead and deletable */
-	ZHEAPTUPLE_LIVE,				/* tuple is live (committed, no deleter) */
+	ZHEAPTUPLE_DEAD,			/* tuple is dead and deletable */
+	ZHEAPTUPLE_LIVE,			/* tuple is live (committed, no deleter) */
 	ZHEAPTUPLE_RECENTLY_DEAD,	/* tuple is dead, but not deletable yet */
-	ZHEAPTUPLE_INSERT_IN_PROGRESS,		/* inserting xact is still in progress */
+	ZHEAPTUPLE_INSERT_IN_PROGRESS,	/* inserting xact is still in progress */
 	ZHEAPTUPLE_DELETE_IN_PROGRESS,	/* deleting xact is still in progress */
-	ZHEAPTUPLE_ABORT_IN_PROGRESS		/* rollback is still pending */
-} ZHTSV_Result;
+	ZHEAPTUPLE_ABORT_IN_PROGRESS	/* rollback is still pending */
+}			ZHTSV_Result;
 
 
 
@@ -91,10 +91,10 @@ extern bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
 					 LockTupleMode mode, LockWaitPolicy wait_policy,
 					 bool *have_tuple_lock);
 extern void GetVisibilityMapPins(Relation relation, Buffer buffer1,
-					Buffer buffer2, BlockNumber block1, BlockNumber block2,
-					Buffer *vmbuffer1, Buffer *vmbuffer2);
+					 Buffer buffer2, BlockNumber block1, BlockNumber block2,
+					 Buffer *vmbuffer1, Buffer *vmbuffer2);
 extern void RelationAddExtraBlocks(Relation relation, BulkInsertState bistate);
 extern Buffer ReadBufferBI(Relation relation, BlockNumber targetBlock,
-					ReadBufferMode mode, BulkInsertState bistate);
+			 ReadBufferMode mode, BulkInsertState bistate);
 
-#endif   /* GENHAM_H */
+#endif							/* GENHAM_H */

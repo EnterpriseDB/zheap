@@ -178,7 +178,7 @@ typedef int UndoLogNumber;
 	UndoLogOffsetFromUsableByteNo(UndoLogOffsetToUsableByteNo(offset) + (n))
 
 /* Find out which tablespace the given undo log location is backed by. */
-extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
+extern Oid	UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
 
 /* Populate a RelFileNode from an UndoRecPtr. */
 #define UndoRecPtrAssignRelFileNode(rfn, urp)			\
@@ -196,36 +196,36 @@ extern Oid UndoRecPtrGetTablespace(UndoRecPtr insertion_point);
 typedef struct UndoLogMetaData
 {
 	UndoLogStatus status;
-	Oid		tablespace;
+	Oid			tablespace;
 	UndoPersistence persistence;	/* permanent, unlogged, temp? */
-	UndoLogOffset insert;			/* next insertion point (head) */
-	UndoLogOffset end;				/* one past end of highest segment */
-	UndoLogOffset discard;			/* oldest data needed (tail) */
+	UndoLogOffset insert;		/* next insertion point (head) */
+	UndoLogOffset end;			/* one past end of highest segment */
+	UndoLogOffset discard;		/* oldest data needed (tail) */
 	UndoLogOffset last_xact_start;	/* last transactions start undo offset */
 
-	bool	is_first_rec;
+	bool		is_first_rec;
 
 	/*
 	 * last undo record's length. We need to save this in undo meta and WAL
 	 * log so that the value can be preserved across restart so that the first
-	 * undo record after the restart can get this value properly.  This will be
-	 * used going to the previous record of the transaction during rollback.
-	 * In case the transaction have done some operation before checkpoint and
-	 * remaining after checkpoint in such case if we can't get the previous
-	 * record prevlen which which before checkpoint we can not properly
-	 * rollback.  And, undo worker is also fetch this value when rolling back
-	 * the last transaction in the undo log for locating the last undo record
-	 * of the transaction.
+	 * undo record after the restart can get this value properly.  This will
+	 * be used going to the previous record of the transaction during
+	 * rollback. In case the transaction have done some operation before
+	 * checkpoint and remaining after checkpoint in such case if we can't get
+	 * the previous record prevlen which which before checkpoint we can not
+	 * properly rollback.  And, undo worker is also fetch this value when
+	 * rolling back the last transaction in the undo log for locating the last
+	 * undo record of the transaction.
 	 */
-	uint16	prevlen;
+	uint16		prevlen;
 } UndoLogMetaData;
 
 /* Record the undo log number used for a transaction. */
 typedef struct xl_undolog_meta
 {
-	UndoLogMetaData	meta;
-	UndoLogNumber	logno;
-	TransactionId	xid;
+	UndoLogMetaData meta;
+	UndoLogNumber logno;
+	TransactionId xid;
 } xl_undolog_meta;
 
 #ifndef FRONTEND
@@ -243,33 +243,33 @@ typedef struct xl_undolog_meta
 typedef struct UndoLogControl
 {
 	UndoLogNumber logno;
-	UndoLogMetaData meta;			/* current meta-data */
-	XLogRecPtr      lsn;
-	bool	need_attach_wal_record;	/* need_attach_wal_record */
-	pid_t		pid;				/* InvalidPid for unattached */
-	LWLock	mutex;					/* protects the above */
+	UndoLogMetaData meta;		/* current meta-data */
+	XLogRecPtr	lsn;
+	bool		need_attach_wal_record; /* need_attach_wal_record */
+	pid_t		pid;			/* InvalidPid for unattached */
+	LWLock		mutex;			/* protects the above */
 	TransactionId xid;
 	/* State used by undo workers. */
-	TransactionId	oldest_xid;		/* cache of oldest transaction's xid */
+	TransactionId oldest_xid;	/* cache of oldest transaction's xid */
 	uint32		oldest_xidepoch;
 	UndoRecPtr	oldest_data;
-	LWLock		discard_lock;		/* prevents discarding while reading */
-	LWLock		rewind_lock;		/* prevent rewinding while reading */
+	LWLock		discard_lock;	/* prevents discarding while reading */
+	LWLock		rewind_lock;	/* prevent rewinding while reading */
 
-	UndoLogNumber next_free;		/* protected by UndoLogLock */
+	UndoLogNumber next_free;	/* protected by UndoLogLock */
 } UndoLogControl;
 
 #endif
 
 /* Space management. */
 extern UndoRecPtr UndoLogAllocate(size_t size,
-								  UndoPersistence level);
+				UndoPersistence level);
 extern UndoRecPtr UndoLogAllocateInRecovery(TransactionId xid,
-											size_t size,
-											UndoPersistence persistence);
+						  size_t size,
+						  UndoPersistence persistence);
 extern void UndoLogAdvance(UndoRecPtr insertion_point,
-						   size_t size,
-						   UndoPersistence persistence);
+			   size_t size,
+			   UndoPersistence persistence);
 extern void UndoLogDiscard(UndoRecPtr discard_point, TransactionId xid);
 extern bool UndoLogIsDiscarded(UndoRecPtr point);
 
@@ -279,7 +279,7 @@ extern void UndoLogShmemInit(void);
 extern Size UndoLogShmemSize(void);
 extern void UndoLogInit(void);
 extern void UndoLogSegmentPath(UndoLogNumber logno, int segno, Oid tablespace,
-							   char *path);
+				   char *path);
 extern void ResetUndoLogs(UndoPersistence persistence);
 
 /* Interface use by tablespace.c. */
@@ -305,7 +305,7 @@ extern UndoRecPtr UndoLogGetLastXactStartPoint(UndoLogNumber logno);
 extern UndoRecPtr UndoLogGetCurrentLocation(UndoPersistence persistence);
 extern UndoRecPtr UndoLogGetFirstValidRecord(UndoLogNumber logno);
 extern UndoRecPtr UndoLogGetNextInsertPtr(UndoLogNumber logno,
-										  TransactionId xid);
+						TransactionId xid);
 extern void UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen);
 extern bool IsTransactionFirstRec(TransactionId xid);
 extern void UndoLogSetPrevLen(UndoLogNumber logno, uint16 prevlen);
@@ -313,13 +313,15 @@ extern uint16 UndoLogGetPrevLen(UndoLogNumber logno);
 extern bool NeedUndoMetaLog(XLogRecPtr redo_point);
 extern void UndoLogSetLSN(XLogRecPtr lsn);
 extern void LogUndoMetaData(xl_undolog_meta *xlrec);
-void UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);
+void		UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);
+
 /* Redo interface. */
 extern void undolog_redo(XLogReaderState *record);
+
 /* Discard the undo logs for temp tables */
 extern void TempUndoDiscard(UndoLogNumber);
 extern UndoRecPtr UndoLogStateGetAndClearPrevLogXactUrp(void);
 extern UndoLogNumber UndoLogAmAttachedTo(UndoPersistence persistence);
-extern Oid UndoLogStateGetDatabaseId(void);
+extern Oid	UndoLogStateGetDatabaseId(void);
 
-#endif
+#endif							/* UNDOLOG_H */

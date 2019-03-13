@@ -42,7 +42,8 @@ typedef enum undorectype
  */
 typedef struct UndoRecordHeader
 {
-	RmgrId		urec_rmid;		/* RMGR [XXX:TODO: this creates an alignment hole?] */
+	RmgrId		urec_rmid;		/* RMGR [XXX:TODO: this creates an alignment
+								 * hole?] */
 	uint8		urec_type;		/* record type code */
 	uint8		urec_info;		/* flag bits */
 	uint16		urec_prevlen;	/* length of previous record in bytes */
@@ -190,8 +191,8 @@ typedef struct UnpackedUndoRecord
 	OffsetNumber uur_offset;	/* offset number */
 	Buffer		uur_buffer;		/* buffer in which undo record data points */
 	uint32		uur_xidepoch;	/* epoch of the inserting transaction. */
-	UndoRecPtr	uur_prevurp;	/* urec pointer to the previous record in
-								 * the different log */
+	UndoRecPtr	uur_prevurp;	/* urec pointer to the previous record in the
+								 * different log */
 	UndoRecPtr	uur_next;		/* urec pointer of the next transaction */
 	Oid			uur_dbid;		/* database id */
 
@@ -205,8 +206,8 @@ typedef struct UnpackedUndoRecord
 extern void UndoRecordSetInfo(UnpackedUndoRecord *uur);
 extern Size UndoRecordExpectedSize(UnpackedUndoRecord *uur);
 extern bool InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
-							 int starting_byte, int *already_written,
-							 int remaining_bytes, bool header_only);
+				 int starting_byte, int *already_written,
+				 int remaining_bytes, bool header_only);
 extern bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page,
 				 int starting_byte, int *already_decoded, bool header_only);
 
