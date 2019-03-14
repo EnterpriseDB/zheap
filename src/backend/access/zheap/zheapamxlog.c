@@ -747,7 +747,7 @@ zheap_xlog_update(XLogReaderState *record)
 		}
 
 		/* prepare an undo record for new tuple */
-		undorecord.uur_rmid = RM_ZHEAP_ID;
+		newundorecord.uur_rmid = RM_ZHEAP_ID;
 		newundorecord.uur_type = UNDO_INSERT;
 		newundorecord.uur_info = 0;
 		newundorecord.uur_prevlen = 0;
