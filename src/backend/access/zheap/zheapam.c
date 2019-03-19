@@ -4985,17 +4985,22 @@ prepare_xlog:
  *
  * We ensure that the tuple always point to the transaction slot of latest
  * inserter/updater except for cases where we lock first and then update the
- * tuple (aka locks via EvalPlanQual mechanism).  For example, say after a
- * committed insert/update, a new request arrives to lock the tuple in key
- * share mode, we will keep the inserter's/updater's slot on the tuple and
- * set the multi-locker and key-share bit.  If the inserter/updater is already
- * known to be having a frozen slot (visible to every one), we will set the
- * key-share locker bit and the tuple will indicate a frozen slot.  Similarly,
- * for a new updater, if the tuple has a single locker, then the undo will
- * have a frozen tuple and for multi-lockers, the undo of updater will have
- * previous inserter/updater slot; in both cases the new tuple will point to
- * the updaters slot.  Now, the rollback of a single locker will set the
- * frozen slot on tuple and the rollback of multi-locker won't change slot
+ * tuple (aka locks via EvalPlanQual mechanism).  This is because for visibility
+ * checks, we only need inserter/updater's xact information.  Keeping their
+ * slot on the tuple avoids the overheads of fetching xact information from
+ * undo during visibility checks.  Also, note that the latest inserter/updater
+ * can be an aborted transaction whose rollback actions are still pending.
+ *
+ * For example, say after a committed insert/update, a new request arrives to
+ * lock the tuple in key share mode, we will keep the inserter's/updater's slot
+ * on the tuple and set the multi-locker and key-share bit.  If the inserter/
+ * updater is already known to be having a frozen slot (visible to every one),
+ * we will set the key-share locker bit and the tuple will indicate a frozen
+ * slot.  Similarly, for a new updater, if the tuple has a single locker, then
+ * the undo will have a frozen tuple and for multi-lockers, the undo of updater
+ * will have previous inserter/updater slot; in both cases the new tuple will
+ * point to the updaters slot.  Now, the rollback of a single locker will set
+ * the frozen slot on tuple and the rollback of multi-locker won't change slot
  * information on tuple.  We don't want to keep the slot of locker on the
  * tuple as after rollback, we will lose track of last updater/inserter.
  *
@@ -5094,19 +5099,16 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 	}
 	else if (!is_update &&
 			 !ZHEAP_XID_IS_LOCKED_ONLY(old_infomask) &&
-			 tup_trans_slot != ZHTUP_SLOT_FROZEN &&
-			 (TransactionIdDidCommit(tup_xid)
-			  || !TransactionIdIsValid(tup_xid)))
+			 tup_trans_slot != ZHTUP_SLOT_FROZEN)
 	{
 		/*
-		 * It's a committed update or insert, so we gotta preserve him as
-		 * updater of the tuple.  Also, indicate that tuple has multiple
-		 * lockers.
+		 * It's a committed update/insert or an aborted update whose rollback
+		 * action is still pending, so we gotta preserve him as updater of the
+		 * tuple.  Also, indicate that tuple has multiple lockers.
 		 *
-		 * Tuple xid could be invalid if the corresponding transaction is
-		 * discarded or the tuple is marked as frozen.  The later case is
-		 * handled in the above condition (slot frozen).  In the former case,
-		 * we can consider it as a committed update or insert.
+		 * Note that tuple xid could be invalid if the undo records
+		 * corresponding to the tuple transaction is discarded.  In that case,
+		 * it can be considered as committed.
 		 */
 		old_tuple_has_update = true;
 		new_infomask |= ZHEAP_MULTI_LOCKERS;
@@ -5146,18 +5148,18 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 	}
 	else if (!is_update &&
 			 ZHEAP_XID_IS_LOCKED_ONLY(old_infomask) &&
-			 tup_trans_slot != ZHTUP_SLOT_FROZEN &&
-			 (TransactionIdDidCommit(tup_xid)
-			  || !TransactionIdIsValid(tup_xid)))
+			 tup_trans_slot != ZHTUP_SLOT_FROZEN)
 	{
 		LockTupleMode old_mode;
 
 		/*
-		 * This case arises for non-inplace updates when the newly inserted
-		 * tuple is marked as locked-only, but multi-locker bit is not set.
+		 * This case arises for committed/aborted non-inplace updates where
+		 * the newly inserted tuple is marked as locked-only, but multi-locker
+		 * bit is not set.
 		 *
-		 * See comments in above condition to know when tup_xid can be
-		 * invalid.
+		 * Note that tuple xid could be invalid if the undo records
+		 * corresponding to the tuple transaction is discarded.  In that case,
+		 * it can be considered as committed.
 		 */
 		new_infomask |= ZHEAP_MULTI_LOCKERS;
 
@@ -5175,14 +5177,21 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 		new_trans_slot = tup_trans_slot;
 	}
 	else if (is_update &&
-			 TransactionIdIsInProgress(single_locker_xid))
+			 TransactionIdIsValid(single_locker_xid) &&
+			 !TransactionIdDidCommit(single_locker_xid))
 	{
 		LockTupleMode old_mode;
 
 		/*
-		 * There can be a non-conflicting key share locker on the tuple and we
-		 * want to update the tuple in no-key exclusive mode.  In that case,
-		 * we should set the multilocker flag as well.
+		 * There can be a non-conflicting in-progress key share locker on the
+		 * tuple and we want to update the tuple in no-key exclusive mode.  In
+		 * that case, we should set the multilocker flag as well.
+		 *
+		 * Note that, the single locker xid can be aborted whose rollback
+		 * actions are still pending.  The scenario should be handled in the
+		 * same way as an in-progress single locker, i.e., we should set the
+		 * multilocker flag accordingly.  Else, the rollback of single locker
+		 * might resotre the infomask of the tuple incorrectly.
 		 */
 		Assert(ZHEAP_XID_IS_LOCKED_ONLY(old_infomask));
 		if (single_locker_xid != add_to_xid)
