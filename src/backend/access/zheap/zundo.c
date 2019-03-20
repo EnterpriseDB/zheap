@@ -1048,6 +1048,15 @@ zheap_undo_actions(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
 		if (slot_urec_ptr < urec_info->urp)
 			continue;
 
+		elog(DEBUG1, "Rollback undo record: "
+			 "TransSlot: %d, Epoch: %d, TransactionId: %d, urec: " UndoRecPtrFormat ", "
+			 "prev_urec: " UndoRecPtrFormat ", block: %d, offset: %d, undo_op: %d, "
+			 "xid_tup: %d, reloid: %d",
+			 slot_no, epoch, xid, slot_urec_ptr,
+			 uur->uur_blkprev, uur->uur_block,
+			 uur->uur_offset, uur->uur_type,
+			 uur->uur_prevxid, uur->uur_reloid);
+
 		switch (uur->uur_type)
 		{
 			case UNDO_INSERT:
