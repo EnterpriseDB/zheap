@@ -51,6 +51,35 @@
 #include "utils/datum.h"
 #include "utils/ztqual.h"
 
+static void tts_zheap_init(TupleTableSlot *slot);
+static void tts_zheap_release(TupleTableSlot *slot);
+static void tts_zheap_clear(TupleTableSlot *slot);
+static void tts_zheap_getsomeattrs(TupleTableSlot *slot, int natts);
+static Datum tts_zheap_getsysattr(TupleTableSlot *slot, int attnum,
+					 bool *isnull);
+static void tts_zheap_materialize(TupleTableSlot *slot);
+static void tts_zheap_copyslot(TupleTableSlot *dstslot,
+				   TupleTableSlot *srcslot);
+static HeapTuple tts_zheap_copy_heap_tuple(TupleTableSlot *slot);
+static MinimalTuple tts_zheap_copy_minimal_tuple(TupleTableSlot *slot);
+
+const		TupleTableSlotOps TTSOpsZHeapTuple = {
+	.base_slot_size = sizeof(ZHeapTupleTableSlot),
+	.init = tts_zheap_init,
+	.release = tts_zheap_release,
+	.clear = tts_zheap_clear,
+	.getsomeattrs = tts_zheap_getsomeattrs,
+	.getsysattr = tts_zheap_getsysattr,
+	.materialize = tts_zheap_materialize,
+	.copyslot = tts_zheap_copyslot,
+
+	.get_heap_tuple = NULL,
+	.get_minimal_tuple = NULL,
+
+	.copy_heap_tuple = tts_zheap_copy_heap_tuple,
+	.copy_minimal_tuple = tts_zheap_copy_minimal_tuple
+};
+
 /*
  * zheap_compute_data_size
  *		Determine size of the data area for a zheap tuple.
@@ -902,23 +931,6 @@ tts_zheap_copy_minimal_tuple(TupleTableSlot *slot)
 	return heap_form_minimal_tuple(slot->tts_tupleDescriptor,
 								   slot->tts_values, slot->tts_isnull);
 }
-
-const		TupleTableSlotOps TTSOpsZHeapTuple = {
-	.base_slot_size = sizeof(ZHeapTupleTableSlot),
-	.init = tts_zheap_init,
-	.release = tts_zheap_release,
-	.clear = tts_zheap_clear,
-	.getsomeattrs = tts_zheap_getsomeattrs,
-	.getsysattr = tts_zheap_getsysattr,
-	.materialize = tts_zheap_materialize,
-	.copyslot = tts_zheap_copyslot,
-
-	.get_heap_tuple = NULL,
-	.get_minimal_tuple = NULL,
-
-	.copy_heap_tuple = tts_zheap_copy_heap_tuple,
-	.copy_minimal_tuple = tts_zheap_copy_minimal_tuple
-};
 
 void
 slot_deform_ztuple(TupleTableSlot *slot, ZHeapTuple tuple,
