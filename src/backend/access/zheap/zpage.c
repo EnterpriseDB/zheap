@@ -9,6 +9,13 @@
  * in the special space.  In the future, we want this array to be of variable
  * length.
  *
+ * zheap tuples are not MAXALIGN'd as PageAddItemExtended would do, but are
+ * instead aligned only on 2-byte boundaries.  This is sufficient to access
+ * the tuple header without copying the data, since there's nothing in the
+ * tuple header wider than a uint16.  The tuple data is always copied
+ * before we access it (since otherwise in-place updates would be difficut
+ * to implement).
+ *
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
