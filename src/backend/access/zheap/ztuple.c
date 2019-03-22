@@ -805,6 +805,7 @@ tts_zheap_clear(TupleTableSlot *slot)
 	slot->tts_nvalid = 0;
 	slot->tts_flags |= TTS_FLAG_EMPTY;
 	zslot->tuple = NULL;
+	zslot->off = 0;
 }
 
 static void
@@ -1056,19 +1057,17 @@ ExecStoreZHeapTuple(ZHeapTuple tuple, TupleTableSlot *slot, bool shouldFree)
 {
 	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
 
-	/*
-	 * sanity checks
-	 */
+	/* sanity checks */
 	Assert(slot != NULL);
 	Assert(TTS_IS_ZHEAP(slot));
-	tts_zheap_clear(slot);
 
-	slot->tts_nvalid = 0;
+	/* clear slot and store new tuple */
+	tts_zheap_clear(slot);
 	zslot->tuple = tuple;
-	zslot->off = 0;
 	slot->tts_flags &= ~TTS_FLAG_EMPTY;
 	slot->tts_tid = tuple->t_self;
 
+	/* set flag if needed */
 	if (shouldFree)
 		slot->tts_flags |= TTS_FLAG_SHOULDFREE;
 
