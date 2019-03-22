@@ -1564,29 +1564,6 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 }
 
 /*
- * zheap_search - search for a zheap tuple satisfying snapshot.
- *
- * This is the same API as zheap_search_buffer, except that the caller
- * does not provide the buffer containing the page, rather we access it
- * locally.
- */
-bool
-zheap_search(ItemPointer tid, Relation relation, Snapshot snapshot,
-			 bool *all_dead)
-{
-	Buffer	buffer;
-	ZHeapTuple	zheapTuple = NULL;
-
-	buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
-	LockBuffer(buffer, BUFFER_LOCK_SHARE);
-	zheapTuple = zheap_search_buffer(tid, relation, buffer, snapshot, all_dead);
-	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-	ReleaseBuffer(buffer);
-
-	return (zheapTuple != NULL);
-}
-
-/*
  * zheap_fetch - Fetch a tuple based on TID.
  *
  *	This function is quite similar to heap_fetch with few differences like
