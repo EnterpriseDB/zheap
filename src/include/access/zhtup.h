@@ -292,7 +292,6 @@ extern PGDLLIMPORT const TupleTableSlotOps TTSOpsZHeapTuple;
 #define TTS_IS_ZHEAP(slot) ((slot)->tts_ops == &TTSOpsZHeapTuple)
 
 extern HeapTuple zheap_to_heap(ZHeapTuple ztuple, TupleDesc tupDesc);
-extern MinimalTuple zheap_to_minimal(ZHeapTuple ztuple, TupleDesc tupDesc);
 extern ZHeapTuple heap_to_zheap(HeapTuple ztuple, TupleDesc tupDesc);
 extern ZHeapTuple zheap_copytuple(ZHeapTuple tuple);
 
