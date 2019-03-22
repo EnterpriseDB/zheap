@@ -896,24 +896,25 @@ tts_zheap_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 
 /*
  * tts_zheap_copy_heap_tuple
+ *		Return a heap tuple constructed from the contents of the slot.
  *
- * ZBORKED: This is extremely inefficient.  tts_zheap_materialize builds a
- * a zheap tuple, so that zheap_to_heap can then deform it again and then
- * form it again in the heap format.  Can't we do this just like we do in
- * tts_zheap_copy_minimal_tuple, which is not only more efficient but less
- * code?
+ * heap_form_tuple will always a build a new tuple, so we don't need an
+ * explicit copy step.
  */
 static HeapTuple
 tts_zheap_copy_heap_tuple(TupleTableSlot *slot)
 {
-	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
+	HeapTuple	tuple;
 
 	Assert(!TTS_EMPTY(slot));
+	slot_getallattrs(slot);
 
-	if (!zslot->tuple)
-		tts_zheap_materialize(slot);
+	tuple = heap_form_tuple(slot->tts_tupleDescriptor,
+							slot->tts_values, slot->tts_isnull);
+	tuple->t_self = slot->tts_tid;
+	tuple->t_tableOid = slot->tts_tableOid;
 
-	return zheap_to_heap(zslot->tuple, slot->tts_tupleDescriptor);
+	return tuple;
 }
 
 /*
@@ -926,6 +927,8 @@ tts_zheap_copy_heap_tuple(TupleTableSlot *slot)
 static MinimalTuple
 tts_zheap_copy_minimal_tuple(TupleTableSlot *slot)
 {
+	Assert(!TTS_EMPTY(slot));
+
 	slot_getallattrs(slot);
 
 	return heap_form_minimal_tuple(slot->tts_tupleDescriptor,
@@ -1062,29 +1065,6 @@ ExecStoreZHeapTuple(ZHeapTuple tuple, TupleTableSlot *slot, bool shouldFree)
 		slot->tts_flags |= TTS_FLAG_SHOULDFREE;
 
 	return slot;
-}
-
-/*
- * zheap_to_heap
- *
- * convert zheap tuple to heap tuple
- */
-HeapTuple
-zheap_to_heap(ZHeapTuple ztuple, TupleDesc tupDesc)
-{
-	HeapTuple	tuple;
-	Datum	   *values = palloc0(sizeof(Datum) * tupDesc->natts);
-	bool	   *nulls = palloc0(sizeof(bool) * tupDesc->natts);
-
-	zheap_deform_tuple(ztuple, tupDesc, values, nulls);
-	tuple = heap_form_tuple(tupDesc, values, nulls);
-	tuple->t_self = ztuple->t_self;
-	tuple->t_tableOid = ztuple->t_tableOid;
-
-	pfree(values);
-	pfree(nulls);
-
-	return tuple;
 }
 
 /*
