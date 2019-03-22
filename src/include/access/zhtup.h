@@ -285,9 +285,8 @@ struct TupleTableSlot;
 extern void slot_deform_ztuple(struct TupleTableSlot *slot, ZHeapTuple tuple,
 				   uint32 *offp, int natts);
 extern ZHeapTuple ExecGetZHeapTupleFromSlot(struct TupleTableSlot *slot);
-extern struct TupleTableSlot *ExecStoreZTuple(ZHeapTuple tuple,
-				struct TupleTableSlot *slot, Buffer buffer,
-				bool shouldFree);
+extern struct TupleTableSlot *ExecStoreZHeapTuple(ZHeapTuple tuple,
+				struct TupleTableSlot *slot, bool shouldFree);
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsZHeapTuple;
 #define TTS_IS_ZHEAP(slot) ((slot)->tts_ops == &TTSOpsZHeapTuple)
 

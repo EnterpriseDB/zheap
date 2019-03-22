@@ -77,7 +77,7 @@ zheapam_fetch_row_version(Relation relation,
 
 	if (zheap_fetch(relation, snapshot, tid, &zslot->tuple, &buffer, false))
 	{
-		ExecStoreZTuple(zslot->tuple, slot, buffer, true);
+		ExecStoreZHeapTuple(zslot->tuple, slot, true);
 		ReleaseBuffer(buffer);
 
 		slot->tts_tableOid = RelationGetRelid(relation);
@@ -427,7 +427,7 @@ retry:
 	}
 
 	slot->tts_tableOid = RelationGetRelid(relation);
-	ExecStoreZTuple(tuple, slot, buffer, false);
+	ExecStoreZHeapTuple(tuple, slot, false);
 	/* FIXME:invent option to just transfer pin ? */
 	ReleaseBuffer(buffer);
 
@@ -618,7 +618,7 @@ zheapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 	if (zheapTuple)
 	{
 		slot->tts_tableOid = RelationGetRelid(scan->rel);
-		ExecStoreZTuple(zheapTuple, slot, hscan->xs_cbuf, false);
+		ExecStoreZHeapTuple(zheapTuple, slot, false);
 	}
 
 	return zheapTuple != NULL;
@@ -1403,7 +1403,7 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 
 		if (sample_it)
 		{
-			ExecStoreZTuple(targtuple, slot, InvalidBuffer, false);
+			ExecStoreZHeapTuple(targtuple, slot, false);
 			scan->rs_cindex++;
 
 			/* note that we leave the buffer locked here! */
@@ -1633,7 +1633,7 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 				if (!visible)
 					continue;
 
-				ExecStoreZTuple(tuple, slot, InvalidBuffer, false);
+				ExecStoreZHeapTuple(tuple, slot, false);
 
 				/* Found visible tuple, return it. */
 				LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
@@ -1649,7 +1649,7 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 				if (tuple == NULL)
 					continue;
 
-				ExecStoreZTuple(tuple, slot, InvalidBuffer, false);
+				ExecStoreZHeapTuple(tuple, slot, false);
 
 				return true;
 			}
