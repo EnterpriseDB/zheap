@@ -157,7 +157,6 @@ extern void PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer,
 			int trans_slot_id, bool set_tpd_map_slot, uint32 epoch,
 			TransactionId xid, UndoRecPtr urecptr, OffsetNumber *usedoff,
 			int ucnt);
-extern UndoRecPtr PageGetUNDO(Page page, int trans_slot_id);
 extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
 										TransactionId xid, TransactionId *latestRemovedXid);
 extern void zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
@@ -165,10 +164,6 @@ extern void zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots
 extern bool PageFreezeTransSlots(Relation relation, Buffer buf,
 					 bool *lock_reacquired, TransInfo * transinfo,
 					 int num_slots, bool use_aborted_slot);
-extern void GetCompletedSlotOffsets(Page page, int nCompletedXactSlots,
-						int *completed_slots,
-						OffsetNumber *offset_completed_slots,
-						int *numOffsets);
 extern TransactionId zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer);
 extern void copy_zrelation_data(Relation srcRel, SMgrRelation dst);
 extern TransactionId zheap_compute_xid_horizon_for_tuples(Relation rel,
@@ -225,11 +220,6 @@ extern void zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
 extern void ZheapInitMetaPage(Relation rel, ForkNumber forkNum, bool already_exists);
 
 /* Zheap and undo record interaction related API's (zundo.c) */
-extern bool zheap_fetch_undo(Relation relation, Snapshot snapshot,
-				 ItemPointer tid, ZHeapTuple * tuple, Buffer *userbuf,
-				 Relation stats_relation);
-extern ZHeapTuple zheap_fetch_undo_guts(ZHeapTuple ztuple, Buffer buffer,
-										ItemPointer tid);
 extern bool ZHeapSatisfyUndoRecord(UnpackedUndoRecord *uurec, BlockNumber blkno,
 					   OffsetNumber offset, TransactionId xid);
 extern ZHeapTuple CopyTupleFromUndoRecord(UnpackedUndoRecord *urec,
