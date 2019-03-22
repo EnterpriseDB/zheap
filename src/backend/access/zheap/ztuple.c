@@ -3,22 +3,39 @@
  * ztuple.c
  *	  Routines to form and deform zheap tuples.
  *
- * Tuple header in zheap is 5 bytes as compared to 24 bytes in heap.  All
- * transactional information is stored in undo, so fields that store such
- * information are not needed here.
+ * zheap implements three separate optimizations which reduce the size of
+ * zheap tuples as compared with PostgreSQL's traditional heap tuple
+ * format.
  *
- * We omit all alignment padding for pass-by-value types.  Pass-by-reference
- * types will work as they do in the heap.  We don’t need alignment padding
- * between the tuple header and the tuple data as we always make a copy of the
- * tuple to support in-place updates.  Likewise, we ideally don't need any
- * alignment padding between tuples. However, there are places in zheap code
- * where we access tuple header directly from the page (e.g. zheap_delete,
- * zheap_update, etc.) for which we want them to be aligned at two-byte
- * boundary).
+ * First, nearly all transactional information is stored in page-level
+ * structures or in the undo log rather than on a per-tuple basis.  As
+ * a result, tuple headers can be much narrower -- just 5 bytes rather
+ * than 23.
+ *
+ * Second, we omit alignment padding between the tuple header and the
+ * tuple data.  Because we support in-place update, we can never return
+ * to the executor a pointer directly into the page; instead, every
+ * tuple must be copied -- and we can easily copy it into an aligned
+ * buffer, whether or not the source data is aligned.
+ *
+ * Third, we omit all alignment padding for pass-by-value data types.
+ * Outside of system catalogs, where it is important for the fixed-width
+ * portion of the tuple to match the format of a C "struct", this padding
+ * isn't even beneficial in the current heap, although it can't easily be
+ * removed for reasons of backward compatibility.  zheap tables can't
+ * currently be used for system catalogs, so this doesn't matter at all
+ * right now; if it matters someday, we should find a better solution
+ * than inserting unnecessary padding into user tables that may contain
+ * billions of rows.
+ *
+ * Unfortunately, zheap cannot take advantage of attcacheoff when
+ * forming and deforming tuples, because we still sometimes need to
+ * take data from a zheap table and put in the form of a heap tuple,
+ * and that code would get confused if the offset had been set according
+ * to zheap's weaker alignment rules.
  *
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
- *
  *
  * IDENTIFICATION
  *	  src/backend/access/zheap/ztuple.c
@@ -35,14 +52,11 @@
 
 /*
  * zheap_compute_data_size
- *		Determine size of the data area of a tuple to be constructed.
+ *		Determine size of the data area for a zheap tuple.
  *
- * We can't start with zero offset for first attribute as that has a
- * hidden assumption that tuple header is MAXALIGNED which is not true
- * for zheap.  For example, if the first attribute requires alignment
- * (say it is four-byte varlena), then the code would assume the offset
- * is aligned in case we start with zero offset for first attribute.  So,
- * always start with the actual byte from where the first attribute starts.
+ * Even the first attribute might require alignment, because in zheap,
+ * unlike the regular heap, t_hoff is not necessarily a multiple of
+ * MAXIMUM_ALIGNOF.
  */
 Size
 zheap_compute_data_size(TupleDesc tupleDesc, Datum *values, bool *isnull,
@@ -65,7 +79,7 @@ zheap_compute_data_size(TupleDesc tupleDesc, Datum *values, bool *isnull,
 
 		if (atti->attbyval)
 		{
-			/* The attbyval attributes are stored unaligned in zheap. */
+			/* attbyval attributes are stored unaligned in zheap. */
 			data_length += atti->attlen;
 		}
 		else if (ATT_IS_PACKABLE(atti) &&
@@ -89,6 +103,12 @@ zheap_compute_data_size(TupleDesc tupleDesc, Datum *values, bool *isnull,
 		}
 		else
 		{
+			/*
+			 * We'll reach this case when storing a varlena that needs a
+			 * 4-byte header, a variable-width type that requires alignment
+			 * such as a record type, and for fixed-width types that are
+			 * not pass-by-value (e.g. aclitem).
+			 */
 			data_length = att_align_datum(data_length, atti->attalign,
 										  atti->attlen, val);
 			data_length = att_addlength_datum(data_length, atti->attlen,
@@ -104,12 +124,11 @@ zheap_compute_data_size(TupleDesc tupleDesc, Datum *values, bool *isnull,
  *		Load data portion of a tuple from values/isnull arrays.
  *
  * We also fill the null bitmap (if any) and set the infomask bits
- * that reflect the tuple's data contents.
+ * that reflect the tuple's data contents.  Note that zheap uses different
+ * infomask values than the regular heap, and that the alignment rules
+ * are different (see the file header comment for more details).
  *
- * This function is same as heap_fill_tuple except for datatype of infomask
- * parameter.
- *
- * NOTE: it is now REQUIRED that the caller have pre-zeroed the data area.
+ * The data area must be pre-zeroed on entry to this function.
  */
 void
 zheap_fill_tuple(TupleDesc tupleDesc,
@@ -166,15 +185,12 @@ zheap_fill_tuple(TupleDesc tupleDesc,
 		}
 
 		/*
-		 * XXX we use the att_align macros on the pointer value itself, not on
+		 * We use the att_align macros on the pointer value itself, not on
 		 * an offset.  This is a bit of a hack.
 		 */
-
 		if (att->attbyval)
 		{
 			/* pass-by-value */
-			/* data = (char *) att_align_nominal(data, att->attalign); */
-			/* store_att_byval(data, values[i], att->attlen); */
 			memcpy(data, (char *) &values[i], att->attlen);
 			data_length = att->attlen;
 		}
@@ -255,16 +271,12 @@ zheap_fill_tuple(TupleDesc tupleDesc,
 
 /*
  * zheap_form_tuple
- *		Construct a tuple from the given values[] and isnull[] arrays.
+ *		Construct a zheap tuple from the given values[] and isnull[] arrays.
  *
- *	This is similar to heap_form_tuple except for tuple header.  Currently,
- *	we don't do anything special for Datum tuples, but eventually we need
- *	to do something about it.
+ * The result is allocated in the current memory context.
  */
 ZHeapTuple
-zheap_form_tuple(TupleDesc tupleDescriptor,
-				 Datum *values,
-				 bool *isnull)
+zheap_form_tuple(TupleDesc tupleDescriptor, Datum *values, bool *isnull)
 {
 	ZHeapTuple	tuple;			/* return tuple */
 	ZHeapTupleHeader td;		/* tuple data */
@@ -281,9 +293,7 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 				 errmsg("number of columns (%d) exceeds limit (%d)",
 						numberOfAttributes, MaxTupleAttributeNumber)));
 
-	/*
-	 * Check for nulls
-	 */
+	/* Check for nulls */
 	for (i = 0; i < numberOfAttributes; i++)
 	{
 		if (isnull[i])
@@ -293,28 +303,15 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 		}
 	}
 
-	/*
-	 * Determine total space needed
-	 */
+	/* Compute required space.  Note that, in zheap, hoff is not aligned. */
 	len = offsetof(ZHeapTupleHeaderData, t_bits);
-
 	if (hasnull)
 		len += BITMAPLEN(numberOfAttributes);
-
-	/*
-	 * We don't MAXALIGN the tuple headers as we always make the copy of tuple
-	 * to support in-place updates.
-	 */
 	hoff = len;
-
 	data_len = zheap_compute_data_size(tupleDescriptor, values, isnull, hoff);
-
 	len += data_len;
 
-	/*
-	 * Allocate and zero the space needed.  Note that the tuple body and
-	 * ZHeapTupleData management structure are allocated in one chunk.
-	 */
+	/* Allocate the require space as a single chunk. */
 	tuple = MemoryContextAllocExtended(CurrentMemoryContext,
 									   ZHEAPTUPLESIZE + len,
 									   MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
@@ -324,6 +321,11 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 	 * And fill in the information.  Note we fill the Datum fields even though
 	 * this tuple may never become a Datum.  This lets HeapTupleHeaderGetDatum
 	 * identify the tuple type if needed.
+	 *
+	 * ZBORKED: The comment above is false.  Not only do we not set those
+	 * fields, but in zheap they don't even exist.  Do we just need to adjust
+	 * the comment, or is there something that actually needs to be changed
+	 * here?
 	 */
 	tuple->t_len = len;
 	ItemPointerSetInvalid(&(tuple->t_self));
@@ -345,11 +347,11 @@ zheap_form_tuple(TupleDesc tupleDescriptor,
 
 /*
  * zheap_deform_tuple
- * 		Similar to heap_deform_tuple, but for zheap tuples.
+ * 		Extract data from a zheap tuple into values/isnull arrays.
  *
- * Note that for zheap, cached offsets are not used and we always start
- * deforming with the actual byte from where the first attribute starts.  See
- * atop zheap_compute_data_size.
+ * See file header comments for an explanation of why attcacheoff is not
+ * used here.  Note that for pass-by-referenced datatypes, the pointer
+ * placed in the Datum will point into the given tuple.
  */
 void
 zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
@@ -372,11 +374,10 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 	 * the caller's arrays.
 	 */
 	natts = Min(natts, tdesc_natts);
-
 	tp = (char *) tup;
-
 	off = tup->t_hoff;
 
+	/* Loop over attributes one by one. */
 	for (attnum = 0; attnum < natts; attnum++)
 	{
 		Form_pg_attribute thisatt = TupleDescAttr(tupleDesc, attnum);
@@ -390,26 +391,26 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 
 		isnull[attnum] = false;
 
+		/*
+		 * If this is a varlena, there might be alignment padding, if it has
+		 * a 4-byte header.  Otherwise, there will only be padding if it's
+		 * not pass-by-value.
+		 */
 		if (thisatt->attlen == -1)
-		{
 			off = att_align_pointer(off, thisatt->attalign, -1,
 									tp + off);
-		}
 		else if (!thisatt->attbyval)
-		{
-			/* not varlena, so safe to use att_align_nominal */
 			off = att_align_nominal(off, thisatt->attalign);
-		}
 
-		/*
-		 * Support fetching attributes for zheap.  The main difference as
-		 * compare to heap tuples is that we don't align passbyval attributes.
-		 * To compensate that we use memcpy to fetch passbyval attributes.
-		 */
 		if (thisatt->attbyval)
 		{
 			Datum		datum;
 
+			/*
+			 * Since pass-by-value attributes are not aligned in zheap, use
+			 * memcpy to copy the value into adequately-aligned storage.
+			 * Since it's pass-by-value, a Datum must be big enough.
+			 */
 			memcpy(&datum, tp + off, thisatt->attlen);
 
 			/*
@@ -436,6 +437,7 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 
 /*
  * zheap_freetuple
+ * 		Free memory used to store zheap tuple.
  */
 void
 zheap_freetuple(ZHeapTuple zhtup)
@@ -451,6 +453,13 @@ zheap_freetuple(ZHeapTuple zhtup)
  * Note that for zheap, cached offsets are not used and we always start
  * deforming with the actual byte from where the first attribute starts.  See
  * atop zheap_compute_data_size.
+ *
+ * ZBORKED: The comments above more or less contradict each other; the first
+ * one says that this is the same as nocachegetattr and the second one
+ * describes a second difference between this function and nocachegetattr().
+ * Really, this function is misnamed for zheap, because *ALL* attribute
+ * fetches in zheap are "nocache", so shouldn't we just rename this to
+ * zgetattr or something like that?
  */
 Datum
 znocachegetattr(ZHeapTuple tuple,
@@ -480,20 +489,18 @@ znocachegetattr(ZHeapTuple tuple,
 		Form_pg_attribute att = TupleDescAttr(tupleDesc, i);
 
 		if (ZHeapTupleHasNulls(tuple) && att_isnull(i, bp))
-		{
 			continue;			/* this cannot be the target att */
-		}
 
+		/*
+		 * If this is a varlena, there might be alignment padding, if it has
+		 * a 4-byte header.  Otherwise, there will only be padding if it's
+		 * not pass-by-value.
+		 */
 		if (att->attlen == -1)
-		{
 			off = att_align_pointer(off, att->attalign, -1,
 									tp + off);
-		}
 		else if (!att->attbyval)
-		{
-			/* not varlena, so safe to use att_align_nominal */
 			off = att_align_nominal(off, att->attalign);
-		}
 
 		if (i == attnum)
 			break;
@@ -506,6 +513,11 @@ znocachegetattr(ZHeapTuple tuple,
 	{
 		Datum		datum;
 
+		/*
+		 * Since pass-by-value attributes are not aligned in zheap, use
+		 * memcpy to copy the value into adequately-aligned storage.
+		 * Since it's pass-by-value, a Datum must be big enough.
+		 */
 		memcpy(&datum, tp + off, thisatt->attlen);
 
 		/*
@@ -524,8 +536,6 @@ znocachegetattr(ZHeapTuple tuple,
 /*
  * zheap_getsysattr
  *		Fetch the value of a system attribute for a tuple.
- *
- * This provides same information as heap_getsysattr, but for zheap tuple.
  */
 Datum
 zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
@@ -539,7 +549,11 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 
 	/*
 	 * For xmin,xmax,cmin and cmax we may need to fetch the information from
-	 * the undo record, so ensure we have the valid buffer.
+	 * the undo record, so ensure we have a valid buffer.
+	 *
+	 * ZBORKED: It does not seem acceptable to call relation_open() here.
+	 * This is a very low-level function which has no business touching the
+	 * relcache.
 	 */
 	if (!BufferIsValid(buf) &&
 		((attnum == MinTransactionIdAttributeNumber) ||
@@ -652,7 +666,8 @@ zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc)
 
 /*
  * zheap_tuple_attr_equals
- * 		Subroutine for ZHeapDetermineModifiedColumns to check if the specified attribute value is same in both given tuples.
+ * 		Subroutine for ZHeapDetermineModifiedColumns to check if the specified
+ *		attribute value is same in both given tuples.
  */
 bool
 zheap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
@@ -757,11 +772,6 @@ tts_zheap_clear(TupleTableSlot *slot)
 		slot->tts_flags &= ~TTS_FLAG_SHOULDFREE;
 	}
 
-#if 0
-	if (ZheapIsValid(bslot->zheap))
-		ReleaseZheap(bslot->zheap);
-#endif
-
 	slot->tts_nvalid = 0;
 	slot->tts_flags |= TTS_FLAG_EMPTY;
 	zslot->tuple = NULL;
@@ -787,8 +797,8 @@ tts_zheap_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 
 /*
  * tts_zheap_materialize
- * 		Materialize the zheap tuple contained in the given slot into its own memory.
- * context.
+ * 		Materialize the zheap tuple contained in the given slot into its own
+ *		memory context.
  */
 static void
 tts_zheap_materialize(TupleTableSlot *slot)
@@ -821,21 +831,6 @@ tts_zheap_materialize(TupleTableSlot *slot)
 	}
 	MemoryContextSwitchTo(oldContext);
 
-#if 0
-
-	/*
-	 * TODO: I expect a ZheapHeapTupleTableSlot to always have a zheap to be
-	 * associated with it OR the tuple is materialized. In the later case we
-	 * won't come here. So, we should always see a valid zheap here to be
-	 * unpinned.
-	 */
-	if (zslot->tuple)
-	{
-		ReleaseZheap(bslot->zheap);
-		bslot->zheap = InvalidZheap;
-	}
-#endif
-
 	/*
 	 * Have to deform from scratch, otherwise tts_values[] entries could point
 	 * into the non-materialized tuple (which might be gone when accessed).
@@ -844,13 +839,20 @@ tts_zheap_materialize(TupleTableSlot *slot)
 	zslot->off = 0;
 }
 
+/*
+ * tts_zheap_copyslot
+ *
+ * ZBORKED: This is extremely inefficient, because it forms a heap tuple
+ * for the source slot which we definitely can't store, and must therefore
+ * deform again -- only to turn around and build a zheap tuple again.
+ * It seems like we should instead do slot_getallattrs() on the source slot
+ * and then copy the Datum/isnull arrays.
+ */
 static void
 tts_zheap_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 {
 	HeapTuple	tuple;
 	MemoryContext oldcontext;
-
-	/* PBORKED: This is a horrible implementation */
 
 	oldcontext = MemoryContextSwitchTo(dstslot->tts_mcxt);
 	tuple = ExecCopySlotHeapTuple(srcslot);
@@ -862,6 +864,15 @@ tts_zheap_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 	pfree(tuple);
 }
 
+/*
+ * tts_zheap_copy_heap_tuple
+ *
+ * ZBORKED: This is extremely inefficient.  tts_zheap_materialize builds a
+ * a zheap tuple, so that zheap_to_heap can then deform it again and then
+ * form it again in the heap format.  Can't we do this just like we do in
+ * tts_zheap_copy_minimal_tuple, which is not only more efficient but less
+ * code?
+ */
 static HeapTuple
 tts_zheap_copy_heap_tuple(TupleTableSlot *slot)
 {
@@ -879,12 +890,8 @@ tts_zheap_copy_heap_tuple(TupleTableSlot *slot)
  * tts_zheap_copy_minimal_tuple
  *		Return a minimal tuple constructed from the contents of the slot.
  *
- * We always return a new minimal tuple so no copy, per say, is needed.
- *
- * TODO:
- * This function is exact copy of tts_zheap_get_minimal_tuple() and thus the
- * callback should point to that one instead of a new implementation. But
- * there's one TODO there which might change tts_heap_get_minimal_tuple().
+ * heap_form_minimal_tuple will always a build a new tuple, so we don't
+ * need an explicit copy step.
  */
 static MinimalTuple
 tts_zheap_copy_minimal_tuple(TupleTableSlot *slot)
@@ -913,7 +920,8 @@ const		TupleTableSlotOps TTSOpsZHeapTuple = {
 };
 
 void
-slot_deform_ztuple(TupleTableSlot *slot, ZHeapTuple tuple, uint32 *offp, int natts)
+slot_deform_ztuple(TupleTableSlot *slot, ZHeapTuple tuple,
+				   uint32 *offp, int natts)
 {
 	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
 	Datum	   *values = slot->tts_values;
@@ -963,18 +971,16 @@ slot_deform_ztuple(TupleTableSlot *slot, ZHeapTuple tuple, uint32 *offp, int nat
 			/* not varlena, so safe to use att_align_nominal */
 			tp = (char *) att_align_nominal(tp, thisatt->attalign);
 		}
-		/* XXX: We don't align for byval attributes in zheap. */
 
-		/*
-		 * Support fetching attributes for zheap.  The main difference as
-		 * compare to heap tuples is that we don't align passbyval attributes.
-		 * To compensate that we use memcpy to fetch the source of passbyval
-		 * attributes.
-		 */
 		if (thisatt->attbyval)
 		{
 			Datum		datum;
 
+			/*
+			 * Since pass-by-value attributes are not aligned in zheap, use
+			 * memcpy to copy the value into adequately-aligned storage.
+			 * Since it's pass-by-value, a Datum must be big enough.
+			 */
 			memcpy(&datum, tp, thisatt->attlen);
 
 			/*
@@ -1000,8 +1006,7 @@ slot_deform_ztuple(TupleTableSlot *slot, ZHeapTuple tuple, uint32 *offp, int nat
 
 /*
  * ExecGetZHeapTupleFromSlot
- *   Fetch ZHeapTuple representing the slot's
- *	content.
+ *   Fetch ZHeapTuple representing the slot's content.
  */
 ZHeapTuple
 ExecGetZHeapTupleFromSlot(TupleTableSlot *slot)
@@ -1027,7 +1032,7 @@ ExecGetZHeapTupleFromSlot(TupleTableSlot *slot)
  *		physical zheap tuple into a specified slot in the tuple table.
  *
  *		NOTE: Unlike ExecStoreTuple, it's possible that buffer is valid and
- *		should_free is true. Because, slot->tts_ztuple may be a copy of the
+ *		should_free is true, because slot->tts_ztuple may be a copy of the
  *		tuple allocated locally. So, we want to free the tuple even after
  *		keeping a pin/lock to the previously valid buffer.
  */
@@ -1080,26 +1085,6 @@ zheap_to_heap(ZHeapTuple ztuple, TupleDesc tupDesc)
 }
 
 /*
- * zheap_to_heap
- *		Convert zheap tuple to a minimal tuple.
- */
-MinimalTuple
-zheap_to_minimal(ZHeapTuple ztuple, TupleDesc tupDesc)
-{
-	MinimalTuple tuple;
-	Datum	   *values = palloc0(sizeof(Datum) * tupDesc->natts);
-	bool	   *nulls = palloc0(sizeof(bool) * tupDesc->natts);
-
-	zheap_deform_tuple(ztuple, tupDesc, values, nulls);
-	tuple = heap_form_minimal_tuple(tupDesc, values, nulls);
-
-	pfree(values);
-	pfree(nulls);
-
-	return tuple;
-}
-
-/*
  * heap_to_zheap
  *		Convert heap tuple to zheap tuple.
  */
@@ -1122,7 +1107,7 @@ heap_to_zheap(HeapTuple tuple, TupleDesc tupDesc)
 }
 
 /*
- *zheap_copytuple
+ * zheap_copytuple
  *		Returns a copy of an entire tuple.
  *
  * The ZHeapTuple struct, tuple header, and tuple data are all allocated
