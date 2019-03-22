@@ -1038,19 +1038,11 @@ ExecGetZHeapTupleFromSlot(TupleTableSlot *slot)
 }
 
 /*
- * ExecStoreZTuple
- *
- *		This function is same as ExecStoreTuple except that it used to store a
- *		physical zheap tuple into a specified slot in the tuple table.
- *
- *		NOTE: Unlike ExecStoreTuple, it's possible that buffer is valid and
- *		should_free is true, because slot->tts_ztuple may be a copy of the
- *		tuple allocated locally. So, we want to free the tuple even after
- *		keeping a pin/lock to the previously valid buffer.
+ * ExecStoreZHeapTuple
+ *		Store a physical zheap tuple into a TTSOpsZHeapTuple slot.
  */
 TupleTableSlot *
-ExecStoreZTuple(ZHeapTuple tuple, TupleTableSlot *slot, Buffer buffer,
-				bool shouldFree)
+ExecStoreZHeapTuple(ZHeapTuple tuple, TupleTableSlot *slot, bool shouldFree)
 {
 	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
 

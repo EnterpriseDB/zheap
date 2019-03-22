@@ -1191,8 +1191,8 @@ zheap_getnextslot(TableScanDesc sscan, ScanDirection direction,
 
 	pgstat_count_heap_getnext(scan->rs_scan.rs_rd);
 
-	return ExecStoreZTuple(zhtup, slot, scan->rs_cbuf,
-						   scan->rs_scan.rs_pageatatime ? false : true);
+	return ExecStoreZHeapTuple(zhtup, slot,
+							   scan->rs_scan.rs_pageatatime ? false : true);
 }
 
 bool
@@ -1361,10 +1361,7 @@ zheap_scan_bitmap_pagescan_next(TableScanDesc sscan, struct TupleTableSlot *slot
 	 * Set up the result slot to point to this tuple. We don't need to keep
 	 * the pin on the buffer, since we only scan tuples in page mode.
 	 */
-	ExecStoreZTuple(scan->rs_cztup,
-					slot,
-					InvalidBuffer,
-					true);
+	ExecStoreZHeapTuple(scan->rs_cztup, slot, true);
 
 	scan->rs_cindex++;
 
