@@ -22,13 +22,6 @@ These interfaces will probably change once the storage format API work is
 integrated into PostgreSQL.  We’ll adjust this code to use whatever interfaces
 are agreed by the PostgreSQL community.
 
-We have also provided a GUC called data_alignment, which sets the alignment
-used for zheap tuples. 0 indicates no alignment, 4 uses a maximum of 4 byte
-alignment, and any other value indicates align as per attalign.  This also
-controls the padding between tuples. This parameter is just for some
-experiments to see the impact of alignment on database size.  This parameter
-will be removed later; we’ll align as described in the zheap design document.
-
 Each zheap page has fixed set of transaction slots each of which contains the
 transaction information (transaction id and epoch) and the latest undo record
 pointer for that transaction.  By default, we have four transaction slots per
