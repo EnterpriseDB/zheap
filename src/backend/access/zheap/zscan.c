@@ -416,13 +416,6 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 
 	snapshot = scan->rs_base.rs_snapshot;
 
-	/*
-	 * Prune and repair fragmentation for the whole page, if possible.
-	 * Fixme - Pruning is required in zheap for deletes, so we need to
-	 * make it work.
-	 */
-	/* heap_page_prune_opt(scan->rs_rd, buffer); */
-
 	TestForOldSnapshot(snapshot, scan->rs_base.rs_rd, dp);
 	lines = PageGetMaxOffsetNumber(dp);
 	ntup = 0;
@@ -615,8 +608,6 @@ zheapgettup_pagemode(ZHeapScanDesc scan,
 			lineindex = scan->rs_cindex + 1;
 		}
 
-		/*dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(scan->rs_snapshot, scan->rs_rd, dp);*/
 		lines = scan->rs_ntuples;
 		/* page and lineindex now reference the next visible tid */
 
