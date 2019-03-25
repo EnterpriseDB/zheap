@@ -951,7 +951,7 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 		}
 		else
 		{
-			/* zheap_getnext did the time qual check */
+			/* zheap_getnextslot did the time qual check */
 			tupleIsAlive = true;
 			targztuple = zheapTuple;
 		}

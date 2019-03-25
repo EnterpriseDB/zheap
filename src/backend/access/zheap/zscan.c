@@ -1083,62 +1083,17 @@ get_next_page:
 }
 #ifdef ZHEAPDEBUGALL
 #define ZHEAPDEBUG_1 \
-	elog(DEBUG2, "zheap_getnext([%s,nkeys=%d],dir=%d) called", \
+	elog(DEBUG2, "zheap_getnextslot([%s,nkeys=%d],dir=%d) called", \
 		 RelationGetRelationName(scan->rs_rd), scan->rs_nkeys, (int) direction)
 #define ZHEAPDEBUG_2 \
-	elog(DEBUG2, "zheap_getnext returning EOS")
+	elog(DEBUG2, "zheap_getnextslot returning EOS")
 #define ZHEAPDEBUG_3 \
-	elog(DEBUG2, "zheap_getnext returning tuple")
+	elog(DEBUG2, "zheap_getnextslot returning tuple")
 #else
 #define ZHEAPDEBUG_1
 #define ZHEAPDEBUG_2
 #define ZHEAPDEBUG_3
 #endif							/* !defined(ZHEAPDEBUGALL) */
-
-
-ZHeapTuple
-zheap_getnext(TableScanDesc sscan, ScanDirection direction)
-{
-	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
-	ZHeapTuple	zhtup = NULL;
-
-	/* Skip metapage */
-	if (scan->rs_scan.rs_startblock == ZHEAP_METAPAGE)
-		scan->rs_scan.rs_startblock = ZHEAP_METAPAGE + 1;
-
-	/* Note: no locking manipulations needed */
-
-	ZHEAPDEBUG_1;				/* zheap_getnext( info ) */
-
-	/*
-	 * The key will be passed only for catalog table scans and catalog tables
-	 * are always a heap table!. So in case of zheap it should be set to NULL.
-	 */
-	Assert(scan->rs_scan.rs_key == NULL);
-
-	if (scan->rs_scan.rs_pageatatime)
-		zhtup = zheapgettup_pagemode(scan, direction);
-	else
-		zhtup = zheapgettup(scan, direction);
-
-	if (zhtup == NULL)
-	{
-		ZHEAPDEBUG_2;			/* zheap_getnext returning EOS */
-		return NULL;
-	}
-
-	scan->rs_cztup = zhtup;
-
-	/*
-	 * if we get here it means we have a new current scan tuple, so point to
-	 * the proper return buffer and return the tuple.
-	 */
-	ZHEAPDEBUG_3;				/* zheap_getnext returning tuple */
-
-	pgstat_count_heap_getnext(scan->rs_scan.rs_rd);
-
-	return zhtup;
-}
 
 TupleTableSlot *
 zheap_getnextslot(TableScanDesc sscan, ScanDirection direction,
@@ -1151,7 +1106,7 @@ zheap_getnextslot(TableScanDesc sscan, ScanDirection direction,
 	if (scan->rs_scan.rs_startblock == ZHEAP_METAPAGE)
 		scan->rs_scan.rs_startblock = ZHEAP_METAPAGE + 1;
 
-	ZHEAPDEBUG_1;				/* zheap_getnext( info ) */
+	ZHEAPDEBUG_1;				/* zheap_getnextslot( info ) */
 
 	/*
 	 * The key will be passed only for catalog table scans and catalog tables
@@ -1166,7 +1121,7 @@ zheap_getnextslot(TableScanDesc sscan, ScanDirection direction,
 
 	if (zhtup == NULL)
 	{
-		ZHEAPDEBUG_2;			/* zheap_getnext returning EOS */
+		ZHEAPDEBUG_2;			/* zheap_getnextslot returning EOS */
 		ExecClearTuple(slot);
 		return NULL;
 	}
@@ -1177,7 +1132,7 @@ zheap_getnextslot(TableScanDesc sscan, ScanDirection direction,
 	 * if we get here it means we have a new current scan tuple, so point to
 	 * the proper return buffer and return the tuple.
 	 */
-	ZHEAPDEBUG_3;				/* zheap_getnext returning tuple */
+	ZHEAPDEBUG_3;				/* zheap_getnextslot returning tuple */
 
 	pgstat_count_heap_getnext(scan->rs_scan.rs_rd);
 
