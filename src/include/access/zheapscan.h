@@ -59,7 +59,6 @@ extern void zheap_setscanlimits(TableScanDesc scan, BlockNumber startBlk,
 					BlockNumber endBlk);
 extern void zheap_update_snapshot(TableScanDesc scan, Snapshot snapshot);
 extern bool zheapgetpage(TableScanDesc scan, BlockNumber page);
-extern ZHeapTuple zheap_getnext(TableScanDesc scan, ScanDirection direction);
 extern bool zheap_getnextslot(TableScanDesc scan, ScanDirection direction,
 				  struct TupleTableSlot *slot);
 
