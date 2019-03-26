@@ -4674,9 +4674,9 @@ next:
 		 * updated the tuple is aborter, we're done.
 		 */
 		if (TransactionIdDidAbort(tup_xid) ||
-			ZHeapTupleIsMoved(mytup->t_data->t_infomask) ||
-			ItemPointerEquals(&mytup->t_self, ctid) ||
-			ZHEAP_XID_IS_LOCKED_ONLY(mytup->t_data->t_infomask))
+			ZHeapTupleIsMoved(zhtup.t_data->t_infomask) ||
+			ItemPointerEquals(&zhtup.t_self, ctid) ||
+			ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask))
 		{
 			result = HeapTupleMayBeUpdated;
 			goto out_locked;
