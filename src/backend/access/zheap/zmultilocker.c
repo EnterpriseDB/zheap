@@ -716,7 +716,7 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	CommandId	cid = InvalidCommandId;
 	uint64		epoch;
 	uint64		epoch_xid;
-	int			trans_slot_id;
+	int			trans_slot_id = 0;
 	uint8		uur_type;
 	int			slot_no;
 	int			total_trans_slots = 0;
