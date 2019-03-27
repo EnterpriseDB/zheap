@@ -59,4 +59,10 @@ worker.
 The other pending code related items are tracked on zheap wiki page:
 https://wiki.postgresql.org/wiki/Zheap
 
+Test run before pushing code
+============================
+- make check-world
+- make installcheck and isolation test (with default_table_access_method = 'zheap')
+- make installcheck with hot standby (with wal_consistency_checking=all)
+
 You can find overall design of zheap in the README: src/backend/access/zheap/README
