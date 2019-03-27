@@ -311,6 +311,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 	int			prev_trans_slot_id;
 	OffsetNumber offnum;
 	bool		valid = false;
+	ZHeapTupleTransInfo	zinfo;
 
 	/*
 	 * As we are going to access special space in the page to retrieve the
@@ -346,13 +347,6 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		 */
 		zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
 		zhtup.t_len = ItemIdGetLength(lp);
-
-		/*
-		 * We've to call ZHeapTupleGetTransInfo to fetch the xact info of the
-		 * tuple since the tuple can be marked with invalid xact flag.
-		 */
-		ZHeapTupleGetTransInfo(&zhtup, buf, &trans_slot_id, NULL, &xid, NULL,
-							   &urec_ptr, false, InvalidSnapshot);
 	}
 	else
 	{
@@ -369,14 +363,16 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		Assert(vis_tuple != NULL);
 		zhtup.t_data = vis_tuple->t_data;
 		zhtup.t_len = vis_tuple->t_len;
-
-		/*
-		 * We've to call ZHeapTupleGetTransInfo to fetch the xact info of the
-		 * tuple since the tuple can be marked with invalid xact flag.
-		 */
-		ZHeapTupleGetTransInfo(&zhtup, buf, &trans_slot_id, NULL, &xid, NULL,
-							   &urec_ptr, false, InvalidSnapshot);
 	}
+
+	/*
+	 * We've to call ZHeapTupleGetTransInfo to fetch the xact info of the
+	 * tuple since the tuple can be marked with invalid xact flag.
+	 */
+	ZHeapTupleGetTransInfo(&zhtup, buf, false, false, InvalidSnapshot, &zinfo);
+	trans_slot_id = zinfo.trans_slot;
+	xid = zinfo.xid;
+	urec_ptr = zinfo.urec_ptr;
 
 	/*
 	 * Current xid on tuple must not precede oldestXidHavingUndo as it will be
@@ -384,7 +380,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 	 */
 	Assert(trans_slot_id != ZHTUP_SLOT_FROZEN);
 
-	if (TransactionIdEquals(xid, priorXmax))
+	if (TransactionIdEquals(zinfo.xid, priorXmax))
 	{
 		valid = true;
 		goto tuple_is_valid;
