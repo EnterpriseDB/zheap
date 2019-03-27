@@ -200,10 +200,9 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
  * other concurrent session holding old snapshot.
  */
 void
-ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, int *trans_slot,
-					   uint64 *epoch_xid_out, TransactionId *xid_out,
-					   CommandId *cid_out, UndoRecPtr *urec_ptr_out,
-					   bool nobuflock, Snapshot snapshot)
+ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
+					   bool nobuflock, bool fetch_cid, Snapshot snapshot,
+					   ZHeapTupleTransInfo *zinfo)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	UndoRecPtr	urec_ptr;
@@ -325,7 +324,7 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, int *trans_slot,
 	}
 	else
 	{
-		if (cid_out && TransactionIdIsCurrentTransactionId(xid))
+		if (fetch_cid && TransactionIdIsCurrentTransactionId(xid))
 		{
 			lp = PageGetItemId(page, offnum);
 			if (!ItemIdIsDeleted(lp))
@@ -334,6 +333,8 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, int *trans_slot,
 				cid = ZHeapPageGetCid(buf, trans_slot_id, tmp_epoch, xid,
 									  urec_ptr, offnum);
 		}
+		else
+			cid = InvalidCommandId;
 		epoch = (uint64) tmp_epoch;
 	}
 
@@ -348,20 +349,26 @@ slot_is_frozen:
 
 done:
 	/* Set the value of required parameters. */
-	if (trans_slot)
-		*trans_slot = trans_slot_id;
-	if (epoch_xid_out)
-		*epoch_xid_out = MakeEpochXid(epoch, xid);
-	if (xid_out)
-		*xid_out = xid;
-	if (cid_out)
-		*cid_out = cid;
 	if (nobuflock)
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-	if (urec_ptr_out)
-		*urec_ptr_out = urec_ptr;
+	zinfo->trans_slot = trans_slot_id;
+	zinfo->epoch_xid = MakeEpochXid(epoch, xid);
+	zinfo->xid = xid;
+	zinfo->cid = cid;
+	zinfo->urec_ptr = urec_ptr;
+}
 
-	return;
+/*
+ * ZHeapTupleGetTransXID - Retrieve just the XID that last modified the tuple.
+ */
+TransactionId
+ZHeapTupleGetTransXID(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
+{
+	ZHeapTupleTransInfo	zinfo;
+
+	ZHeapTupleGetTransInfo(zhtup, buf, nobuflock, false, InvalidSnapshot,
+						   &zinfo);
+	return zinfo.xid;
 }
 
 /*
@@ -1289,13 +1296,9 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 						Buffer buffer, ItemPointer ctid)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
-	TransactionId xid;
-	CommandId  *cid;
 	CommandId	cur_cid = GetCurrentCommandId(false);
-	CommandId	tmp_cid;
-	uint64		epoch_xid;
-	int			trans_slot;
+	ZHeapTupleTransInfo	zinfo;
+	bool		fetch_cid;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
@@ -1307,18 +1310,12 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	 * attempt to fetch CID from undo in such cases.
 	 */
 	if (!GetCurrentCommandIdUsed() && cur_cid == snapshot->curcid)
-	{
-		cid = NULL;
-	}
+		fetch_cid = false;
 	else
-	{
-		cid = &tmp_cid;
-		*cid = InvalidCommandId;
-	}
+		fetch_cid = true;
 
 	/* Get transaction info */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &trans_slot, &epoch_xid, &xid, cid,
-						   &urec_ptr, false, snapshot);
+	ZHeapTupleGetTransInfo(zhtup, buffer, false, fetch_cid, snapshot, &zinfo);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -1329,21 +1326,21 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 		 * smallest xid that has undo.  Transaction slot can also be
 		 * considered frozen if it belongs to previous epoch.
 		 */
-		if (trans_slot == ZHTUP_SLOT_FROZEN ||
-			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return NULL;
 
-		if (TransactionIdIsCurrentTransactionId(xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		{
-			if (cid && *cid >= snapshot->curcid)
+			if (fetch_cid && zinfo.cid >= snapshot->curcid)
 			{
 				/* deleted after scan started, get previous tuple from undo */
-				return GetTupleFromUndo(urec_ptr,
+				return GetTupleFromUndo(zinfo.urec_ptr,
 										zhtup,
 										snapshot,
 										buffer,
 										ctid,
-										trans_slot,
+										zinfo.trans_slot,
 										InvalidTransactionId);
 			}
 			else
@@ -1356,20 +1353,20 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 				if (ctid &&
 					tuple->t_infomask & ZHEAP_UPDATED &&
 					!ZHeapTupleIsMoved(tuple->t_infomask))
-					ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
+					ZHeapTupleGetCtid(zhtup, buffer, zinfo.urec_ptr, ctid);
 
 				return NULL;	/* deleted before scan started */
 			}
 		}
-		else if (XidInMVCCSnapshot(xid, snapshot))
-			return GetTupleFromUndo(urec_ptr,
+		else if (XidInMVCCSnapshot(zinfo.xid, snapshot))
+			return GetTupleFromUndo(zinfo.urec_ptr,
 									zhtup,
 									snapshot,
 									buffer,
 									ctid,
-									trans_slot,
+									zinfo.trans_slot,
 									InvalidTransactionId);
-		else if (TransactionIdDidCommit(xid))
+		else if (TransactionIdDidCommit(zinfo.xid))
 		{
 			/*
 			 * For non-inplace-updates, ctid needs to be retrieved from undo
@@ -1379,17 +1376,17 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 			if (ctid &&
 				!ZHeapTupleIsMoved(tuple->t_infomask) &&
 				tuple->t_infomask & ZHEAP_UPDATED)
-				ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
+				ZHeapTupleGetCtid(zhtup, buffer, zinfo.urec_ptr, ctid);
 
 			return NULL;		/* tuple is deleted */
 		}
 		else					/* transaction is aborted */
-			return GetTupleFromUndo(urec_ptr,
+			return GetTupleFromUndo(zinfo.urec_ptr,
 									zhtup,
 									snapshot,
 									buffer,
 									ctid,
-									trans_slot,
+									zinfo.trans_slot,
 									InvalidTransactionId);
 	}
 	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
@@ -1400,46 +1397,46 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 		 * transaction slot is cleared or latest xid that has changed the
 		 * tuple precedes smallest xid that has undo.
 		 */
-		if (trans_slot == ZHTUP_SLOT_FROZEN ||
-			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return zhtup;		/* tuple is updated */
 
-		if (TransactionIdIsCurrentTransactionId(xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		{
-			if (cid && *cid >= snapshot->curcid)
+			if (fetch_cid && zinfo.cid >= snapshot->curcid)
 			{
 				/*
 				 * updated/locked after scan started, get previous tuple from
 				 * undo.
 				 */
-				return GetTupleFromUndo(urec_ptr,
+				return GetTupleFromUndo(zinfo.urec_ptr,
 										zhtup,
 										snapshot,
 										buffer,
 										ctid,
-										trans_slot,
+										zinfo.trans_slot,
 										InvalidTransactionId);
 			}
 			else
 				return zhtup;	/* updated before scan started */
 		}
-		else if (XidInMVCCSnapshot(xid, snapshot))
-			return GetTupleFromUndo(urec_ptr,
+		else if (XidInMVCCSnapshot(zinfo.xid, snapshot))
+			return GetTupleFromUndo(zinfo.urec_ptr,
 									zhtup,
 									snapshot,
 									buffer,
 									ctid,
-									trans_slot,
+									zinfo.trans_slot,
 									InvalidTransactionId);
-		else if (TransactionIdDidCommit(xid))
+		else if (TransactionIdDidCommit(zinfo.xid))
 			return zhtup;		/* tuple is updated */
 		else					/* transaction is aborted */
-			return GetTupleFromUndo(urec_ptr,
+			return GetTupleFromUndo(zinfo.urec_ptr,
 									zhtup,
 									snapshot,
 									buffer,
 									ctid,
-									trans_slot,
+									zinfo.trans_slot,
 									InvalidTransactionId);
 	}
 
@@ -1448,20 +1445,20 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	 * latest xid that has changed the tuple precedes smallest xid that has
 	 * undo.
 	 */
-	if (trans_slot == ZHTUP_SLOT_FROZEN ||
-		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return zhtup;
 
-	if (TransactionIdIsCurrentTransactionId(xid))
+	if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 	{
-		if (cid && *cid >= snapshot->curcid)
+		if (fetch_cid && zinfo.cid >= snapshot->curcid)
 			return NULL;		/* inserted after scan started */
 		else
 			return zhtup;		/* inserted before scan started */
 	}
-	else if (XidInMVCCSnapshot(xid, snapshot))
+	else if (XidInMVCCSnapshot(zinfo.xid, snapshot))
 		return NULL;
-	else if (TransactionIdDidCommit(xid))
+	else if (TransactionIdDidCommit(zinfo.xid))
 		return zhtup;
 	else
 		return NULL;
@@ -1645,18 +1642,18 @@ check_trans_slot:
  */
 TM_Result
 ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
-						  Buffer buffer, ItemPointer ctid, int *trans_slot,
-						  TransactionId *xid, SubTransactionId *subxid,
-						  CommandId *cid, TransactionId *single_locker_xid,
+						  Buffer buffer, ItemPointer ctid,
+						  ZHeapTupleTransInfo *zinfo,
+						  SubTransactionId *subxid,
+						  TransactionId *single_locker_xid,
 						  int *single_locker_trans_slot, bool free_zhtup,
 						  bool lock_allowed, Snapshot snapshot,
 						  bool *in_place_updated_or_locked)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
-	uint64		epoch_xid;
 	CommandId	cur_comm_cid = GetCurrentCommandId(false);
 	bool		visible;
+	bool		fetch_cid = true;
 
 	*single_locker_xid = InvalidTransactionId;
 	*single_locker_trans_slot = InvalidXactSlotId;
@@ -1672,13 +1669,11 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 	 * attempt to fetch CID from undo in such cases.
 	 */
 	if (!GetCurrentCommandIdUsed() && cur_comm_cid == curcid)
-	{
-		cid = NULL;
-	}
+		fetch_cid = false;
 
 	/* Get transaction info */
-	ZHeapTupleGetTransInfo(zhtup, buffer, trans_slot, &epoch_xid, xid, cid,
-						   &urec_ptr, false, InvalidSnapshot);
+	ZHeapTupleGetTransInfo(zhtup, buffer, false, fetch_cid,
+						   InvalidSnapshot, zinfo);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -1690,20 +1685,20 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 		 * not possible at this stage as the tuple has already passed snapshot
 		 * check.
 		 */
-		Assert(!(*trans_slot == ZHTUP_SLOT_FROZEN &&
-				 epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)));
+		Assert(!(zinfo->trans_slot == ZHTUP_SLOT_FROZEN &&
+				 zinfo->epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)));
 
-		if (TransactionIdIsCurrentTransactionId(*xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo->xid))
 		{
-			if (cid && *cid >= curcid)
+			if (fetch_cid && zinfo->cid >= curcid)
 			{
 				/* deleted after scan started, check previous tuple from undo */
-				visible = UndoTupleSatisfiesUpdate(urec_ptr,
+				visible = UndoTupleSatisfiesUpdate(zinfo->urec_ptr,
 												   zhtup,
 												   curcid,
 												   buffer,
 												   ctid,
-												   *trans_slot,
+												   zinfo->trans_slot,
 												   InvalidTransactionId,
 												   free_zhtup,
 												   in_place_updated_or_locked);
@@ -1715,14 +1710,14 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			else
 				return TM_Invisible;	/* deleted before scan started */
 		}
-		else if (TransactionIdIsInProgress(*xid))
+		else if (TransactionIdIsInProgress(zinfo->xid))
 		{
-			visible = UndoTupleSatisfiesUpdate(urec_ptr,
+			visible = UndoTupleSatisfiesUpdate(zinfo->urec_ptr,
 											   zhtup,
 											   curcid,
 											   buffer,
 											   ctid,
-											   *trans_slot,
+											   zinfo->trans_slot,
 											   InvalidTransactionId,
 											   free_zhtup,
 											   in_place_updated_or_locked);
@@ -1730,14 +1725,15 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			if (visible)
 			{
 				if (subxid)
-					ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, subxid);
+					ZHeapTupleGetSubXid(zhtup, buffer, zinfo->urec_ptr,
+										subxid);
 
 				return TM_BeingModified;
 			}
 			else
 				return TM_Invisible;
 		}
-		else if (TransactionIdDidCommit(*xid))
+		else if (TransactionIdDidCommit(zinfo->xid))
 		{
 			/*
 			 * For non-inplace-updates, ctid needs to be retrieved from undo
@@ -1747,19 +1743,19 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			if (ctid &&
 				!ZHeapTupleIsMoved(tuple->t_infomask) &&
 				tuple->t_infomask & ZHEAP_UPDATED)
-				ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
+				ZHeapTupleGetCtid(zhtup, buffer, zinfo->urec_ptr, ctid);
 
 			/* tuple is deleted or non-inplace-updated */
 			return TM_Updated;
 		}
 		else					/* transaction is aborted */
 		{
-			visible = UndoTupleSatisfiesUpdate(urec_ptr,
+			visible = UndoTupleSatisfiesUpdate(zinfo->urec_ptr,
 											   zhtup,
 											   curcid,
 											   buffer,
 											   ctid,
-											   *trans_slot,
+											   zinfo->trans_slot,
 											   InvalidTransactionId,
 											   free_zhtup,
 											   in_place_updated_or_locked);
@@ -1790,8 +1786,8 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 		 * from undo as we never store lockers slot on tuple.  See
 		 * compute_new_xid_infomask for more details about lockers.
 		 */
-		if (*trans_slot == ZHTUP_SLOT_FROZEN ||
-			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN ||
+			zinfo->epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		{
 			bool		found = false;
 
@@ -1815,20 +1811,20 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			}
 		}
 
-		if (TransactionIdIsCurrentTransactionId(*xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo->xid))
 		{
-			if (cid && *cid >= curcid)
+			if (fetch_cid && zinfo->cid >= curcid)
 			{
 				/*
 				 * updated/locked after scan started, check previous tuple
 				 * from undo
 				 */
-				visible = UndoTupleSatisfiesUpdate(urec_ptr,
+				visible = UndoTupleSatisfiesUpdate(zinfo->urec_ptr,
 												   zhtup,
 												   curcid,
 												   buffer,
 												   ctid,
-												   *trans_slot,
+												   zinfo->trans_slot,
 												   InvalidTransactionId,
 												   free_zhtup,
 												   in_place_updated_or_locked);
@@ -1855,14 +1851,14 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 					return TM_Ok;	/* updated before scan started */
 			}
 		}
-		else if (TransactionIdIsInProgress(*xid))
+		else if (TransactionIdIsInProgress(zinfo->xid))
 		{
-			visible = UndoTupleSatisfiesUpdate(urec_ptr,
+			visible = UndoTupleSatisfiesUpdate(zinfo->urec_ptr,
 											   zhtup,
 											   curcid,
 											   buffer,
 											   ctid,
-											   *trans_slot,
+											   zinfo->trans_slot,
 											   InvalidTransactionId,
 											   free_zhtup,
 											   in_place_updated_or_locked);
@@ -1870,32 +1866,33 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			if (visible)
 			{
 				if (subxid)
-					ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, subxid);
+					ZHeapTupleGetSubXid(zhtup, buffer, zinfo->urec_ptr,
+										subxid);
 
 				return TM_BeingModified;
 			}
 			else
 				return TM_Invisible;
 		}
-		else if (TransactionIdDidCommit(*xid))
+		else if (TransactionIdDidCommit(zinfo->xid))
 		{
 			/*
 			 * if tuple is updated and not in our snapshot, then allow to
 			 * update it.
 			 */
-			if (lock_allowed || !XidInMVCCSnapshot(*xid, snapshot))
+			if (lock_allowed || !XidInMVCCSnapshot(zinfo->xid, snapshot))
 				return TM_Ok;
 			else
 				return TM_Updated;
 		}
 		else					/* transaction is aborted */
 		{
-			visible = UndoTupleSatisfiesUpdate(urec_ptr,
+			visible = UndoTupleSatisfiesUpdate(zinfo->urec_ptr,
 											   zhtup,
 											   curcid,
 											   buffer,
 											   ctid,
-											   *trans_slot,
+											   zinfo->trans_slot,
 											   InvalidTransactionId,
 											   free_zhtup,
 											   in_place_updated_or_locked);
@@ -1919,20 +1916,20 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 	 * latest xid that has changed the tuple precedes smallest xid that has
 	 * undo.
 	 */
-	if (*trans_slot == ZHTUP_SLOT_FROZEN ||
-		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN ||
+		zinfo->epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return TM_Ok;
 
-	if (TransactionIdIsCurrentTransactionId(*xid))
+	if (TransactionIdIsCurrentTransactionId(zinfo->xid))
 	{
-		if (cid && *cid >= curcid)
+		if (fetch_cid && zinfo->cid >= curcid)
 			return TM_Invisible;	/* inserted after scan started */
 		else
 			return TM_Ok;		/* inserted before scan started */
 	}
-	else if (TransactionIdIsInProgress(*xid))
+	else if (TransactionIdIsInProgress(zinfo->xid))
 		return TM_Invisible;
-	else if (TransactionIdDidCommit(*xid))
+	else if (TransactionIdDidCommit(zinfo->xid))
 		return TM_Ok;
 	else
 		return TM_Invisible;
@@ -1949,16 +1946,19 @@ bool
 ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin, Buffer buffer)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	TransactionId xid;
-	uint64		epoch_xid;
-	int			trans_slot_id;
+	ZHeapTupleTransInfo	zinfo;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
-	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &trans_slot_id, &epoch_xid, &xid, NULL,
-						   NULL, false, InvalidSnapshot);
+	/*
+	 * Get transaction id.
+	 *
+	 * ZBORKED: Why not do this only if one of the relevant infomask bits is
+	 * set?  It seems to be unused otherwise, and it's certainly not free.
+	 */
+	ZHeapTupleGetTransInfo(zhtup, buffer, false, false, InvalidSnapshot,
+						   &zinfo);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -1968,7 +1968,8 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin, Buffer buffer)
 		 * slot is cleared or latest xid that has changed the tuple precedes
 		 * smallest xid that has undo.
 		 */
-		if (trans_slot_id == ZHTUP_SLOT_FROZEN || epoch_xid < OldestXmin)
+		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+			zinfo.epoch_xid < OldestXmin)
 			return true;
 	}
 
@@ -1997,17 +1998,14 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 						Buffer buffer, ItemPointer ctid)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	TransactionId xid;
-	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
-	uint64		epoch_xid;
-	int			trans_slot_id;
+	ZHeapTupleTransInfo	zinfo;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
-	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &trans_slot_id, &epoch_xid, &xid,
-						   NULL, &urec_ptr, false, InvalidSnapshot);
+	/* Get transaction information */
+	ZHeapTupleGetTransInfo(zhtup, buffer, false, false, InvalidSnapshot,
+						   &zinfo);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -2017,33 +2015,33 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 		 * slot is cleared or latest xid that has changed the tuple precedes
 		 * smallest xid that has undo.
 		 */
-		if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return NULL;
 
-		if (TransactionIdIsCurrentTransactionId(xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 			return NULL;
-		else if (TransactionIdIsInProgress(xid))
-			return GetTupleFromUndo(urec_ptr,
+		else if (TransactionIdIsInProgress(zinfo.xid))
+			return GetTupleFromUndo(zinfo.urec_ptr,
 									zhtup,
 									snapshot,
 									buffer,
 									ctid,
-									trans_slot_id,
+									zinfo.trans_slot,
 									InvalidTransactionId);
-		else if (TransactionIdDidCommit(xid))
+		else if (TransactionIdDidCommit(zinfo.xid))
 		{
 			/* tuple is deleted or non-inplace-updated */
 			return NULL;
 		}
 		else					/* transaction is aborted */
 		{
-			return GetTupleFromUndo(urec_ptr,
+			return GetTupleFromUndo(zinfo.urec_ptr,
 									zhtup,
 									snapshot,
 									buffer,
 									ctid,
-									trans_slot_id,
+									zinfo.trans_slot,
 									InvalidTransactionId);
 		}
 	}
@@ -2055,36 +2053,36 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 		 * transaction slot is cleared or latest xid that has changed the
 		 * tuple precedes smallest xid that has undo.
 		 */
-		if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return zhtup;
 
-		if (TransactionIdIsCurrentTransactionId(xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		{
 			return zhtup;
 		}
-		else if (TransactionIdIsInProgress(xid))
+		else if (TransactionIdIsInProgress(zinfo.xid))
 		{
-			return GetTupleFromUndo(urec_ptr,
+			return GetTupleFromUndo(zinfo.urec_ptr,
 									zhtup,
 									snapshot,
 									buffer,
 									ctid,
-									trans_slot_id,
+									zinfo.trans_slot,
 									InvalidTransactionId);
 		}
-		else if (TransactionIdDidCommit(xid))
+		else if (TransactionIdDidCommit(zinfo.xid))
 		{
 			return zhtup;
 		}
 		else					/* transaction is aborted */
 		{
-			return GetTupleFromUndo(urec_ptr,
+			return GetTupleFromUndo(zinfo.urec_ptr,
 									zhtup,
 									snapshot,
 									buffer,
 									ctid,
-									trans_slot_id,
+									zinfo.trans_slot,
 									InvalidTransactionId);
 		}
 	}
@@ -2094,17 +2092,17 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 	 * latest xid that has changed the tuple precedes smallest xid that has
 	 * undo.
 	 */
-	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return zhtup;
 
-	if (TransactionIdIsCurrentTransactionId(xid))
+	if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		return zhtup;
-	else if (TransactionIdIsInProgress(xid))
+	else if (TransactionIdIsInProgress(zinfo.xid))
 	{
 		return NULL;
 	}
-	else if (TransactionIdDidCommit(xid))
+	else if (TransactionIdDidCommit(zinfo.xid))
 		return zhtup;
 	else
 	{
@@ -2141,10 +2139,7 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 						 Buffer buffer, ItemPointer ctid)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	TransactionId xid;
-	uint64		epoch_xid;
-	UndoRecPtr	urec_ptr;
-	int			trans_slot_id;
+	ZHeapTupleTransInfo	zinfo;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
@@ -2154,8 +2149,8 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	snapshot->speculativeToken = 0;
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &trans_slot_id, &epoch_xid, &xid, NULL,
-						   &urec_ptr, false, InvalidSnapshot);
+	ZHeapTupleGetTransInfo(zhtup, buffer, false, false, InvalidSnapshot,
+						   &zinfo);
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -2165,11 +2160,11 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		 * slot is cleared or latest xid that has changed the tuple precedes
 		 * smallest xid that has undo.
 		 */
-		if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return NULL;
 
-		if (TransactionIdIsCurrentTransactionId(xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		{
 			/*
 			 * For non-inplace-updates, ctid needs to be retrieved from undo
@@ -2179,17 +2174,18 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 			if (ctid &&
 				!ZHeapTupleIsMoved(tuple->t_infomask) &&
 				tuple->t_infomask & ZHEAP_UPDATED)
-				ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
+				ZHeapTupleGetCtid(zhtup, buffer, zinfo.urec_ptr, ctid);
 			return NULL;
 		}
-		else if (TransactionIdIsInProgress(xid))
+		else if (TransactionIdIsInProgress(zinfo.xid))
 		{
-			snapshot->xmax = xid;
-			if (UndoRecPtrIsValid(urec_ptr))
-				ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, &snapshot->subxid);
+			snapshot->xmax = zinfo.xid;
+			if (UndoRecPtrIsValid(zinfo.urec_ptr))
+				ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr,
+									&snapshot->subxid);
 			return zhtup;		/* in deletion by other */
 		}
-		else if (TransactionIdDidCommit(xid))
+		else if (TransactionIdDidCommit(zinfo.xid))
 		{
 			/*
 			 * For non-inplace-updates, ctid needs to be retrieved from undo
@@ -2199,15 +2195,20 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 			if (ctid &&
 				!ZHeapTupleIsMoved(tuple->t_infomask) &&
 				tuple->t_infomask & ZHEAP_UPDATED)
-				ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
+				ZHeapTupleGetCtid(zhtup, buffer, zinfo.urec_ptr, ctid);
 
 			/* tuple is deleted or non-inplace-updated */
 			return NULL;
 		}
 		else					/* transaction is aborted */
 		{
-			return GetTupleFromUndo(urec_ptr, zhtup, snapshot, buffer, ctid,
-									trans_slot_id, InvalidTransactionId);
+			return GetTupleFromUndo(zinfo.urec_ptr,
+									zhtup,
+									snapshot,
+									buffer,
+									ctid,
+									zinfo.trans_slot,
+									InvalidTransactionId);
 		}
 	}
 	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
@@ -2218,29 +2219,31 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 		 * transaction slot is cleared or latest xid that has changed the
 		 * tuple precedes smallest xid that has undo.
 		 */
-		if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return zhtup;		/* tuple is updated */
 
-		if (TransactionIdIsCurrentTransactionId(xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 			return zhtup;
-		else if (TransactionIdIsInProgress(xid))
+		else if (TransactionIdIsInProgress(zinfo.xid))
 		{
 			if (!ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
 			{
-				snapshot->xmax = xid;
-				if (UndoRecPtrIsValid(urec_ptr))
-					ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, &snapshot->subxid);
+				snapshot->xmax = zinfo.xid;
+				if (UndoRecPtrIsValid(zinfo.urec_ptr))
+					ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr,
+										&snapshot->subxid);
 			}
 			return zhtup;		/* being updated */
 		}
-		else if (TransactionIdDidCommit(xid))
+		else if (TransactionIdDidCommit(zinfo.xid))
 			return zhtup;		/* tuple is updated by someone else */
 		else					/* transaction is aborted */
 		{
 			/* Here we need to fetch the tuple from undo. */
-			return GetTupleFromUndo(urec_ptr, zhtup, snapshot, buffer, ctid,
-									trans_slot_id, InvalidTransactionId);
+			return GetTupleFromUndo(zinfo.urec_ptr, zhtup, snapshot, buffer,
+									ctid, zinfo.trans_slot,
+									InvalidTransactionId);
 		}
 	}
 
@@ -2249,29 +2252,30 @@ ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
 	 * latest xid that has changed the tuple precedes smallest xid that has
 	 * undo.
 	 */
-	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return zhtup;
 
-	if (TransactionIdIsCurrentTransactionId(xid))
+	if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		return zhtup;
-	else if (TransactionIdIsInProgress(xid))
+	else if (TransactionIdIsInProgress(zinfo.xid))
 	{
 		/* Return the speculative token to caller. */
 		if (ZHeapTupleHeaderIsSpeculative(tuple))
 		{
-			ZHeapTupleGetSpecToken(zhtup, buffer, urec_ptr,
+			ZHeapTupleGetSpecToken(zhtup, buffer, zinfo.urec_ptr,
 								   &snapshot->speculativeToken);
 
 			Assert(snapshot->speculativeToken != 0);
 		}
 
-		snapshot->xmin = xid;
-		if (UndoRecPtrIsValid(urec_ptr))
-			ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, &snapshot->subxid);
+		snapshot->xmin = zinfo.xid;
+		if (UndoRecPtrIsValid(zinfo.urec_ptr))
+			ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr,
+								&snapshot->subxid);
 		return zhtup;			/* in insertion by other */
 	}
-	else if (TransactionIdDidCommit(xid))
+	else if (TransactionIdDidCommit(zinfo.xid))
 		return zhtup;
 	else
 	{
@@ -2349,16 +2353,15 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 {
 	ZHeapTuple	zhtup = *ztuple;
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	UndoRecPtr	urec_ptr;
-	uint64		epoch_xid;
-	int			trans_slot_id;
+	ZHeapTupleTransInfo	zinfo;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &trans_slot_id, &epoch_xid, xid, NULL,
-						   &urec_ptr, false, InvalidSnapshot);
+	ZHeapTupleGetTransInfo(zhtup, buffer, false, false, InvalidSnapshot,
+						   &zinfo);
+	*xid = zinfo.xid;
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -2368,27 +2371,27 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 		 * slot is cleared or latest xid that has changed the tuple precedes
 		 * smallest xid that has undo.
 		 */
-		if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return HEAPTUPLE_DEAD;
 
-		if (TransactionIdIsCurrentTransactionId(*xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 			return HEAPTUPLE_DELETE_IN_PROGRESS;
-		else if (TransactionIdIsInProgress(*xid))
+		else if (TransactionIdIsInProgress(zinfo.xid))
 		{
 			/* Get Sub transaction id */
 			if (subxid)
-				ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, subxid);
+				ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr, subxid);
 
 			return HEAPTUPLE_DELETE_IN_PROGRESS;
 		}
-		else if (TransactionIdDidCommit(*xid))
+		else if (TransactionIdDidCommit(zinfo.xid))
 		{
 			/*
 			 * Deleter committed, but perhaps it was recent enough that some
 			 * open transactions could still see the tuple.
 			 */
-			if (!TransactionIdPrecedes(*xid, OldestXmin))
+			if (!TransactionIdPrecedes(zinfo.xid, OldestXmin))
 				return HEAPTUPLE_RECENTLY_DEAD;
 
 			/* Otherwise, it's dead and removable */
@@ -2400,8 +2403,9 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 			 * For aborted transactions, we need to fetch the tuple from undo
 			 * chain.
 			 */
-			*ztuple = GetTupleFromUndoForAbortedXact(urec_ptr, buffer,
-													 trans_slot_id, zhtup, xid);
+			*ztuple = GetTupleFromUndoForAbortedXact(zinfo.urec_ptr, buffer,
+													 zinfo.trans_slot, zhtup,
+													 xid);
 			if (*ztuple != NULL)
 				return HEAPTUPLE_LIVE;
 			else
@@ -2435,20 +2439,20 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 	 * latest xid that has changed the tuple precedes smallest xid that has
 	 * undo.
 	 */
-	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return HEAPTUPLE_LIVE;
 
-	if (TransactionIdIsCurrentTransactionId(*xid))
+	if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		return HEAPTUPLE_INSERT_IN_PROGRESS;
-	else if (TransactionIdIsInProgress(*xid))
+	else if (TransactionIdIsInProgress(zinfo.xid))
 	{
 		/* Get Sub transaction id */
 		if (subxid)
-			ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, subxid);
+			ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr, subxid);
 		return HEAPTUPLE_INSERT_IN_PROGRESS;	/* in insertion by other */
 	}
-	else if (TransactionIdDidCommit(*xid))
+	else if (TransactionIdDidCommit(zinfo.xid))
 		return HEAPTUPLE_LIVE;
 	else						/* transaction is aborted */
 	{
@@ -2458,8 +2462,11 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 			 * For aborted transactions, we need to fetch the tuple from undo
 			 * chain.
 			 */
-			*ztuple = GetTupleFromUndoForAbortedXact(urec_ptr, buffer,
-													 trans_slot_id, zhtup, xid);
+			*ztuple = GetTupleFromUndoForAbortedXact(zinfo.urec_ptr,
+													 buffer,
+													 zinfo.trans_slot,
+													 zhtup,
+													 xid);
 			if (*ztuple != NULL)
 				return HEAPTUPLE_LIVE;
 		}
@@ -2508,16 +2515,15 @@ ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
 						  Buffer buffer, TransactionId *xid)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	UndoRecPtr	urec_ptr;
-	uint64		epoch_xid;
-	int			trans_slot_id;
+	ZHeapTupleTransInfo	zinfo;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, &trans_slot_id, &epoch_xid, xid, NULL,
-						   &urec_ptr, false, InvalidSnapshot);
+	ZHeapTupleGetTransInfo(zhtup, buffer, false, false, InvalidSnapshot,
+						   &zinfo);
+	*xid = zinfo.xid;
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
@@ -2527,23 +2533,23 @@ ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
 		 * slot is cleared or latest xid that has changed the tuple precedes
 		 * smallest xid that has undo.
 		 */
-		if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-			epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return ZHEAPTUPLE_DEAD;
 
-		if (TransactionIdIsCurrentTransactionId(*xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 			return ZHEAPTUPLE_DELETE_IN_PROGRESS;
-		else if (TransactionIdIsInProgress(*xid))
+		else if (TransactionIdIsInProgress(zinfo.xid))
 		{
 			return ZHEAPTUPLE_DELETE_IN_PROGRESS;
 		}
-		else if (TransactionIdDidCommit(*xid))
+		else if (TransactionIdDidCommit(zinfo.xid))
 		{
 			/*
 			 * Deleter committed, but perhaps it was recent enough that some
 			 * open transactions could still see the tuple.
 			 */
-			if (!TransactionIdPrecedes(*xid, OldestXmin))
+			if (!TransactionIdPrecedes(zinfo.xid, OldestXmin))
 				return ZHEAPTUPLE_RECENTLY_DEAD;
 
 			/* Otherwise, it's dead and removable */
@@ -2570,15 +2576,15 @@ ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
 	 * latest xid that has changed the tuple precedes smallest xid that has
 	 * undo.
 	 */
-	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return ZHEAPTUPLE_LIVE;
 
-	if (TransactionIdIsCurrentTransactionId(*xid))
+	if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		return ZHEAPTUPLE_INSERT_IN_PROGRESS;
-	else if (TransactionIdIsInProgress(*xid))
+	else if (TransactionIdIsInProgress(zinfo.xid))
 		return ZHEAPTUPLE_INSERT_IN_PROGRESS;	/* in insertion by other */
-	else if (TransactionIdDidCommit(*xid))
+	else if (TransactionIdDidCommit(zinfo.xid))
 		return ZHEAPTUPLE_LIVE;
 	else						/* transaction is aborted */
 	{
@@ -2692,8 +2698,7 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 		{
 			snap = GetTransactionSnapshot();
 			tuple = ZHeapGetVisibleTuple(offnum, snap, buffer, NULL);
-			ZHeapTupleGetTransInfo(tuple, buffer, NULL, NULL, xid,
-								   NULL, NULL, false, InvalidSnapshot);
+			*xid = ZHeapTupleGetTransXID(tuple, buffer, false);
 			pfree(tuple);
 			return true;
 		}

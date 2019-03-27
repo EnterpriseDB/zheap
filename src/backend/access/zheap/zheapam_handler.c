@@ -409,8 +409,7 @@ retry:
 			}
 
 			/* updated row should have xid matching this xmax */
-			ZHeapTupleGetTransInfo(tuple, buffer, NULL, NULL, &priorXmax, NULL,
-								   NULL, true, InvalidSnapshot);
+			priorXmax = ZHeapTupleGetTransXID(tuple, buffer, true);
 
 			/*
 			 * As we still hold a snapshot to which priorXmax is not visible,
