@@ -18,6 +18,15 @@
 #include "access/xlogdefs.h"
 #include "access/zheap.h"
 
+typedef struct ZHeapTupleTransInfo
+{
+	int trans_slot;
+	uint64 epoch_xid;
+	TransactionId xid;
+	CommandId cid;
+	UndoRecPtr urec_ptr;
+} ZHeapTupleTransInfo;
+
 /*
  * ZHeapTupleSatisfiesVisibility
  *		True iff zheap tuple satisfies a time qual.
@@ -29,10 +38,10 @@ extern void FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch,
 					   TransactionId *xid, CommandId *cid,
 					   UndoRecPtr *urec_ptr, bool skip_lockers);
 extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
-					   int *trans_slot, uint64 *epoch_xid_out,
-					   TransactionId *xid_out, CommandId *cid_out,
-					   UndoRecPtr *urec_ptr_out, bool nobuflock,
-					   Snapshot snapshot);
+					   bool nobuflock, bool fetch_cid, Snapshot snapshot,
+					   ZHeapTupleTransInfo *zinfo);
+extern TransactionId ZHeapTupleGetTransXID(ZHeapTuple zhtup, Buffer buf,
+					  bool nobuflock);
 
 /* Fetch CTID information stored in undo */
 extern void ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid,
@@ -45,8 +54,8 @@ extern ZHeapTuple ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot,
 									   Buffer buffer, bool *all_dead);
 extern HTSU_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,
 						  CommandId curcid, Buffer buffer, ItemPointer ctid,
-						  int *trans_slot, TransactionId *xid,
-						  SubTransactionId *subxid, CommandId *cid,
+						  ZHeapTupleTransInfo *zinfo,
+						  SubTransactionId *subxid,
 						  TransactionId *single_locker_xid, int *single_locker_trans_slot,
 						  bool free_zhtup, bool lock_allowed, Snapshot snapshot,
 						  bool *in_place_updated_or_locked);

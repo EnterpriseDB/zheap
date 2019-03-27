@@ -571,7 +571,6 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 TupleDesc tupleDesc, bool *isnull)
 {
 	Datum		result;
-	TransactionId xid = InvalidTransactionId;
 	bool		release_buf = false;
 
 	Assert(zhtup);
@@ -612,16 +611,16 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 * Fixme - Need to check whether we need any handling of epoch
 				 * here.
 				 */
-				uint64		epoch_xid;
+				ZHeapTupleTransInfo	zinfo;
 
-				ZHeapTupleGetTransInfo(zhtup, buf, NULL, &epoch_xid, &xid,
-									   NULL, NULL, false, InvalidSnapshot);
+				ZHeapTupleGetTransInfo(zhtup, buf, false, false,
+									   InvalidSnapshot, &zinfo);
 
-				if (!TransactionIdIsValid(xid) || epoch_xid <
+				if (!TransactionIdIsValid(zinfo.xid) || zinfo.epoch_xid <
 					pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
-					xid = FrozenTransactionId;
+					zinfo.xid = FrozenTransactionId;
 
-				result = TransactionIdGetDatum(xid);
+				result = TransactionIdGetDatum(zinfo.xid);
 			}
 			break;
 		case MaxTransactionIdAttributeNumber:
