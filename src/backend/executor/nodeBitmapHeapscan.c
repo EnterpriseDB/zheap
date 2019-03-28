@@ -197,6 +197,7 @@ BitmapHeapNext(BitmapHeapScanState *node)
 		{
 			ExecStoreAllNullTuple(slot);
 			node->return_empty_tuples--;
+			return slot;
 		}
 		else if (tbmres)
 		{
@@ -263,6 +264,18 @@ BitmapHeapNext(BitmapHeapScanState *node)
 
 			/* Adjust the prefetch target */
 			BitmapAdjustPrefetchTarget(node);
+
+			if (node->skip_fetch)
+			{
+				/*
+				 * If we set node->return_empty_tuples in lieu of calling
+				 * table_scan_bitmap_pagescan, we must discard the iterator
+				 * result so that we also skip the call to
+				 * table_scan_bitmap_pagescan_next after we finish returning
+				 * empty tuples.
+				 */
+				node->tbmres = tbmres = NULL;
+			}
 
 			/*
 			 * XXX: Note we do not prefetch here.
