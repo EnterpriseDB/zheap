@@ -890,6 +890,70 @@ pgbench(
 check_pgbench_logs($bdir, '001_pgbench_log_3', 1, 10, 10,
 	qr{^\d \d{1,2} \d+ \d \d+ \d+$});
 
+#Test to verify non-inplace updates and rollback in zheap
+$node->append_conf('postgresql.conf', "default_table_access_method = 'zheap'\n");
+$node->restart;
+
+#Modifying existing setup for the testcase
+$node->safe_psql('postgres', 'DROP TABLE pgbench_tellers CASCADE; ');
+$node->safe_psql('postgres', 'DROP TABLE  pgbench_branches CASCADE; ');
+$node->safe_psql('postgres', 'DROP TABLE pgbench_accounts CASCADE; ');
+$node->safe_psql('postgres', 'CREATE  TABLE pgbench_accounts (aid integer,aidp integer,bid integer,abalance integer); ');
+$node->safe_psql('postgres', 'CREATE  TABLE pgbench_branches (bid integer,bidp integer,	bbalance integer); ');
+$node->safe_psql('postgres', 'CREATE  TABLE pgbench_tellers (tid integer,tidp integer,	bid integer,tbalance integer); ');
+$node->safe_psql('postgres', 'CREATE INDEX pgbench_accounts_pkey ON pgbench_accounts USING BTREE (aid);');
+$node->safe_psql('postgres', 'CREATE INDEX pgbench_branches_pkey ON pgbench_branches USING BTREE (bid);');
+$node->safe_psql('postgres', 'CREATE INDEX pgbench_tellers_pkey ON pgbench_tellers USING BTREE (tid);');
+$node->safe_psql('postgres', 'CREATE INDEX pgbench_accounts_pkey1 ON pgbench_accounts USING BTREE (aidp);');
+$node->safe_psql('postgres', 'CREATE INDEX pgbench_branches_pkey1 ON pgbench_branches USING BTREE (bidp);');
+$node->safe_psql('postgres', 'CREATE INDEX pgbench_tellers_pkey1 ON pgbench_tellers USING BTREE (tidp);');
+$node->safe_psql('postgres', 'INSERT INTO pgbench_accounts SELECT g,g,1,0 FROM generate_series(1, 5000000) g;');
+$node->safe_psql('postgres', 'INSERT INTO pgbench_branches SELECT g,g,0 FROM generate_series(1,5000)g;');
+$node->safe_psql('postgres', 'INSERT INTO pgbench_tellers SELECT g,g,1,0 FROM generate_series(1,50000)g;');
+
+pgbench(
+	"-T 60 -c32 -j32 -M prepared",
+	0,
+	[
+			qr{type: multiple scripts},
+			qr{mode: prepared},
+			qr{script 1: .*/001_pgbench_custom_script_zheap_1},
+			qr{weight: 1},
+			qr{script 2: .*/001_pgbench_custom_script_zheap_2},
+			qr{weight: 5}
+	],
+	[qr{starting vacuum...end.}],
+	'zheap pgbench custom scripts',
+	{
+		'001_pgbench_custom_script_zheap_1@1' => q{-- custom_script
+		\set aid random(1, 5000000)
+		\set bid random(1, 5000)
+		\set tid random(1, 50000)
+		\set delta random(1, 5000000)
+		\set deltb random(1, 5000)
+		\set deltt random(1, 50000)
+		BEGIN;
+		UPDATE pgbench_accounts SET aid = :delta WHERE aidp = :aid;
+		SELECT abalance FROM pgbench_accounts WHERE aidp = :aid;
+		UPDATE pgbench_tellers SET tid = :deltt WHERE tidp = :tid;
+		UPDATE pgbench_branches SET bid = :deltb WHERE bidp = :bid;
+		INSERT INTO pgbench_history (tid, bid, aid, delta, mtime) VALUES (:tid, :bid, :aid, :delta, CURRENT_TIMESTAMP);
+		END;
+},
+		'001_pgbench_custom_script_zheap_2@5' => q{-- custom_script_rb
+		\set aid random(1, 50000000)
+		\set bid random(1, 500)
+		\set tid random(1, 5000)
+		\set delta random(1, 50000)
+		BEGIN;
+		UPDATE pgbench_accounts SET abalance = abalance + :delta WHERE aid = :aid;
+		SELECT abalance FROM pgbench_accounts WHERE aid = :aid;
+		UPDATE pgbench_tellers SET tbalance = tbalance + :delta WHERE tid = :tid;
+		UPDATE pgbench_branches SET bbalance = bbalance + :delta WHERE bid = :bid;
+		rollback;
+}
+	});
+
 # done
 $node->stop;
 done_testing();
