@@ -60,8 +60,10 @@ static ZHeapTuple GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 static ZHeapTuple GetTupleFromUndoForAbortedXact(UndoRecPtr urec_ptr, Buffer buffer, int trans_slot,
 												 ZHeapTuple ztuple, TransactionId *xid);
 static ZTupleTidOp ZHeapTidOpFromInfomask(uint16 infomask);
-static ZVersionSelector ZHeapSelectVersion(ZTupleTidOp op, TransactionId xid,
-				   CommandId cid, Snapshot snapshot);
+static ZVersionSelector ZHeapSelectVersionMVCC(ZTupleTidOp op,
+				   TransactionId xid, CommandId cid, Snapshot snapshot);
+static ZVersionSelector ZHeapSelectVersionSelf(ZTupleTidOp op,
+					   TransactionId xid, CommandId cid);
 
 /*
  * FetchTransInfoFromUndo - Retrieve transaction information of transaction
@@ -455,7 +457,13 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 		return undo_tup;
 
 	/* Check XID and CID against snapshot. */
-	zselect = ZHeapSelectVersion(op, xid, cid, snapshot);
+	if (IsMVCCSnapshot(snapshot))
+		zselect = ZHeapSelectVersionMVCC(op, xid, cid, snapshot);
+	else
+	{
+		/* ZBORKED: Why do we always use SnapshotSelf rules here? */
+		zselect = ZHeapSelectVersionSelf(op, xid, cid);
+	}
 
 	/* Return the current version, or nothing, if appropriate. */
 	if (zselect == ZVERSION_CURRENT)
@@ -797,7 +805,13 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 			return undo_tup;
 
 		/* Check XID and CID against snapshot. */
-		zselect = ZHeapSelectVersion(op, xid, cid, snapshot);
+		if (IsMVCCSnapshot(snapshot))
+			zselect = ZHeapSelectVersionMVCC(op, xid, cid, snapshot);
+		else
+		{
+			/* ZBORKED: Why do we always use SnapshotSelf rules here? */
+			zselect = ZHeapSelectVersionSelf(op, xid, cid);
+		}
 
 		/* Return the current version, or nothing, if appropriate. */
 		if (zselect == ZVERSION_CURRENT)
@@ -1127,22 +1141,38 @@ ZHeapTidOpFromInfomask(uint16 infomask)
 }
 
 /*
- * ZHeapSelectVersion
+ * ZHeapSelectVersionMVCC
  *
- * Common logic to select whether we should return the current version of a
- * tuple, an older version, or no version at all.
+ * Decide, for a given MVCC snapshot, whether we should return the current
+ * version of a tuple, an older version, or no version at all.
  */
 static ZVersionSelector
-ZHeapSelectVersion(ZTupleTidOp op, TransactionId xid, CommandId cid,
-				   Snapshot snapshot)
+ZHeapSelectVersionMVCC(ZTupleTidOp op, TransactionId xid, CommandId cid,
+					   Snapshot snapshot)
 {
-	Assert(op != ZTUPLETID_GONE);
+	Assert(IsMVCCSnapshot(snapshot));
 
-	if (op == ZTUPLETID_MODIFIED)
+	if (op == ZTUPLETID_GONE)
 	{
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
-			if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
+			if (cid >= snapshot->curcid)
+				return ZVERSION_OLDER;	/* deleted after scan started */
+			else
+				return ZVERSION_NONE;	/* deleted before scan started */
+		}
+		else if (XidInMVCCSnapshot(xid, snapshot))
+			return ZVERSION_OLDER;
+		else if (TransactionIdDidCommit(xid))
+			return ZVERSION_NONE;		/* tuple is deleted */
+		else
+			return ZVERSION_OLDER;		/* transaction is aborted */
+	}
+	else if (op == ZTUPLETID_MODIFIED)
+	{
+		if (TransactionIdIsCurrentTransactionId(xid))
+		{
+			if (cid >= snapshot->curcid)
 			{
 				/* updated/locked after scan started */
 				return ZVERSION_OLDER;
@@ -1153,9 +1183,7 @@ ZHeapSelectVersion(ZTupleTidOp op, TransactionId xid, CommandId cid,
 				return ZVERSION_CURRENT;
 			}
 		}
-		else if (IsMVCCSnapshot(snapshot) && XidInMVCCSnapshot(xid, snapshot))
-			return ZVERSION_OLDER;
-		else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(xid))
+		else if (XidInMVCCSnapshot(xid, snapshot))
 			return ZVERSION_OLDER;
 		else if (TransactionIdDidCommit(xid))
 			return ZVERSION_CURRENT;
@@ -1166,19 +1194,64 @@ ZHeapSelectVersion(ZTupleTidOp op, TransactionId xid, CommandId cid,
 	{
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
-			if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
+			if (cid >= snapshot->curcid)
 				return ZVERSION_NONE; /* inserted after scan started */
 			else
 				return ZVERSION_CURRENT;	/* inserted before scan started */
 		}
-		else if (IsMVCCSnapshot(snapshot) && XidInMVCCSnapshot(xid, snapshot))
-			return ZVERSION_NONE;
-		else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(xid))
+		else if (XidInMVCCSnapshot(xid, snapshot))
 			return ZVERSION_NONE;
 		else if (TransactionIdDidCommit(xid))
 			return ZVERSION_CURRENT;
 		else
 			return ZVERSION_NONE;
+	}
+
+	/* should never get here */
+	pg_unreachable();
+}
+
+/*
+ * ZHeapSelectVersionSelf
+ *
+ * Decide, using SnapshotSelf visibility rules, whether we should return the
+ * current version of a tuple, an older version, or no version at all.
+ */
+static ZVersionSelector
+ZHeapSelectVersionSelf(ZTupleTidOp op, TransactionId xid, CommandId cid)
+{
+	if (op == ZTUPLETID_GONE)
+	{
+		if (TransactionIdIsCurrentTransactionId(xid))
+			return ZVERSION_NONE;
+		else if (TransactionIdIsInProgress(xid))
+			return ZVERSION_OLDER;
+		else if (TransactionIdDidCommit(xid))
+			return ZVERSION_NONE;
+		else
+			return ZVERSION_OLDER;		/* transaction is aborted */
+	}
+	else if (op == ZTUPLETID_MODIFIED)
+	{
+		if (TransactionIdIsCurrentTransactionId(xid))
+			return ZVERSION_CURRENT;
+		else if (TransactionIdIsInProgress(xid))
+			return ZVERSION_OLDER;
+		else if (TransactionIdDidCommit(xid))
+			return ZVERSION_CURRENT;
+		else
+			return ZVERSION_OLDER;		/* transaction is aborted */
+	}
+	else
+	{
+		if (TransactionIdIsCurrentTransactionId(xid))
+			return ZVERSION_CURRENT;
+		else if (TransactionIdIsInProgress(xid))
+			return ZVERSION_NONE;
+		else if (TransactionIdDidCommit(xid))
+			return ZVERSION_CURRENT;
+		else
+			return ZVERSION_NONE;		/* transaction is aborted */
 	}
 
 	/* should never get here */
@@ -1233,10 +1306,14 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	CommandId	cur_cid = GetCurrentCommandId(false);
 	ZHeapTupleTransInfo	zinfo;
 	bool		fetch_cid;
+	ZTupleTidOp op;
 	ZVersionSelector	zselect;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
+
+	/* Get last operation type */
+	op = ZHeapTidOpFromInfomask(tuple->t_infomask);
 
 	/*
 	 * If the current command doesn't need to modify any tuple and the
@@ -1274,69 +1351,13 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 		 * a non-inplace update, the tuple is now effectively gone; if it was
 		 * an insert or an inplace update, use the current version.
 		 */
-		if ((tuple->t_infomask & (ZHEAP_DELETED|ZHEAP_UPDATED)) != 0)
+		if (op == ZTUPLETID_GONE)
 			zselect = ZVERSION_NONE;
 		else
 			zselect = ZVERSION_CURRENT;
-	}
-	else if ((tuple->t_infomask & (ZHEAP_DELETED|ZHEAP_UPDATED)) != 0)
-	{
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-		{
-			if (zinfo.cid >= snapshot->curcid)
-				zselect = ZVERSION_OLDER; /* deleted after scan started */
-			else
-				zselect = ZVERSION_NONE;
-		}
-		else if (XidInMVCCSnapshot(zinfo.xid, snapshot))
-			zselect = ZVERSION_OLDER;
-		else if (TransactionIdDidCommit(zinfo.xid))
-			zselect = ZVERSION_NONE;		/* tuple is deleted */
-		else					/* transaction is aborted */
-			zselect = ZVERSION_OLDER;
-	}
-	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
-			 tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
-	{
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-		{
-			if (zinfo.cid >= snapshot->curcid)
-			{
-				/* updated/locked after scan started */
-				zselect = ZVERSION_OLDER;
-			}
-			else
-			{
-				/* updated before scan started */
-				zselect = ZVERSION_CURRENT;
-			}
-		}
-		else if (XidInMVCCSnapshot(zinfo.xid, snapshot))
-			zselect = ZVERSION_OLDER;
-		else if (TransactionIdDidCommit(zinfo.xid))
-			zselect = ZVERSION_CURRENT; /* tuple is updated */
-		else					/* transaction is aborted */
-			zselect = ZVERSION_OLDER;
 	}
 	else
-	{
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-		{
-			if (zinfo.cid >= snapshot->curcid)
-				zselect = ZVERSION_NONE; /* inserted after scan started */
-			else
-			{
-				zselect = ZVERSION_CURRENT;
-				/* inserted before scan started */
-			}
-		}
-		else if (XidInMVCCSnapshot(zinfo.xid, snapshot))
-			zselect = ZVERSION_NONE;
-		else if (TransactionIdDidCommit(zinfo.xid))
-			zselect = ZVERSION_CURRENT;
-		else
-			zselect = ZVERSION_NONE;
-	}
+		zselect = ZHeapSelectVersionMVCC(op, zinfo.xid, zinfo.cid, snapshot);
 
 	/*
 	 * If we decided that our snapshot can't see any version of the tuple,
@@ -1895,10 +1916,14 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	ZHeapTupleTransInfo	zinfo;
+	ZTupleTidOp op;
 	ZVersionSelector	zselect;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
+
+	/* Get last operation type */
+	op = ZHeapTidOpFromInfomask(tuple->t_infomask);
 
 	/* Get transaction information */
 	ZHeapTupleGetTransInfo(zhtup, buffer, false, false, InvalidSnapshot,
@@ -1914,51 +1939,13 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
 		 * a non-inplace update, the tuple is now effectively gone; if it was
 		 * an insert or an inplace update, use the current version.
 		 */
-		if ((tuple->t_infomask & (ZHEAP_DELETED|ZHEAP_UPDATED)) != 0)
+		if (op == ZTUPLETID_GONE)
 			zselect = ZVERSION_NONE;
 		else
 			zselect = ZVERSION_CURRENT;
-	}
-	else if ((tuple->t_infomask & (ZHEAP_DELETED|ZHEAP_UPDATED)) != 0)
-	{
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-			zselect = ZVERSION_NONE;
-		else if (TransactionIdIsInProgress(zinfo.xid))
-			zselect = ZVERSION_OLDER;
-		else if (TransactionIdDidCommit(zinfo.xid))
-		{
-			/* tuple is deleted or non-inplace-updated */
-			zselect = ZVERSION_NONE;
-		}
-		else					/* transaction is aborted */
-			zselect = ZVERSION_OLDER;
-	}
-	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
-			 tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
-	{
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-			zselect = ZVERSION_CURRENT;
-		else if (TransactionIdIsInProgress(zinfo.xid))
-			zselect = ZVERSION_OLDER;
-		else if (TransactionIdDidCommit(zinfo.xid))
-			zselect = ZVERSION_CURRENT;
-		else					/* transaction is aborted */
-			zselect = ZVERSION_OLDER;
 	}
 	else
-	{
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-			zselect = ZVERSION_CURRENT;
-		else if (TransactionIdIsInProgress(zinfo.xid))
-			zselect = ZVERSION_NONE;
-		else if (TransactionIdDidCommit(zinfo.xid))
-			zselect = ZVERSION_CURRENT;
-		else
-		{
-			/* Inserting transaction is aborted. */
-			zselect = ZVERSION_NONE;
-		}
-	}
+		zselect = ZHeapSelectVersionSelf(op, zinfo.xid, zinfo.cid);
 
 	/*
 	 * If we decided that our snapshot can't see any version of the tuple,
