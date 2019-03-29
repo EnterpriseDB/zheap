@@ -5371,7 +5371,6 @@ void
 zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 {
 	TransactionId xid = GetTopTransactionId();
-	TransactionId current_tup_xid;
 	ItemPointer tid = &(tuple->t_self);
 	ItemId		lp;
 	ZHeapTupleHeader zhtuphdr;
@@ -5379,8 +5378,8 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 	BlockNumber block;
 	Buffer		buffer;
 	OffsetNumber offnum;
-	int			out_slot_no PG_USED_FOR_ASSERTS_ONLY;
 	int			trans_slot_id;
+	ZHeapTupleTransInfo	zinfo;
 
 	Assert(ItemPointerIsValid(tid));
 
@@ -5402,20 +5401,14 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 	 * Sanity check that the tuple really is a speculatively inserted tuple,
 	 * inserted by us.
 	 */
-	out_slot_no = GetTransactionSlotInfo(buffer,
-										 offnum,
-										 trans_slot_id,
-										 NULL,
-										 &current_tup_xid,
-										 NULL,
-										 true,
-										 false);
+	GetTransactionSlotInfo(buffer, offnum, trans_slot_id, true, false,
+						   &zinfo);
 
 	/* As the transaction is still open, the slot can't be frozen. */
-	Assert(out_slot_no != ZHTUP_SLOT_FROZEN);
-	Assert(current_tup_xid != InvalidTransactionId);
+	Assert(zinfo.trans_slot != ZHTUP_SLOT_FROZEN);
+	Assert(zinfo.xid != InvalidTransactionId);
 
-	if (current_tup_xid != xid)
+	if (zinfo.xid != xid)
 		elog(ERROR, "attempted to kill a tuple inserted by another transaction");
 	if (!(IsToastRelation(relation) || ZHeapTupleHeaderIsSpeculative(zhtuphdr)))
 		elog(ERROR, "attempted to kill a non-speculative tuple");
@@ -5496,18 +5489,14 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 	OffsetNumber offnum;
 	UnpackedUndoRecord *urec;
 	ZHeapTuple	undo_tup;
+	ZHeapTupleTransInfo	zinfo;
 
 	prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
 	blk = ItemPointerGetBlockNumber(&zhtup->t_self);
 	offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
-	(void) GetTransactionSlotInfo(buffer,
-								  offnum,
-								  prev_trans_slot_id,
-								  NULL,
-								  NULL,
-								  &urec_ptr,
-								  true,
-								  false);
+	GetTransactionSlotInfo(buffer, offnum, prev_trans_slot_id, true, false,
+						   &zinfo);
+	urec_ptr = zinfo.urec_ptr;
 	undo_tup = zhtup;
 
 	while (true)
@@ -5549,15 +5538,16 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 			 */
 			if (trans_slot_id != prev_trans_slot_id)
 			{
-				(void) GetTransactionSlotInfo(buffer,
-											  ItemPointerGetOffsetNumber(&undo_tup->t_self),
-											  trans_slot_id,
-											  NULL,
-											  NULL,
-											  &urec_ptr,
-											  true,
-											  true);
+				ZHeapTupleTransInfo	zinfo;
+
+				GetTransactionSlotInfo(buffer,
+									   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+									   trans_slot_id,
+									   true,
+									   true,
+									   &zinfo);
 				prev_trans_slot_id = trans_slot_id;
+				urec_ptr = zinfo.urec_ptr;
 			}
 			zhtup = undo_tup;
 		}
@@ -6126,15 +6116,18 @@ ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
  * TPDSlot - true, if the passed transaction_slot_id is the slot number in TPD
  * entry.
  */
-int
+void
 GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
-					   uint32 *epoch, TransactionId *xid,
-					   UndoRecPtr *urec_ptr, bool NoTPDBufLock, bool TPDSlot)
+					   bool NoTPDBufLock, bool TPDSlot,
+					   ZHeapTupleTransInfo *zinfo)
 {
 	ZHeapPageOpaque opaque;
 	Page		page;
 	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
-	int			out_trans_slot_id = trans_slot_id;
+	uint32		epoch = 0;
+
+	zinfo->trans_slot = trans_slot_id;
+	zinfo->cid = InvalidCommandId;
 
 	page = BufferGetPage(buf);
 	phdr = (PageHeader) page;
@@ -6146,23 +6139,16 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 	 */
 	if (trans_slot_id == ZHTUP_SLOT_FROZEN)
 	{
-		if (epoch)
-			*epoch = 0;
-		if (xid)
-			*xid = InvalidTransactionId;
-		if (urec_ptr)
-			*urec_ptr = InvalidUndoRecPtr;
+		zinfo->xid = InvalidTransactionId;
+		zinfo->urec_ptr = InvalidUndoRecPtr;
 	}
 	else if (trans_slot_id < ZHEAP_PAGE_TRANS_SLOTS ||
 			 (trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS &&
 			  !ZHeapPageHasTPDSlot(phdr)))
 	{
-		if (epoch)
-			*epoch = opaque->transinfo[trans_slot_id - 1].xid_epoch;
-		if (xid)
-			*xid = opaque->transinfo[trans_slot_id - 1].xid;
-		if (urec_ptr)
-			*urec_ptr = opaque->transinfo[trans_slot_id - 1].urec_ptr;
+		epoch = opaque->transinfo[trans_slot_id - 1].xid_epoch;
+		zinfo->xid = opaque->transinfo[trans_slot_id - 1].xid;
+		zinfo->urec_ptr = opaque->transinfo[trans_slot_id - 1].urec_ptr;
 	}
 	else
 	{
@@ -6176,30 +6162,32 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 			 */
 			if (trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS)
 				trans_slot_id = ZHEAP_PAGE_TRANS_SLOTS + 1;
-			out_trans_slot_id = TPDPageGetTransactionSlotInfo(buf,
-															  trans_slot_id,
-															  InvalidOffsetNumber,
-															  epoch,
-															  xid,
-															  urec_ptr,
-															  NoTPDBufLock,
-															  false);
+			zinfo->trans_slot =
+				TPDPageGetTransactionSlotInfo(buf,
+											  trans_slot_id,
+											  InvalidOffsetNumber,
+											  &epoch,
+											  &zinfo->xid,
+											  &zinfo->urec_ptr,
+											  NoTPDBufLock,
+											  false);
 		}
 		else
 		{
 			Assert(offset != InvalidOffsetNumber);
-			out_trans_slot_id = TPDPageGetTransactionSlotInfo(buf,
-															  trans_slot_id,
-															  offset,
-															  epoch,
-															  xid,
-															  urec_ptr,
-															  NoTPDBufLock,
-															  false);
+			zinfo->trans_slot =
+				TPDPageGetTransactionSlotInfo(buf,
+											  trans_slot_id,
+											  offset,
+											  &epoch,
+											  &zinfo->xid,
+											  &zinfo->urec_ptr,
+											  NoTPDBufLock,
+											  false);
 		}
 	}
 
-	return out_trans_slot_id;
+	zinfo->epoch_xid = MakeEpochXid((uint64) epoch, zinfo->xid);
 }
 
 /*
@@ -7433,13 +7421,9 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 				 int trans_slot_id)
 {
 	UnpackedUndoRecord *urec;
-	UndoRecPtr	undo_rec_ptr;
 	CommandId	current_cid;
-	TransactionId xid;
-	uint64		epoch_xid;
-	uint32		epoch;
 	bool		TPDSlot = true;
-	int			out_slot_no;
+	ZHeapTupleTransInfo	zinfo;
 
 	/*
 	 * For undo tuple caller will pass the valid slot id otherwise we can get
@@ -7457,39 +7441,32 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 	 */
 	if (!UndoRecPtrIsValid(urec_ptr))
 	{
-		out_slot_no = GetTransactionSlotInfo(buf,
-											 ItemPointerGetOffsetNumber(&zhtup->t_self),
-											 trans_slot_id,
-											 &epoch,
-											 &xid,
-											 &undo_rec_ptr,
-											 true,
-											 TPDSlot);
+		GetTransactionSlotInfo(buf,
+							   ItemPointerGetOffsetNumber(&zhtup->t_self),
+							   trans_slot_id,
+							   true,
+							   TPDSlot,
+							   &zinfo);
 	}
 	else
 	{
-		out_slot_no = GetTransactionSlotInfo(buf,
-											 ItemPointerGetOffsetNumber(&zhtup->t_self),
-											 trans_slot_id,
-											 &epoch,
-											 &xid,
-											 NULL,
-											 true,
-											 TPDSlot);
-		undo_rec_ptr = urec_ptr;
+		GetTransactionSlotInfo(buf,
+							   ItemPointerGetOffsetNumber(&zhtup->t_self),
+							   trans_slot_id,
+							   true,
+							   TPDSlot,
+							   &zinfo);
+		zinfo.urec_ptr = urec_ptr;
 	}
 
-	if (out_slot_no == ZHTUP_SLOT_FROZEN)
+	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
 		return InvalidCommandId;
 
-	epoch_xid = (uint64) epoch;
-	epoch_xid = MakeEpochXid(epoch_xid, xid);
-
-	if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	if (zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return InvalidCommandId;
 
-	Assert(UndoRecPtrIsValid(undo_rec_ptr));
-	urec = UndoFetchRecord(undo_rec_ptr,
+	Assert(UndoRecPtrIsValid(zinfo.urec_ptr));
+	urec = UndoFetchRecord(zinfo.urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
 						   InvalidTransactionId,

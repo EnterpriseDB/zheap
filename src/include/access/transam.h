@@ -72,6 +72,10 @@
 #define GetXidFromEpochXid(epochxid)			\
 	((uint32) (epochxid) & 0XFFFFFFFF)
 
+/* Extract epoch from a value comprised of epoch and xid  */
+#define GetEpochFromEpochXid(epochxid)			\
+	((uint32) ((epochxid) >> 32))
+
 /* ----------
  *		Object ID (OID) zero is InvalidOid.
  *
