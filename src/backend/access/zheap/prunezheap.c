@@ -761,9 +761,6 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 	itemIdSortData itemidbase[MaxZHeapTuplesPerPage];
 	itemIdSort	itemidptr;
 	ItemId		lp;
-	TransactionId xid;
-	uint32		epoch;
-	UndoRecPtr	urec_ptr;
 	int			nline,
 				nstorage,
 				nunused;
@@ -813,10 +810,10 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 
 			if (!ZHeapTupleHasInvalidXact(tup->t_infomask))
 			{
-				int			trans_slot;
+				ZHeapTupleTransInfo	zinfo;
 
-				trans_slot = ZHeapTupleHeaderGetXactSlot(tup);
-				if (trans_slot == ZHTUP_SLOT_FROZEN)
+				zinfo.trans_slot = ZHeapTupleHeaderGetXactSlot(tup);
+				if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
 					continue;
 
 				/*
@@ -829,9 +826,8 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 				 * set we can get the actual transaction and check the status
 				 * of the transaction.
 				 */
-				trans_slot = GetTransactionSlotInfo(buffer, i, trans_slot,
-													&epoch, &xid, &urec_ptr,
-													NoTPDBufLock, false);
+				GetTransactionSlotInfo(buffer, i, zinfo.trans_slot,
+									   NoTPDBufLock, false, &zinfo);
 
 				/*
 				 * It is quite possible that the item is showing some valid
@@ -839,10 +835,10 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 				 * happen when the slot belongs to TPD entry and the
 				 * corresponding TPD entry is pruned.
 				 */
-				if (trans_slot == ZHTUP_SLOT_FROZEN)
+				if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
 					continue;
 
-				if (!TransactionIdDidCommit(xid))
+				if (!TransactionIdDidCommit(zinfo.xid))
 					return;
 			}
 		}
@@ -892,7 +888,7 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 			 */
 			if (ItemIdHasPendingXact(lp))
 			{
-				int			trans_slot;
+				ZHeapTupleTransInfo	zinfo;
 
 				/*
 				 * If unused_set is true, it means that itemIds are already
@@ -901,7 +897,7 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 				 */
 				if (unused_set)
 					continue;
-				trans_slot = ItemIdGetTransactionSlot(lp);
+				zinfo.trans_slot = ItemIdGetTransactionSlot(lp);
 
 				/*
 				 * Here, we are relying on the transaction information in slot
@@ -909,12 +905,10 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 				 * transaction information from the entry would have been
 				 * cleared.  See PageFreezeTransSlots.
 				 */
-				if (trans_slot != ZHTUP_SLOT_FROZEN)
+				if (zinfo.trans_slot != ZHTUP_SLOT_FROZEN)
 				{
-					trans_slot = GetTransactionSlotInfo(buffer, i, trans_slot,
-														&epoch, &xid,
-														&urec_ptr, NoTPDBufLock,
-														false);
+					GetTransactionSlotInfo(buffer, i, zinfo.trans_slot,
+										   NoTPDBufLock, false, &zinfo);
 
 					/*
 					 * It is quite possible that the item is showing some
@@ -922,8 +916,8 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 					 * frozen. This can happen when the slot belongs to TPD
 					 * entry and the corresponding TPD entry is pruned.
 					 */
-					if (trans_slot != ZHTUP_SLOT_FROZEN &&
-						!TransactionIdDidCommit(xid))
+					if (zinfo.trans_slot != ZHTUP_SLOT_FROZEN &&
+						!TransactionIdDidCommit(zinfo.xid))
 						continue;
 				}
 			}

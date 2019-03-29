@@ -23,6 +23,7 @@
 #include "storage/bufmgr.h"
 #include "storage/buf_internals.h"
 #include "storage/proc.h"
+#include "utils/ztqual.h"
 
 static bool IsZMultiLockListMember(List *members, ZMultiLockMember *mlmember);
 
@@ -165,7 +166,6 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	TransactionId xid;
 	SubTransactionId subxid = InvalidSubTransactionId;
 	uint64		epoch_xid;
-	uint32		epoch;
 	int			prev_trans_slot_id,
 				trans_slot_id;
 	uint8		uur_type;
@@ -206,10 +206,10 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	{
 		bool		first_urp = true;
 
-		epoch = trans_slots[slot_no].xid_epoch;
 		xid = trans_slots[slot_no].xid;
 
-		epoch_xid = MakeEpochXid((uint64) epoch, xid);
+		epoch_xid = MakeEpochXid((uint64) trans_slots[slot_no].xid_epoch,
+								 xid);
 
 		/*
 		 * We need to process the undo chain only for in-progress
@@ -251,6 +251,8 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			 */
 			if (nobuflock && first_urp)
 			{
+				ZHeapTupleTransInfo	zinfo;
+
 				log = UndoLogGet(UndoRecPtrGetLogNo(urec_ptr));
 
 				/*
@@ -268,18 +270,14 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				 * can't be re-winded.  Although, it can be discarded but we
 				 * have handling for the same.
 				 */
-				trans_slot_id = GetTransactionSlotInfo(buf,
-													   InvalidOffsetNumber,
-													   trans_slot_id,
-													   &epoch,
-													   &xid,
-													   &urec_ptr,
-													   true,
-													   true);
+				GetTransactionSlotInfo(buf, InvalidOffsetNumber, trans_slot_id,
+									   true, true, &zinfo);
+				trans_slot_id = zinfo.trans_slot;
+				epoch_xid = zinfo.epoch_xid;
+				urec_ptr = zinfo.urec_ptr;
 
 				/* Release the buffer lock */
 				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-				epoch_xid = MakeEpochXid((uint64) epoch, xid);
 
 				/*
 				 * We need to process the undo chain only for in-progress
