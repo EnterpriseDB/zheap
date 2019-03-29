@@ -31,6 +31,7 @@
 #include "access/tpd.h"
 #include "miscadmin.h"
 #include "utils/memdebug.h"
+#include "utils/ztqual.h"
 
 /*
  * ZPageAddItemExtended - Add an item to a zheap page.
@@ -143,10 +144,9 @@ ZPageAddItemExtended(Buffer buffer,
 					 */
 					if (ItemIdHasPendingXact(itemId))
 					{
-						TransactionId xid;
-						UndoRecPtr	urec_ptr;
-						int			trans_slot_id = ItemIdGetTransactionSlot(itemId);
-						uint32		epoch;
+						ZHeapTupleTransInfo	zinfo;
+
+						zinfo.trans_slot = ItemIdGetTransactionSlot(itemId);
 
 						/*
 						 * We can't reach here for a valid input page as the
@@ -161,11 +161,11 @@ ZPageAddItemExtended(Buffer buffer,
 						 * reused, then transaction information from the entry
 						 * would have been cleared.  See PageFreezeTransSlots.
 						 */
-						if (trans_slot_id == ZHTUP_SLOT_FROZEN)
+						if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
 							break;
-						trans_slot_id = GetTransactionSlotInfo(buffer, offsetNumber,
-															   trans_slot_id, &epoch, &xid,
-															   &urec_ptr, NoTPDBufLock, false);
+						GetTransactionSlotInfo(buffer, offsetNumber,
+											   zinfo.trans_slot, NoTPDBufLock,
+											   false, &zinfo);
 
 						/*
 						 * It is quite possible that the item is showing some
@@ -174,10 +174,10 @@ ZPageAddItemExtended(Buffer buffer,
 						 * TPD entry and the corresponding TPD entry is
 						 * pruned.
 						 */
-						if (trans_slot_id == ZHTUP_SLOT_FROZEN)
+						if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
 							break;
-						if (TransactionIdIsValid(xid) &&
-							!TransactionIdDidCommit(xid))
+						if (TransactionIdIsValid(zinfo.xid) &&
+							!TransactionIdDidCommit(zinfo.xid))
 						{
 							hasPendingXact = true;
 							continue;
