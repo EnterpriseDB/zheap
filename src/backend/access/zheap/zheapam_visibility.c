@@ -40,6 +40,13 @@
 
 typedef enum
 {
+	ZTUPLETID_NEW,				/* inserted */
+	ZTUPLETID_MODIFIED,			/* in-place update or lock */
+	ZTUPLETID_GONE				/* non-in-place update or delete */
+} ZTupleTidOp;
+
+typedef enum
+{
 	ZVERSION_NONE,
 	ZVERSION_CURRENT,
 	ZVERSION_OLDER
@@ -51,7 +58,8 @@ static ZHeapTuple GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 								   TransactionId prev_undo_xid);
 static ZHeapTuple GetTupleFromUndoForAbortedXact(UndoRecPtr urec_ptr, Buffer buffer, int trans_slot,
 												 ZHeapTuple ztuple, TransactionId *xid);
-static ZVersionSelector ZHeapSelectVersion(int op, TransactionId xid,
+static ZTupleTidOp ZHeapTidOpFromInfomask(uint16 infomask);
+static ZVersionSelector ZHeapSelectVersion(ZTupleTidOp op, TransactionId xid,
 				   CommandId cid, Snapshot snapshot);
 
 /*
@@ -385,19 +393,11 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 					 int trans_slot_id, CommandId cid)
 {
 	ZVersionSelector	zselect;
-	int			undo_oper = -1;
+	ZTupleTidOp	op;
 	TransactionId oldestXidHavingUndo;
 
-	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
-		undo_oper = ZHEAP_INPLACE_UPDATED;
-	else if (undo_tup->t_data->t_infomask & ZHEAP_XID_LOCK_ONLY)
-		undo_oper = ZHEAP_XID_LOCK_ONLY;
-	else
-	{
-		/* we can't further operate on deleted or non-inplace-updated tuple */
-		Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED) ||
-			   !(undo_tup->t_data->t_infomask & ZHEAP_UPDATED));
-	}
+	op = ZHeapTidOpFromInfomask(undo_tup->t_data->t_infomask);
+	Assert(op != ZTUPLETID_GONE);	/* shouldn't find such tuples in undo */
 
 	oldestXidHavingUndo = GetXidFromEpochXid(
 											 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
@@ -460,7 +460,7 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 		return undo_tup;
 
 	/* Check XID and CID against snapshot. */
-	zselect = ZHeapSelectVersion(undo_oper, xid, cid, snapshot);
+	zselect = ZHeapSelectVersion(op, xid, cid, snapshot);
 
 	/* Return the current version, or nothing, if appropriate. */
 	if (zselect == ZVERSION_CURRENT)
@@ -534,8 +534,8 @@ fetch_prior_undo_record:
 	UndoRecordRelease(urec);
 
 	/* we can't further operate on deleted or non-inplace-updated tuple */
-	Assert(!((undo_tup->t_data->t_infomask & ZHEAP_DELETED) ||
-			 (undo_tup->t_data->t_infomask & ZHEAP_UPDATED)));
+	Assert(ZHeapTidOpFromInfomask(undo_tup->t_data->t_infomask)
+				!= ZTUPLETID_GONE);
 
 	oldestXidHavingUndo = GetXidFromEpochXid(
 											 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
@@ -663,7 +663,6 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	UndoRecPtr	prev_urec_ptr;
 	TransactionId xid;
 	CommandId	cid;
-	int			undo_oper;
 	TransactionId oldestXidHavingUndo;
 	int			trans_slot_id;
 	int			prev_trans_slot_id = trans_slot;
@@ -676,11 +675,11 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	 */
 	while (1)
 	{
+		ZTupleTidOp			op = ZTUPLETID_NEW;
 		ZVersionSelector	zselect;
 
 		prev_urec_ptr = InvalidUndoRecPtr;
 		cid = InvalidCommandId;
-		undo_oper = -1;
 		trans_slot_id = InvalidXactSlotId;
 
 		urec = UndoFetchRecord(urec_ptr,
@@ -750,19 +749,10 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 			prev_urec_ptr = zinfo.urec_ptr;
 		}
 
-		if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
-			undo_oper = ZHEAP_INPLACE_UPDATED;
-		else if (undo_tup->t_data->t_infomask & ZHEAP_XID_LOCK_ONLY)
-			undo_oper = ZHEAP_XID_LOCK_ONLY;
-		else
-		{
-			/*
-			 * we can't further operate on a deleted or non-inplace-updated
-			 * tuple
-			 */
-			Assert(!((undo_tup->t_data->t_infomask & ZHEAP_DELETED) ||
-					 (undo_tup->t_data->t_infomask & ZHEAP_UPDATED)));
-		}
+		op = ZHeapTidOpFromInfomask(undo_tup->t_data->t_infomask);
+
+		/* can't further operate on deleted or non-inplace-updated tuple */
+		Assert(op != ZTUPLETID_GONE);
 
 		/*
 		 * We need to fetch all the transaction related information from
@@ -812,7 +802,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 			return undo_tup;
 
 		/* Check XID and CID against snapshot. */
-		zselect = ZHeapSelectVersion(undo_oper, xid, cid, snapshot);
+		zselect = ZHeapSelectVersion(op, xid, cid, snapshot);
 
 		/* Return the current version, or nothing, if appropriate. */
 		if (zselect == ZVERSION_CURRENT)
@@ -935,7 +925,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	CommandId	cid;
 	int			trans_slot_id;
 	int			prev_trans_slot_id = trans_slot;
-	int			undo_oper;
+	ZTupleTidOp	op;
 	ZVersionSelector	zselect;
 
 	/*
@@ -947,7 +937,6 @@ fetch_prior_undo_record:
 	prev_urec_ptr = InvalidUndoRecPtr;
 	cid = InvalidCommandId;
 	trans_slot_id = InvalidXactSlotId;
-	undo_oper = -1;
 
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
@@ -980,22 +969,8 @@ fetch_prior_undo_record:
 			*ctid = undo_tup->t_self;
 	}
 
-	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
-	{
-		undo_oper = ZHEAP_INPLACE_UPDATED;
-		*in_place_updated_or_locked = true;
-	}
-	else if (undo_tup->t_data->t_infomask & ZHEAP_XID_LOCK_ONLY)
-	{
-		undo_oper = ZHEAP_XID_LOCK_ONLY;
-		*in_place_updated_or_locked = true;
-	}
-	else
-	{
-		/* we can't further operate on deleted or non-inplace-updated tuple */
-		Assert(!(undo_tup->t_data->t_infomask & ZHEAP_DELETED) ||
-			   !(undo_tup->t_data->t_infomask & ZHEAP_UPDATED));
-	}
+	op = ZHeapTidOpFromInfomask(undo_tup->t_data->t_infomask);
+	Assert(op != ZTUPLETID_GONE);   /* shouldn't find such tuples in undo */
 
 	UndoRecordRelease(urec);
 
@@ -1089,8 +1064,7 @@ fetch_prior_undo_record:
 		goto result_available;
 	}
 
-	if (undo_oper == ZHEAP_INPLACE_UPDATED ||
-		undo_oper == ZHEAP_XID_LOCK_ONLY)
+	if (op == ZTUPLETID_MODIFIED)
 	{
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
@@ -1143,15 +1117,33 @@ result_available:
 }
 
 /*
+ * ZHeapTidOpFromInfomask
+ *
+ * Determine the last operation performed on a tuple using the infomask.
+ */
+static ZTupleTidOp
+ZHeapTidOpFromInfomask(uint16 infomask)
+{
+	if ((infomask & (ZHEAP_INPLACE_UPDATED|ZHEAP_XID_LOCK_ONLY)) != 0)
+		return ZTUPLETID_MODIFIED;
+	if ((infomask & (ZHEAP_UPDATED|ZHEAP_DELETED)) != 0)
+		return ZTUPLETID_GONE;
+	return ZTUPLETID_NEW;
+}
+
+/*
  * ZHeapSelectVersion
  *
  * Common logic to select whether we should return the current version of a
  * tuple, an older version, or no version at all.
  */
 static ZVersionSelector
-ZHeapSelectVersion(int op, TransactionId xid, CommandId cid, Snapshot snapshot)
+ZHeapSelectVersion(ZTupleTidOp op, TransactionId xid, CommandId cid,
+				   Snapshot snapshot)
 {
-	if (op == ZHEAP_INPLACE_UPDATED || op == ZHEAP_XID_LOCK_ONLY)
+	Assert(op != ZTUPLETID_GONE);
+
+	if (op == ZTUPLETID_MODIFIED)
 	{
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
@@ -1304,13 +1296,9 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 		else if (XidInMVCCSnapshot(zinfo.xid, snapshot))
 			zselect = ZVERSION_OLDER;
 		else if (TransactionIdDidCommit(zinfo.xid))
-		{
-
 			zselect = ZVERSION_NONE;		/* tuple is deleted */
-		}
 		else					/* transaction is aborted */
 			zselect = ZVERSION_OLDER;
-
 	}
 	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
 			 tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
