@@ -1260,6 +1260,18 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	/* Get transaction info */
 	ZHeapTupleGetTransInfo(zhtup, buffer, false, fetch_cid, snapshot, &zinfo);
 
+	/*
+	 * If we decided not to fetch the CID, it's because we know that every
+	 * tuple which has been stamped with our XID was also stamped with a CID
+	 * less than snapshot->curcid. The exact value doesn't matter, so we can
+	 * just use FirstCommandId.  This might seem to be a problem in the case
+	 * where snapshot->curcid == FirstCommandId, but in that case there can't
+	 * be any tuples stamped with our XID at all, so won't matter what value
+	 * we pick here.
+	 */
+	if (!fetch_cid)
+		zinfo.cid = FirstCommandId;
+
 	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
 		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 	{
@@ -1279,7 +1291,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	{
 		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		{
-			if (fetch_cid && zinfo.cid >= snapshot->curcid)
+			if (zinfo.cid >= snapshot->curcid)
 				zselect = ZVERSION_OLDER; /* deleted after scan started */
 			else
 				zselect = ZVERSION_NONE;
@@ -1300,7 +1312,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	{
 		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		{
-			if (fetch_cid && zinfo.cid >= snapshot->curcid)
+			if (zinfo.cid >= snapshot->curcid)
 			{
 				/* updated/locked after scan started */
 				zselect = ZVERSION_OLDER;
@@ -1322,7 +1334,7 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 	{
 		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		{
-			if (fetch_cid && zinfo.cid >= snapshot->curcid)
+			if (zinfo.cid >= snapshot->curcid)
 				zselect = ZVERSION_NONE; /* inserted after scan started */
 			else
 			{
