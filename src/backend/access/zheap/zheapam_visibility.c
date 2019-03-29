@@ -383,17 +383,14 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 					 Snapshot snapshot, Buffer buffer, TransactionId xid,
 					 int trans_slot_id, CommandId cid)
 {
+	ZVersionSelector	zselect;
 	int			undo_oper = -1;
 	TransactionId oldestXidHavingUndo;
 
 	if (undo_tup->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
-	{
 		undo_oper = ZHEAP_INPLACE_UPDATED;
-	}
 	else if (undo_tup->t_data->t_infomask & ZHEAP_XID_LOCK_ONLY)
-	{
 		undo_oper = ZHEAP_XID_LOCK_ONLY;
-	}
 	else
 	{
 		/* we can't further operate on deleted or non-inplace-updated tuple */
@@ -463,62 +460,53 @@ GetVisibleTupleIfAny(UndoRecPtr prev_urec_ptr, ZHeapTuple undo_tup,
 			if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
 			{
 				/* updated/locked after scan started */
-				return GetTupleFromUndo(prev_urec_ptr,
-										undo_tup,
-										snapshot,
-										buffer,
-										NULL,
-										trans_slot_id,
-										xid);
+				zselect = ZVERSION_OLDER;
 			}
 			else
-				return undo_tup;	/* updated before scan started */
+				zselect = ZVERSION_CURRENT; /* updated before scan started */
 		}
 		else if (IsMVCCSnapshot(snapshot) && XidInMVCCSnapshot(xid, snapshot))
-			return GetTupleFromUndo(prev_urec_ptr,
-									undo_tup,
-									snapshot,
-									buffer,
-									NULL,
-									trans_slot_id,
-									xid);
+			zselect = ZVERSION_OLDER;
 		else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(xid))
-			return GetTupleFromUndo(prev_urec_ptr,
-									undo_tup,
-									snapshot,
-									buffer,
-									NULL,
-									trans_slot_id,
-									xid);
+			zselect = ZVERSION_OLDER;
 		else if (TransactionIdDidCommit(xid))
-			return undo_tup;
+			zselect = ZVERSION_CURRENT;
 		else
-			return GetTupleFromUndo(prev_urec_ptr,
-									undo_tup,
-									snapshot,
-									buffer,
-									NULL,
-									trans_slot_id,
-									xid);
+			zselect = ZVERSION_OLDER;
 	}
 	else						/* undo tuple is the root tuple */
 	{
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
 			if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
-				return NULL;	/* inserted after scan started */
+				zselect = ZVERSION_NONE; /* inserted after scan started */
 			else
-				return undo_tup;	/* inserted before scan started */
+				zselect = ZVERSION_CURRENT;	/* inserted before scan started */
 		}
 		else if (IsMVCCSnapshot(snapshot) && XidInMVCCSnapshot(xid, snapshot))
-			return NULL;
+			zselect = ZVERSION_NONE;
 		else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(xid))
-			return NULL;
+			zselect = ZVERSION_NONE;
 		else if (TransactionIdDidCommit(xid))
-			return undo_tup;
+			zselect = ZVERSION_CURRENT;
 		else
-			return NULL;
+			zselect = ZVERSION_NONE;
 	}
+
+	/* Return the current version, or nothing, if appropriate. */
+	if (zselect == ZVERSION_CURRENT)
+		return undo_tup;
+	if (zselect == ZVERSION_NONE)
+		return NULL;
+
+	/* Need to check older versions, so delegate to GetTupleFromUndo. */
+	return GetTupleFromUndo(prev_urec_ptr,
+							undo_tup,
+							snapshot,
+							buffer,
+							NULL,
+							trans_slot_id,
+							xid);
 }
 
 /*
@@ -719,6 +707,8 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	 */
 	while (1)
 	{
+		ZVersionSelector	zselect;
+
 		prev_urec_ptr = InvalidUndoRecPtr;
 		cid = InvalidCommandId;
 		undo_oper = -1;
@@ -858,65 +848,59 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 			if (TransactionIdIsCurrentTransactionId(xid))
 			{
 				if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
-				{
-					/*
-					 * Updated after scan started, need to fetch prior tuple
-					 * in undo chain.
-					 */
-					urec_ptr = prev_urec_ptr;
-					zhtup = undo_tup;
-					prev_undo_xid = xid;
-					prev_trans_slot_id = trans_slot_id;
-				}
+					zselect = ZVERSION_OLDER;	/* updated after scan start */
 				else
-					return undo_tup;	/* updated before scan started */
+				{
+					/* updated before scan started */
+					zselect = ZVERSION_CURRENT;
+				}
 			}
 			else if (IsMVCCSnapshot(snapshot) &&
 					 XidInMVCCSnapshot(xid, snapshot))
-			{
-				urec_ptr = prev_urec_ptr;
-				zhtup = undo_tup;
-				prev_undo_xid = xid;
-				prev_trans_slot_id = trans_slot_id;
-			}
+				zselect = ZVERSION_OLDER;
 			else if (!IsMVCCSnapshot(snapshot) &&
 					 TransactionIdIsInProgress(xid))
-			{
-				urec_ptr = prev_urec_ptr;
-				zhtup = undo_tup;
-				prev_undo_xid = xid;
-				prev_trans_slot_id = trans_slot_id;
-			}
+				zselect = ZVERSION_OLDER;
 			else if (TransactionIdDidCommit(xid))
-				return undo_tup;
+				zselect = ZVERSION_CURRENT;
 			else
-			{
-				urec_ptr = prev_urec_ptr;
-				zhtup = undo_tup;
-				prev_undo_xid = xid;
-				prev_trans_slot_id = trans_slot_id;
-			}
+				zselect = ZVERSION_OLDER;
 		}
 		else						/* undo tuple is the root tuple */
 		{
 			if (TransactionIdIsCurrentTransactionId(xid))
 			{
 				if (IsMVCCSnapshot(snapshot) && cid >= snapshot->curcid)
-					return NULL;	/* inserted after scan started */
+					zselect = ZVERSION_NONE; /* inserted after scan started */
 				else
-					return undo_tup;	/* inserted before scan started */
+				{
+					/* inserted before scan started */
+					zselect = ZVERSION_CURRENT;
+				}
 			}
 			else if (IsMVCCSnapshot(snapshot) &&
 					 XidInMVCCSnapshot(xid, snapshot))
-				return NULL;
+				zselect = ZVERSION_NONE;
 			else if (!IsMVCCSnapshot(snapshot) &&
 					 TransactionIdIsInProgress(xid))
-				return NULL;
+				zselect = ZVERSION_NONE;
 			else if (TransactionIdDidCommit(xid))
-				return undo_tup;
+				zselect = ZVERSION_CURRENT;
 			else
-				return NULL;
+				zselect = ZVERSION_NONE;
 		}
+
+		/* Return the current version, or nothing, if appropriate. */
+		if (zselect == ZVERSION_CURRENT)
+			return undo_tup;
+		if (zselect == ZVERSION_NONE)
+			return NULL;
+
+		/* Need to check next older version, so loop around. */
+		urec_ptr = prev_urec_ptr;
+		zhtup = undo_tup;
+		prev_undo_xid = xid;
+		prev_trans_slot_id = trans_slot_id;
 	}
 
 	/* we should never reach here */
@@ -1028,7 +1012,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	int			trans_slot_id;
 	int			prev_trans_slot_id = trans_slot;
 	int			undo_oper;
-	bool		result;
+	ZVersionSelector	zselect;
 
 	/*
 	 * tuple is modified after the scan is started, fetch the prior record
@@ -1040,7 +1024,6 @@ fetch_prior_undo_record:
 	cid = InvalidCommandId;
 	trans_slot_id = InvalidXactSlotId;
 	undo_oper = -1;
-	result = false;
 
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
@@ -1052,7 +1035,7 @@ fetch_prior_undo_record:
 	/* If undo is discarded, then current tuple is visible. */
 	if (urec == NULL)
 	{
-		result = true;
+		zselect = ZVERSION_CURRENT;
 		goto result_available;
 	}
 
@@ -1104,7 +1087,7 @@ fetch_prior_undo_record:
 		TransactionIdEquals(xid, FrozenTransactionId) ||
 		TransactionIdPrecedes(xid, oldestXidHavingUndo))
 	{
-		result = true;
+		zselect = ZVERSION_CURRENT;
 		goto result_available;
 	}
 
@@ -1178,7 +1161,7 @@ fetch_prior_undo_record:
 		TransactionIdEquals(xid, FrozenTransactionId) ||
 		TransactionIdPrecedes(xid, oldestXidHavingUndo))
 	{
-		result = true;
+		zselect = ZVERSION_CURRENT;
 		goto result_available;
 	}
 
@@ -1188,68 +1171,51 @@ fetch_prior_undo_record:
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
 			if (cid >= curcid)
-			{
-				/*
-				 * Updated after scan started, need to fetch prior tuple in
-				 * undo chain.
-				 */
-				urec_ptr = prev_urec_ptr;
-				zhtup = undo_tup;
-				prev_undo_xid = xid;
-				prev_trans_slot_id = trans_slot_id;
-				free_zhtup = true;
-
-				goto fetch_prior_undo_record;
-			}
+				zselect = ZVERSION_OLDER;	/* updated after scan started */
 			else
-				result = true;	/* updated before scan started */
+				zselect = ZVERSION_CURRENT; /* updated before scan started */
 		}
 		else if (TransactionIdIsInProgress(xid))
-		{
-			/* Note the values required to fetch prior tuple in undo chain. */
-			urec_ptr = prev_urec_ptr;
-			zhtup = undo_tup;
-			prev_undo_xid = xid;
-			prev_trans_slot_id = trans_slot_id;
-			free_zhtup = true;
-
-			goto fetch_prior_undo_record;
-		}
+			zselect = ZVERSION_OLDER;
 		else if (TransactionIdDidCommit(xid))
-			result = true;
+			zselect = ZVERSION_CURRENT;
 		else
-		{
-			/* Note the values required to fetch prior tuple in undo chain. */
-			urec_ptr = prev_urec_ptr;
-			zhtup = undo_tup;
-			prev_undo_xid = xid;
-			prev_trans_slot_id = trans_slot_id;
-			free_zhtup = true;
-
-			goto fetch_prior_undo_record;
-		}
+			zselect = ZVERSION_OLDER;
 	}
 	else						/* undo tuple is the root tuple */
 	{
 		if (TransactionIdIsCurrentTransactionId(xid))
 		{
 			if (cid >= curcid)
-				result = false; /* inserted after scan started */
+				zselect = ZVERSION_NONE; /* inserted after scan started */
 			else
-				result = true;	/* inserted before scan started */
+				zselect = ZVERSION_CURRENT;	/* inserted before scan started */
 		}
 		else if (TransactionIdIsInProgress(xid))
-			result = false;
+			zselect = ZVERSION_NONE;
 		else if (TransactionIdDidCommit(xid))
-			result = true;
+			zselect = ZVERSION_CURRENT;
 		else
-			result = false;
+			zselect = ZVERSION_NONE;
+	}
+
+	if (zselect == ZVERSION_OLDER)
+	{
+		/* Note the values required to fetch prior tuple in undo chain. */
+		urec_ptr = prev_urec_ptr;
+		zhtup = undo_tup;
+		prev_undo_xid = xid;
+		prev_trans_slot_id = trans_slot_id;
+		free_zhtup = true;
+
+		/* And then go fetch it. */
+		goto fetch_prior_undo_record;
 	}
 
 result_available:
 	if (undo_tup)
 		pfree(undo_tup);
-	return result;
+	return (zselect == ZVERSION_CURRENT);
 }
 
 /*
@@ -1451,6 +1417,7 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 				epoch_xid;
 	int			vis_info;
 	ZHeapTupleTransInfo	zinfo;
+	ZVersionSelector	zselect;
 
 	if (all_dead)
 		*all_dead = false;
@@ -1537,38 +1504,29 @@ check_trans_slot:
 	if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 	{
 		if (zinfo.cid >= snapshot->curcid)
-		{
-			/* deleted after scan started, get previous tuple from undo */
-			return GetTupleFromUndoWithOffset(zinfo.urec_ptr,
-											  snapshot,
-											  buffer,
-											  off,
-											  zinfo.trans_slot);
-		}
+			zselect = ZVERSION_OLDER;		/* deleted after scan started */
 		else
-			return NULL;		/* deleted before scan started */
+			zselect = ZVERSION_NONE;		/* deleted before scan started */
 	}
 	else if (IsMVCCSnapshot(snapshot) &&
 			 XidInMVCCSnapshot(zinfo.xid, snapshot))
-		return GetTupleFromUndoWithOffset(zinfo.urec_ptr,
-										  snapshot,
-										  buffer,
-										  off,
-										  zinfo.trans_slot);
+		zselect = ZVERSION_OLDER;
 	else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(zinfo.xid))
-		return GetTupleFromUndoWithOffset(zinfo.urec_ptr,
-										  snapshot,
-										  buffer,
-										  off,
-										  zinfo.trans_slot);
+		zselect = ZVERSION_OLDER;
 	else if (TransactionIdDidCommit(zinfo.xid))
-		return NULL;			/* tuple is deleted */
+		zselect = ZVERSION_NONE;			/* tuple is deleted */
 	else						/* transaction is aborted */
+		zselect = ZVERSION_OLDER;
+
+	if (zselect == ZVERSION_OLDER)
 		return GetTupleFromUndoWithOffset(zinfo.urec_ptr,
 										  snapshot,
 										  buffer,
 										  off,
 										  zinfo.trans_slot);
+
+	/* ZVERSION_CURRENT should be impossible here */
+	Assert(zselect == ZVERSION_NONE);
 
 	return NULL;
 }
