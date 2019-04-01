@@ -58,6 +58,26 @@ UndoRecordExpectedSize(UnpackedUndoRecord *uur)
 }
 
 /*
+ * Compute size of the Unpacked undo record in memory
+ */
+Size
+UnpackedUndoRecordSize(UnpackedUndoRecord *uur)
+{
+	Size		size;
+
+	size = sizeof(UnpackedUndoRecord);
+
+	/* Add payload size if record contains payload data. */
+	if ((uur->uur_info & UREC_INFO_PAYLOAD) != 0)
+	{
+		size += uur->uur_payload.len;
+		size += uur->uur_tuple.len;
+	}
+
+	return size;
+}
+
+/*
  * To insert an undo record, call InsertUndoRecord() repeatedly until it
  * returns true.
  *
@@ -297,7 +317,7 @@ InsertUndoBytes(char *sourceptr, int sourcelen,
  */
 bool
 UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
-				 int *already_decoded, bool header_only)
+				 int *already_decoded, bool header_only, bool copy_data)
 {
 	char	   *readptr = (char *) page + starting_byte;
 	char	   *endptr = (char *) page + BLCKSZ;
@@ -372,16 +392,16 @@ UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 		uur->uur_tuple.len = work_payload.urec_tuple_len;
 
 		/*
-		 * If we can read the complete record from a single page then just
-		 * point payload data and tuple data into the page otherwise allocate
-		 * the memory.
+		 * If we can read the complete record from a single page and copy_data
+		 * is false then just point payload data and tuple data into the page
+		 * otherwise allocate the memory.
 		 *
 		 * XXX There is possibility of optimization that instead of always
 		 * allocating the memory whenever tuple is split we can check if any
 		 * of the payload or tuple data falling into the same page then don't
 		 * allocate the memory for that.
 		 */
-		if (!is_undo_splited &&
+		if (!copy_data && !is_undo_splited &&
 			uur->uur_payload.len + uur->uur_tuple.len <= (endptr - readptr))
 		{
 			uur->uur_payload.data = readptr;

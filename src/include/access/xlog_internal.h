@@ -26,6 +26,7 @@
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
 #include "pgtime.h"
+#include "postmaster/undoloop.h"
 #include "storage/block.h"
 #include "storage/relfilenode.h"
 
@@ -297,9 +298,9 @@ typedef struct RmgrData
 	void		(*rm_startup) (void);
 	void		(*rm_cleanup) (void);
 	void		(*rm_mask) (char *pagedata, BlockNumber blkno);
-	bool		(*rm_undo) (List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
-							TransactionId xid, BlockNumber blkno,
-							bool blk_chain_complete, bool norellock);
+	bool		(*rm_undo) (UndoRecInfo *urp_array, int first_idx, int last_idx,
+							Oid reloid, TransactionId xid, BlockNumber blkno,
+							bool blk_chain_complete, bool rellock);
 	void		(*rm_undo_desc) (StringInfo buf, UnpackedUndoRecord *record);
 } RmgrData;
 

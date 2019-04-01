@@ -55,6 +55,10 @@ extern void PrepareUpdateUndoActionProgress(XLogReaderState *xlog_record,
 								UndoRecPtr urecptr, int progress);
 extern void UndoRecordUpdateTransInfo(int idx);
 
+extern void UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp,
+							 RelFileNode rnode, UndoPersistence persistence,
+							 bool keep_buffer);
 extern void ResetUndoBuffers(void);
+extern bool UndoRecordIsValid(UndoRecPtr urp);
 
 #endif							/* UNDOINSERT_H */
