@@ -148,17 +148,6 @@ headers, this saves space. In the future, someone might want to support
 in-place updates for toast table data instead of doing delete+insert as we do
 today.
 
-SQL Operations: All SQL operations that either need to interact with a heap
-(scans, ALTER TABLE, etc.) or require a HeapTuple (like joins, ORDER BY,
-ANALYZE, COPY, etc.) need to be changed to interact with zheap pages or zheap
-tuples.  For now, we have taken the approach of  writing converter functions
-for tuples (i.e.  zheap_to_heap, heap_to_zheap) to avoid changing the whole
-backend to accept to Zheap pages and tuples.  Operations which need to access
-pages still need to be modified.   For all performance-critical operations, we
-operate directly on zheap pages and zheap tuples to avoid the cost of
-conversion.  We think that some of this needs to be changed in response to
-whatever conclusions are reached regarding the proposed storage API.
-
 Transaction slot reuse
 -----------------------
 Transaction slots can be freely reused if the transaction is committed and
