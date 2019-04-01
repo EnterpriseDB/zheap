@@ -70,7 +70,7 @@ static ZVersionSelector ZHeapSelectVersionSelf(ZTupleTidOp op,
  *			that has modified the undo tuple.
  */
 void
-FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint64 *epoch, TransactionId *xid,
+FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint32 *epoch, TransactionId *xid,
 					   CommandId *cid, UndoRecPtr *urec_ptr, bool skip_lockers)
 {
 	UnpackedUndoRecord *urec;
@@ -223,7 +223,7 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 					   ZHeapTupleTransInfo *zinfo)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	uint64		epoch;
+	uint32		epoch;
 	ItemId		lp;
 	Page		page;
 	ItemPointer tid = &(zhtup->t_self);
@@ -1413,8 +1413,8 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 {
 	Page		page;
 	ItemId		lp;
-	uint64		epoch,
-				epoch_xid;
+	uint32		epoch;
+	uint64		epoch_xid;
 	int			vis_info;
 	ZHeapTupleTransInfo	zinfo;
 	ZVersionSelector	zselect;
