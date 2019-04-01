@@ -867,10 +867,10 @@ ztoast_delete_datum(Relation rel, Datum value, bool is_speculative)
 	Relation   *toastidxs;
 	ScanKeyData toastkey;
 	SysScanDesc toastscan;
-	HeapTuple	toasttup;
 	int			num_indexes;
 	int			validIndex;
 	SnapshotData SnapshotToast;
+	TupleTableSlot *slot;
 
 	if (!VARATT_IS_EXTERNAL_ONDISK(attr))
 		return;
@@ -908,15 +908,17 @@ ztoast_delete_datum(Relation rel, Datum value, bool is_speculative)
 	init_toast_snapshot(&SnapshotToast);
 	toastscan = systable_beginscan_ordered(toastrel, toastidxs[validIndex],
 										   &SnapshotToast, 1, &toastkey);
-	while ((toasttup = systable_getnext_ordered(toastscan, ForwardScanDirection)) != NULL)
+	while ((slot = systable_getnext_ordered_slot(toastscan, ForwardScanDirection)) != NULL)
 	{
+		ZHeapTuple	ztuple = ExecGetZHeapTupleFromSlot(slot);
+
 		/*
 		 * Have a chunk, delete it
 		 */
 		if (!is_speculative)
-			simple_zheap_delete(toastrel, &toasttup->t_self, &SnapshotToast);
+			simple_zheap_delete(toastrel, &ztuple->t_self, &SnapshotToast);
 		else
-			zheap_abort_speculative(toastrel, &toasttup->t_self);
+			zheap_abort_speculative(toastrel, &ztuple->t_self);
 	}
 
 	/*

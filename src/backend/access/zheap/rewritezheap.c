@@ -200,14 +200,12 @@ end_zheap_rewrite(RewriteZheapState state)
  * reasons.
  */
 void
-reform_and_rewrite_ztuple(ZHeapTuple tuple, TupleDesc oldTupDesc,
-						  TupleDesc newTupDesc, Datum *values, bool *isnull,
+reform_and_rewrite_ztuple(TupleDesc oldTupDesc, TupleDesc newTupDesc,
+						  Datum *values, bool *isnull,
 						  RewriteZheapState rwstate)
 {
 	ZHeapTuple	copiedTuple;
 	int			i;
-
-	zheap_deform_tuple(tuple, oldTupDesc, values, isnull);
 
 	/* Be sure to null out any dropped columns */
 	for (i = 0; i < newTupDesc->natts; i++)
@@ -218,7 +216,7 @@ reform_and_rewrite_ztuple(ZHeapTuple tuple, TupleDesc oldTupDesc,
 
 	copiedTuple = zheap_form_tuple(newTupDesc, values, isnull);
 
-	rewrite_zheap_tuple(rwstate, tuple, copiedTuple);
+	rewrite_zheap_tuple(rwstate, copiedTuple);
 
 	zheap_freetuple(copiedTuple);
 }
@@ -238,8 +236,7 @@ reform_and_rewrite_ztuple(ZHeapTuple tuple, TupleDesc oldTupDesc,
  * new_tuple	new, rewritten tuple to be inserted to new heap
  */
 void
-rewrite_zheap_tuple(RewriteZheapState state, ZHeapTuple old_tuple,
-					ZHeapTuple new_tuple)
+rewrite_zheap_tuple(RewriteZheapState state, ZHeapTuple new_tuple)
 {
 	MemoryContext old_cxt;
 
