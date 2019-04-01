@@ -168,17 +168,12 @@ static XactUndoRecordInfo xact_urec_info[MAX_XACT_UNDO_INFO];
 static int	xact_urec_info_idx;
 
 /* Prototypes for static functions. */
-static UnpackedUndoRecord *UndoGetOneRecord(UnpackedUndoRecord *urec,
-				 UndoRecPtr urp, RelFileNode rnode,
-				 UndoPersistence persistence);
 static void UndoRecordPrepareTransInfo(XLogReaderState *xlog_record,
 						   UndoRecPtr urecptr, UndoRecPtr xact_urp);
 static int UndoGetBufferSlot(RelFileNode rnode, BlockNumber blk,
 				  ReadBufferMode rbm,
 				  UndoPersistence persistence,
 				  XLogReaderState *xlog_record);
-static bool UndoRecordIsValid(UndoLogControl * log,
-				  UndoRecPtr urp);
 
 /*
  * Check whether the undo record is discarded or not.  If it's already discarded
@@ -188,9 +183,11 @@ static bool UndoRecordIsValid(UndoLogControl * log,
  * lock if return false otherwise lock will be held on return and the caller
  * need to release it.
  */
-static bool
-UndoRecordIsValid(UndoLogControl * log, UndoRecPtr urp)
+bool
+UndoRecordIsValid(UndoRecPtr urp)
 {
+	UndoLogControl *log = UndoLogGet(UndoRecPtrGetLogNo(urp));
+
 	Assert(LWLockHeldByMeInMode(&log->discard_lock, LW_SHARED));
 
 	if (log->oldest_data == InvalidUndoRecPtr)
@@ -268,7 +265,7 @@ UndoRecordPrepareTransInfo(XLogReaderState *xlog_record, UndoRecPtr urecptr,
 	 * is preparing its first undo in which case we have nothing to update.
 	 * UndoRecordIsValid will release the lock if it returns false.
 	 */
-	if (!UndoRecordIsValid(log, xact_urp))
+	if (!UndoRecordIsValid(xact_urp))
 		return;
 
 	UndoRecPtrAssignRelFileNode(rnode, xact_urp);
@@ -292,7 +289,7 @@ UndoRecordPrepareTransInfo(XLogReaderState *xlog_record, UndoRecPtr urecptr,
 		page = BufferGetPage(buffer);
 
 		if (UnpackUndoRecord(&xact_urec_info[xact_urec_info_idx].uur, page,
-							 starting_byte, &already_decoded, true))
+							 starting_byte, &already_decoded, true, false))
 			break;
 
 		/* Could not fetch the complete header so go to the next block. */
@@ -345,7 +342,7 @@ PrepareUpdateUndoActionProgress(XLogReaderState *xlog_record,
 		page = BufferGetPage(buffer);
 
 		if (UnpackUndoRecord(&xact_urec_info[xact_urec_info_idx].uur, page, starting_byte,
-							 &already_decoded, true))
+							 &already_decoded, true, false))
 			break;
 
 		starting_byte = UndoLogBlockHeaderSize;
@@ -385,7 +382,7 @@ UndoRecordUpdateTransInfo(int idx)
 	 */
 	LWLockAcquire(&log->discard_lock, LW_SHARED);
 
-	if (!UndoRecordIsValid(log, urec_ptr))
+	if (!UndoRecordIsValid(urec_ptr))
 		return;
 
 	/*
@@ -1087,16 +1084,24 @@ InsertPreparedUndo(void)
 }
 
 /*
- * Helper function for UndoFetchRecord.  It will fetch the undo record pointed
+ * UndoGetOneRecord It will fetch the undo record pointed
  * by urp and unpack the record into urec.  This function will not release the
  * pin on the buffer if complete record is fetched from one buffer, so caller
  * can reuse the same urec to fetch the another undo record which is on the
  * same block.  Caller will be responsible to release the buffer inside urec
  * and set it to invalid if it wishes to fetch the record from another block.
+ *
+ * keep_buffer - if this flag is set then it will keep the buffer pin on the
+ * first buffer of the undo record.  This is used by bulk fetch who want to read
+ * multiple record of the transaction.  So keeping buffer pin will ensure that
+ * we don't need to read the buffer multiple times while fetching the previous
+ * record of the transaction as there might be multiple undo record on the same
+ * buffer.  This will also make sure that payload and data part are always
+ * copied in separate allocated memory instead of pointing into buffer.
  */
-static UnpackedUndoRecord *
+void
 UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
-				 UndoPersistence persistence)
+				 UndoPersistence persistence, bool keep_buffer)
 {
 	Buffer		buffer = urec->uur_buffer;
 	Page		page;
@@ -1127,24 +1132,35 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
 		 * matches with block number and offset then fetch the complete
 		 * record.
 		 */
-		if (UnpackUndoRecord(urec, page, starting_byte, &already_decoded, false))
+		if (UnpackUndoRecord(urec, page, starting_byte, &already_decoded,
+							 false, keep_buffer))
 			break;
+
+		/* An undo record can be spread to two blocks max. */
+		Assert(cur_blk == UndoRecPtrGetBlockNum(urp));
 
 		starting_byte = UndoLogBlockHeaderSize;
 		is_undo_rec_split = true;
 
 		/*
 		 * The record spans more than a page so we would have copied it (see
-		 * UnpackUndoRecord).  In such cases, we can release the buffer.
+		 * UnpackUndoRecord).  In such cases, we can release the buffer.  If
+		 * keep_buffer is set then don't release the first buffer of the undo
+		 * record.
 		 */
-		urec->uur_buffer = InvalidBuffer;
-		UnlockReleaseBuffer(buffer);
+		if (!keep_buffer)
+		{
+			UnlockReleaseBuffer(buffer);
+			urec->uur_buffer = InvalidBuffer;
+		}
+		else
+			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
 		/* Go to next block. */
 		cur_blk++;
 		buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
-										   RBM_NORMAL, NULL,
-										   RelPersistenceForUndoPersistence(persistence));
+								RBM_NORMAL, NULL,
+								RelPersistenceForUndoPersistence(persistence));
 	}
 
 	/*
@@ -1155,8 +1171,6 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
 		UnlockReleaseBuffer(buffer);
 	else
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-
-	return urec;
 }
 
 /*
@@ -1262,7 +1276,7 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 		 * also holding log->discard_lock.
 		 */
 		LWLockAcquire(&log->discard_lock, LW_SHARED);
-		if (!UndoRecordIsValid(log, urp))
+		if (!UndoRecordIsValid(urp))
 		{
 			if (BufferIsValid(urec->uur_buffer))
 				ReleaseBuffer(urec->uur_buffer);
@@ -1270,7 +1284,7 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 		}
 
 		/* Fetch the current undo record. */
-		urec = UndoGetOneRecord(urec, urp, rnode, log->meta.persistence);
+		UndoGetOneRecord(urec, urp, rnode, log->meta.persistence, false);
 		LWLockRelease(&log->discard_lock);
 
 		if (blkno == InvalidBlockNumber)

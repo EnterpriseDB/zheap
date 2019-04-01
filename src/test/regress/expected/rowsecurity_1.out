@@ -1695,15 +1695,15 @@ NOTICE:  f_leak => yyyyyy
 UPDATE t1 SET b = b WHERE f_leak(b) RETURNING tableoid::regclass, *, t1;
 NOTICE:  f_leak => bbbbbb_updt
 NOTICE:  f_leak => daddad_updt
-NOTICE:  f_leak => defdef
 NOTICE:  f_leak => bcdbcd
+NOTICE:  f_leak => defdef
 NOTICE:  f_leak => yyyyyy
  tableoid | id  | a |      b      |         t1          
 ----------+-----+---+-------------+---------------------
  t1       | 102 | 2 | bbbbbb_updt | (102,2,bbbbbb_updt)
  t1       | 104 | 4 | daddad_updt | (104,4,daddad_updt)
- t2       | 204 | 4 | defdef      | (204,4,defdef)
  t2       | 202 | 2 | bcdbcd      | (202,2,bcdbcd)
+ t2       | 204 | 4 | defdef      | (204,4,defdef)
  t3       | 302 | 2 | yyyyyy      | (302,2,yyyyyy)
 (5 rows)
 
@@ -1899,12 +1899,12 @@ EXPLAIN (COSTS OFF) DELETE FROM t1 WHERE f_leak(b);
 (10 rows)
 
 DELETE FROM only t1 WHERE f_leak(b) RETURNING tableoid::regclass, *, t1;
-NOTICE:  f_leak => bbbbbb_updt
 NOTICE:  f_leak => daddad_updt
+NOTICE:  f_leak => bbbbbb_updt
  tableoid | id  | a |      b      |         t1          
 ----------+-----+---+-------------+---------------------
- t1       | 102 | 2 | bbbbbb_updt | (102,2,bbbbbb_updt)
  t1       | 104 | 4 | daddad_updt | (104,4,daddad_updt)
+ t1       | 102 | 2 | bbbbbb_updt | (102,2,bbbbbb_updt)
 (2 rows)
 
 DELETE FROM t1 WHERE f_leak(b) RETURNING tableoid::regclass, *, t1;
