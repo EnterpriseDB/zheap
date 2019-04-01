@@ -1863,23 +1863,18 @@ bool
 ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin, Buffer buffer)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	ZHeapTupleTransInfo	zinfo;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
-	/*
-	 * Get transaction id.
-	 *
-	 * ZBORKED: Why not do this only if one of the relevant infomask bits is
-	 * set?  It seems to be unused otherwise, and it's certainly not free.
-	 */
-	ZHeapTupleGetTransInfo(zhtup, buffer, false, false, InvalidSnapshot,
-						   &zinfo);
-
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
 	{
+		ZHeapTupleTransInfo	zinfo;
+
+		/* Get transaction id. */
+		ZHeapTupleGetTransInfo(zhtup, buffer, false, false, InvalidSnapshot,
+						   &zinfo);
 		/*
 		 * The tuple is deleted and must be all visible if the transaction
 		 * slot is cleared or latest xid that has changed the tuple precedes
