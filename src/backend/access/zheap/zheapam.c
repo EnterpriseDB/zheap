@@ -1111,7 +1111,7 @@ zheap_tuple_updated:
 	 * then consider it as frozen which means it is all-visible.  This ensures
 	 * that we don't need to store epoch in the undo record to check if the
 	 * undo tuple belongs to previous epoch and hence all-visible.  See
-	 * comments atop of file ztqual.c.
+	 * comments atop of file zheapam_visibility.c.
 	 */
 	oldestXidHavingUndo = GetXidFromEpochXid(
 											 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
@@ -2270,7 +2270,7 @@ zheap_tuple_updated:
 	 * then consider it as frozen which means it is all-visible.  This ensures
 	 * that we don't need to store epoch in the undo record to check if the
 	 * undo tuple belongs to previous epoch and hence all-visible.  See
-	 * comments atop of file ztqual.c.
+	 * comments atop of file zheapam_visibility.c.
 	 */
 	oldestXidHavingUndo = GetXidFromEpochXid(
 											 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
@@ -4854,7 +4854,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	 * then consider it as frozen which means it is all-visible.  This ensures
 	 * that we don't need to store epoch in the undo record to check if the
 	 * undo tuple belongs to previous epoch and hence all-visible.  See
-	 * comments atop of file ztqual.c.
+	 * comments atop of file zheapam_visibility.c.
 	 */
 	oldestXidHavingUndo = GetXidFromEpochXid(
 											 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
