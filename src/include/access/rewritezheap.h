@@ -23,10 +23,10 @@ extern RewriteZheapState begin_zheap_rewrite(Relation OldHeap, Relation NewHeap,
 											 TransactionId OldestXmin, TransactionId FreezeXid,
 											 MultiXactId MultiXactCutoff, bool use_wal);
 extern void end_zheap_rewrite(RewriteZheapState state);
-extern void reform_and_rewrite_ztuple(ZHeapTuple tuple, TupleDesc oldTupDesc,
+extern void reform_and_rewrite_ztuple(TupleDesc oldTupDesc,
 						  TupleDesc newTupDesc, Datum *values, bool *isnull,
 						  RewriteZheapState rwstate);
-extern void rewrite_zheap_tuple(RewriteZheapState state, ZHeapTuple oldTuple,
+extern void rewrite_zheap_tuple(RewriteZheapState state,
 					ZHeapTuple newTuple);
 
 #endif							/* REWRITE_ZHEAP_H */
