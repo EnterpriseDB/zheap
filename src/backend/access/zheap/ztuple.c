@@ -1067,28 +1067,6 @@ ExecStoreZHeapTuple(ZHeapTuple tuple, TupleTableSlot *slot, bool shouldFree)
 }
 
 /*
- * heap_to_zheap
- *		Convert heap tuple to zheap tuple.
- */
-ZHeapTuple
-heap_to_zheap(HeapTuple tuple, TupleDesc tupDesc)
-{
-	ZHeapTuple	ztuple;
-	Datum	   *values = palloc0(sizeof(Datum) * tupDesc->natts);
-	bool	   *nulls = palloc0(sizeof(bool) * tupDesc->natts);
-
-	heap_deform_tuple(tuple, tupDesc, values, nulls);
-	ztuple = zheap_form_tuple(tupDesc, values, nulls);
-	ztuple->t_self = tuple->t_self;
-	ztuple->t_tableOid = tuple->t_tableOid;
-
-	pfree(values);
-	pfree(nulls);
-
-	return ztuple;
-}
-
-/*
  * zheap_copytuple
  *		Returns a copy of an entire tuple.
  *

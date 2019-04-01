@@ -624,6 +624,18 @@ systable_beginscan_ordered(Relation heapRelation,
 }
 
 /*
+ * systable_getnext_ordered_slot --- get next slot in an ordered catalog scan.
+ */
+struct TupleTableSlot *
+systable_getnext_ordered_slot(SysScanDesc sysscan, ScanDirection direction)
+{
+	if (index_getnext_slot(sysscan->iscan, direction, sysscan->slot))
+		return sysscan->slot;
+	else
+		return NULL;
+}
+
+/*
  * systable_getnext_ordered --- get next tuple in an ordered catalog scan
  */
 HeapTuple

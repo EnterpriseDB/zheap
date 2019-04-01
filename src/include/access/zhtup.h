@@ -290,7 +290,6 @@ extern struct TupleTableSlot *ExecStoreZHeapTuple(ZHeapTuple tuple,
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsZHeapTuple;
 #define TTS_IS_ZHEAP(slot) ((slot)->tts_ops == &TTSOpsZHeapTuple)
 
-extern ZHeapTuple heap_to_zheap(HeapTuple ztuple, TupleDesc tupDesc);
 extern ZHeapTuple zheap_copytuple(ZHeapTuple tuple);
 
 /* This is same as fastgetattr except that it takes ZHeapTuple as input. */

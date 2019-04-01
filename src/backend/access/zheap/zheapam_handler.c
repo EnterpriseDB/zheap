@@ -1767,8 +1767,12 @@ zheap_copy_for_cluster(Relation OldHeap, Relation NewHeap, Relation OldIndex,
 		if (tuplesort != NULL)
 			tuplesort_puttupleslot(tuplesort, slot);
 		else
-			reform_and_rewrite_ztuple(ExecGetZHeapTupleFromSlot(slot), oldTupDesc, newTupDesc,
+		{
+			zheap_deform_tuple(ExecGetZHeapTupleFromSlot(slot), oldTupDesc,
+							   values, isnull);
+			reform_and_rewrite_ztuple(oldTupDesc, newTupDesc,
 									  values, isnull, rwstate);
+		}
 	}
 
 	if (indexScan != NULL)
@@ -1789,7 +1793,6 @@ zheap_copy_for_cluster(Relation OldHeap, Relation NewHeap, Relation OldIndex,
 		for (;;)
 		{
 			HeapTuple	heapTuple;
-			ZHeapTuple	zheapTuple;
 
 			CHECK_FOR_INTERRUPTS();
 
@@ -1797,12 +1800,10 @@ zheap_copy_for_cluster(Relation OldHeap, Relation NewHeap, Relation OldIndex,
 			if (heapTuple == NULL)
 				break;
 
-			zheapTuple = heap_to_zheap(heapTuple, oldTupDesc);
+			heap_deform_tuple(heapTuple, oldTupDesc, values, isnull);
 
-			reform_and_rewrite_ztuple(zheapTuple, oldTupDesc, newTupDesc,
+			reform_and_rewrite_ztuple(oldTupDesc, newTupDesc,
 									  values, isnull, rwstate);
-			/* be tidy */
-			pfree(zheapTuple);
 		}
 
 		tuplesort_end(tuplesort);
