@@ -310,7 +310,8 @@ UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 	 * to use compare and swap for updating the shared memory value.
 	 */
 	pg_atomic_write_u64(&ProcGlobal->oldestXidWithEpochHavingUndo,
-						MakeEpochXid(epoch, oldestXidHavingUndo));
+						U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch,
+																				  oldestXidHavingUndo)));
 }
 
 /*

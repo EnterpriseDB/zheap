@@ -545,7 +545,7 @@ zbuffer_exec_pending_rollback(Relation rel, Buffer buf, BlockNumber *tpd_blkno)
 {
 	int			slot_no;
 	int			total_trans_slots = 0;
-	uint64		epoch;
+	uint32		epoch;
 	TransactionId xid;
 	UndoRecPtr	urec_ptr;
 	TransInfo  *trans_slots = NULL;
