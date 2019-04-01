@@ -7646,12 +7646,11 @@ ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
  * the caller of this function has at least read lock on the buffer.
  */
 CommandId
-ZHeapPageGetCid(Buffer buf, uint32 epoch, TransactionId xid,
+ZHeapPageGetCid(Buffer buf, uint64 epoch_xid,
 				UndoRecPtr urec_ptr, OffsetNumber off)
 {
 	UnpackedUndoRecord *urec;
 	CommandId	current_cid;
-	uint64		epoch_xid = FullTransactionIdFromEpochAndXid(epoch, xid);
 
 	if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return InvalidCommandId;
