@@ -207,9 +207,9 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		bool		first_urp = true;
 
 		xid = trans_slots[slot_no].xid;
-
-		epoch_xid = MakeEpochXid((uint64) trans_slots[slot_no].xid_epoch,
-								 xid);
+		epoch_xid =
+			FullTransactionIdFromEpochAndXid(trans_slots[slot_no].xid_epoch,
+											 xid);
 
 		/*
 		 * We need to process the undo chain only for in-progress
@@ -712,7 +712,7 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	TransInfo  *trans_slots = NULL;
 	TransactionId xid;
 	CommandId	cid = InvalidCommandId;
-	uint64		epoch;
+	uint32		epoch;
 	uint64		epoch_xid;
 	int			trans_slot_id;
 	uint8		uur_type;
@@ -729,7 +729,7 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		epoch = trans_slots[slot_no].xid_epoch;
 		xid = trans_slots[slot_no].xid;
 
-		epoch_xid = MakeEpochXid(epoch, xid);
+		epoch_xid = FullTransactionIdFromEpochAndXid(epoch, xid);
 
 		/*
 		 * We need to process the undo chain only for in-progress
@@ -848,7 +848,7 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		if (trans_slot)
 			*trans_slot = trans_slot_id;
 		if (epoch_xid_out)
-			*epoch_xid_out = MakeEpochXid(epoch, xid);
+			*epoch_xid_out = FullTransactionIdFromEpochAndXid(epoch, xid);
 		if (xid_out)
 			*xid_out = xid;
 		if (cid_out)

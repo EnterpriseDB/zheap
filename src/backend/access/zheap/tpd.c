@@ -2655,11 +2655,10 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 
 	/* Update latest transaction information on the page. */
 	tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(tpdpage);
-	tpd_latest_xid_epoch = (uint64) tpdopaque->tpd_latest_xid_epoch;
-	tpd_latest_xid_epoch = MakeEpochXid(tpd_latest_xid_epoch,
-										tpdopaque->tpd_latest_xid);
-	current_xid_epoch = (uint64) epoch;
-	current_xid_epoch = MakeEpochXid(current_xid_epoch, xid);
+	tpd_latest_xid_epoch =
+		FullTransactionIdFromEpochAndXid(tpdopaque->tpd_latest_xid_epoch,
+										 tpdopaque->tpd_latest_xid);
+	current_xid_epoch = FullTransactionIdFromEpochAndXid(epoch, xid);
 	if (tpd_latest_xid_epoch < current_xid_epoch)
 	{
 		tpdopaque->tpd_latest_xid_epoch = epoch;
@@ -3047,11 +3046,11 @@ TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
 		   sizeof(TransInfo));
 	/* Update latest transaction information on the page. */
 	tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(tpdpage);
-	tpd_latest_xid_epoch = (uint64) tpdopaque->tpd_latest_xid_epoch;
-	tpd_latest_xid_epoch = MakeEpochXid(tpd_latest_xid_epoch,
-										tpdopaque->tpd_latest_xid);
-	current_xid_epoch = (uint64) epoch;
-	current_xid_epoch = MakeEpochXid(current_xid_epoch, xid);
+	tpd_latest_xid_epoch =
+		FullTransactionIdFromEpochAndXid(tpdopaque->tpd_latest_xid_epoch,
+										 tpdopaque->tpd_latest_xid);
+	current_xid_epoch =
+		FullTransactionIdFromEpochAndXid(epoch, xid);
 	if (tpd_latest_xid_epoch < current_xid_epoch)
 	{
 		tpdopaque->tpd_latest_xid_epoch = epoch;
