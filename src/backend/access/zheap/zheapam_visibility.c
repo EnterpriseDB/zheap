@@ -185,8 +185,7 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
 		GetTransactionSlotInfo(buffer, offnum, trans_slot, true, false,
 							   &zinfo);
 		*xid = zinfo.xid;
-		*cid = ZHeapPageGetCid(buffer,
-							   GetEpochFromEpochXid(zinfo.epoch_xid), *xid,
+		*cid = ZHeapPageGetCid(buffer, zinfo.epoch_xid,
 							   zinfo.urec_ptr, offnum);
 	}
 
@@ -344,9 +343,8 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 											  InvalidXactSlotId);
 			else
 				zinfo->cid =
-					ZHeapPageGetCid(buf,
-									GetEpochFromEpochXid(zinfo->epoch_xid),
-									zinfo->xid, zinfo->urec_ptr, offnum);
+					ZHeapPageGetCid(buf, zinfo->epoch_xid,
+									zinfo->urec_ptr, offnum);
 		}
 		else
 			zinfo->cid = InvalidCommandId;
@@ -1474,8 +1472,8 @@ check_trans_slot:
 				goto check_trans_slot;
 
 			epoch = GetEpochFromEpochXid(zinfo.epoch_xid);
-			zinfo.cid = ZHeapPageGetCid(buffer, epoch,
-										zinfo.xid, zinfo.urec_ptr, off);
+			zinfo.cid = ZHeapPageGetCid(buffer, zinfo.epoch_xid,
+										zinfo.urec_ptr, off);
 		}
 	}
 	else
