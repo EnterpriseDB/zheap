@@ -1,6 +1,6 @@
 /*-------------------------------------------------------------------------
  *
- * ztqual.c
+ * zheapam_visibility.c
  *	  POSTGRES "time qualification" code, ie, ztuple visibility rules.
  *
  *
@@ -8,7 +8,7 @@
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
- *	  src/backend/utils/time/ztqual.c
+ *	  src/backend/access/zheap/zheapam_visibility.c
  *
  * The core idea to check if the tuple is all-visible is to see if it is
  * modified by transaction smaller than oldestXidWithEpochHavingUndo (aka
