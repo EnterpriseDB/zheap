@@ -334,7 +334,7 @@ struct ZHeapTupleTransInfo;
 /* Zheap transaction information related API's */
 extern CommandId ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf,
 				 UndoRecPtr urec_ptr, int trans_slot_id);
-extern CommandId ZHeapPageGetCid(Buffer buf, int trans_slot, uint32 epoch,
+extern CommandId ZHeapPageGetCid(Buffer buf, uint32 epoch,
 				TransactionId xid, UndoRecPtr urec_ptr, OffsetNumber off);
 extern void GetTransactionSlotInfo(Buffer buf, OffsetNumber offset,
 					   int trans_slot_id,
@@ -346,7 +346,7 @@ extern void ZHeapTupleGetSubXid(ZHeapTuple zhtup, Buffer buf,
 					UndoRecPtr urec_ptr, SubTransactionId *subxid);
 extern void ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf,
 					   UndoRecPtr urec_ptr, uint32 *specToken);
-extern void ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
+extern void ZHeapPageGetCtid(Buffer buf, UndoRecPtr urec_ptr,
 				 ItemPointer ctid);
 
 /* Page related API's. */
