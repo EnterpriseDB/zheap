@@ -518,6 +518,7 @@ ComputeIoConcurrency(int io_concurrency, double *target)
 	return (new_prefetch_pages >= 0.0 && new_prefetch_pages < (double) INT_MAX);
 }
 
+#ifdef USE_PREFETCH
 /*
  * PrefetchBufferGuts -- Guts of prefetching a buffer.
  *
@@ -530,7 +531,6 @@ static void
 PrefetchBufferGuts(RelFileNode rnode, SMgrRelation smgr, ForkNumber forkNum,
 				   BlockNumber blockNum)
 {
-#ifdef USE_PREFETCH
 	BufferTag	newTag;		/* identity of requested block */
 	uint32		newHash;	/* hash value for newTag */
 	LWLock	   *newPartitionLock;	/* buffer partition lock for it */
@@ -563,8 +563,8 @@ PrefetchBufferGuts(RelFileNode rnode, SMgrRelation smgr, ForkNumber forkNum,
 	 * real fix would involve some additional per-buffer state, and it's
 	 * not clear that there's enough of a problem to justify that.
 	 */
-#endif							/* USE_PREFETCH */
 }
+#endif							/* USE_PREFETCH */
 
 /*
  * PrefetchBuffer -- initiate asynchronous read of a block of a relation
