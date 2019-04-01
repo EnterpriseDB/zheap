@@ -305,7 +305,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 	ItemPointer tid = &(tuple->t_self);
 	ItemId		lp;
 	Page		page;
-	TransactionId xid;
+	TransactionId xid PG_USED_FOR_ASSERTS_ONLY;
 	TransactionId prev_undo_xid = InvalidTransactionId;
 	int			trans_slot_id = InvalidXactSlotId;
 	int			prev_trans_slot_id;
