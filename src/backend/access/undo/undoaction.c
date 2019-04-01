@@ -39,6 +39,293 @@ static void RollbackHTRemoveEntry(UndoRecPtr start_urec_ptr);
 static HTAB *RollbackHT;
 
 /*
+ * PrefetchUndoPages - Prefetch undo pages
+ *
+ * Prefetch undo pages, if prefetch_pages are behind prefetch_target
+ */
+static void
+PrefetchUndoPages(RelFileNode rnode, int prefetch_target, int *prefetch_pages,
+				  BlockNumber to_blkno, BlockNumber from_blkno,
+				  char persistence)
+{
+	int			nprefetch;
+	BlockNumber startblock;
+	BlockNumber lastprefetched;
+
+	/* Calculate last prefetched page in the previous iteration. */
+	lastprefetched = from_blkno - *prefetch_pages;
+
+	/* We have already prefetched all the pages of the transaction's undo. */
+	if (lastprefetched <= to_blkno)
+		return;
+
+	/* Calculate number of blocks to be prefetched. */
+	nprefetch =
+		Min(prefetch_target - *prefetch_pages, lastprefetched - to_blkno);
+
+	/* Where to start prefetch. */
+	startblock = lastprefetched - nprefetch;
+
+	while (nprefetch--)
+	{
+		PrefetchBufferWithoutRelcache(rnode, MAIN_FORKNUM, startblock++,
+									  RelPersistenceForUndoPersistence(persistence));
+		(*prefetch_pages)++;
+	}
+}
+
+/*
+ * UndoRecordBulkFetch  - Read undo records in bulk
+ *
+ * Read undo records between from_urecptr and to_urecptr until we exhaust the
+ * the memory size specified by undo_apply_size.  If we could not read all the
+ * records till to_urecptr then the caller should consume current set of records
+ * and call this function again.
+ *
+ * from_urecptr		- Where to start fetching the undo records.  If we can not
+ *					  read all the records because of memory limit then this
+ *					  will be set to the previous undo record pointer from where
+ *					  we need to start fetching on next call. Otherwise it will
+ *					  be set to InvalidUndoRecPtr.
+ * to_urecptr		- Last undo record pointer to be fetched.
+ * undo_apply_size	- Memory segment limit to collect undo records.
+ * nrecords			- Number of undo records read.
+ * one_page			- Caller is applying undo only for one block not for
+ *					  complete transaction.  If this is set true then instead of
+ *					  following transaction undo chain using prevlen we will
+ *					  follow the block prev chain of the block so that we can
+ *					  avoid reading many unnecessary undo records of the
+ *					  transaction.
+ */
+UndoRecInfo *
+UndoRecordBulkFetch(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
+					int undo_apply_size, int *nrecords, bool one_page)
+{
+	RelFileNode rnode;
+	UndoRecPtr	urecptr,
+				prev_urec_ptr;
+	BlockNumber blkno;
+	BlockNumber to_blkno;
+	Buffer		buffer = InvalidBuffer;
+	UnpackedUndoRecord *uur = NULL;
+	UndoRecInfo *urp_array;
+	int			urp_array_size = 1024;
+	int			urp_index = 0;
+	int			prefetch_target = 0;
+	int			prefetch_pages = 0;
+	Size		total_size = 0;
+	TransactionId xid = InvalidTransactionId;
+
+	/*
+	 * In one_page mode we are fetching undo only for one page instead of
+	 * fetching all the undo of the transaction.  Basically, we are fetching
+	 * interleaved undo records.  So it does not make sense to do any prefetch
+	 * in that case.
+	 */
+	if (!one_page)
+		prefetch_target = target_prefetch_pages;
+
+	/*
+	 * Allocate initial memory to hold the undo record info, we can expand it
+	 * if needed.
+	 */
+	urp_array = (UndoRecInfo *) palloc(sizeof(UndoRecInfo) * urp_array_size);
+	urecptr = *from_urecptr;
+
+	prev_urec_ptr = InvalidUndoRecPtr;
+	*from_urecptr = InvalidUndoRecPtr;
+
+	/* Read undo chain backward until we reach to the first undo record.  */
+	do
+	{
+		BlockNumber from_blkno;
+		UndoLogControl *log;
+		UndoPersistence persistence;
+		int			size;
+		int			logno;
+
+		logno = UndoRecPtrGetLogNo(urecptr);
+		log = UndoLogGet(logno);
+		persistence = log->meta.persistence;
+
+		UndoRecPtrAssignRelFileNode(rnode, urecptr);
+		to_blkno = UndoRecPtrGetBlockNum(to_urecptr);
+		from_blkno = UndoRecPtrGetBlockNum(urecptr);
+
+		/* Allocate memory for next undo record. */
+		uur = palloc0(sizeof(UnpackedUndoRecord));
+
+		/*
+		 * If next undo record pointer to be fetched is not on the same block
+		 * then release the old buffer and reduce the prefetch_pages count by
+		 * one as we have consumed one page. Otherwise, just set the old
+		 * buffer into the new undo record so that UndoGetOneRecord don't read
+		 * the buffer again.
+		 */
+		blkno = UndoRecPtrGetBlockNum(urecptr);
+		if (!UndoRecPtrIsValid(prev_urec_ptr) ||
+			UndoRecPtrGetLogNo(prev_urec_ptr) != logno ||
+			UndoRecPtrGetBlockNum(prev_urec_ptr) != blkno)
+		{
+			/* Release the previous buffer */
+			if (BufferIsValid(buffer))
+			{
+				ReleaseBuffer(buffer);
+				buffer = InvalidBuffer;
+			}
+
+			if (prefetch_pages > 0)
+				prefetch_pages--;
+		}
+		else
+			uur->uur_buffer = buffer;
+
+		/*
+		 * If prefetch_pages are half of the prefetch_target then it's time to
+		 * prefetch again.
+		 */
+		if (prefetch_pages < prefetch_target / 2)
+			PrefetchUndoPages(rnode, prefetch_target, &prefetch_pages, to_blkno,
+							  from_blkno, persistence);
+
+		/*
+		 * In one_page mode it's possible that the undo of the transaction might
+		 * have been applied by worker and undo got discarded. Prevent discard
+		 * worker from discarding undo data while we are reading it.  See detail
+		 * comment in UndoFetchRecord.  In normal mode we are holding
+		 * transaction undo action lock so it can not be discarded.
+		 */
+		if (one_page)
+		{
+			LWLockAcquire(&log->discard_lock, LW_SHARED);
+
+			if (!UndoRecordIsValid(urecptr))
+				break;
+
+			/* Read the undo record. */
+			UndoGetOneRecord(uur, urecptr, rnode, persistence, true);
+			LWLockRelease(&log->discard_lock);
+		}
+		else
+			UndoGetOneRecord(uur, urecptr, rnode, persistence, true);
+
+		/*
+		 * Remember the buffer, so that next time we can call UndoGetOneRecord
+		 * with the same buffer if we are reading the undo from the same
+		 * buffer.
+		 */
+		buffer = uur->uur_buffer;
+		uur->uur_buffer = InvalidBuffer;
+
+		/*
+		 * As soon as the transaction id is changed we can stop fetching the
+		 * undo record.  Ideally, to_urecptr should control this but while
+		 * reading undo only for a page we don't know what is the end undo
+		 * record pointer for the transaction.
+		 */
+		if (one_page)
+		{
+			if (!TransactionIdIsValid(xid))
+				xid = uur->uur_xid;
+			else if (xid != uur->uur_xid)
+				break;
+		}
+
+		/* Remember the previous undo record pointer. */
+		prev_urec_ptr = urecptr;
+
+		/*
+		 * Calculate the previous undo record pointer of the transaction.  If
+		 * we are reading undo only for a page then follow the blkprev chain
+		 * of the page.  Otherwise, calculate the previous undo record pointer
+		 * using transaction's current undo record pointer and the prevlen.
+		 */
+		if (one_page)
+			urecptr = uur->uur_blkprev;
+		else if (uur->uur_prevlen > 0 || UndoRecPtrIsValid(uur->uur_prevurp))
+			urecptr = UndoGetPrevUndoRecptr(prev_urec_ptr, uur->uur_prevlen,
+											uur->uur_prevurp);
+		else
+			urecptr = InvalidUndoRecPtr;
+
+		/* We have consumed all elements of the urp_array so expand its size. */
+		if (urp_index >= urp_array_size)
+		{
+			urp_array_size *= 2;
+			urp_array =
+				repalloc(urp_array, sizeof(UndoRecInfo) * urp_array_size);
+		}
+
+		/* Add entry in the urp_array */
+		urp_array[urp_index].index = urp_index;
+		urp_array[urp_index].urp = prev_urec_ptr;
+		urp_array[urp_index].uur = uur;
+		urp_index++;
+
+		/* We have fetched all the undo records for the transaction. */
+		if (!UndoRecPtrIsValid(urecptr))
+			break;
+
+		/*
+		 * Including current record, if we have crossed the memory limit then
+		 * stop processing more records.  Remember to set the from_urecptr so
+		 * that on next call we can resume fetching undo records where we left
+		 * it.
+		 */
+		size = UnpackedUndoRecordSize(uur);
+		total_size += size;
+
+		if (total_size >= undo_apply_size)
+		{
+			*from_urecptr = urecptr;
+			break;
+		}
+	} while (prev_urec_ptr != to_urecptr);
+
+	/* Release the last buffer. */
+	if (BufferIsValid(buffer))
+		ReleaseBuffer(buffer);
+
+	*nrecords = urp_index;
+
+	return urp_array;
+}
+
+/*
+ * undo_record_comparator
+ *
+ * qsort comparator to handle undo record for applying undo actions of the
+ * transaction.
+ */
+static int
+undo_record_comparator(const void *left, const void *right)
+{
+	UnpackedUndoRecord *luur = ((UndoRecInfo *) left)->uur;
+	UnpackedUndoRecord *ruur = ((UndoRecInfo *) right)->uur;
+
+	if (luur->uur_reloid < ruur->uur_reloid)
+		return -1;
+	else if (luur->uur_reloid > ruur->uur_reloid)
+		return 1;
+	else if (luur->uur_block == ruur->uur_block)
+	{
+		/*
+		 * If records are for the same block then maintain their existing
+		 * order by comparing their index in the array.  Because for single
+		 * block we need to maintain the order for applying undo action.
+		 */
+		if (((UndoRecInfo *) left)->index < ((UndoRecInfo *) right)->index)
+			return -1;
+		else
+			return 1;
+	}
+	else if (luur->uur_block < ruur->uur_block)
+		return -1;
+	else
+		return 1;
+}
+
+/*
  * execute_undo_actions - Execute the undo actions
  *
  * from_urecptr - undo record pointer from where to start applying undo action.
@@ -55,27 +342,22 @@ static HTAB *RollbackHT;
  *				  lock here. If the flag is true then we need to acquire lock
  *				  here itself, because caller will not be having any lock.
  *				  When we are performing undo actions for prepared transactions,
- *			      or for rollback to savepoint, we need not to lock as we already
- *				  have the lock on the table. In cases like error or when
- *				  rollbacking from the undo worker we need to have proper locks.
+ *				  or for rollback to savepoint, we need not to lock as we
+ *				  already have the lock on the table. In cases like error or
+ *				  when rolling back from the undo worker we need to have proper
+ *				  locks.
  */
 void
 execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 					 bool nopartial, bool rewind, bool rellock)
 {
 	UnpackedUndoRecord *uur = NULL;
-	UndoRecPtr	urec_ptr,
-				prev_urec_ptr,
-				prev_blkprev;
-	UndoRecPtr	save_urec_ptr;
-	Oid			prev_reloid = InvalidOid;
+	UndoRecInfo *urp_array;
+	UndoRecPtr	urec_ptr;
 	ForkNumber	prev_fork = InvalidForkNumber;
 	BlockNumber prev_block = InvalidBlockNumber;
-	List	   *luinfo = NIL;
-	bool		more_undo;
 	TransactionId xid = InvalidTransactionId;
-	UndoRecInfo *urec_info;
-	bool		has_truncated = false;
+	int			undo_apply_size = maintenance_work_mem * 1024L;
 
 	Assert(from_urecptr != InvalidUndoRecPtr);
 
@@ -92,8 +374,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		to_urecptr = UndoLogGetLastXactStartPoint(logno);
 	}
 
-	prev_blkprev = save_urec_ptr = urec_ptr = from_urecptr;
-
+	urec_ptr = from_urecptr;
 	if (nopartial)
 	{
 		uur = UndoFetchRecord(urec_ptr, InvalidBlockNumber, InvalidOffsetNumber,
@@ -116,215 +397,101 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			return;
 	}
 
-	prev_urec_ptr = InvalidUndoRecPtr;
-	while (prev_urec_ptr != to_urecptr)
+	/*
+	 * Fetch the multiple undo records which can fit into uur_segment; sort
+	 * them in order of reloid and block number then apply them together
+	 * page-wise. Repeat this until we get invalid undo record pointer.
+	 */
+	do
 	{
-		Oid			reloid = InvalidOid;
-		uint16		urec_prevlen;
-		UndoRecPtr	urec_prevurp;
-
-		more_undo = true;
-
-		prev_urec_ptr = urec_ptr;
-
-		/* Fetch the undo record for given undo_recptr. */
-		uur = UndoFetchRecord(urec_ptr, InvalidBlockNumber,
-							  InvalidOffsetNumber, InvalidTransactionId, NULL, NULL);
-
-		if (uur != NULL)
-			reloid = uur->uur_reloid;
+		Oid			prev_reloid = InvalidOid;
+		bool		blk_chain_complete;
+		int			i;
+		int			nrecords;
+		int			last_index = 0;
+		int			prefetch_pages = 0;
 
 		/*
-		 * If the record is already discarded by undo worker or if the
-		 * relation is dropped or truncated, then we cannot fetch record
-		 * successfully. Hence, exit quietly.
-		 *
-		 * Note: reloid remains InvalidOid for a discarded record.
+		 * If urec_ptr is not valid means we have complete all undo actions
+		 * for this transaction, otherwise we need to fetch the next batch of
+		 * the undo records.
 		 */
-
-		if (OidIsValid(reloid))
-		{
-			Relation	rel;
-
-			if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(reloid)))
-				reloid = InvalidOid;
-			else
-			{
-				/*
-				 * If the action is executed by backend as a result of
-				 * rollback, we must already have an appropriate lock on
-				 * relation.
-				 */
-				if (rellock)
-					rel = heap_open(reloid, RowExclusiveLock);
-				else
-					rel = heap_open(reloid, NoLock);
-
-				if (RelationGetNumberOfBlocks(rel) <= uur->uur_block)
-				{
-					/*
-					 * This is possible if the underlying relation is
-					 * truncated just before taking the relation lock above.
-					 */
-					has_truncated = true;
-				}
-
-				heap_close(rel, NoLock);
-			}
-		}
+		if (!UndoRecPtrIsValid(urec_ptr))
+			break;
 
 		/*
-		 * FIXME:  Currently, we are ignoring the undo for the truncated table
-		 * but this is not the best way to handle the undo for the truncated
-		 * table, we might need to try to apply the undo actions for the
-		 * truncated table i.e. we might call execute undo action in later
-		 * stages where we can apply the undo action if the truncate is done
-		 * in the same transaction and the transaction is rolledback.  We
-		 * might want to do it differently once we fix the similar problem in
-		 * 'cleaning up the orphan files' patch.
+		 * Fetch multiple undo record in bulk.  This will return the array of
+		 * undo record which will holds undo record pointers and the pointers
+		 * to the actual unpacked undo record.   This will also update the
+		 * number of undo records it has copied in the urp_array.  Also, for
+		 * prefetching the target block ahead of applying undo actions it will
+		 * update undo_blkinfo which will contains the information of the data
+		 * blocks for which undo actions are going to applied for this undo
+		 * record batch.
 		 */
-		if (!OidIsValid(reloid) || has_truncated)
-		{
-			/* release the undo records for which action has been replayed */
-			while (luinfo)
-			{
-				UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
+		urp_array = UndoRecordBulkFetch(&urec_ptr, to_urecptr, undo_apply_size,
+										&nrecords, false);
+		if (nrecords == 0)
+			break;
 
-				UndoRecordRelease(urec_info->uur);
-				pfree(urec_info);
-				luinfo = list_delete_first(luinfo);
-			}
+		xid = urp_array[0].uur->uur_xid;
 
-			/* Release the undo action lock before returning. */
-			if (nopartial)
-				TransactionUndoActionLockRelease(xid);
+		/* Sort the undo record array in order of target blocks. */
+		qsort((void *) urp_array, nrecords, sizeof(UndoRecInfo),
+			  undo_record_comparator);
 
-			/* Release the just-fetched record */
-			if (uur != NULL)
-				UndoRecordRelease(uur);
-
-			return;
-		}
-
-		xid = uur->uur_xid;
-
-		/* Collect the undo records that belong to the same page. */
-		if (!OidIsValid(prev_reloid) ||
-			(prev_reloid == reloid &&
-			 prev_fork == uur->uur_fork &&
-			 prev_block == uur->uur_block &&
-			 prev_blkprev == urec_ptr))
-		{
-			prev_reloid = reloid;
-			prev_fork = uur->uur_fork;
-			prev_block = uur->uur_block;
-
-			/* Prepare an undo record information element. */
-			urec_info = palloc(sizeof(UndoRecInfo));
-			urec_info->urp = urec_ptr;
-			urec_info->uur = uur;
-
-			luinfo = lappend(luinfo, urec_info);
-			urec_prevlen = uur->uur_prevlen;
-			urec_prevurp = uur->uur_prevurp;
-			save_urec_ptr = uur->uur_blkprev;
-
-			/* The undo chain must continue till we reach to_urecptr */
-			if (urec_ptr != to_urecptr &&
-				(urec_prevlen > 0 || UndoRecPtrIsValid(urec_prevurp)))
-			{
-				urec_ptr = UndoGetPrevUndoRecptr(urec_ptr, urec_prevlen,
-												 urec_prevurp);
-				prev_blkprev = uur->uur_blkprev;
-				continue;
-			}
-			else
-				more_undo = false;
-		}
+		if (nopartial && !UndoRecPtrIsValid(urec_ptr))
+			blk_chain_complete = true;
 		else
-		{
-			more_undo = true;
-		}
+			blk_chain_complete = false;
 
 		/*
-		 * If no more undo is left to be processed and we are rolling back the
-		 * complete transaction, then we can consider that the undo chain for
-		 * a block is complete. If the previous undo pointer in the page is
-		 * invalid, then also the undo chain for the current block is
-		 * completed.
+		 * Now we have urp_array which is sorted in the block order so
+		 * traverse this array and apply the undo action block by block.
 		 */
-		if ((!more_undo && nopartial) || !UndoRecPtrIsValid(save_urec_ptr))
+		for (i = last_index; i < nrecords; i++)
 		{
-			execute_undo_actions_page(luinfo, save_urec_ptr, prev_reloid,
-									  xid, prev_block, true, rellock);
-		}
-		else
-		{
-			execute_undo_actions_page(luinfo, save_urec_ptr, prev_reloid,
-									  xid, prev_block, false, rellock);
-		}
-
-		/* release the undo records for which action has been replayed */
-		while (luinfo)
-		{
-			UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
-
-			UndoRecordRelease(urec_info->uur);
-			pfree(urec_info);
-			luinfo = list_delete_first(luinfo);
-		}
-
-		/*
-		 * There are still more records to process, so keep moving backwards
-		 * in the chain.
-		 */
-		if (more_undo)
-		{
-			/* Prepare an undo record information element. */
-			urec_info = palloc(sizeof(UndoRecInfo));
-			urec_info->urp = urec_ptr;
-			urec_info->uur = uur;
-			luinfo = lappend(luinfo, urec_info);
-
-			prev_reloid = reloid;
-			prev_fork = uur->uur_fork;
-			prev_block = uur->uur_block;
-			save_urec_ptr = uur->uur_blkprev;
-			prev_blkprev = uur->uur_blkprev;
+			UnpackedUndoRecord *uur = urp_array[i].uur;
 
 			/*
-			 * Continue to process the records if this is not the last undo
-			 * record in chain.
+			 * If this undo is not for the same block then apply all undo
+			 * actions for the previous block.
 			 */
-			urec_prevlen = uur->uur_prevlen;
-			urec_prevurp = uur->uur_prevurp;
-			if (urec_ptr != to_urecptr &&
-				(urec_prevlen > 0 || UndoRecPtrIsValid(urec_prevurp)))
-				urec_ptr = UndoGetPrevUndoRecptr(urec_ptr, urec_prevlen, urec_prevurp);
-			else
-				break;
+			if (OidIsValid(prev_reloid) &&
+				(prev_reloid != uur->uur_reloid ||
+				 prev_fork != uur->uur_fork ||
+				 prev_block != uur->uur_block))
+			{
+				execute_undo_actions_page(urp_array, last_index, i - 1,
+										  prev_reloid, xid, prev_block,
+										  blk_chain_complete, rellock);
+				last_index = i;
+
+				/* We have consumed one prefetched page. */
+				if (prefetch_pages > 0)
+					prefetch_pages--;
+			}
+
+			prev_reloid = uur->uur_reloid;
+			prev_fork = uur->uur_fork;
+			prev_block = uur->uur_block;
 		}
-		else
-			break;
-	}
 
-	/* Apply the undo actions for the remaining records. */
-	if (list_length(luinfo))
-	{
-		execute_undo_actions_page(luinfo, save_urec_ptr, prev_reloid,
-								  xid, prev_block, nopartial ? true : false,
-								  rellock);
+		/* Apply the last set of the actions. */
+		execute_undo_actions_page(urp_array, last_index, i - 1,
+								  prev_reloid, xid, prev_block,
+								  blk_chain_complete, rellock);
 
-		/* release the undo records for which action has been replayed */
-		while (luinfo)
-		{
-			UndoRecInfo *urec_info = (UndoRecInfo *) linitial(luinfo);
+		/* Free all undo records. */
+		for (i = 0; i < nrecords; i++)
+			UndoRecordRelease(urp_array[i].uur);
 
-			UndoRecordRelease(urec_info->uur);
-			pfree(urec_info);
-			luinfo = list_delete_first(luinfo);
-		}
-	}
+		/*
+		 * Free urp array and undo_blkinfo array for the current batch of undo
+		 * records.
+		 */
+		pfree(urp_array);
+	} while (true);
 
 	if (rewind)
 	{
@@ -415,17 +582,14 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 /*
  * execute_undo_actions_page - Execute the undo actions for a page
  *
- *	luinfo - list of undo records (along with their location) for which undo
- *			 action needs to be replayed.
- *	urec_ptr - undo record pointer to which we need to rewind.
+ *	urp_array - array of undo records (along with their location) for which undo
+ *				action needs to be applied.
+ *	first_idx - index in the urp_array of the first undo action to be applied
+ *	last_idx  - index in the urp_array of the first undo action to be applied
  *	reloid	- OID of relation on which undo actions needs to be applied.
  *	blkno	- block number on which undo actions needs to be applied.
  *	blk_chain_complete - indicates whether the undo chain for block is
  *						 complete.
- *	nopartial - true if rollback is for complete transaction. If we are not
- *				rolling back the complete transaction then we need to apply the
- *				undo action for UNDO_INVALID_XACT_SLOT also because in such
- *				case we will rewind the insert undo location.
  *	rellock	  -	if the caller already has the lock on the required relation,
  *				then this flag is false, i.e. we do not need to acquire any
  *				lock here. If the flag is true then we need to acquire lock
@@ -438,23 +602,21 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
  *	returns true, if successfully applied the undo actions, otherwise, false.
  */
 bool
-execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
-						  TransactionId xid, BlockNumber blkno,
-						  bool blk_chain_complete, bool norellock)
+execute_undo_actions_page(UndoRecInfo * urp_array, int first_idx, int last_idx,
+						  Oid reloid, TransactionId xid, BlockNumber blkno,
+						  bool blk_chain_complete, bool rellock)
 {
-	UndoRecInfo *first;
-
 	/*
 	 * All records passed to us are for the same RMGR, so we just use the
 	 * first record to dispatch.
 	 */
-	Assert(luinfo != NIL);
-	first = (UndoRecInfo *) linitial(luinfo);
+	Assert(urp_array != NULL);
 
-	return RmgrTable[first->uur->uur_rmid].rm_undo(luinfo, urec_ptr, reloid,
-												   xid, blkno,
-												   blk_chain_complete,
-												   norellock);
+	return RmgrTable[urp_array[0].uur->uur_rmid].rm_undo(urp_array, first_idx,
+														 last_idx, reloid, xid,
+														 blkno,
+														 blk_chain_complete,
+														 rellock);
 }
 
 /*

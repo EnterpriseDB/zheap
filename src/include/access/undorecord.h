@@ -205,10 +205,12 @@ typedef struct UnpackedUndoRecord
 
 extern void UndoRecordSetInfo(UnpackedUndoRecord *uur);
 extern Size UndoRecordExpectedSize(UnpackedUndoRecord *uur);
+extern Size UnpackedUndoRecordSize(UnpackedUndoRecord *uur);
 extern bool InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 				 int starting_byte, int *already_written,
 				 int remaining_bytes, bool header_only);
 extern bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page,
-				 int starting_byte, int *already_decoded, bool header_only);
+				 int starting_byte, int *already_decoded, bool header_only,
+				 bool copy_data);
 
 #endif							/* UNDORECORD_H */

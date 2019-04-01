@@ -20,6 +20,7 @@
 #include "access/hio.h"
 #include "access/undoinsert.h"
 #include "access/zhtup.h"
+#include "postmaster/undoloop.h"
 #include "storage/smgr.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
@@ -239,9 +240,8 @@ extern void lazy_vacuum_zheap_rel(Relation onerel, int options,
 					  struct VacuumParams *params, BufferAccessStrategy bstrategy);
 
 /* in zheap/zundo.c */
-extern bool zheap_undo_actions(List *luinfo, UndoRecPtr urec_ptr, Oid reloid,
-				   TransactionId xid, BlockNumber blkno,
+extern bool zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
+				   Oid reloid, TransactionId xid, BlockNumber blkno,
 				   bool blk_chain_complete, bool rellock);
-
 
 #endif							/* ZHEAP_H */

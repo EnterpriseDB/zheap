@@ -13,7 +13,6 @@
 #define _UNDOLOOP_H
 
 #include "access/undoinsert.h"
-#include "utils/hsearch.h"
 #include "utils/relcache.h"
 
 
@@ -73,6 +72,7 @@ typedef struct RollbackHashEntry
 /* undo record information */
 typedef struct UndoRecInfo
 {
+	int			index;			/* Index of the element to make qsort stable. */
 	UndoRecPtr	urp;			/* undo recptr (undo record location). */
 	UnpackedUndoRecord *uur;	/* actual undo record. */
 } UndoRecInfo;
@@ -93,9 +93,13 @@ extern List *RollbackHTGetDBList(void);
 extern bool ConditionTransactionUndoActionLock(TransactionId xid);
 extern void TransactionUndoActionLockRelease(TransactionId xid);
 
-extern bool execute_undo_actions_page(List *luinfo, UndoRecPtr urec_ptr,
-						  Oid reloid, TransactionId xid, BlockNumber blkno,
-						  bool blk_chain_complete, bool norellock);
+extern bool execute_undo_actions_page(UndoRecInfo *urp_array, int first_idx,
+						  int last_idx, Oid reloid, TransactionId xid,
+						  BlockNumber blkno, bool blk_chain_complete,
+						  bool rellock);
+extern UndoRecInfo *UndoRecordBulkFetch(UndoRecPtr *from_urecptr,
+						  UndoRecPtr to_urecptr, int undo_apply_size,
+						  int *nrecords, bool one_page);
 
 /* To discard the logs in single user mode. */
 extern void UndoLogDiscardAll(void);
