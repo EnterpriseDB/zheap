@@ -7522,8 +7522,7 @@ ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 				  ItemPointer ctid)
 {
 	*ctid = zhtup->t_self;
-	ZHeapPageGetCtid(ZHeapTupleHeaderGetXactSlot(zhtup->t_data), buf,
-					 urec_ptr, ctid);
+	ZHeapPageGetCtid(buf, urec_ptr, ctid);
 }
 
 /*
@@ -7646,7 +7645,7 @@ ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
  * the caller of this function has at least read lock on the buffer.
  */
 CommandId
-ZHeapPageGetCid(Buffer buf, int trans_slot, uint32 epoch, TransactionId xid,
+ZHeapPageGetCid(Buffer buf, uint32 epoch, TransactionId xid,
 				UndoRecPtr urec_ptr, OffsetNumber off)
 {
 	UnpackedUndoRecord *urec;
@@ -7682,8 +7681,7 @@ ZHeapPageGetCid(Buffer buf, int trans_slot, uint32 epoch, TransactionId xid,
  * It is expected that caller of this function has at least read lock.
  */
 void
-ZHeapPageGetCtid(int trans_slot, Buffer buf, UndoRecPtr urec_ptr,
-				 ItemPointer ctid)
+ZHeapPageGetCtid(Buffer buf, UndoRecPtr urec_ptr, ItemPointer ctid)
 {
 	UnpackedUndoRecord *urec;
 
