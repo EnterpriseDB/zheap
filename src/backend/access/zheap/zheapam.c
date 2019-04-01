@@ -6234,7 +6234,7 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 		}
 	}
 
-	zinfo->epoch_xid = MakeEpochXid((uint64) epoch, zinfo->xid);
+	zinfo->epoch_xid = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, zinfo->xid));
 }
 
 /*
@@ -7159,7 +7159,8 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 			 * previous epoch or transaction id is old enough that it is all
 			 * visible.
 			 */
-			slot_xid_epoch = MakeEpochXid(slot_xid_epoch, slot_xid);
+			slot_xid_epoch = U64FromFullTransactionId(
+				FullTransactionIdFromEpochAndXid(slot_xid_epoch, slot_xid));
 
 			if (slot_xid_epoch < oldestXidWithEpochHavingUndo)
 				frozen_slots[nFrozenSlots++] = slot_no;
@@ -7669,10 +7670,7 @@ ZHeapPageGetCid(Buffer buf, uint32 epoch, TransactionId xid,
 {
 	UnpackedUndoRecord *urec;
 	CommandId	current_cid;
-	uint64		epoch_xid;
-
-	epoch_xid = (uint64) epoch;
-	epoch_xid = MakeEpochXid(epoch_xid, xid);
+	uint64		epoch_xid = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, xid));
 
 	if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 		return InvalidCommandId;

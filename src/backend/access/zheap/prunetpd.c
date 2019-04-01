@@ -57,7 +57,7 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
 				maxoff;
 	ItemId		itemId;
 	uint64		epoch_xid;
-	uint64		epoch;
+	uint32		epoch;
 	Size		space_freed;
 
 	prstate.nunused = 0;
@@ -72,7 +72,8 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
 	/* Can we prune the entire page? */
 	tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(tpdpage);
 	epoch = tpdopaque->tpd_latest_xid_epoch;
-	epoch_xid = MakeEpochXid(epoch, tpdopaque->tpd_latest_xid);
+	epoch_xid = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch,
+																		  tpdopaque->tpd_latest_xid));
 	if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 	{
 		prstate.nunused = TPDPruneEntirePage(rel, tpdbuf);
@@ -259,12 +260,12 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
 	{
 		uint64		epoch_xid;
 		TransactionId xid;
-		uint64		epoch;
+		uint32		epoch;
 		UndoRecPtr	urec_ptr = trans_slots[slot_no].urec_ptr;
 
 		epoch = trans_slots[slot_no].xid_epoch;
 		xid = trans_slots[slot_no].xid;
-		epoch_xid = MakeEpochXid(epoch, xid);
+		epoch_xid = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, xid));
 
 		/*
 		 * Check whether transaction slot can be considered frozen? If both

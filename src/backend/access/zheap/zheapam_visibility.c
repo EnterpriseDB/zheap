@@ -165,7 +165,6 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
 	if (vis_info & ITEMID_XACT_INVALID)
 	{
 		ZHeapTupleData undo_tup;
-		uint64		epoch;
 
 		ItemPointerSetBlockNumber(&undo_tup.t_self,
 								  BufferGetBlockNumber(buffer));
@@ -178,8 +177,7 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
 		GetTransactionSlotInfo(buffer, offnum, trans_slot, true, false,
 							   &zinfo);
 		*xid = InvalidTransactionId;
-		epoch = GetEpochFromEpochXid(zinfo.epoch_xid);
-		FetchTransInfoFromUndo(&undo_tup, &epoch, xid, cid, &zinfo.urec_ptr,
+		FetchTransInfoFromUndo(&undo_tup, NULL, xid, cid, &zinfo.urec_ptr,
 							   false);
 	}
 	else
@@ -368,7 +366,7 @@ done:
 	/* Set the value of required parameters. */
 	if (nobuflock)
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-	zinfo->epoch_xid = MakeEpochXid(epoch, zinfo->xid);
+	zinfo->epoch_xid = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, zinfo->xid));
 }
 
 /*
@@ -849,7 +847,7 @@ GetTupleFromUndoWithOffset(UndoRecPtr urec_ptr, Snapshot snapshot,
 	TransactionId oldestXidHavingUndo;
 	int			prev_trans_slot_id = trans_slot;
 	ZHeapTupleTransInfo	zinfo;
-	uint64		epoch;
+	uint32		epoch;
 
 	/*
 	 * tuple is modified after the scan is started, fetch the prior record
@@ -876,7 +874,7 @@ GetTupleFromUndoWithOffset(UndoRecPtr urec_ptr, Snapshot snapshot,
 	 * we can infer the epoch here.
 	 */
 	epoch = GetEpochForXid(urec->uur_xid);
-	zinfo.epoch_xid = MakeEpochXid(epoch, urec->uur_xid);
+	zinfo.epoch_xid = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, urec->uur_xid));
 
 	UndoRecordRelease(urec);
 
@@ -1475,7 +1473,7 @@ check_trans_slot:
 			if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
 				goto check_trans_slot;
 
-			epoch = (uint64) GetEpochFromEpochXid(zinfo.epoch_xid);
+			epoch = GetEpochFromEpochXid(zinfo.epoch_xid);
 			zinfo.cid = ZHeapPageGetCid(buffer, epoch,
 										zinfo.xid, zinfo.urec_ptr, off);
 		}
@@ -1488,7 +1486,7 @@ check_trans_slot:
 		zinfo.urec_ptr = InvalidUndoRecPtr;
 	}
 
-	epoch_xid = MakeEpochXid(epoch, zinfo.xid);
+	epoch_xid = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, zinfo.xid));
 
 	/*
 	 * The tuple is deleted and must be all visible if the transaction slot is

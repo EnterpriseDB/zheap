@@ -228,10 +228,6 @@ extern bool XLOG_DEBUG;
 #define XLOG_INCLUDE_ORIGIN		0x01	/* include the replication origin */
 #define XLOG_MARK_UNIMPORTANT	0x02	/* record not important for durability */
 
-// ZBORKED: replace with underlying functions
-/* Generate a 64-bit xid by using epoch and 32-bit xid. */
-#define MakeEpochXid(epoch, xid) \
-	U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, xid))
 
 /* Checkpoint statistics */
 typedef struct CheckpointStatsData
