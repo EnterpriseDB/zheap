@@ -126,7 +126,7 @@ extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
 						   TransactionId xid, UndoRecPtr *ureptr,
 						   bool *lock_reacquired,
 						   bool extend_if_required,
-						   bool use_aborted_slot,
+						   Buffer other_buf,
 						   bool *slot_reused_or_TPD_slot);
 extern void MultiPageReserveTransSlot(Relation relation,
 						  Buffer oldbuf, Buffer newbuf,
@@ -171,7 +171,7 @@ extern void zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots
 								  bool isFrozen, bool TPDSlot);
 extern bool PageFreezeTransSlots(Relation relation, Buffer buf,
 					 bool *lock_reacquired, TransInfo * transinfo,
-					 int num_slots, bool use_aborted_slot);
+					 int num_slots, Buffer other_buf);
 extern TransactionId zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer);
 extern void copy_zrelation_data(Relation srcRel, SMgrRelation dst);
 extern TransactionId zheap_compute_xid_horizon_for_tuples(Relation rel,

@@ -65,6 +65,7 @@
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "storage/itemid.h"
+#include "storage/buf_internals.h"
 #include "utils/datum.h"
 #include "utils/expandeddatum.h"
 #include "utils/inval.h"
@@ -278,7 +279,7 @@ reacquire_buffer:
 												   &prev_urecptr,
 												   &lock_reacquired,
 												   false,
-												   true,
+												   InvalidBuffer,
 												   NULL);
 		if (lock_reacquired)
 		{
@@ -1027,7 +1028,7 @@ zheap_tuple_updated:
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer,
 											   PageGetMaxOffsetNumber(page),
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired, false, true,
+											   &lock_reacquired, false, InvalidBuffer,
 											   NULL);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
@@ -2180,7 +2181,7 @@ zheap_tuple_updated:
 	 */
 	trans_slot_id = PageReserveTransactionSlot(relation, buffer, max_offset,
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired, false, true,
+											   &lock_reacquired, false, InvalidBuffer,
 											   &slot_reused_or_TPD_slot);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
@@ -2609,9 +2610,36 @@ reacquire_buffer:
 			 * buffer. Else, only release the lock on old buffer.
 			 */
 			if (buffer != newbuf)
-				UnlockReleaseBuffer(newbuf);
+			{
+				/*
+				 * If we have reacquired the lock while reserving a slot, then
+				 * we would have already released lock on the old buffer.  See
+				 * other_buf handling in PageFreezeTransSlots.
+				 */
+				if (!lock_reacquired)
+					LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+				else
+				{
+					BufferDesc *buf_hdr PG_USED_FOR_ASSERTS_ONLY;
 
-			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+					/*
+					 * Old buffer should be valid and should not locked because
+					 * we already released lock on the old buffer in
+					 * PageFreezeTransSlots.
+					 */
+					Assert(BufferIsValid(buffer));
+					buf_hdr = GetBufferDescriptor(buffer - 1);
+					Assert(!(LWLockHeldByMeInMode(BufferDescriptorGetContentLock(buf_hdr),
+												  LW_EXCLUSIVE)));
+				}
+
+				/* Release the new buffer. */
+				UnlockReleaseBuffer(newbuf);
+			}
+			else
+				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+			/* Release all the TPD buffer. */
 			UnlockReleaseTPDBuffers();
 
 			if (new_trans_slot_id == InvalidXactSlotId)
@@ -4114,7 +4142,7 @@ failed:
 	trans_slot_id = PageReserveTransactionSlot(relation, *buffer,
 											   PageGetMaxOffsetNumber(page),
 											   epoch, xid, &prev_urecptr,
-											   &lock_reacquired, false, true,
+											   &lock_reacquired, false, InvalidBuffer,
 											   NULL);
 	if (lock_reacquired)
 		goto check_tup_satisfies_update;
@@ -4673,7 +4701,7 @@ lock_tuple:
 		trans_slot_id = PageReserveTransactionSlot(rel, buf, offnum, epoch,
 												   xid, &prev_urecptr,
 												   &lock_reacquired, false,
-												   true, NULL);
+												   InvalidBuffer, NULL);
 		if (lock_reacquired)
 		{
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
@@ -6455,22 +6483,7 @@ MultiPageReserveTransSlot(Relation relation,
 	bool		always_extend;
 	bool		is_tpdblk_order_changed;
 	int			slot_id;
-	bool		use_aborted_slot = true;
 	BlockNumber oldbuf_tpd_blk PG_USED_FOR_ASSERTS_ONLY = InvalidBlockNumber;
-
-	/*
-	 * To avoid deadlock risks, we can't reuse aborted transaction slots while
-	 * reserving transaction slot on new buffer block in case the new block is
-	 * smaller than old block.  This is because while reusing the aborted
-	 * transaction's slot we need to release the lock on page, apply the undo
-	 * actions and then reacquire the lock.  When we try to reacquire the lock
-	 * on smaller block, it will break our rule "lock lower number block
-	 * first". We don't need to bother about oldbuf as by now we already have
-	 * reserved slot on old buffer, here, we will just get our previously
-	 * reserved slot.
-	 */
-	if (BufferGetBlockNumber(newbuf) < BufferGetBlockNumber(oldbuf))
-		use_aborted_slot = false;
 
 	/*
 	 * If previously reserved slot is from TPD then we should have TPD page
@@ -6526,7 +6539,7 @@ retry_tpd_lock:
 											 oldbuf_prev_urecptr,
 											 lock_reacquired,
 											 false,
-											 true,
+											 InvalidBuffer,
 											 NULL);
 
 		/*
@@ -6557,7 +6570,7 @@ retry_tpd_lock:
 														   newbuf_prev_urecptr,
 														   lock_reacquired,
 														   always_extend,
-														   use_aborted_slot,
+														   oldbuf,
 														   NULL);
 	}
 	else
@@ -6571,7 +6584,7 @@ retry_tpd_lock:
 														   newbuf_prev_urecptr,
 														   lock_reacquired,
 														   false,
-														   use_aborted_slot,
+														   oldbuf,
 														   NULL);
 
 		/*
@@ -6617,7 +6630,7 @@ retry_tpd_lock:
 											 oldbuf_prev_urecptr,
 											 lock_reacquired,
 											 false,
-											 true,
+											 InvalidBuffer,
 											 NULL);
 
 		/*
@@ -6681,7 +6694,7 @@ int
 PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 						   uint32 epoch, TransactionId xid,
 						   UndoRecPtr *urec_ptr, bool *lock_reacquired,
-						   bool always_extend, bool use_aborted_slot,
+						   bool always_extend, Buffer other_buf,
 						   bool *slot_reused_or_TPD_slot)
 {
 	ZHeapPageOpaque opaque;
@@ -6773,7 +6786,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 
 	/* no transaction slot available, try to reuse some existing slot */
 	if (PageFreezeTransSlots(relation, buf, lock_reacquired, NULL, 0,
-							 use_aborted_slot))
+							 other_buf))
 	{
 		/*
 		 * If the lock is reacquired inside, then we allow callers to reverify
@@ -6822,7 +6835,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 
 		tpd_e_slot = TPDPageReserveTransSlot(relation, buf, offset,
 											 urec_ptr, lock_reacquired,
-											 always_extend, use_aborted_slot);
+											 always_extend, other_buf);
 
 		if (tpd_e_slot != InvalidXactSlotId)
 		{
@@ -7068,13 +7081,16 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
  *	This function assumes that the caller already has Exclusive lock on the
  *	buffer.
  *
+ *	other_buf will be valid only in case of non in-place update in two
+ *	different buffers and other_buf will be old buffer.  Caller of
+ *	MultiPageReserveTransSlot will not try to release lock again.
+ *
  *	This function returns true if it manages to free some transaction slot,
  *	false otherwise.
  */
 bool
 PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
-					 TransInfo * transinfo, int num_slots,
-					 bool use_aborted_slot)
+					 TransInfo * transinfo, int num_slots, Buffer other_buf)
 {
 	uint64		oldestXidWithEpochHavingUndo;
 	int			slot_no;
@@ -7348,7 +7364,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		result = true;
 		goto cleanup;
 	}
-	else if (nAbortedXactSlots && use_aborted_slot)
+	else if (nAbortedXactSlots)
 	{
 		int			i;
 		int			slot_no;
@@ -7369,6 +7385,18 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		 * page as we might need to traverse the long undo chain for a page.
 		 */
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+		/*
+		 * Release the lock on the other buffer to avoid deadlock as we need
+		 * to relock the new buffer again.  We could optimize here by
+		 * releasing the lock on old buffer conditionally (when the old block
+		 * number is bigger than new block number), but that would complicate
+		 * the handling.  If we ever want to deal with it, we need to ensure
+		 * that after reacquiring lock on new page, it is still a heap page
+		 * and also we need to pass this information to the caller.
+		 */
+		if (BufferIsValid(other_buf))
+			LockBuffer(other_buf, BUFFER_LOCK_UNLOCK);
 
 		/*
 		 * XXX We release the TPD buffers here even when we are operating on
@@ -7410,6 +7438,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 		*lock_reacquired = true;
+
 		pfree(urecptr);
 		pfree(xid);
 		pfree(epoch);
@@ -7896,7 +7925,7 @@ reacquire_buffer:
 													   &prev_urecptr,
 													   &lock_reacquired,
 													   false,
-													   true,
+													   InvalidBuffer,
 													   NULL);
 			if (lock_reacquired)
 				goto reacquire_buffer;
