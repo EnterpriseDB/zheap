@@ -127,6 +127,35 @@ fetch_prior_undo:
 }
 
 /*
+ * ZHeapUpdateTransactionSlotInfo
+ *
+ * Get the transaction slot information for the specified transaction slot,
+ * and use it to update the trans_slot and urec_ptr values for the
+ * ZHeapTupleTransInfo passed as an argument.
+ */
+void
+ZHeapUpdateTransactionSlotInfo(int trans_slot, Buffer buffer,
+							   OffsetNumber offnum, ZHeapTupleTransInfo *zinfo)
+{
+	ZHeapTupleTransInfo	zinfo2;
+
+	/*
+	 * It is quite possible that the tuple is showing some valid
+	 * transaction slot, but actual slot has been frozen.  This can happen
+	 * when the slot belongs to TPD entry and the corresponding TPD entry
+	 * is pruned.
+	 */
+	GetTransactionSlotInfo(buffer,
+						   offnum,
+						   trans_slot,
+						   true,
+						   true,
+						   &zinfo2);
+	zinfo->trans_slot = zinfo2.trans_slot;
+	zinfo->urec_ptr = zinfo2.urec_ptr;
+}
+
+/*
  * ZHeapPageGetNewCtid
  *
  * 	This should be called for ctid which is already set deleted to get the new
@@ -606,24 +635,9 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 		 * different transaction.
 		 */
 		if (zinfo.trans_slot != prev_trans_slot_id)
-		{
-			ZHeapTupleTransInfo	zinfo2;
-
-			/*
-			 * It is quite possible that the tuple is showing some valid
-			 * transaction slot, but actual slot has been frozen.  This can
-			 * happen when the slot belongs to TPD entry and the
-			 * corresponding TPD entry is pruned.
-			 */
-			GetTransactionSlotInfo(buffer,
-								   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-								   zinfo.trans_slot,
-								   true,
-								   true,
-								   &zinfo2);
-			zinfo.trans_slot = zinfo2.trans_slot;
-			zinfo.urec_ptr = zinfo2.urec_ptr;
-		}
+			ZHeapUpdateTransactionSlotInfo(zinfo.trans_slot, buffer,
+										   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+										   &zinfo);
 
 		op = ZHeapTidOpFromInfomask(undo_tup->t_data->t_infomask);
 
@@ -798,24 +812,9 @@ fetch_prior_undo_record:
 	 * transaction slot.
 	 */
 	if (zinfo.trans_slot != prev_trans_slot_id)
-	{
-		ZHeapTupleTransInfo	zinfo2;
-
-		/*
-		 * It is quite possible that the tuple is showing some valid
-		 * transaction slot, but actual slot has been frozen.  This can happen
-		 * when the slot belongs to TPD entry and the corresponding TPD entry
-		 * is pruned.
-		 */
-		GetTransactionSlotInfo(buffer,
-							   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-							   zinfo.trans_slot,
-							   true,
-							   true,
-							   &zinfo2);
-		zinfo.trans_slot = zinfo2.trans_slot;
-		zinfo.urec_ptr = zinfo2.urec_ptr;
-	}
+		ZHeapUpdateTransactionSlotInfo(zinfo.trans_slot, buffer,
+									   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+									   &zinfo);
 
 	/*
 	 * We need to fetch all the transaction related information from undo
