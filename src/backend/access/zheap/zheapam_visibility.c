@@ -239,8 +239,6 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 			tuple = zhtup->t_data;
 		}
 		zinfo->trans_slot = ZHeapTupleHeaderGetXactSlot(tuple);
-		if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN)
-			goto slot_is_frozen;
 		if (ZHeapTupleHasInvalidXact(tuple->t_infomask))
 			is_invalid_slot = true;
 	}
@@ -251,8 +249,6 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 		 * from the item pointer itself.
 		 */
 		zinfo->trans_slot = ItemIdGetTransactionSlot(lp);
-		if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN)
-			goto slot_is_frozen;
 		if (ItemIdGetVisibilityInfo(lp) & ITEMID_XACT_INVALID)
 			is_invalid_slot = true;
 	}
@@ -1368,7 +1364,6 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 {
 	Page		page;
 	ItemId		lp;
-	int			vis_info;
 	ZHeapTupleTransInfo	zinfo;
 	ZVersionSelector	zselect;
 
@@ -1380,31 +1375,23 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 	Assert(ItemIdIsDeleted(lp));
 
 	zinfo.trans_slot = ItemIdGetTransactionSlot(lp);
-	vis_info = ItemIdGetVisibilityInfo(lp);
 
 	/*
 	 * We need to fetch all the transaction related information from undo
 	 * record for the tuples that point to a slot that gets invalidated for
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
-check_trans_slot:
+	GetTransactionSlotInfo(buffer, off, zinfo.trans_slot, true, false, &zinfo);
+
+	/*
+	 * Even if zinfo.trans_slot was not ZHTUP_SLOT_FROZEN before we called
+	 * GetTransactionSlotInfo, it might have that value now.  This can
+	 * happen when the slot belongs to a TPD entry and the corresponding
+	 * TPD entry is pruned.
+	 */
 	if (zinfo.trans_slot != ZHTUP_SLOT_FROZEN)
 	{
-		/*
-		 * We need undo record pointer to fetch the transaction
-		 * information from undo.
-		 */
-		GetTransactionSlotInfo(buffer, off, zinfo.trans_slot,
-							   true, false, &zinfo);
-
-		/*
-		 * It is quite possible that the tuple is showing some valid
-		 * transaction slot, but actual slot has been frozen.  This can
-		 * happen when the slot belongs to TPD entry and the corresponding
-		 * TPD entry is pruned.
-		 */
-		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
-			goto check_trans_slot;
+		int		vis_info = ItemIdGetVisibilityInfo(lp);
 
 		if (vis_info & ITEMID_XACT_INVALID)
 		{
@@ -1420,13 +1407,6 @@ check_trans_slot:
 		else
 			zinfo.cid = ZHeapPageGetCid(buffer, zinfo.epoch_xid,
 										zinfo.urec_ptr, off);
-	}
-	else
-	{
-		zinfo.epoch_xid = InvalidFullTransactionId;
-		zinfo.xid = InvalidTransactionId;
-		zinfo.cid = InvalidCommandId;
-		zinfo.urec_ptr = InvalidUndoRecPtr;
 	}
 
 	/*
