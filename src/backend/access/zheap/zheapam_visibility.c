@@ -1397,6 +1397,15 @@ check_trans_slot:
 		GetTransactionSlotInfo(buffer, off, zinfo.trans_slot,
 							   true, false, &zinfo);
 
+		/*
+		 * It is quite possible that the tuple is showing some valid
+		 * transaction slot, but actual slot has been frozen.  This can
+		 * happen when the slot belongs to TPD entry and the corresponding
+		 * TPD entry is pruned.
+		 */
+		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
+			goto check_trans_slot;
+
 		if (vis_info & ITEMID_XACT_INVALID)
 		{
 			ZHeapTupleData undo_tup;
@@ -1405,26 +1414,12 @@ check_trans_slot:
 									  BufferGetBlockNumber(buffer));
 			ItemPointerSetOffsetNumber(&undo_tup.t_self, off);
 
-			/*
-			 * It is quite possible that the tuple is showing some valid
-			 * transaction slot, but actual slot has been frozen.  This can
-			 * happen when the slot belongs to TPD entry and the corresponding
-			 * TPD entry is pruned.
-			 */
-			if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
-				goto check_trans_slot;
-
 			FetchTransInfoFromUndo(&undo_tup, InvalidTransactionId, &zinfo,
 								   false);
 		}
 		else
-		{
-			if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
-				goto check_trans_slot;
-
 			zinfo.cid = ZHeapPageGetCid(buffer, zinfo.epoch_xid,
 										zinfo.urec_ptr, off);
-		}
 	}
 	else
 	{
