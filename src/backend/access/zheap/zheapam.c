@@ -171,15 +171,19 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 }
 
 /*
- * xid_infomask_changed - It checks whether the relevant status for a tuple
- *	xid has changed.
+ * Given two versions of the same t_infomask for a tuple, compare them and
+ * return whether the relevant status for a tuple xid has changed.  This is
+ * used after a buffer lock has been released and reacquired: we want to ensure
+ * that the tuple state continues to be the same it was when we previously
+ * examined it.
  *
- * Note the Xid field itself must be compared separately.
+ * Note the xid field itself must be compared separately.
  */
 static inline bool
 xid_infomask_changed(uint16 new_infomask, uint16 old_infomask)
 {
-	const uint16 interesting = ZHEAP_XID_LOCK_ONLY;
+	const uint16 interesting =
+		ZHEAP_MULTI_LOCKERS | ZHEAP_XID_LOCK_ONLY | ZHEAP_LOCK_MASK;
 
 	if ((new_infomask & interesting) != (old_infomask & interesting))
 		return true;
