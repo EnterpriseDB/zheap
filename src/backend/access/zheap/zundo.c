@@ -432,18 +432,9 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		 * different transaction slot.
 		 */
 		if (prev_trans_slot_id != zinfo.trans_slot)
-		{
-			ZHeapTupleTransInfo	zinfo2;
-
-			GetTransactionSlotInfo(buf,
-								   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-								   zinfo.trans_slot,
-								   true,
-								   true,
-								   &zinfo2);
-			zinfo.trans_slot = zinfo2.trans_slot;
-			zinfo.urec_ptr = zinfo2.urec_ptr;
-		}
+			ZHeapUpdateTransactionSlotInfo(zinfo.trans_slot, buf,
+										   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+										   &zinfo);
 
 		/*
 		 * If the tuple has invalid xact flag, we may have to fetch the
