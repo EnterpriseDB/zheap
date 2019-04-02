@@ -144,8 +144,17 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup,
 				/* Retrieve the TPD transaction slot from payload */
 				if (trans_slot_id)
 				{
+					/*
+					 * The undo records are stored without alignment, so we use
+					 * memcpy to avoid unaligned access. We can optimize it for
+					 * the cases where undo data is separately allocated
+					 * (aka when a particular undo record is split across
+					 * multiple buffers), but those are not common cases, so it
+					 * doesn't seem worth the effort.
+					 */
 					if (urec->uur_info & UREC_INFO_PAYLOAD_CONTAINS_SLOT)
-						*trans_slot_id = *(int *) urec->uur_payload.data;
+						memcpy(trans_slot_id, urec->uur_payload.data,
+							   sizeof(int));
 					else
 						*trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 				}
@@ -199,7 +208,9 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup,
 						 * We first store the Lockmode and then transaction
 						 * slot in payload, so retrieve it accordingly.
 						 */
-						*trans_slot_id = *(int *) ((char *) urec->uur_payload.data + sizeof(LockTupleMode));
+						memcpy(trans_slot_id,
+							   urec->uur_payload.data + sizeof(LockTupleMode),
+							   sizeof(int));
 					}
 					else
 						*trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
@@ -251,9 +262,11 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup,
 						 * transaction slot, so retrieve it accordingly.
 						 */
 						if (urec->uur_type == UNDO_UPDATE)
-							*trans_slot_id = *(int *) ((char *) urec->uur_payload.data + sizeof(ItemPointerData));
+							memcpy(trans_slot_id, urec->uur_payload.data +
+								   sizeof(ItemPointerData), sizeof(int));
 						else
-							*trans_slot_id = *(int *) urec->uur_payload.data;
+							memcpy(trans_slot_id, urec->uur_payload.data,
+								   sizeof(int));
 					}
 					else
 						*trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
