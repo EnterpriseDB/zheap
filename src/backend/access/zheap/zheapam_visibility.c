@@ -1490,22 +1490,16 @@ check_trans_slot:
 		return NULL;
 	}
 
-	if (TransactionIdIsCurrentTransactionId(zinfo.xid))
+	/* Check XID and CID against snapshot. */
+	if (IsMVCCSnapshot(snapshot))
+		zselect = ZHeapSelectVersionMVCC(ZTUPLETID_GONE, zinfo.xid,
+										 zinfo.cid, snapshot);
+	else
 	{
-		if (zinfo.cid >= snapshot->curcid)
-			zselect = ZVERSION_OLDER;		/* deleted after scan started */
-		else
-			zselect = ZVERSION_NONE;		/* deleted before scan started */
+		/* ZBORKED: Why do we always use SnapshotSelf rules here? */
+		zselect = ZHeapSelectVersionSelf(ZTUPLETID_GONE, zinfo.xid,
+										 zinfo.cid);
 	}
-	else if (IsMVCCSnapshot(snapshot) &&
-			 XidInMVCCSnapshot(zinfo.xid, snapshot))
-		zselect = ZVERSION_OLDER;
-	else if (!IsMVCCSnapshot(snapshot) && TransactionIdIsInProgress(zinfo.xid))
-		zselect = ZVERSION_OLDER;
-	else if (TransactionIdDidCommit(zinfo.xid))
-		zselect = ZVERSION_NONE;			/* tuple is deleted */
-	else						/* transaction is aborted */
-		zselect = ZVERSION_OLDER;
 
 	if (zselect == ZVERSION_OLDER)
 		return GetTupleFromUndoWithOffset(zinfo.urec_ptr,
