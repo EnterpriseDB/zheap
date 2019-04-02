@@ -1041,7 +1041,7 @@ fetch_prior_undo_record:
 		FetchTransInfoFromUndo(undo_tup, &epoch, &zinfo.xid, &zinfo.cid,
 							   &zinfo.urec_ptr, false);
 		zinfo.epoch_xid =
-			FullTransactionIdFromEpochAndXid(epoch, zinfo->xid);
+			FullTransactionIdFromEpochAndXid(epoch, zinfo.xid);
 	}
 	else if (zinfo.cid == InvalidCommandId)
 	{
