@@ -936,14 +936,11 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 {
 	UnpackedUndoRecord *urec;
 	ZHeapTuple	undo_tup;
-	UndoRecPtr	prev_urec_ptr;
-	TransactionId xid,
-				oldestXidHavingUndo;
-	CommandId	cid;
-	int			trans_slot_id;
+	TransactionId oldestXidHavingUndo;
 	int			prev_trans_slot_id = trans_slot;
 	ZTupleTidOp	op;
 	ZVersionSelector	zselect;
+	ZHeapTupleTransInfo	zinfo;
 
 	/*
 	 * tuple is modified after the scan is started, fetch the prior record
@@ -951,9 +948,9 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 	 */
 fetch_prior_undo_record:
 	undo_tup = NULL;
-	prev_urec_ptr = InvalidUndoRecPtr;
-	cid = InvalidCommandId;
-	trans_slot_id = InvalidXactSlotId;
+	zinfo.urec_ptr = InvalidUndoRecPtr;
+	zinfo.cid = InvalidCommandId;
+	zinfo.trans_slot = InvalidXactSlotId;
 
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
@@ -969,10 +966,11 @@ fetch_prior_undo_record:
 		goto result_available;
 	}
 
-	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, &trans_slot_id, &cid,
+	undo_tup = CopyTupleFromUndoRecord(urec, zhtup, &zinfo.trans_slot,
+									   &zinfo.cid,
 									   free_zhtup, BufferGetPage(buffer));
-	prev_urec_ptr = urec->uur_blkprev;
-	xid = urec->uur_prevxid;
+	zinfo.urec_ptr = urec->uur_blkprev;
+	zinfo.xid = urec->uur_prevxid;
 
 	/*
 	 * For non-inplace-updates, ctid needs to be retrieved from undo record if
@@ -999,9 +997,9 @@ fetch_prior_undo_record:
 	 * latest xid that has changed the tuple is too old that it is all-visible
 	 * or it precedes smallest xid that has undo.
 	 */
-	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		TransactionIdEquals(xid, FrozenTransactionId) ||
-		TransactionIdPrecedes(xid, oldestXidHavingUndo))
+	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+		TransactionIdEquals(zinfo.xid, FrozenTransactionId) ||
+		TransactionIdPrecedes(zinfo.xid, oldestXidHavingUndo))
 	{
 		zselect = ZVERSION_CURRENT;
 		goto result_available;
@@ -1011,9 +1009,9 @@ fetch_prior_undo_record:
 	 * Change the undo chain if the undo tuple is stamped with the different
 	 * transaction slot.
 	 */
-	if (trans_slot_id != prev_trans_slot_id)
+	if (zinfo.trans_slot != prev_trans_slot_id)
 	{
-		ZHeapTupleTransInfo	zinfo;
+		ZHeapTupleTransInfo	zinfo2;
 
 		/*
 		 * It is quite possible that the tuple is showing some valid
@@ -1023,12 +1021,12 @@ fetch_prior_undo_record:
 		 */
 		GetTransactionSlotInfo(buffer,
 							   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-							   trans_slot_id,
+							   zinfo.trans_slot,
 							   true,
 							   true,
-							   &zinfo);
-		trans_slot_id = zinfo.trans_slot;
-		prev_urec_ptr = zinfo.urec_ptr;
+							   &zinfo2);
+		zinfo.trans_slot = zinfo2.trans_slot;
+		zinfo.urec_ptr = zinfo2.urec_ptr;
 	}
 
 	/*
@@ -1038,9 +1036,14 @@ fetch_prior_undo_record:
 	 */
 	if (ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
 	{
-		FetchTransInfoFromUndo(undo_tup, NULL, &xid, &cid, &prev_urec_ptr, false);
+		uint32		epoch;
+
+		FetchTransInfoFromUndo(undo_tup, &epoch, &zinfo.xid, &zinfo.cid,
+							   &zinfo.urec_ptr, false);
+		zinfo.epoch_xid =
+			FullTransactionIdFromEpochAndXid(epoch, zinfo->xid);
 	}
-	else if (cid == InvalidCommandId)
+	else if (zinfo.cid == InvalidCommandId)
 	{
 		CommandId	cur_comm_cid = GetCurrentCommandId(false);
 
@@ -1052,7 +1055,7 @@ fetch_prior_undo_record:
 		 */
 		if (!GetCurrentCommandIdUsed() && cur_comm_cid == curcid)
 		{
-			cid = InvalidCommandId;
+			zinfo.cid = InvalidCommandId;
 		}
 		else
 		{
@@ -1064,7 +1067,8 @@ fetch_prior_undo_record:
 			 * it's usage, but that will make code look ugly, so keeping it
 			 * here.
 			 */
-			cid = ZHeapTupleGetCid(undo_tup, buffer, prev_urec_ptr, trans_slot_id);
+			zinfo.cid = ZHeapTupleGetCid(undo_tup, buffer, zinfo.urec_ptr,
+										 zinfo.trans_slot);
 		}
 	}
 
@@ -1073,9 +1077,9 @@ fetch_prior_undo_record:
 	 * latest xid that has changed the tuple is too old that it is all-visible
 	 * or it precedes smallest xid that has undo.
 	 */
-	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		TransactionIdEquals(xid, FrozenTransactionId) ||
-		TransactionIdPrecedes(xid, oldestXidHavingUndo))
+	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+		TransactionIdEquals(zinfo.xid, FrozenTransactionId) ||
+		TransactionIdPrecedes(zinfo.xid, oldestXidHavingUndo))
 	{
 		zselect = ZVERSION_CURRENT;
 		goto result_available;
@@ -1083,32 +1087,32 @@ fetch_prior_undo_record:
 
 	if (op == ZTUPLETID_MODIFIED)
 	{
-		if (TransactionIdIsCurrentTransactionId(xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		{
-			if (cid >= curcid)
+			if (zinfo.cid >= curcid)
 				zselect = ZVERSION_OLDER;	/* updated after scan started */
 			else
 				zselect = ZVERSION_CURRENT; /* updated before scan started */
 		}
-		else if (TransactionIdIsInProgress(xid))
+		else if (TransactionIdIsInProgress(zinfo.xid))
 			zselect = ZVERSION_OLDER;
-		else if (TransactionIdDidCommit(xid))
+		else if (TransactionIdDidCommit(zinfo.xid))
 			zselect = ZVERSION_CURRENT;
 		else
 			zselect = ZVERSION_OLDER;
 	}
 	else						/* undo tuple is the root tuple */
 	{
-		if (TransactionIdIsCurrentTransactionId(xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
 		{
-			if (cid >= curcid)
+			if (zinfo.cid >= curcid)
 				zselect = ZVERSION_NONE; /* inserted after scan started */
 			else
 				zselect = ZVERSION_CURRENT;	/* inserted before scan started */
 		}
-		else if (TransactionIdIsInProgress(xid))
+		else if (TransactionIdIsInProgress(zinfo.xid))
 			zselect = ZVERSION_NONE;
-		else if (TransactionIdDidCommit(xid))
+		else if (TransactionIdDidCommit(zinfo.xid))
 			zselect = ZVERSION_CURRENT;
 		else
 			zselect = ZVERSION_NONE;
@@ -1117,10 +1121,10 @@ fetch_prior_undo_record:
 	if (zselect == ZVERSION_OLDER)
 	{
 		/* Note the values required to fetch prior tuple in undo chain. */
-		urec_ptr = prev_urec_ptr;
+		urec_ptr = zinfo.urec_ptr;
 		zhtup = undo_tup;
-		prev_undo_xid = xid;
-		prev_trans_slot_id = trans_slot_id;
+		prev_undo_xid = zinfo.xid;
+		prev_trans_slot_id = zinfo.trans_slot;
 		free_zhtup = true;
 
 		/* And then go fetch it. */
