@@ -36,6 +36,9 @@ typedef struct ZHeapTupleTransInfo
 
 extern void FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId xid,
 					   ZHeapTupleTransInfo *zinfo, bool skip_lockers);
+extern void ZHeapUpdateTransactionSlotInfo(int trans_slot, Buffer buffer,
+							   OffsetNumber offnum,
+							   ZHeapTupleTransInfo *zinfo);
 extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 					   bool nobuflock, bool fetch_cid, Snapshot snapshot,
 					   ZHeapTupleTransInfo *zinfo);
