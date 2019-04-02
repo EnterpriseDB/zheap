@@ -450,8 +450,12 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		 */
 		if (ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
 		{
-			FetchTransInfoFromUndo(undo_tup, NULL, &zinfo.xid, NULL,
+			uint32	epoch;
+
+			FetchTransInfoFromUndo(undo_tup, &epoch, &zinfo.xid, &zinfo.cid,
 								   &zinfo.urec_ptr, true);
+			zinfo.epoch_xid =
+				FullTransactionIdFromEpochAndXid(epoch, zinfo.xid);
 		}
 
 		urec = NULL;

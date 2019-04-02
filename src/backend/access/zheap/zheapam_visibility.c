@@ -74,7 +74,6 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint32 *epoch, TransactionId *xid,
 					   CommandId *cid, UndoRecPtr *urec_ptr, bool skip_lockers)
 {
 	UnpackedUndoRecord *urec;
-	UndoRecPtr	urec_ptr_out = InvalidUndoRecPtr;
 	TransactionId undo_tup_xid;
 
 	Assert(xid != NULL);
@@ -92,7 +91,7 @@ fetch_prior_undo:
 						   ItemPointerGetBlockNumber(&undo_tup->t_self),
 						   ItemPointerGetOffsetNumber(&undo_tup->t_self),
 						   undo_tup_xid,
-						   &urec_ptr_out,
+						   urec_ptr,
 						   ZHeapSatisfyUndoRecord);
 
 	/*
@@ -102,13 +101,10 @@ fetch_prior_undo:
 	 */
 	if (urec == NULL)
 	{
-		if (epoch)
-			*epoch = 0;
+		*epoch = 0;
 		*xid = InvalidTransactionId;
-		if (cid)
-			*cid = InvalidCommandId;
-		if (urec_ptr)
-			*urec_ptr = InvalidUndoRecPtr;
+		*cid = InvalidCommandId;
+		*urec_ptr = InvalidUndoRecPtr;
 		return;
 	}
 
@@ -117,13 +113,9 @@ fetch_prior_undo:
 	 * this tuple must be in 2-billion xid range of oldestXidHavingUndo, so we
 	 * can get compute its epoch as we do for current transaction.
 	 */
-	if (epoch)
-		*epoch = GetEpochForXid(urec->uur_xid);
+	*epoch = GetEpochForXid(urec->uur_xid);
 	*xid = urec->uur_xid;
-	if (cid)
-		*cid = urec->uur_cid;
-	if (urec_ptr)
-		*urec_ptr = urec_ptr_out;
+	*cid = urec->uur_cid;
 
 	if (skip_lockers &&
 		(urec->uur_type == UNDO_XID_LOCK_ONLY ||
@@ -504,16 +496,15 @@ GetTupleFromUndoForAbortedXact(UndoRecPtr urec_ptr, Buffer buffer, int trans_slo
 {
 	ZHeapTuple	undo_tup = ztuple;
 	UnpackedUndoRecord *urec;
-	UndoRecPtr	prev_urec_ptr;
 	TransactionId prev_undo_xid PG_USED_FOR_ASSERTS_ONLY;
 	TransactionId oldestXidHavingUndo = InvalidTransactionId;
-	int			trans_slot_id;
 	int			prev_trans_slot_id = trans_slot;
+	ZHeapTupleTransInfo	zinfo;
 
 	prev_undo_xid = InvalidTransactionId;
 fetch_prior_undo_record:
-	prev_urec_ptr = InvalidUndoRecPtr;
-	trans_slot_id = InvalidXactSlotId;
+	zinfo.urec_ptr = InvalidUndoRecPtr;
+	zinfo.trans_slot = InvalidXactSlotId;
 
 	urec = UndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&undo_tup->t_self),
@@ -527,11 +518,11 @@ fetch_prior_undo_record:
 		return undo_tup;
 
 	/* Here, we free the previous version and palloc a new tuple from undo. */
-	undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id, NULL,
+	undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &zinfo.trans_slot, NULL,
 									   true, BufferGetPage(buffer));
 
-	prev_urec_ptr = urec->uur_blkprev;
-	*xid = urec->uur_prevxid;
+	zinfo.urec_ptr = urec->uur_blkprev;
+	zinfo.xid = urec->uur_prevxid;
 
 	UndoRecordRelease(urec);
 
@@ -546,66 +537,62 @@ fetch_prior_undo_record:
 	 * The tuple must be all visible if the transaction slot is cleared or
 	 * latest xid that has changed the tuple is too old that it is all-visible
 	 * or it precedes smallest xid that has undo.
+	 *
+	 * We also know that we have the latest version of the tuple if the
+	 * latest XID committed or if the transaction slot has been reused (which
+	 * is what ZHeapTupleHasInvalidXact tests).
 	 */
-	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		TransactionIdEquals(*xid, FrozenTransactionId) ||
-		TransactionIdPrecedes(*xid, oldestXidHavingUndo))
+	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+		TransactionIdEquals(zinfo.xid, FrozenTransactionId) ||
+		TransactionIdPrecedes(zinfo.xid, oldestXidHavingUndo) ||
+		TransactionIdDidCommit(zinfo.xid) ||
+		ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
 	{
+		*xid = zinfo.xid;
 		return undo_tup;
 	}
-
-	/*
-	 * If we got a tuple modified by a committed transaction, return it.
-	 */
-	if (TransactionIdDidCommit(*xid))
-		return undo_tup;
-
-	/*
-	 * If the tuple points to a slot that gets invalidated for reuse at some
-	 * point of time, then undo_tup is the latest committed version of the
-	 * tuple.
-	 */
-	if (ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
-		return undo_tup;
 
 	/*
 	 * If the undo tuple is stamped with a different transaction, then either
 	 * the previous transaction is committed or tuple must be locked only. In
 	 * both cases, we can return the tuple fetched from undo.
 	 */
-	if (trans_slot_id != prev_trans_slot_id)
+	if (zinfo.trans_slot != prev_trans_slot_id)
 	{
-		ZHeapTupleTransInfo	zinfo;
+		uint32	epoch;
 
 		GetTransactionSlotInfo(buffer,
 							   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-							   trans_slot_id,
+							   zinfo.trans_slot,
 							   true,
 							   true,
 							   &zinfo);
-		prev_urec_ptr = zinfo.urec_ptr;
-		FetchTransInfoFromUndo(undo_tup, NULL, xid, NULL, &prev_urec_ptr, false);
+		FetchTransInfoFromUndo(undo_tup, &epoch, &zinfo.xid, &zinfo.cid,
+							   &zinfo.urec_ptr, false);
+		zinfo.epoch_xid = FullTransactionIdFromEpochAndXid(epoch, zinfo.xid);
 
-		Assert(TransactionIdDidCommit(*xid) ||
+		Assert(TransactionIdDidCommit(zinfo.xid) ||
 			   ZHEAP_XID_IS_LOCKED_ONLY(undo_tup->t_data->t_infomask));
 
+		*xid = zinfo.xid;
 		return undo_tup;
 	}
 
 	/* transaction must be aborted. */
-	Assert(!TransactionIdIsCurrentTransactionId(*xid));
-	Assert(!TransactionIdIsInProgress(*xid));
-	Assert(TransactionIdDidAbort(*xid));
+	Assert(!TransactionIdIsCurrentTransactionId(zinfo.xid));
+	Assert(!TransactionIdIsInProgress(zinfo.xid));
+	Assert(TransactionIdDidAbort(zinfo.xid));
 
 	/*
 	 * The tuple must be all visible if the transaction slot is cleared or
 	 * latest xid that has changed the tuple is too old that it is all-visible
 	 * or it precedes smallest xid that has undo.
 	 */
-	if (trans_slot_id == ZHTUP_SLOT_FROZEN ||
-		TransactionIdEquals(*xid, FrozenTransactionId) ||
-		TransactionIdPrecedes(*xid, oldestXidHavingUndo))
+	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+		TransactionIdEquals(zinfo.xid, FrozenTransactionId) ||
+		TransactionIdPrecedes(zinfo.xid, oldestXidHavingUndo))
 	{
+		*xid = zinfo.xid;
 		return undo_tup;
 	}
 
@@ -614,7 +601,7 @@ fetch_prior_undo_record:
 	 * the same tuple.
 	 */
 	Assert(!TransactionIdIsValid(prev_undo_xid) ||
-		   TransactionIdEquals(prev_undo_xid, *xid));
+		   TransactionIdEquals(prev_undo_xid, zinfo.xid));
 
 	/*
 	 * If undo tuple is the root tuple inserted by the aborted transaction, we
@@ -627,9 +614,9 @@ fetch_prior_undo_record:
 		return NULL;
 	}
 
-	urec_ptr = prev_urec_ptr;
-	prev_undo_xid = *xid;
-	prev_trans_slot_id = trans_slot_id;
+	urec_ptr = zinfo.urec_ptr;
+	prev_undo_xid = zinfo.xid;
+	prev_trans_slot_id = zinfo.trans_slot;
 
 	goto fetch_prior_undo_record;
 
