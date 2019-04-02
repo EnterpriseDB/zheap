@@ -34,9 +34,8 @@ typedef struct ZHeapTupleTransInfo
 #define ZHeapTupleSatisfiesVisibility(tuple, snapshot, buffer, ctid) \
 	((*(snapshot)->zsatisfies) (tuple, snapshot, buffer, ctid))
 
-extern void FetchTransInfoFromUndo(ZHeapTuple undo_tup, uint32 *epoch,
-					   TransactionId *xid, CommandId *cid,
-					   UndoRecPtr *urec_ptr, bool skip_lockers);
+extern void FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId xid,
+					   ZHeapTupleTransInfo *zinfo, bool skip_lockers);
 extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 					   bool nobuflock, bool fetch_cid, Snapshot snapshot,
 					   ZHeapTupleTransInfo *zinfo);
