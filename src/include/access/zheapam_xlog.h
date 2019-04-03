@@ -278,7 +278,7 @@ typedef struct xl_zheap_unused
 
 	TransactionId latestRemovedXid;
 	uint16		nunused;
-	uint8		trans_slot_id;
+	uint16		trans_slot_id;
 	uint8		flags;
 	/* OFFSET NUMBERS are in the block reference 0 */
 } xl_zheap_unused;
