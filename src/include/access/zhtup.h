@@ -262,14 +262,12 @@ extern void zheap_fill_tuple(TupleDesc tupleDesc,
 extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
 								   Datum *values, bool *isnull);
 extern void zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
-				   Datum *values, bool *isnull);
+				   Datum *values, bool *isnull, int atts_count);
 extern void zheap_freetuple(ZHeapTuple zhtup);
-extern Datum znocachegetattr(ZHeapTuple tup, int attnum,
-				TupleDesc att);
 extern Datum zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 TupleDesc tupleDesc, bool *isnull);
 extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
-extern bool zheap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
+extern Bitmapset *zheap_tuple_attr_equals(TupleDesc tupdesc, Bitmapset *att_list,
 						ZHeapTuple tup1, ZHeapTuple tup2);
 
 /* Tuple table slot related API's that are specific zheap tuples. */
@@ -291,46 +289,6 @@ extern PGDLLIMPORT const TupleTableSlotOps TTSOpsZHeapTuple;
 #define TTS_IS_ZHEAP(slot) ((slot)->tts_ops == &TTSOpsZHeapTuple)
 
 extern ZHeapTuple zheap_copytuple(ZHeapTuple tuple);
-
-/* This is same as fastgetattr except that it takes ZHeapTuple as input. */
-#define zfastgetattr(tup, attnum, tupleDesc, isnull)					\
-(																	\
-	AssertMacro((attnum) > 0),										\
-	(*(isnull) = false),											\
-	ZHeapTupleNoNulls(tup) ?											\
-	(																\
-		znocachegetattr((tup), (attnum), (tupleDesc))			\
-	)																\
-	:																\
-	(																\
-		att_isnull((attnum)-1, (tup)->t_data->t_bits) ?				\
-		(															\
-			(*(isnull) = true),										\
-			(Datum)NULL												\
-		)															\
-		:															\
-		(															\
-			znocachegetattr((tup), (attnum), (tupleDesc))			\
-		)															\
-	)																\
-)
-
-/* This is same as heap_getattr except that it takes ZHeapTuple as input. */
-#define zheap_getattr(tup, attnum, tupleDesc, isnull) \
-	( \
-		((attnum) > 0) ? \
-		( \
-			((attnum) > (int) ZHeapTupleHeaderGetNatts((tup)->t_data)) ? \
-			( \
-				(*(isnull) = true), \
-				(Datum)NULL \
-			) \
-			: \
-				zfastgetattr((tup), (attnum), (tupleDesc), (isnull)) \
-		) \
-		: \
-			zheap_getsysattr((tup), (InvalidBuffer), (attnum), (tupleDesc), (isnull)) \
-	)
 
 struct ZHeapTupleTransInfo;
 

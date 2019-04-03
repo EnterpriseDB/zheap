@@ -6144,20 +6144,10 @@ static Bitmapset *
 ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 							  ZHeapTuple oldtup, ZHeapTuple newtup)
 {
-	int			attnum;
-	Bitmapset  *modified = NULL;
-
-	while ((attnum = bms_first_member(interesting_cols)) >= 0)
-	{
-		attnum += FirstLowInvalidHeapAttributeNumber;
-
-		if (!zheap_tuple_attr_equals(RelationGetDescr(relation),
-									 attnum, oldtup, newtup))
-			modified = bms_add_member(modified,
-									  attnum - FirstLowInvalidHeapAttributeNumber);
-	}
-
-	return modified;
+	return zheap_tuple_attr_equals(RelationGetDescr(relation),
+								   interesting_cols,
+								   oldtup,
+								   newtup);
 }
 
 /*

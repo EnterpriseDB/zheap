@@ -384,11 +384,10 @@ zheap_form_tuple(TupleDesc tupleDescriptor, Datum *values, bool *isnull)
  */
 void
 zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
-				   Datum *values, bool *isnull)
+				   Datum *values, bool *isnull, int att_count)
 {
 	ZHeapTupleHeader tup = tuple->t_data;
 	bool		hasnulls = ZHeapTupleHasNulls(tuple);
-	int			tdesc_natts = tupleDesc->natts;
 	int			natts;			/* number of atts to extract */
 	int			attnum;
 	char	   *tp;				/* ptr to tuple data */
@@ -402,7 +401,7 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 	 * has more fields than the caller is expecting.  Don't run off the end of
 	 * the caller's arrays.
 	 */
-	natts = Min(natts, tdesc_natts);
+	natts = Min(natts, att_count);
 	tp = (char *) tup;
 	off = tup->t_hoff;
 
@@ -460,7 +459,7 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 	 * If tuple doesn't have all the atts indicated by tupleDesc, read the
 	 * rest as nulls or missing values as appropriate.
 	 */
-	for (; attnum < tdesc_natts; attnum++)
+	for (; attnum < att_count; attnum++)
 		values[attnum] = getmissingattr(tupleDesc, attnum + 1, &isnull[attnum]);
 }
 
@@ -472,94 +471,6 @@ void
 zheap_freetuple(ZHeapTuple zhtup)
 {
 	pfree(zhtup);
-}
-
-/*
- * znocachegetattr
- * 		This is same as nocachegetattr except that it takes
- * ZHeapTuple as input.
- *
- * Note that for zheap, cached offsets are not used and we always start
- * deforming with the actual byte from where the first attribute starts.  See
- * atop zheap_compute_data_size.
- *
- * ZBORKED: The comments above more or less contradict each other; the first
- * one says that this is the same as nocachegetattr and the second one
- * describes a second difference between this function and nocachegetattr().
- * Really, this function is misnamed for zheap, because *ALL* attribute
- * fetches in zheap are "nocache", so shouldn't we just rename this to
- * zgetattr or something like that?
- */
-Datum
-znocachegetattr(ZHeapTuple tuple,
-				int attnum,
-				TupleDesc tupleDesc)
-{
-	ZHeapTupleHeader tup = tuple->t_data;
-	Form_pg_attribute thisatt;
-	Datum		ret_datum = (Datum) 0;
-	char	   *tp;				/* ptr to data part of tuple */
-	bits8	   *bp = tup->t_bits;	/* ptr to null bitmap in tuple */
-	int			off;			/* current offset within data */
-	int			i;
-
-	attnum--;
-	tp = (char *) tup;
-
-	/*
-	 * For each non-null attribute, we have to first account for alignment
-	 * padding before the attr, then advance over the attr based on its
-	 * length.  Nulls have no storage and no alignment padding either.
-	 */
-	off = tup->t_hoff;
-
-	for (i = 0;; i++)			/* loop exit is at "break" */
-	{
-		Form_pg_attribute att = TupleDescAttr(tupleDesc, i);
-
-		if (ZHeapTupleHasNulls(tuple) && att_isnull(i, bp))
-			continue;			/* this cannot be the target att */
-
-		/*
-		 * If this is a varlena, there might be alignment padding, if it has
-		 * a 4-byte header.  Otherwise, there will only be padding if it's
-		 * not pass-by-value.
-		 */
-		if (att->attlen == -1)
-			off = att_align_pointer(off, att->attalign, -1,
-									tp + off);
-		else if (!att->attbyval)
-			off = att_align_nominal(off, att->attalign);
-
-		if (i == attnum)
-			break;
-
-		off = att_addlength_pointer(off, att->attlen, tp + off);
-	}
-
-	thisatt = TupleDescAttr(tupleDesc, attnum);
-	if (thisatt->attbyval)
-	{
-		Datum		datum;
-
-		/*
-		 * Since pass-by-value attributes are not aligned in zheap, use
-		 * memcpy to copy the value into adequately-aligned storage.
-		 * Since it's pass-by-value, a Datum must be big enough.
-		 */
-		memcpy(&datum, tp + off, thisatt->attlen);
-
-		/*
-		 * We use fetch_att to set the other uninitialized bytes in datum
-		 * field as zero.  We could achieve that by just initializing datum
-		 * with zero, but this helps us to keep the code in sync with heap.
-		 */
-		ret_datum = fetch_att(&datum, true, thisatt->attlen);
-	}
-	else
-		ret_datum = PointerGetDatum((char *) (tp + off));
-
-	return ret_datum;
 }
 
 /*
@@ -694,81 +605,79 @@ zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc)
 
 /*
  * zheap_tuple_attr_equals
- * 		Subroutine for ZHeapDetermineModifiedColumns to check if the specified
- *		attribute value is same in both given tuples.
+ *		Subroutine for ZHeapDetermineModifiedColumns which returns the set of
+ *		attributes from the given att_list that are different in tup1 and tup2.
  */
-bool
-zheap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
+Bitmapset *
+zheap_tuple_attr_equals(TupleDesc tupdesc, Bitmapset *att_list,
 						ZHeapTuple tup1, ZHeapTuple tup2)
 {
-	Datum		value1,
-				value2;
-	bool		isnull1,
-				isnull2;
-	Form_pg_attribute att;
+	int			l_attno = 0,
+				col = -1;
+	bool		old_isnull[MaxHeapAttributeNumber],
+				new_isnull[MaxHeapAttributeNumber];
+	Datum		old_values[MaxHeapAttributeNumber],
+				new_values[MaxHeapAttributeNumber];
+	Bitmapset  *modified = NULL;
 
-	/*
-	 * If it's a whole-tuple reference, say "not equal".  It's not really
-	 * worth supporting this case, since it could only succeed after a no-op
-	 * update, which is hardly a case worth optimizing for.
-	 */
-	if (attrnum == 0)
-		return false;
-
-	/*
-	 * Likewise, automatically say "not equal" for any system attribute other
-	 * than OID and tableOID; we cannot expect these to be consistent in a HOT
-	 * chain, or even to be set correctly yet in the new tuple.
-	 */
-	if (attrnum < 0)
+	/* Find the largest attno in the given Bitmapset. */
+	while ((col = bms_next_member(att_list, col)) >= 0)
 	{
-		if (attrnum != TableOidAttributeNumber)
-			return false;
+		/* bit numbers are offset by FirstLowInvalidHeapAttributeNumber */
+		AttrNumber	attno = col + FirstLowInvalidHeapAttributeNumber;
+
+		if (attno <= InvalidAttrNumber) /* shouldn't happen */
+			elog(ERROR, "system-column update is not supported");
+
+		if (l_attno < attno)
+			l_attno = attno;
 	}
 
-	/*
-	 * Extract the corresponding values.  XXX this is pretty inefficient if
-	 * there are many indexed columns.  Should HeapDetermineModifiedColumns do
-	 * a single heap_deform_tuple call on each tuple, instead?	But that
-	 * doesn't work for system columns ...
-	 */
-	value1 = zheap_getattr(tup1, attrnum, tupdesc, &isnull1);
-	value2 = zheap_getattr(tup2, attrnum, tupdesc, &isnull2);
+	Assert(l_attno <= tupdesc->natts);
 
-	/*
-	 * If one value is NULL and other is not, then they are certainly not
-	 * equal
-	 */
-	if (isnull1 != isnull2)
-		return false;
+	/* Deform both the old and new tuple. */
+	zheap_deform_tuple(tup1, tupdesc, old_values, old_isnull, l_attno);
+	zheap_deform_tuple(tup2, tupdesc, new_values, new_isnull, l_attno);
 
-	/*
-	 * If both are NULL, they can be considered equal.
-	 */
-	if (isnull1)
-		return true;
-
-	/*
-	 * We do simple binary comparison of the two datums.  This may be overly
-	 * strict because there can be multiple binary representations for the
-	 * same logical value.  But we should be OK as long as there are no false
-	 * positives.  Using a type-specific equality operator is messy because
-	 * there could be multiple notions of equality in different operator
-	 * classes; furthermore, we cannot safely invoke user-defined functions
-	 * while holding exclusive buffer lock.
-	 */
-	if (attrnum <= 0)
+	/* Loop through atts and add every non-equal attno to modified. */
+	col = -1;
+	while ((col = bms_next_member(att_list, col)) >= 0)
 	{
-		/* The only allowed system columns are OIDs, so do this */
-		return (DatumGetObjectId(value1) == DatumGetObjectId(value2));
+		/* bit numbers are offset by FirstLowInvalidHeapAttributeNumber */
+		AttrNumber	attno = col + FirstLowInvalidHeapAttributeNumber;
+
+		/* If one value is NULL and other is not, they are not equal. */
+		if (old_isnull[attno - 1] != new_isnull[attno - 1])
+			bms_add_member(modified, attno - FirstLowInvalidHeapAttributeNumber);
+
+		/* If both are NULL, they can be considered equal. */
+		else if (old_isnull[attno - 1])
+			continue;
+
+		else
+		{
+			Form_pg_attribute att = TupleDescAttr(tupdesc, attno - 1);
+
+			/*
+			 * We do simple binary comparison of the two datums.  This may be
+			 * overly strict because there can be multiple binary
+			 * representations for the same logical value.  But we should be
+			 * OK as long as there are no false positives.  Using a
+			 * type-specific equality operator is messy because there could be
+			 * multiple notions of equality in different operator classes;
+			 * furthermore, we cannot safely invoke user-defined functions
+			 * while holding exclusive buffer lock.
+			 */
+			if (!datumIsEqual(old_values[attno - 1], new_values[attno - 1],
+							  att->attbyval, att->attlen))
+				modified = bms_add_member(modified,
+										  attno - FirstLowInvalidHeapAttributeNumber);
+		}
 	}
-	else
-	{
-		Assert(attrnum <= tupdesc->natts);
-		att = TupleDescAttr(tupdesc, attrnum - 1);
-		return datumIsEqual(value1, value2, att->attbyval, att->attlen);
-	}
+
+	return modified;
 }
+
 
 /*
  * TupleTableSlotOps implementation for ZheapHeapTupleTableSlot.

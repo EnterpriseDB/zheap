@@ -1769,7 +1769,7 @@ zheap_copy_for_cluster(Relation OldHeap, Relation NewHeap, Relation OldIndex,
 		else
 		{
 			zheap_deform_tuple(ExecGetZHeapTupleFromSlot(slot), oldTupDesc,
-							   values, isnull);
+							   values, isnull, oldTupDesc->natts);
 			reform_and_rewrite_ztuple(oldTupDesc, newTupDesc,
 									  values, isnull, rwstate);
 		}
