@@ -5083,10 +5083,9 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 		Assert((tup_xid == add_to_xid) || (mode == LockTupleKeyShare));
 
 		if (tup_xid != add_to_xid)
-		{
 			new_infomask |= ZHEAP_MULTI_LOCKERS;
-			new_trans_slot = tup_trans_slot;
-		}
+
+		new_trans_slot = tup_trans_slot;
 	}
 	else if (!is_update &&
 			 tup_trans_slot == ZHTUP_SLOT_FROZEN)
@@ -5114,23 +5113,8 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 		 * corresponding to the tuple transaction is discarded.  In that case,
 		 * it can be considered as committed.
 		 */
-		old_tuple_has_update = true;
 		new_infomask |= ZHEAP_MULTI_LOCKERS;
-
-		if (ZHEAP_XID_IS_EXCL_LOCKED(old_infomask))
-			new_infomask |= ZHEAP_XID_EXCL_LOCK;
-		else if (ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(old_infomask))
-			new_infomask |= ZHEAP_XID_NOKEY_EXCL_LOCK;
-		else
-		{
-			/*
-			 * Tuple must not be locked in any other mode as we are here
-			 * because either the tuple is updated or inserted and the
-			 * corresponding transaction is committed.
-			 */
-			Assert(!(ZHEAP_XID_IS_KEYSHR_LOCKED(old_infomask) ||
-					 ZHEAP_XID_IS_SHR_LOCKED(old_infomask)));
-		}
+		old_tuple_has_update = true;
 
 		if (ZHeapTupleIsInPlaceUpdated(old_infomask))
 			new_infomask |= ZHEAP_INPLACE_UPDATED;
@@ -5138,17 +5122,43 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 			new_infomask |= ZHEAP_UPDATED;
 		else
 		{
+			/* This is a freshly inserted tuple. */
+			old_tuple_has_update = false;
+		}
+
+		if (!old_tuple_has_update)
+		{
 			/*
 			 * This is a freshly inserted tuple, allow to set the requested
 			 * lock mode on tuple.
 			 */
-			old_tuple_has_update = false;
+		}
+		else
+		{
+			LockTupleMode old_mode;
+
+			if (ZHEAP_XID_IS_EXCL_LOCKED(old_infomask))
+				old_mode = LockTupleExclusive;
+			else if (ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(old_infomask))
+				old_mode = LockTupleNoKeyExclusive;
+			else
+			{
+				/*
+				 * Tuple must not be locked in any other mode as we are here
+				 * because either the tuple is updated or inserted and the
+				 * corresponding transaction is committed.
+				 */
+				Assert(!(ZHEAP_XID_IS_KEYSHR_LOCKED(old_infomask) ||
+						 ZHEAP_XID_IS_SHR_LOCKED(old_infomask)));
+
+				old_mode = LockTupleNoKeyExclusive;
+			}
+
+			if (mode < old_mode)
+				mode = old_mode;
 		}
 
 		new_trans_slot = tup_trans_slot;
-
-		if (old_tuple_has_update)
-			goto infomask_is_computed;
 	}
 	else if (!is_update &&
 			 ZHEAP_XID_IS_LOCKED_ONLY(old_infomask) &&
@@ -5259,8 +5269,6 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 				elog(ERROR, "invalid lock mode");
 		}
 	}
-
-infomask_is_computed:
 
 	*result_infomask = new_infomask;
 
