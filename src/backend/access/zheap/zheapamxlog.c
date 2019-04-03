@@ -238,6 +238,7 @@ zheap_xlog_delete(XLogReaderState *record)
 	Buffer		buffer;
 	Page		page;
 	ZHeapTupleData zheaptup;
+	ZHeapPrepareUndoInfo zh_undo_info;
 	UnpackedUndoRecord undorecord;
 	UndoRecPtr	urecptr;
 	RelFileNode target_node;
@@ -249,12 +250,14 @@ zheap_xlog_delete(XLogReaderState *record)
 	FullTransactionId fxid = XLogRecGetFullXid(record);
 	TransactionId xid = XidFromFullTransactionId(fxid);
 	uint32		xid_epoch = EpochFromFullTransactionId(fxid);
+	SubTransactionId dummy_subXactToken = InvalidSubTransactionId;
 	int		   *tpd_trans_slot_id = NULL;
-	bool		hasPayload = false;
 
 	xlrec = (xl_zheap_delete *) ((char *) xlundohdr + SizeOfUndoHeader);
 	if (xlrec->flags & XLZ_DELETE_CONTAINS_TPD_SLOT)
 		tpd_trans_slot_id = (int *) ((char *) xlrec + SizeOfZHeapDelete);
+	else
+		*tpd_trans_slot_id = InvalidXactSlotId;
 
 	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
 	ItemPointerSetBlockNumber(&target_tid, blkno);
@@ -337,44 +340,6 @@ zheap_xlog_delete(XLogReaderState *record)
 		zheaptup.t_len = datalen;
 	}
 
-	/* prepare an undo record */
-	undorecord.uur_rmid = RM_ZHEAP_ID;
-	undorecord.uur_type = UNDO_DELETE;
-	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;
-	undorecord.uur_reloid = xlundohdr->reloid;
-	undorecord.uur_prevxid = xlrec->prevxid;
-	undorecord.uur_xid = xid;
-	undorecord.uur_cid = FirstCommandId;
-	undorecord.uur_fork = MAIN_FORKNUM;
-	undorecord.uur_blkprev = xlundohdr->blkprev;
-	undorecord.uur_block = ItemPointerGetBlockNumber(&target_tid);
-	undorecord.uur_offset = ItemPointerGetOffsetNumber(&target_tid);
-
-	initStringInfo(&undorecord.uur_tuple);
-
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &zheaptup.t_len,
-						   sizeof(uint32));
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &zheaptup.t_self,
-						   sizeof(ItemPointerData));
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &zheaptup.t_tableOid,
-						   sizeof(Oid));
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) zheaptup.t_data,
-						   zheaptup.t_len);
-
-	if (xlrec->flags & XLZ_DELETE_CONTAINS_TPD_SLOT)
-	{
-		initStringInfo(&undorecord.uur_payload);
-		appendBinaryStringInfo(&undorecord.uur_payload,
-							   (char *) tpd_trans_slot_id,
-							   sizeof(*tpd_trans_slot_id));
-		hasPayload = true;
-	}
-
 	/*
 	 * For sub-transactions, we store the dummy contains subxact token in the
 	 * undorecord so that, the size of undorecord in DO function matches with
@@ -384,25 +349,22 @@ zheap_xlog_delete(XLogReaderState *record)
 	 * is true.
 	 */
 	if (xlrec->flags & XLZ_DELETE_CONTAINS_SUBXACT)
-	{
-		SubTransactionId dummy_subXactToken = 1;
+		dummy_subXactToken = 1;
 
-		if (!hasPayload)
-		{
-			initStringInfo(&undorecord.uur_payload);
-			hasPayload = true;
-		}
-
-		appendBinaryStringInfo(&undorecord.uur_payload,
-							   (char *) &dummy_subXactToken,
-							   sizeof(SubTransactionId));
-	}
-
-	if (!hasPayload)
-		undorecord.uur_payload.len = 0;
-
-	urecptr = PrepareUndoInsert(&undorecord, fxid, UNDO_PERMANENT, record,
-								NULL);
+	/* prepare an undo record */
+	zh_undo_info.reloid = xlundohdr->reloid;
+	zh_undo_info.blkno = ItemPointerGetBlockNumber(&target_tid);
+	zh_undo_info.offnum = ItemPointerGetOffsetNumber(&target_tid);
+	zh_undo_info.prev_urecptr = xlundohdr->blkprev;
+	zh_undo_info.fxid = fxid;
+	zh_undo_info.cid = FirstCommandId;
+	zh_undo_info.undo_persistence = UNDO_PERMANENT;
+	urecptr = zheap_prepare_undodelete(&zh_undo_info,
+									   &zheaptup,
+									   xlrec->prevxid,
+									   *tpd_trans_slot_id,
+									   dummy_subXactToken,
+									   &undorecord, record, NULL);
 	InsertPreparedUndo();
 
 	/*
