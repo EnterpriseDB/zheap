@@ -328,18 +328,6 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 
 		FetchTransInfoFromUndo(zhtup, InvalidTransactionId, zinfo);
 	}
-	else if (!ItemIdIsDeleted(lp) && ZHeapTupleHasMultiLockers(tuple->t_infomask))
-	{
-		/*
-		 * When we take a lock on the tuple, we never set locker's slot on the
-		 * tuple.  However, we use the newly computed infomask for the tuple
-		 * and write its current infomask in undo due to which
-		 * INVALID_XACT_SLOT bit of the tuple will move to undo.  In such
-		 * cases, if we need the previous inserter/updater's transaction id,
-		 * we've to skip locker's undo records.
-		 */
-		FetchTransInfoFromUndo(zhtup, InvalidTransactionId, zinfo);
-	}
 	else
 	{
 		if (fetch_cid && TransactionIdIsCurrentTransactionId(zinfo->xid))
