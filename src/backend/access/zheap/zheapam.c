@@ -482,10 +482,12 @@ zheap_delete(Relation relation, ItemPointer tid,
 	TransactionId tup_xid,
 				oldestXidHavingUndo,
 				single_locker_xid;
-	SubTransactionId tup_subxid = InvalidSubTransactionId;
+	SubTransactionId tup_subxid = InvalidSubTransactionId,
+				subxid = InvalidSubTransactionId;
 	CommandId	tup_cid;
 	ItemId		lp;
 	ZHeapTupleData zheaptup;
+	ZHeapPrepareUndoInfo zh_undo_info;
 	UnpackedUndoRecord undorecord;
 	Page		page;
 	BlockNumber blkno;
@@ -507,11 +509,9 @@ zheap_delete(Relation relation, ItemPointer tid,
 	bool		all_visible_cleared = false;
 	bool		any_multi_locker_member_alive = false;
 	bool		lock_reacquired;
-	bool		hasSubXactLock = false;
-	bool		hasPayload = false;
 	xl_undolog_meta undometa;
 	uint8		vm_status;
-	ZHeapTupleTransInfo	zinfo;
+	ZHeapTupleTransInfo zinfo;
 
 	Assert(ItemPointerIsValid(tid));
 
@@ -1004,8 +1004,8 @@ zheap_tuple_updated:
 	 */
 	if (IsSubTransaction())
 	{
-		SubXactLockTableInsert(GetCurrentSubTransactionId());
-		hasSubXactLock = true;
+		subxid = GetCurrentSubTransactionId();
+		SubXactLockTableInsert(subxid);
 	}
 
 	/*
@@ -1109,91 +1109,21 @@ zheap_tuple_updated:
 
 	CheckForSerializableConflictIn(relation, &(zheaptup.t_self), buffer);
 
-	/*
-	 * Prepare an undo record.  We need to separately store the latest
-	 * transaction id that has changed the tuple to ensure that we don't try
-	 * to process the tuple in undo chain that is already discarded. See
-	 * GetTupleFromUndo.
-	 */
-	undorecord.uur_rmid = RM_ZHEAP_ID;
-	undorecord.uur_type = UNDO_DELETE;
-	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;
-	undorecord.uur_reloid = relation->rd_id;
-	undorecord.uur_prevxid = tup_xid;
-	undorecord.uur_xid = xid;
-	undorecord.uur_cid = cid;
-	undorecord.uur_fork = MAIN_FORKNUM;
-	undorecord.uur_blkprev = prev_urecptr;
-	undorecord.uur_block = blkno;
-	undorecord.uur_offset = offnum;
+	/* Prepare an undo record for this operation. */
+	zh_undo_info.reloid = relation->rd_id;
+	zh_undo_info.blkno = blkno;
+	zh_undo_info.offnum = offnum;
+	zh_undo_info.prev_urecptr = prev_urecptr;
+	zh_undo_info.xid = xid;
+	zh_undo_info.cid = cid;
+	zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
+	urecptr = zheap_prepare_undodelete(&zh_undo_info,
+									   &zheaptup,
+									   tup_xid,
+									   tup_trans_slot_id,
+									   subxid,
+									   &undorecord, NULL, &undometa);
 
-	initStringInfo(&undorecord.uur_tuple);
-
-	/*
-	 * Copy the entire old tuple including it's header in the undo record. We
-	 * need this to reconstruct the tuple if current tuple is not visible to
-	 * some other transaction.  We choose to write the complete tuple in undo
-	 * record for delete operation so that we can reuse the space after the
-	 * transaction performing the operation commits.
-	 */
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &zheaptup.t_len,
-						   sizeof(uint32));
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &zheaptup.t_self,
-						   sizeof(ItemPointerData));
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &zheaptup.t_tableOid,
-						   sizeof(Oid));
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) zheaptup.t_data,
-						   zheaptup.t_len);
-
-	/*
-	 * Store the transaction slot number for undo tuple in undo record, if the
-	 * slot belongs to TPD entry.  We can always get the current tuple's
-	 * transaction slot number by referring offset->slot map in TPD entry,
-	 * however that won't be true for tuple in undo.
-	 */
-	if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-	{
-		undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SLOT;
-		initStringInfo(&undorecord.uur_payload);
-		appendBinaryStringInfo(&undorecord.uur_payload,
-							   (char *) &tup_trans_slot_id,
-							   sizeof(tup_trans_slot_id));
-		hasPayload = true;
-	}
-
-	/*
-	 * Store subtransaction id in undo record.  See SubXactLockTableWait to
-	 * know why we need to store subtransaction id in undo.
-	 */
-	if (hasSubXactLock)
-	{
-		SubTransactionId subxid = GetCurrentSubTransactionId();
-
-		if (!hasPayload)
-		{
-			initStringInfo(&undorecord.uur_payload);
-			hasPayload = true;
-		}
-
-		undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SUBXACT;
-		appendBinaryStringInfo(&undorecord.uur_payload,
-							   (char *) &subxid,
-							   sizeof(subxid));
-	}
-
-	if (!hasPayload)
-		undorecord.uur_payload.len = 0;
-
-	urecptr = PrepareUndoInsert(&undorecord,
-								InvalidTransactionId,
-								UndoPersistenceForRelation(relation),
-								NULL,
-								&undometa);
 	/* We must have a valid vmbuffer. */
 	Assert(BufferIsValid(vmbuffer));
 	vm_status = visibilitymap_get_status(relation,
@@ -1259,7 +1189,7 @@ zheap_tuple_updated:
 
 		if (changingPart)
 			xlrec.flags |= XLZ_DELETE_IS_PARTITION_MOVE;
-		if (hasSubXactLock)
+		if (subxid != InvalidSubTransactionId)
 			xlrec.flags |= XLZ_DELETE_CONTAINS_SUBXACT;
 
 		/*
@@ -1450,7 +1380,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	uint8		vm_status;
 	uint8		vm_status_new = 0;
 	bool		slot_reused_or_TPD_slot = false;
-	ZHeapTupleTransInfo	zinfo;
+	ZHeapTupleTransInfo zinfo;
 
 	Assert(ItemPointerIsValid(otid));
 
@@ -2610,8 +2540,8 @@ reacquire_buffer:
 					BufferDesc *buf_hdr PG_USED_FOR_ASSERTS_ONLY;
 
 					/*
-					 * Old buffer should be valid and should not locked because
-					 * we already released lock on the old buffer in
+					 * Old buffer should be valid and should not locked
+					 * because we already released lock on the old buffer in
 					 * PageFreezeTransSlots.
 					 */
 					Assert(BufferIsValid(buffer));
@@ -3221,7 +3151,7 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 	bool		any_multi_locker_member_alive = false;
 	bool		lock_reacquired;
 	bool		rollback_and_relocked;
-	ZHeapTupleTransInfo	zinfo;
+	ZHeapTupleTransInfo zinfo;
 
 	xid = GetTopTransactionId();
 	epoch = GetEpochForXid(xid);
@@ -4367,7 +4297,7 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 	int			trans_slot_id;
 	bool		lock_reacquired;
 	OffsetNumber offnum;
-	ZHeapTupleTransInfo	zinfo;
+	ZHeapTupleTransInfo zinfo;
 
 	ItemPointerCopy(ctid, &tupid);
 
@@ -5407,7 +5337,7 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 	Buffer		buffer;
 	OffsetNumber offnum;
 	int			trans_slot_id;
-	ZHeapTupleTransInfo	zinfo;
+	ZHeapTupleTransInfo zinfo;
 
 	Assert(ItemPointerIsValid(tid));
 
@@ -5517,7 +5447,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 	OffsetNumber offnum;
 	UnpackedUndoRecord *urec;
 	ZHeapTuple	undo_tup;
-	ZHeapTupleTransInfo	zinfo;
+	ZHeapTupleTransInfo zinfo;
 
 	prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
 	blk = ItemPointerGetBlockNumber(&zhtup->t_self);
@@ -5566,7 +5496,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 			 */
 			if (trans_slot_id != prev_trans_slot_id)
 			{
-				ZHeapTupleTransInfo	zinfo;
+				ZHeapTupleTransInfo zinfo;
 
 				GetTransactionSlotInfo(buffer,
 									   ItemPointerGetOffsetNumber(&undo_tup->t_self),
@@ -5658,6 +5588,111 @@ zheap_prepare_undoinsert(Oid reloid, BlockNumber blkno, OffsetNumber offnum,
 	urecptr = PrepareUndoInsert(undorecord,
 								xid,
 								undo_persistence,
+								xlog_record,
+								undometa);
+
+	return urecptr;
+}
+
+/*
+ * zheap_prepare_undodelete - prepare the undo record for zheap delete
+ *	operation.
+ *
+ * Returns the undo record pointer (aka location) where the undo record
+ * will be inserted in undo log.
+ */
+UndoRecPtr
+zheap_prepare_undodelete(ZHeapPrepareUndoInfo * zhUndoInfo, ZHeapTuple zhtup,
+						 TransactionId tup_xid, int tup_trans_slot_id,
+						 SubTransactionId subxid,
+						 UnpackedUndoRecord *undorecord,
+						 XLogReaderState *xlog_record,
+						 xl_undolog_meta * undometa)
+{
+	UndoRecPtr	urecptr = InvalidUndoRecPtr;
+	bool		hasPayload = false;
+
+	/*
+	 * Prepare an undo record.  We need to separately store the latest
+	 * transaction id that has changed the tuple to ensure that we don't try
+	 * to process the tuple in undo chain that is already discarded. See
+	 * GetTupleFromUndo.
+	 */
+	undorecord->uur_rmid = RM_ZHEAP_ID;
+	undorecord->uur_type = UNDO_DELETE;
+	undorecord->uur_info = 0;
+	undorecord->uur_prevlen = 0;
+	undorecord->uur_reloid = zhUndoInfo->reloid;
+	undorecord->uur_prevxid = tup_xid;
+	undorecord->uur_xid = zhUndoInfo->xid;
+	undorecord->uur_cid = zhUndoInfo->cid;
+	undorecord->uur_fork = MAIN_FORKNUM;
+	undorecord->uur_blkprev = zhUndoInfo->prev_urecptr;
+	undorecord->uur_block = zhUndoInfo->blkno;
+	undorecord->uur_offset = zhUndoInfo->offnum;
+
+	initStringInfo(&undorecord->uur_tuple);
+
+	/*
+	 * Copy the entire old tuple including it's header in the undo record. We
+	 * need this to reconstruct the tuple if current tuple is not visible to
+	 * some other transaction.  We choose to write the complete tuple in undo
+	 * record for delete operation so that we can reuse the space after the
+	 * transaction performing the operation commits.
+	 */
+	appendBinaryStringInfo(&undorecord->uur_tuple,
+						   (char *) &zhtup->t_len,
+						   sizeof(uint32));
+	appendBinaryStringInfo(&undorecord->uur_tuple,
+						   (char *) &zhtup->t_self,
+						   sizeof(ItemPointerData));
+	appendBinaryStringInfo(&undorecord->uur_tuple,
+						   (char *) &zhtup->t_tableOid,
+						   sizeof(Oid));
+	appendBinaryStringInfo(&undorecord->uur_tuple,
+						   (char *) zhtup->t_data,
+						   zhtup->t_len);
+
+	/*
+	 * Store the transaction slot number for undo tuple in undo record, if the
+	 * slot belongs to TPD entry.  We can always get the current tuple's
+	 * transaction slot number by referring offset->slot map in TPD entry,
+	 * however that won't be true for tuple in undo.
+	 */
+	if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+	{
+		undorecord->uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SLOT;
+		initStringInfo(&undorecord->uur_payload);
+		appendBinaryStringInfo(&undorecord->uur_payload,
+							   (char *) &tup_trans_slot_id,
+							   sizeof(tup_trans_slot_id));
+		hasPayload = true;
+	}
+
+	/*
+	 * Store subtransaction id in undo record.  See SubXactLockTableWait to
+	 * know why we need to store subtransaction id in undo.
+	 */
+	if (subxid != InvalidSubTransactionId)
+	{
+		if (!hasPayload)
+		{
+			initStringInfo(&undorecord->uur_payload);
+			hasPayload = true;
+		}
+
+		undorecord->uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SUBXACT;
+		appendBinaryStringInfo(&undorecord->uur_payload,
+							   (char *) &subxid,
+							   sizeof(subxid));
+	}
+
+	if (!hasPayload)
+		undorecord->uur_payload.len = 0;
+
+	urecptr = PrepareUndoInsert(undorecord,
+								zhUndoInfo->xid,
+								zhUndoInfo->undo_persistence,
 								xlog_record,
 								undometa);
 
@@ -6147,7 +6182,7 @@ ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 void
 GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 					   bool NoTPDBufLock, bool TPDSlot,
-					   ZHeapTupleTransInfo *zinfo)
+					   ZHeapTupleTransInfo * zinfo)
 {
 	ZHeapPageOpaque opaque;
 	Page		page;
@@ -7453,7 +7488,7 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 	UnpackedUndoRecord *urec;
 	CommandId	current_cid;
 	bool		TPDSlot = true;
-	ZHeapTupleTransInfo	zinfo;
+	ZHeapTupleTransInfo zinfo;
 
 	/*
 	 * For undo tuple caller will pass the valid slot id otherwise we can get

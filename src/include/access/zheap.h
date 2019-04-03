@@ -99,6 +99,18 @@ typedef struct ZHeapFreeOffsetRanges
 	int			nranges;
 }			ZHeapFreeOffsetRanges;
 
+/* This is used to prepare undo records. */
+typedef struct ZHeapPrepareUndoInfo
+{
+	Oid			reloid;
+	BlockNumber blkno;
+	OffsetNumber offnum;
+	UndoRecPtr	prev_urecptr;
+	TransactionId xid;
+	CommandId	cid;
+	UndoPersistence undo_persistence;
+}			ZHeapPrepareUndoInfo;
+
 extern void zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate, uint32 specToken);
 extern void simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot);
@@ -176,6 +188,11 @@ extern UndoRecPtr zheap_prepare_undoinsert(Oid reloid, BlockNumber blkno,
 						 UnpackedUndoRecord *undorecord,
 						 XLogReaderState *xlog_record,
 						 xl_undolog_meta * undometa);
+extern UndoRecPtr zheap_prepare_undodelete(ZHeapPrepareUndoInfo * zhUndoInfo, ZHeapTuple zhtup,
+						 TransactionId tup_xid, int tup_trans_slot_id,
+						 SubTransactionId subxid, UnpackedUndoRecord *undorecord,
+						 XLogReaderState *xlog_record, xl_undolog_meta * undometa);
+
 
 /* Pruning related API's (prunezheap.c) */
 extern bool zheap_page_prune_opt(Relation relation, Buffer buffer,
@@ -240,7 +257,7 @@ extern void lazy_vacuum_zheap_rel(Relation onerel, int options,
 					  struct VacuumParams *params, BufferAccessStrategy bstrategy);
 
 /* in zheap/zundo.c */
-extern bool zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
+extern bool zheap_undo_actions(UndoRecInfo * urp_array, int first_idx, int last_idx,
 				   Oid reloid, TransactionId xid, BlockNumber blkno,
 				   bool blk_chain_complete, bool rellock);
 
