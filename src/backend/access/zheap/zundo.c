@@ -440,7 +440,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		 * correct xact info from other slot.
 		 */
 		if (ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
-			FetchTransInfoFromUndo(undo_tup, zinfo.xid, &zinfo, true);
+			FetchTransInfoFromUndo(undo_tup, zinfo.xid, &zinfo);
 
 		urec = NULL;
 	} while (UndoRecPtrIsValid(zinfo.urec_ptr));
