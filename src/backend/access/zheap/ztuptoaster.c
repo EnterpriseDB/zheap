@@ -110,9 +110,9 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 	numAttrs = tupleDesc->natts;
 
 	Assert(numAttrs <= MaxHeapAttributeNumber);
-	zheap_deform_tuple(newtup, tupleDesc, toast_values, toast_isnull);
+	zheap_deform_tuple(newtup, tupleDesc, toast_values, toast_isnull, tupleDesc->natts);
 	if (oldtup != NULL)
-		zheap_deform_tuple(oldtup, tupleDesc, toast_oldvalues, toast_oldisnull);
+		zheap_deform_tuple(oldtup, tupleDesc, toast_oldvalues, toast_oldisnull, tupleDesc->natts);
 
 	/* ----------
 	 * Then collect information about the values given
@@ -964,7 +964,7 @@ ztoast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative)
 	numAttrs = tupleDesc->natts;
 
 	Assert(numAttrs <= MaxHeapAttributeNumber);
-	zheap_deform_tuple(oldtup, tupleDesc, toast_values, toast_isnull);
+	zheap_deform_tuple(oldtup, tupleDesc, toast_values, toast_isnull, tupleDesc->natts);
 
 	/*
 	 * Check for external stored attributes and delete them from the secondary
