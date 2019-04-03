@@ -481,19 +481,6 @@ fetch_prior_undo_record:
 	Assert(TransactionIdDidAbort(zinfo.xid));
 
 	/*
-	 * The tuple must be all visible if the transaction slot is cleared or
-	 * latest xid that has changed the tuple is too old that it is all-visible
-	 * or it precedes smallest xid that has undo.
-	 */
-	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
-		TransactionIdEquals(zinfo.xid, FrozenTransactionId) ||
-		TransactionIdPrecedes(zinfo.xid, oldestXidHavingUndo))
-	{
-		*xid = zinfo.xid;
-		return undo_tup;
-	}
-
-	/*
 	 * We can't have two aborted transaction with pending rollback state for
 	 * the same tuple.
 	 */
