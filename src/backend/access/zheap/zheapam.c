@@ -5216,6 +5216,20 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 			mode = old_mode;
 	}
 
+	/*
+	 * For LockOnly mode and LockForUpdate mode with multilocker flag on the
+	 * tuple, we keep the old transaction slot as it is.  Since we're not
+	 * changing the xid slot in the tuple, we shouldn't remove the existing (if
+	 * any) invalid xact flag from the tuple.
+	 */
+	if (!is_update ||
+		((lockoper == LockForUpdate) && ZHeapTupleHasMultiLockers(new_infomask)))
+	{
+		if (ZHeapTupleHasInvalidXact(old_infomask))
+			new_infomask |= ZHEAP_INVALID_XACT_SLOT;
+	}
+
+
 	if (is_update && !ZHeapTupleHasMultiLockers(new_infomask))
 	{
 		if (lockoper == LockForUpdate)
