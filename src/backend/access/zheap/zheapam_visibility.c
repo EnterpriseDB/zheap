@@ -65,8 +65,10 @@ static ZVersionSelector ZHeapSelectVersionSelf(ZTupleTidOp op,
 					   TransactionId xid, CommandId cid);
 
 /*
- * FetchTransInfoFromUndo - Retrieve transaction information of transaction
- *			that has modified the undo tuple.
+ * FetchTransInfoFromUndo
+ *
+ * Retrieve information about the transaction which has last operated on the
+ * specified tuple.
  */
 void
 FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId xid,
@@ -75,32 +77,53 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId xid,
 	UnpackedUndoRecord *urec;
 	uint32	epoch;
 
-fetch_prior_undo:
-	/*
-	 * The transaction slot referred by the undo tuple could have been reused
-	 * multiple times, so to ensure that we have fetched the right undo record
-	 * we need to verify that the undo record contains xid same as the xid
-	 * that has modified the tuple.
-	 */
-	urec = UndoFetchRecord(zinfo->urec_ptr,
-						   ItemPointerGetBlockNumber(&undo_tup->t_self),
-						   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-						   xid,
-						   &zinfo->urec_ptr,
-						   ZHeapSatisfyUndoRecord);
-
-	/*
-	 * The undo tuple must be visible, if the undo record containing the
-	 * information of the last transaction that has updated the tuple is
-	 * discarded.
-	 */
-	if (urec == NULL)
+	while (1)
 	{
-		zinfo->epoch_xid = InvalidFullTransactionId;
-		zinfo->xid = InvalidTransactionId;
-		zinfo->cid = InvalidCommandId;
-		zinfo->urec_ptr = InvalidUndoRecPtr;
-		return;
+		/*
+		 * The transaction slot referred by the undo tuple could have been
+		 * reused multiple times, so to ensure that we have fetched the right
+		 * undo record we need to verify that the undo record contains xid same
+		 * as the xid that has modified the tuple. (However, when the tuple
+		 * is from the zheap itself rather than from undo, it's OK to pass
+		 * InvalidTransactionId as the XID, because we must be looking for
+		 * the latest version of the tuple in the undo rather than some
+		 * earlier one.)
+		 */
+		urec = UndoFetchRecord(zinfo->urec_ptr,
+							   ItemPointerGetBlockNumber(&undo_tup->t_self),
+							   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+							   xid,
+							   &zinfo->urec_ptr,
+							   ZHeapSatisfyUndoRecord);
+
+		/*
+		 * If the undo record containing the information about the last
+		 * transaction that has operated on the tuple has been discareded,
+		 * this version of the tuple must be all-visible.
+		 */
+		if (urec == NULL)
+		{
+			zinfo->epoch_xid = InvalidFullTransactionId;
+			zinfo->xid = InvalidTransactionId;
+			zinfo->cid = InvalidCommandId;
+			zinfo->urec_ptr = InvalidUndoRecPtr;
+			return;
+		}
+
+		/*
+		 * If this is a UNDO_XID_LOCK_ONLY or UNDO_XID_MULTI_LOCK_ONLY
+		 * operation, it doesn't have any useful transaction information and
+		 * should be skipped.  See compute_new_xid_infomask for more details.
+		 * Otherwise, we've found the correct record.
+		 */
+		if (urec->uur_type != UNDO_XID_LOCK_ONLY &&
+			 urec->uur_type != UNDO_XID_MULTI_LOCK_ONLY)
+			break;
+
+		/* We'll need to look further back into the undo log. */
+		xid = InvalidTransactionId;
+		zinfo->urec_ptr = urec->uur_blkprev;
+		UndoRecordRelease(urec);
 	}
 
 	/*
@@ -112,22 +135,6 @@ fetch_prior_undo:
 	zinfo->xid = urec->uur_xid;
 	zinfo->epoch_xid = FullTransactionIdFromEpochAndXid(epoch, zinfo->xid);
 	zinfo->cid = urec->uur_cid;
-
-	/*
-	 * For UNDO_XID_LOCK_ONLY and UNDO_XID_MULTI_LOCK_ONLY undo operation, we
-	 * don't set the xact information on the tuple.  Hence, we should skip
-	 * these undo records while fetching xact information from undo.  See
-	 * compute_new_xid_infomask for more details.
-	 */
-	if (urec->uur_type == UNDO_XID_LOCK_ONLY ||
-		 urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY)
-	{
-		xid = InvalidTransactionId;
-		zinfo->urec_ptr = urec->uur_blkprev;
-		UndoRecordRelease(urec);
-		goto fetch_prior_undo;
-	}
-
 	UndoRecordRelease(urec);
 }
 
