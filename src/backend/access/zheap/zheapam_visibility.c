@@ -564,7 +564,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 
 		urec = UndoFetchRecord(urec_ptr,
 							   BufferGetBlockNumber(buffer),
-							   ItemPointerGetOffsetNumber(&zhtup->t_self),
+							   offnum,
 							   prev_undo_xid,
 							   NULL,
 							   ZHeapSatisfyUndoRecord);
@@ -574,7 +574,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 			return zhtup;
 
 		undo_tup = CopyTupleFromUndoRecord(urec, zhtup, &zinfo.trans_slot,
-										   &zinfo.cid, true,
+										   &zinfo.cid, (zhtup != NULL),
 										   BufferGetPage(buffer));
 		zinfo.urec_ptr = urec->uur_blkprev;
 		zinfo.xid = urec->uur_prevxid;
