@@ -53,6 +53,9 @@ typedef enum
 	ZVERSION_OLDER
 } ZVersionSelector;
 
+#define SNAPSHOT_REQUESTS_SPECTOKEN		0x0001
+#define SNAPSHOT_REQUESTS_SUBXID		0x0002
+
 static ZHeapTuple GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple zhtup,
 				 Snapshot snapshot, Buffer buffer, OffsetNumber offnum,
 				 ItemPointer ctid, int trans_slot);
@@ -63,6 +66,9 @@ static ZVersionSelector ZHeapSelectVersionMVCC(ZTupleTidOp op,
 				   TransactionId xid, CommandId cid, Snapshot snapshot);
 static ZVersionSelector ZHeapSelectVersionSelf(ZTupleTidOp op,
 					   TransactionId xid, CommandId cid);
+static ZVersionSelector ZHeapSelectVersionDirty(ZTupleTidOp op,
+						uint16 infomask, ZHeapTupleTransInfo *zinfo,
+						Snapshot snapshot, int *snapshot_requests);
 
 /*
  * FetchTransInfoFromUndo
@@ -1053,75 +1059,100 @@ ZHeapSelectVersionSelf(ZTupleTidOp op, TransactionId xid, CommandId cid)
 }
 
 /*
- * ZHeapTupleSatisfiesMVCC
+ * ZHeapTupleSatisfies
  *
- *	Returns the visible version of tuple if any, NULL otherwise. We need to
- *	traverse undo record chains to determine the visibility of tuple.  In
- *	this function we need to first the determine the visibility of modified
- *	tuple and if it is not visible, then we need to fetch the prior version
- *	of tuple from undo chain and decide based on its visibility.  The undo
- *	chain needs to be traversed till we reach root version of the tuple.
+ * Returns the visible version of tuple if any, NULL otherwise. We need to
+ * traverse undo record chains to determine the visibility of tuple.  In
+ * this function we need to first the determine the visibility of modified
+ * tuple and if it is not visible, then we need to fetch the prior version
+ * of tuple from undo chain and decide based on its visibility.  The undo
+ * chain needs to be traversed till we reach correct version of the tuple.
  *
- *	Here, we consider the effects of:
- *		all transactions committed as of the time of the given snapshot
- *		previous commands of this transaction
+ * For aborted transactions, we may need to fetch the visible tuple from undo.
+ * It is possible that actions corresponding to aborted transaction have
+ * been applied, but still xid is present in slot, however we should never
+ * get such an xid.
  *
- *	Does _not_ include:
- *		transactions shown as in-progress by the snapshot
- *		transactions started after the snapshot was taken
- *		changes made by the current command
- *
- *	The tuple will be considered visible iff latest operation on tuple is
- *	Insert, In-Place update or tuple is locked and the transaction that has
- *	performed operation is current transaction (and the operation is performed
- *	by some previous command) or is committed.
- *
- *	We traverse the undo chain to get the visible tuple if any, in case
- *	the latest transaction that has operated on tuple is shown as in-progress
- *	by the snapshot or is started after the snapshot was taken or is current
- *	transaction and the changes are made by current command.
- *
- *  For aborted transactions, we need to fetch the visible tuple from undo.
- *	Now, it is possible that actions corresponding to aborted transaction
- *	has been applied, but still xid is present in slot, however we should
- *	never get such an xid.
- *
- *	For multilockers, the strongest locker information is always present on
- *	the tuple.  So for updaters, we don't need anything special as the tuple
- *	visibility will be determined based on the transaction information present
- *	on tuple.  For the lockers only case, we need to determine if the original
- *	inserter is visible to snapshot.
+ * For multilockers, the strongest locker information is always present on
+ * the tuple.  So for updaters, we don't need anything special as the tuple
+ * visibility will be determined based on the transaction information present
+ * on tuple.  For the lockers only case, we need to determine if the original
+ * inserter is visible to snapshot.
  */
 ZHeapTuple
-ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
-						Buffer buffer, ItemPointer ctid)
+ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
+					Buffer buffer, ItemPointer ctid)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
-	CommandId	cur_cid = GetCurrentCommandId(false);
 	ZHeapTupleTransInfo	zinfo;
-	bool		fetch_cid;
+	bool		fetch_cid = false;
+	Snapshot	transinfo_snapshot = InvalidSnapshot;
 	ZTupleTidOp op;
 	ZVersionSelector	zselect;
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
 
+	/* Special handling for particular snapshot types. */
+	if (snapshot->visibility_type == MVCC_VISIBILITY)
+	{
+		CommandId	cur_cid = GetCurrentCommandId(false);
+
+		/*
+		 * If the current command doesn't need to modify any tuple and the
+		 * snapshot used is not of any previous command, then it can see all
+		 * the modifications made by current transactions till now.  So, we
+		 * don't even attempt to fetch CID from undo in such cases.
+		 */
+		if (!GetCurrentCommandIdUsed() && cur_cid == snapshot->curcid)
+			fetch_cid = false;
+		else
+			fetch_cid = true;
+
+		/*
+		 * For an MVCC snapshot only, ZHeapTupleGetTransInfo needs to see
+		 * our snapshot; for any other type, we must pass InvalidSnapshot.
+		 */
+		transinfo_snapshot = snapshot;
+	}
+	else if (snapshot->visibility_type == DIRTY_VISIBILITY)
+	{
+		snapshot->xmin = snapshot->xmax = InvalidTransactionId;
+		snapshot->subxid = InvalidSubTransactionId;
+		snapshot->speculativeToken = 0;
+	}
+	else if (snapshot->visibility_type == TOAST_VISIBILITY)
+	{
+		/*
+		 * Unlike heap, we don't need checks for VACUUM moving conditions as
+		 * those are for pre-9.0 and that doesn't apply for zheap.  For aborted
+		 * speculative inserts, we always marks row as dead, so we don't any
+		 * check for that.  So, here we can rely on the fact that if you can
+		 * see the main table row that contains a TOAST reference, you should
+		 * be able to see the TOASTed value.
+		 */
+		return zhtup;
+	}
+	else if (snapshot->visibility_type == ANY_VISIBILITY)
+		return ZHeapTupleSatisfiesAny(zhtup, snapshot, buffer, ctid);
+	else if (snapshot->visibility_type == NON_VACUUMABLE_VISIBILTY)
+	{
+		TransactionId	xid;
+		HTSV_Result	result;
+
+		result =
+			ZHeapTupleSatisfiesOldestXmin(&zhtup, snapshot->xmin, buffer,
+										  &xid, NULL);
+
+		return result == HEAPTUPLE_DEAD ? zhtup : NULL;
+	}
+
 	/* Get last operation type */
 	op = ZHeapTidOpFromInfomask(tuple->t_infomask);
 
-	/*
-	 * If the current command doesn't need to modify any tuple and the
-	 * snapshot used is not of any previous command, then it can see all the
-	 * modifications made by current transactions till now.  So, we don't even
-	 * attempt to fetch CID from undo in such cases.
-	 */
-	if (!GetCurrentCommandIdUsed() && cur_cid == snapshot->curcid)
-		fetch_cid = false;
-	else
-		fetch_cid = true;
-
 	/* Get transaction info */
-	ZHeapTupleGetTransInfo(zhtup, buffer, fetch_cid, snapshot, &zinfo);
+	ZHeapTupleGetTransInfo(zhtup, buffer, fetch_cid, transinfo_snapshot,
+						   &zinfo);
 
 	/*
 	 * If we decided not to fetch the CID, it's because we know that every
@@ -1150,8 +1181,31 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 		else
 			zselect = ZVERSION_CURRENT;
 	}
-	else
+	else if (snapshot->visibility_type == MVCC_VISIBILITY)
 		zselect = ZHeapSelectVersionMVCC(op, zinfo.xid, zinfo.cid, snapshot);
+	else if (snapshot->visibility_type == SELF_VISIBILITY)
+		zselect = ZHeapSelectVersionSelf(op, zinfo.xid, zinfo.cid);
+	else if (snapshot->visibility_type == DIRTY_VISIBILITY)
+	{
+		int		requests = 0;
+
+		zselect = ZHeapSelectVersionDirty(op, tuple->t_infomask, &zinfo,
+										  snapshot, &requests);
+		if ((requests & SNAPSHOT_REQUESTS_SPECTOKEN) != 0 &&
+			ZHeapTupleHeaderIsSpeculative(tuple))
+		{
+			ZHeapTupleGetSpecToken(zhtup, buffer, zinfo.urec_ptr,
+								   &snapshot->speculativeToken);
+
+			Assert(snapshot->speculativeToken != 0);
+		}
+		if ((requests & SNAPSHOT_REQUESTS_SUBXID) != 0)
+			ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr,
+								&snapshot->subxid);
+	}
+	else
+		elog(ERROR, "unsupported snapshot type %d",
+			 (int) snapshot->visibility_type);
 
 	/*
 	 * If we decided that our snapshot can't see any version of the tuple,
@@ -1163,9 +1217,14 @@ ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup, Snapshot snapshot,
 		 * For non-inplace-updates, ctid needs to be retrieved from undo
 		 * record if required.  If the tuple is moved to another
 		 * partition, then we don't need ctid.
+		 *
+		 * ZBORKED: Is it correct that we skip this for SELF_VISIBILITY?
+		 * That's inherited from an older code structure, but it could be
+		 * an arbitrary inconsistency.
 		 */
 		if (ctid && (tuple->t_infomask & ZHEAP_UPDATED) != 0 &&
-			!ZHeapTupleIsMoved(tuple->t_infomask))
+			!ZHeapTupleIsMoved(tuple->t_infomask) &&
+			snapshot->visibility_type != SELF_VISIBILITY)
 			ZHeapTupleGetCtid(zhtup, buffer, zinfo.urec_ptr, ctid);
 
 		return NULL;
@@ -1647,82 +1706,6 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin, Buffer buffer)
 }
 
 /*
- * ZHeapTupleSatisfiesSelf
- *		Returns the visible version of tuple (including effects of previous
- *		commands in current transactions) if any, NULL otherwise.
- *
- *	Here, we consider the effects of:
- *		all committed transactions (as of the current instant)
- *		previous commands of this transaction
- *		changes made by the current command
- *
- *	The tuple will be considered visible iff:
- *		Latest operation on tuple is Insert, In-Place update or tuple is
- *		locked and the transaction that has performed operation is current
- *		transaction or is committed.
- *
- *	If the transaction is in progress, then we fetch the tuple from undo.
- */
-ZHeapTuple
-ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
-						Buffer buffer, ItemPointer ctid)
-{
-	ZHeapTupleHeader tuple = zhtup->t_data;
-	ZHeapTupleTransInfo	zinfo;
-	ZTupleTidOp op;
-	ZVersionSelector	zselect;
-
-	Assert(ItemPointerIsValid(&zhtup->t_self));
-	Assert(zhtup->t_tableOid != InvalidOid);
-
-	/* Get last operation type */
-	op = ZHeapTidOpFromInfomask(tuple->t_infomask);
-
-	/* Get transaction information */
-	ZHeapTupleGetTransInfo(zhtup, buffer, false, InvalidSnapshot, &zinfo);
-
-	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
-		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
-	{
-		/*
-		 * The tuple is not associated with a transaction slot that is new
-		 * enough to matter, so all changes previously made to the tuple are
-		 * now all-visible.  If the last operation performed was a delete or
-		 * a non-inplace update, the tuple is now effectively gone; if it was
-		 * an insert or an inplace update, use the current version.
-		 */
-		if (op == ZTUPLETID_GONE)
-			zselect = ZVERSION_NONE;
-		else
-			zselect = ZVERSION_CURRENT;
-	}
-	else
-		zselect = ZHeapSelectVersionSelf(op, zinfo.xid, zinfo.cid);
-
-	/*
-	 * If we decided that our snapshot can't see any version of the tuple,
-	 * return NULL.
-	 */
-	if (zselect == ZVERSION_NONE)
-		return NULL;
-
-	/*
-	 * If we decided that we need to consult the undo log to figure out
-	 * what version our snapshot can see, delegate to GetTupleFromUndo.
-	 */
-	if (zselect == ZVERSION_OLDER)
-		return GetTupleFromUndo(zinfo.urec_ptr,
-								zhtup,
-								snapshot,
-								buffer,
-								ItemPointerGetOffsetNumber(&zhtup->t_self),
-								ctid,
-								zinfo.trans_slot);
-
-	return zhtup;
-}
-
-/*
  * ZHeapTupleSatisfiesDirty
  *		Returns the visible version of tuple (including effects of open
  *		transactions) if any, NULL otherwise.
@@ -1743,142 +1726,74 @@ ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
  *		locked and the transaction that has performed operation is current
  *		transaction or is in-progress or is committed.
  */
-ZHeapTuple
-ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup, Snapshot snapshot,
-						 Buffer buffer, ItemPointer ctid)
+static ZVersionSelector
+ZHeapSelectVersionDirty(ZTupleTidOp op, uint16 infomask,
+						ZHeapTupleTransInfo *zinfo,
+						Snapshot snapshot, int *snapshot_requests)
 {
-	ZHeapTupleHeader tuple = zhtup->t_data;
-	ZHeapTupleTransInfo	zinfo;
-	ZVersionSelector	zselect;
-
-	Assert(ItemPointerIsValid(&zhtup->t_self));
-	Assert(zhtup->t_tableOid != InvalidOid);
-
-	snapshot->xmin = snapshot->xmax = InvalidTransactionId;
-	snapshot->subxid = InvalidSubTransactionId;
-	snapshot->speculativeToken = 0;
-
-	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, false, InvalidSnapshot, &zinfo);
-
-	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
-		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	if (op == ZTUPLETID_GONE)
 	{
-		/*
-		 * The tuple is not associated with a transaction slot that is new
-		 * enough to matter, so all changes previously made to the tuple are
-		 * now all-visible.  If the last operation performed was a delete or
-		 * a non-inplace update, the tuple is now effectively gone; if it was
-		 * an insert or an inplace update, use the current version.
-		 */
-		if ((tuple->t_infomask & (ZHEAP_DELETED|ZHEAP_UPDATED)) != 0)
-			zselect = ZVERSION_NONE;
-		else
-			zselect = ZVERSION_CURRENT;
-	}
-	else if ((tuple->t_infomask & (ZHEAP_DELETED|ZHEAP_UPDATED)) != 0)
-	{
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-			zselect = ZVERSION_NONE;
-		else if (TransactionIdIsInProgress(zinfo.xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo->xid))
+			return ZVERSION_NONE;
+		else if (TransactionIdIsInProgress(zinfo->xid))
 		{
-			snapshot->xmax = zinfo.xid;
-			if (UndoRecPtrIsValid(zinfo.urec_ptr))
-				ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr,
-									&snapshot->subxid);
-			zselect = ZVERSION_CURRENT;
+			snapshot->xmax = zinfo->xid;
+			if (UndoRecPtrIsValid(zinfo->urec_ptr))
+				*snapshot_requests |= SNAPSHOT_REQUESTS_SUBXID;
+			return ZVERSION_CURRENT;
 		}
-		else if (TransactionIdDidCommit(zinfo.xid))
+		else if (TransactionIdDidCommit(zinfo->xid))
 		{
 			/* tuple is deleted or non-inplace-updated */
-			zselect = ZVERSION_NONE;
+			return ZVERSION_NONE;
 		}
 		else					/* transaction is aborted */
-			zselect = ZVERSION_OLDER;
+			return ZVERSION_OLDER;
 	}
-	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
-			 tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
+	else if (op == ZTUPLETID_MODIFIED)
 	{
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-			zselect = ZVERSION_CURRENT;
-		else if (TransactionIdIsInProgress(zinfo.xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo->xid))
+			return ZVERSION_CURRENT;
+		else if (TransactionIdIsInProgress(zinfo->xid))
 		{
-			if (!ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
+			if (!ZHEAP_XID_IS_LOCKED_ONLY(infomask))
 			{
-				snapshot->xmax = zinfo.xid;
-				if (UndoRecPtrIsValid(zinfo.urec_ptr))
-					ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr,
-										&snapshot->subxid);
+				snapshot->xmax = zinfo->xid;
+				if (UndoRecPtrIsValid(zinfo->urec_ptr))
+					*snapshot_requests |= SNAPSHOT_REQUESTS_SUBXID;
 			}
-			zselect = ZVERSION_CURRENT; /* being updated */
+			return ZVERSION_CURRENT; /* being updated */
 		}
-		else if (TransactionIdDidCommit(zinfo.xid))
-			zselect = ZVERSION_CURRENT;	/* tuple is updated by someone else */
+		else if (TransactionIdDidCommit(zinfo->xid))
+			return ZVERSION_CURRENT;	/* tuple is updated by someone else */
 		else					/* transaction is aborted */
-			zselect = ZVERSION_OLDER;
+			return ZVERSION_OLDER;
 	}
 	else
 	{
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-			zselect = ZVERSION_CURRENT;
-		else if (TransactionIdIsInProgress(zinfo.xid))
+		if (TransactionIdIsCurrentTransactionId(zinfo->xid))
+			return ZVERSION_CURRENT;
+		else if (TransactionIdIsInProgress(zinfo->xid))
 		{
-			/* Return the speculative token to caller. */
-			if (ZHeapTupleHeaderIsSpeculative(tuple))
-			{
-				ZHeapTupleGetSpecToken(zhtup, buffer, zinfo.urec_ptr,
-									   &snapshot->speculativeToken);
+			/* Return any speculative token to caller. */
+			*snapshot_requests |= SNAPSHOT_REQUESTS_SPECTOKEN;
 
-				Assert(snapshot->speculativeToken != 0);
-			}
-
-			snapshot->xmin = zinfo.xid;
-			if (UndoRecPtrIsValid(zinfo.urec_ptr))
-				ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr,
-									&snapshot->subxid);
-			zselect = ZVERSION_CURRENT; /* in insertion by other */
+			snapshot->xmin = zinfo->xid;
+			if (UndoRecPtrIsValid(zinfo->urec_ptr))
+				*snapshot_requests |= SNAPSHOT_REQUESTS_SUBXID;
+			return ZVERSION_CURRENT; /* in insertion by other */
 		}
-		else if (TransactionIdDidCommit(zinfo.xid))
-			zselect = ZVERSION_CURRENT;
+		else if (TransactionIdDidCommit(zinfo->xid))
+			return ZVERSION_CURRENT;
 		else
 		{
 			/* inserting transaction aborted */
-			zselect = ZVERSION_NONE;
+			return ZVERSION_NONE;
 		}
 	}
 
-	/*
-	 * If we decided that our snapshot can't see any version of the tuple,
-	 * return NULL.
-	 */
-	if (zselect == ZVERSION_NONE)
-	{
-		/*
-		 * For non-inplace-updates, ctid needs to be retrieved from undo
-		 * record if required.  If the tuple is moved to another
-		 * partition, then we don't need ctid.
-		 */
-		if (ctid && (tuple->t_infomask & ZHEAP_UPDATED) != 0 &&
-			!ZHeapTupleIsMoved(tuple->t_infomask))
-			ZHeapTupleGetCtid(zhtup, buffer, zinfo.urec_ptr, ctid);
-
-		return NULL;
-	}
-
-	/*
-	 * If we decided that we need to consult the undo log to figure out
-	 * what version our snapshot can see, delegate to GetTupleFromUndo.
-	 */
-	if (zselect == ZVERSION_OLDER)
-		return GetTupleFromUndo(zinfo.urec_ptr,
-								zhtup,
-								snapshot,
-								buffer,
-								ItemPointerGetOffsetNumber(&zhtup->t_self),
-								ctid,
-								zinfo.trans_slot);
-
-	return zhtup;
+	/* should never get here */
+	pg_unreachable();
 }
 
 /*
@@ -1912,6 +1827,7 @@ ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer,
 
 		ZHeapTupleGetCtid(zhtup, buffer, zinfo.urec_ptr, ctid);
 	}
+
 	return zhtup;
 }
 
@@ -2070,26 +1986,6 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple *ztuple, TransactionId OldestXmin,
 }
 
 /*
- * ZHeapTupleSatisfiesNonVacuumable
- *
- *	True if tuple might be visible to some transaction; false if it's
- *	surely dead to everyone i.e. vacuumable.
- *
- *	This is an interface to ZHeapTupleSatisfiesOldestXmin that meets the
- *	SnapshotSatisfiesFunc API, so it can be used through a Snapshot.
- *	snapshot->xmin must have been set up with the xmin horizon to use.
- */
-ZHeapTuple
-ZHeapTupleSatisfiesNonVacuumable(ZHeapTuple ztup, Snapshot snapshot,
-								 Buffer buffer, ItemPointer ctid)
-{
-	TransactionId xid;
-
-	return (ZHeapTupleSatisfiesOldestXmin(&ztup, snapshot->xmin, buffer, &xid, NULL)
-			!= HEAPTUPLE_DEAD) ? ztup : NULL;
-}
-
-/*
  * ZHeapTupleSatisfiesVacuum
  * Similar to ZHeapTupleSatisfiesOldestXmin, but it behaves differently for
  * handling aborted transaction.
@@ -2179,59 +2075,6 @@ ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
 	}
 
 	return ZHEAPTUPLE_LIVE;
-}
-
-/*
- * ZHeapTupleSatisfiesToast
- *
- * True iff zheap tuple is valid as a TOAST row.
- *
- * Unlike heap, we don't need checks for VACUUM moving conditions as those are
- * for pre-9.0 and that doesn't apply for zheap.  For aborted speculative
- * inserts, we always marks row as dead, so we don't any check for that.  So,
- * here we can rely on the fact that if you can see the main table row that
- * contains a TOAST reference, you should be able to see the TOASTed value.
- */
-ZHeapTuple
-ZHeapTupleSatisfiesToast(ZHeapTuple zhtup, Snapshot snapshot,
-						 Buffer buffer, ItemPointer ctid)
-{
-	Assert(ItemPointerIsValid(&zhtup->t_self));
-	Assert(zhtup->t_tableOid != InvalidOid);
-
-	return zhtup;
-}
-
-
-ZHeapTuple
-ZHeapTupleSatisfies(ZHeapTuple stup, Snapshot snapshot, Buffer buffer, ItemPointer ctid)
-{
-	switch (snapshot->visibility_type)
-	{
-		case MVCC_VISIBILITY:
-			return ZHeapTupleSatisfiesMVCC(stup, snapshot, buffer, ctid);
-			break;
-		case SELF_VISIBILITY:
-			return ZHeapTupleSatisfiesSelf(stup, snapshot, buffer, ctid);
-			break;
-		case ANY_VISIBILITY:
-			return ZHeapTupleSatisfiesAny(stup, snapshot, buffer, ctid);
-			break;
-		case TOAST_VISIBILITY:
-			return ZHeapTupleSatisfiesToast(stup, snapshot, buffer, ctid);
-			break;
-		case DIRTY_VISIBILITY:
-			return ZHeapTupleSatisfiesDirty(stup, snapshot, buffer, ctid);
-			break;
-		case HISTORIC_MVCC_VISIBILITY:
-			elog(ERROR, "unsupported snapshot type");
-			break;
-		case NON_VACUUMABLE_VISIBILTY:
-			return ZHeapTupleSatisfiesNonVacuumable(stup, snapshot, buffer, ctid);
-			break;
-	}
-
-	return NULL;				/* silence compiler */
 }
 
 /*
