@@ -482,30 +482,9 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 TupleDesc tupleDesc, bool *isnull)
 {
 	Datum		result;
-	bool		release_buf = false;
 
 	Assert(zhtup);
 
-	/*
-	 * For xmin,xmax,cmin and cmax we may need to fetch the information from
-	 * the undo record, so ensure we have a valid buffer.
-	 *
-	 * ZBORKED: It does not seem acceptable to call relation_open() here.
-	 * This is a very low-level function which has no business touching the
-	 * relcache.
-	 */
-	if (!BufferIsValid(buf) &&
-		((attnum == MinTransactionIdAttributeNumber) ||
-		 (attnum == MaxTransactionIdAttributeNumber) ||
-		 (attnum == MinCommandIdAttributeNumber) ||
-		 (attnum == MaxCommandIdAttributeNumber)))
-	{
-		Relation	rel = relation_open(zhtup->t_tableOid, NoLock);
-
-		buf = ReadBuffer(rel, ItemPointerGetBlockNumber(&(zhtup->t_self)));
-		relation_close(rel, NoLock);
-		release_buf = true;
-	}
 
 	/* Currently, no sys attribute ever reads as NULL. */
 	*isnull = false;
@@ -518,12 +497,30 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 			break;
 		case MinTransactionIdAttributeNumber:
 			{
+				ZHeapTupleTransInfo zinfo;
+				bool		release_buf = false;
+
+				/*
+				 * For xmin we may need to fetch the information from the undo
+				 * record, so ensure we have a valid buffer.
+				 *
+				 * ZBORKED: It does not seem acceptable to call
+				 * relation_open() here. This is a very low-level function
+				 * which has no business touching the relcache.
+				 */
+				if (!BufferIsValid(buf))
+				{
+					Relation	rel = relation_open(zhtup->t_tableOid, NoLock);
+
+					buf = ReadBuffer(rel, ItemPointerGetBlockNumber(&(zhtup->t_self)));
+					relation_close(rel, NoLock);
+					release_buf = true;
+				}
+
 				/*
 				 * Fixme - Need to check whether we need any handling of epoch
 				 * here.
 				 */
-				ZHeapTupleTransInfo	zinfo;
-
 				ZHeapTupleGetTransInfo(zhtup, buf, false, false,
 									   InvalidSnapshot, &zinfo);
 
@@ -532,6 +529,9 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 					zinfo.xid = FrozenTransactionId;
 
 				result = TransactionIdGetDatum(zinfo.xid);
+
+				if (release_buf)
+					ReleaseBuffer(buf);
 			}
 			break;
 		case MaxTransactionIdAttributeNumber:
@@ -549,9 +549,6 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 			result = 0;			/* keep compiler quiet */
 			break;
 	}
-
-	if (release_buf)
-		ReleaseBuffer(buf);
 
 	return result;
 }
