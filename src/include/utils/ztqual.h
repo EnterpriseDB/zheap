@@ -40,7 +40,7 @@ extern void ZHeapUpdateTransactionSlotInfo(int trans_slot, Buffer buffer,
 							   OffsetNumber offnum,
 							   ZHeapTupleTransInfo *zinfo);
 extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
-					   bool nobuflock, bool fetch_cid, Snapshot snapshot,
+					   bool fetch_cid, Snapshot snapshot,
 					   ZHeapTupleTransInfo *zinfo);
 extern TransactionId ZHeapTupleGetTransXID(ZHeapTuple zhtup, Buffer buf,
 					  bool nobuflock);
