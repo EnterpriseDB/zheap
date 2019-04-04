@@ -522,7 +522,7 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 * Fixme - Need to check whether we need any handling of epoch
 				 * here.
 				 */
-				ZHeapTupleGetTransInfo(zhtup, buf, false, false,
+				ZHeapTupleGetTransInfo(zhtup, buf, false,
 									   InvalidSnapshot, &zinfo);
 
 				if (!TransactionIdIsValid(zinfo.xid) || zinfo.epoch_xid <
