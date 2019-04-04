@@ -5357,10 +5357,7 @@ zheap_abort_speculative(Relation relation, ItemPointer tid)
 TransactionId
 zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 {
-	UndoRecPtr	urec_ptr;
-	TransactionId xid = InvalidTransactionId;
 	int			trans_slot_id = InvalidXactSlotId;
-	int			prev_trans_slot_id;
 	TransactionId result;
 	BlockNumber blk;
 	OffsetNumber offnum;
@@ -5368,17 +5365,18 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 	ZHeapTuple	undo_tup;
 	ZHeapTupleTransInfo zinfo;
 
-	prev_trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
+	zinfo.trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
 	blk = ItemPointerGetBlockNumber(&zhtup->t_self);
 	offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
-	GetTransactionSlotInfo(buffer, offnum, prev_trans_slot_id, true, false,
+	GetTransactionSlotInfo(buffer, offnum, zinfo.trans_slot, true, false,
 						   &zinfo);
-	urec_ptr = zinfo.urec_ptr;
 	undo_tup = zhtup;
+	zinfo.xid = InvalidTransactionId;
 
 	while (true)
 	{
-		urec = UndoFetchRecord(urec_ptr, blk, offnum, xid, NULL, ZHeapSatisfyUndoRecord);
+		urec = UndoFetchRecord(zinfo.urec_ptr, blk, offnum, zinfo.xid, NULL,
+							   ZHeapSatisfyUndoRecord);
 		if (urec != NULL)
 		{
 			/*
@@ -5398,10 +5396,10 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 											   NULL, (undo_tup) == (zhtup) ? false : true,
 											   BufferGetPage(buffer));
 
-			xid = urec->uur_prevxid;
-			urec_ptr = urec->uur_blkprev;
+			zinfo.xid = urec->uur_prevxid;
+			zinfo.urec_ptr = urec->uur_blkprev;
 			UndoRecordRelease(urec);
-			if (!UndoRecPtrIsValid(urec_ptr))
+			if (!UndoRecPtrIsValid(zinfo.urec_ptr))
 			{
 				zheap_freetuple(undo_tup);
 				result = FrozenTransactionId;
@@ -5413,17 +5411,11 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 			 * Change the undo chain if the undo tuple is stamped with the
 			 * different transaction slot.
 			 */
-			if (trans_slot_id != prev_trans_slot_id)
-			{
-				ZHeapTupleTransInfo zinfo;
-
+			if (trans_slot_id != zinfo.trans_slot)
 				ZHeapUpdateTransactionSlotInfo(trans_slot_id,
 											   buffer,
 											   ItemPointerGetOffsetNumber(&undo_tup->t_self),
 											   &zinfo);
-				prev_trans_slot_id = zinfo.trans_slot;
-				urec_ptr = zinfo.urec_ptr;
-			}
 			zhtup = undo_tup;
 		}
 		else
