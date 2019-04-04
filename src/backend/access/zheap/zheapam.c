@@ -5377,48 +5377,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 	{
 		urec = UndoFetchRecord(zinfo.urec_ptr, blk, offnum, zinfo.xid, NULL,
 							   ZHeapSatisfyUndoRecord);
-		if (urec != NULL)
-		{
-			/*
-			 * If we have valid undo record, then check if we have reached the
-			 * insert log and return the corresponding transaction id.
-			 */
-			if (urec->uur_type == UNDO_INSERT ||
-				urec->uur_type == UNDO_MULTI_INSERT ||
-				urec->uur_type == UNDO_INPLACE_UPDATE)
-			{
-				result = urec->uur_xid;
-				UndoRecordRelease(urec);
-				break;
-			}
-
-			undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
-											   NULL, (undo_tup) == (zhtup) ? false : true,
-											   BufferGetPage(buffer));
-
-			zinfo.xid = urec->uur_prevxid;
-			zinfo.urec_ptr = urec->uur_blkprev;
-			UndoRecordRelease(urec);
-			if (!UndoRecPtrIsValid(zinfo.urec_ptr))
-			{
-				zheap_freetuple(undo_tup);
-				result = FrozenTransactionId;
-				break;
-			}
-
-
-			/*
-			 * Change the undo chain if the undo tuple is stamped with the
-			 * different transaction slot.
-			 */
-			if (trans_slot_id != zinfo.trans_slot)
-				ZHeapUpdateTransactionSlotInfo(trans_slot_id,
-											   buffer,
-											   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-											   &zinfo);
-			zhtup = undo_tup;
-		}
-		else
+		if (urec == NULL)
 		{
 			/*
 			 * Undo record could be null only when it's undo log is/about to
@@ -5430,6 +5389,45 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 			result = FrozenTransactionId;
 			break;
 		}
+
+		/*
+		 * If we have valid undo record, then check if we have reached the
+		 * insert log and return the corresponding transaction id.
+		 */
+		if (urec->uur_type == UNDO_INSERT ||
+			urec->uur_type == UNDO_MULTI_INSERT ||
+			urec->uur_type == UNDO_INPLACE_UPDATE)
+		{
+			result = urec->uur_xid;
+			UndoRecordRelease(urec);
+			break;
+		}
+
+		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
+										   NULL, (undo_tup) == (zhtup) ? false : true,
+										   BufferGetPage(buffer));
+
+		zinfo.xid = urec->uur_prevxid;
+		zinfo.urec_ptr = urec->uur_blkprev;
+		UndoRecordRelease(urec);
+		if (!UndoRecPtrIsValid(zinfo.urec_ptr))
+		{
+			zheap_freetuple(undo_tup);
+			result = FrozenTransactionId;
+			break;
+		}
+
+
+		/*
+		 * Change the undo chain if the undo tuple is stamped with the
+		 * different transaction slot.
+		 */
+		if (trans_slot_id != zinfo.trans_slot)
+			ZHeapUpdateTransactionSlotInfo(trans_slot_id,
+										   buffer,
+										   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+										   &zinfo);
+		zhtup = undo_tup;
 	}
 
 	return result;
