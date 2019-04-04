@@ -602,7 +602,7 @@ resize:
 				 * so we store the previous undo record pointer in the
 				 * transaction header.
 				 */
-				Assert(UndoRecPtrIsValid(prevlogno));
+				Assert(prevlogno != InvalidUndoLogNumber);
 				log = UndoLogGet(prevlogno);
 				urec->uur_prevurp = MakeUndoRecPtr(prevlogno,
 												   log->meta.insert - log->meta.prevlen);
