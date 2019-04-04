@@ -5398,13 +5398,11 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 			{
 				ZHeapTupleTransInfo zinfo;
 
-				GetTransactionSlotInfo(buffer,
-									   ItemPointerGetOffsetNumber(&undo_tup->t_self),
-									   trans_slot_id,
-									   true,
-									   true,
-									   &zinfo);
-				prev_trans_slot_id = trans_slot_id;
+				ZHeapUpdateTransactionSlotInfo(trans_slot_id,
+											   buffer,
+											   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+											   &zinfo);
+				prev_trans_slot_id = zinfo.trans_slot;
 				urec_ptr = zinfo.urec_ptr;
 			}
 			zhtup = undo_tup;
