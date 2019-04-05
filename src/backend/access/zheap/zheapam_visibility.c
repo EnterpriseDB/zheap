@@ -286,15 +286,7 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 	 * is pruned.
 	 */
 	if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN)
-	{
-slot_is_frozen:
-		zinfo->trans_slot = ZHTUP_SLOT_FROZEN;
-		zinfo->epoch_xid = U64FromFullTransactionId(InvalidFullTransactionId);
-		zinfo->xid = InvalidTransactionId;
-		zinfo->cid = InvalidCommandId;
-		zinfo->urec_ptr = InvalidUndoRecPtr;
 		return;
-	}
 
 	/*
 	 * We need to fetch all the transaction related information from undo
@@ -323,7 +315,14 @@ slot_is_frozen:
 			 (TransactionIdPrecedes(zinfo->xid, pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)) ||
 			  (snapshot != InvalidSnapshot && !XidInMVCCSnapshot(zinfo->xid, snapshot)))) ||
 			UndoLogIsDiscarded(zinfo->urec_ptr))
-			goto slot_is_frozen;
+		{
+			zinfo->trans_slot = ZHTUP_SLOT_FROZEN;
+			zinfo->epoch_xid = U64FromFullTransactionId(InvalidFullTransactionId);
+			zinfo->xid = InvalidTransactionId;
+			zinfo->cid = InvalidCommandId;
+			zinfo->urec_ptr = InvalidUndoRecPtr;
+			return;
+		}
 
 		FetchTransInfoFromUndo(blocknum, offnum, InvalidTransactionId, zinfo);
 	}
