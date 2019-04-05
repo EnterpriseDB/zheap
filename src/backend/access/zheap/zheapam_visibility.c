@@ -50,7 +50,8 @@ typedef enum
 {
 	ZVERSION_NONE,
 	ZVERSION_CURRENT,
-	ZVERSION_OLDER
+	ZVERSION_OLDER,
+	ZVERSION_CHECK_CID
 } ZVersionSelector;
 
 #define SNAPSHOT_REQUESTS_SPECTOKEN		0x0001
@@ -63,7 +64,11 @@ static ZHeapTuple GetTupleFromUndoForAbortedXact(UndoRecPtr urec_ptr, Buffer buf
 												 ZHeapTuple ztuple, TransactionId *xid);
 static ZTupleTidOp ZHeapTidOpFromInfomask(uint16 infomask);
 static ZVersionSelector ZHeapSelectVersionMVCC(ZTupleTidOp op,
-				   TransactionId xid, CommandId cid, Snapshot snapshot);
+				   TransactionId xid, Snapshot snapshot);
+static ZVersionSelector ZHeapSelectVersionUpdate(ZTupleTidOp op,
+						 TransactionId xid, CommandId visibility_cid);
+static ZVersionSelector ZHeapCheckCID(ZTupleTidOp op,
+			  CommandId tuple_cid, CommandId visibility_cid);
 static ZVersionSelector ZHeapSelectVersionSelf(ZTupleTidOp op,
 					   TransactionId xid);
 static ZVersionSelector ZHeapSelectVersionDirty(ZTupleTidOp op,
@@ -626,6 +631,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 	{
 		ZTupleTidOp			op;
 		ZVersionSelector	zselect;
+		bool		have_cid = false;
 
 		zinfo.urec_ptr = InvalidUndoRecPtr;
 		zinfo.cid = InvalidCommandId;
@@ -660,34 +666,12 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 		 * PageFreezeTransSlots.
 		 */
 		if (ZHeapTupleHasInvalidXact(ztuple->t_data->t_infomask))
-			FetchTransInfoFromUndo(ztuple, zinfo.xid, &zinfo);
-		else if (zinfo.cid == InvalidCommandId)
 		{
-			CommandId	cur_cid = GetCurrentCommandId(false);
-
-			/*
-			 * If the current command doesn't need to modify any tuple and
-			 * the snapshot used is not of any previous command, then it can
-			 * see all the modifications made by current transactions till
-			 * now.  So, we don't even attempt to fetch CID from undo in
-			 * such cases.
-			 */
-			if (!GetCurrentCommandIdUsed() && cur_cid == snapshot->curcid)
-				zinfo.cid = InvalidCommandId;
-			else
-			{
-				/*
-				 * we don't use prev_undo_xid to fetch the undo record for
-				 * cid as it is required only when transaction is current
-				 * transaction in which case there is no risk of transaction
-				 * chain switching, so we are safe.  It might be better to
-				 * move this check near to it's usage, but that will make
-				 * code look ugly, so keeping it here.
-				 */
-				zinfo.cid = ZHeapTupleGetCid(ztuple, buffer, zinfo.urec_ptr,
-											 zinfo.trans_slot);
-			}
+			FetchTransInfoFromUndo(ztuple, zinfo.xid, &zinfo);
+			have_cid = true;
 		}
+		else if (zinfo.cid != InvalidCommandId)
+			have_cid = true;
 
 		/*
 		 * The tuple must be all visible if the transaction slot is cleared
@@ -699,14 +683,33 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 			return ztuple;
 
-		/* Check XID and CID against snapshot. */
+		/* Check XID against snapshot. */
 		if (IsMVCCSnapshot(snapshot))
-			zselect = ZHeapSelectVersionMVCC(op, zinfo.xid, zinfo.cid,
-											 snapshot);
+			zselect = ZHeapSelectVersionMVCC(op, zinfo.xid, snapshot);
 		else
 		{
 			/* ZBORKED: Why do we always use SnapshotSelf rules here? */
 			zselect = ZHeapSelectVersionSelf(op, zinfo.xid);
+		}
+
+		/* If necessary, check CID against snapshot. */
+		if (zselect == ZVERSION_CHECK_CID)
+		{
+			if (!have_cid)
+			{
+				/*
+				 * we don't use prev_undo_xid to fetch the undo record for
+				 * cid as it is required only when transaction is current
+				 * transaction in which case there is no risk of transaction
+				 * chain switching, so we are safe.
+				 */
+				zinfo.cid = ZHeapTupleGetCid(ztuple, buffer, zinfo.urec_ptr,
+											 zinfo.trans_slot);
+				have_cid = true;
+			}
+
+			/* OK, now we can make a final visibility decision. */
+			zselect = ZHeapCheckCID(op, zinfo.cid, snapshot->curcid);
 		}
 
 		/* Return the current version, or nothing, if appropriate. */
@@ -716,6 +719,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 			return NULL;
 
 		/* Need to check next older version, so loop around. */
+		Assert(zselect == ZVERSION_OLDER);
 		urec_ptr = zinfo.urec_ptr;
 		prev_undo_xid = zinfo.xid;
 		prev_trans_slot_id = zinfo.trans_slot;
@@ -749,6 +753,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 	ZVersionSelector	zselect;
 	ZHeapTupleTransInfo	zinfo;
 	OffsetNumber    offnum = ItemPointerGetOffsetNumber(&ztuple->t_self);
+	bool		have_cid = false;
 
 	/*
 	 * tuple is modified after the scan is started, fetch the prior record
@@ -786,35 +791,12 @@ fetch_prior_undo_record:
 	 * reuse at some point of time.  See PageFreezeTransSlots.
 	 */
 	if (ZHeapTupleHasInvalidXact(ztuple->t_data->t_infomask))
-		FetchTransInfoFromUndo(ztuple, zinfo.xid, &zinfo);
-	else if (zinfo.cid == InvalidCommandId)
 	{
-		CommandId	cur_comm_cid = GetCurrentCommandId(false);
-
-		/*
-		 * If the current command doesn't need to modify any tuple and the
-		 * snapshot used is not of any previous command, then it can see all
-		 * the modifications made by current transactions till now.  So, we
-		 * don't even attempt to fetch CID from undo in such cases.
-		 */
-		if (!GetCurrentCommandIdUsed() && cur_comm_cid == curcid)
-		{
-			zinfo.cid = InvalidCommandId;
-		}
-		else
-		{
-			/*
-			 * we don't use prev_undo_xid to fetch the undo record for cid as
-			 * it is required only when transaction is current transaction in
-			 * which case there is no risk of transaction chain switching, so
-			 * we are safe.  It might be better to move this check near to
-			 * it's usage, but that will make code look ugly, so keeping it
-			 * here.
-			 */
-			zinfo.cid = ZHeapTupleGetCid(ztuple, buffer, zinfo.urec_ptr,
-										 zinfo.trans_slot);
-		}
+		FetchTransInfoFromUndo(ztuple, zinfo.xid, &zinfo);
+		have_cid = true;
 	}
+	else if (zinfo.cid != InvalidCommandId)
+		have_cid = true;
 
 	/*
 	 * The tuple must be all visible if the transaction slot is cleared or
@@ -829,37 +811,23 @@ fetch_prior_undo_record:
 		goto result_available;
 	}
 
-	if (op == ZTUPLETID_MODIFIED)
+	zselect = ZHeapSelectVersionUpdate(op, zinfo.xid, curcid);
+
+	if (zselect == ZVERSION_CHECK_CID)
 	{
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
+		if (!have_cid)
 		{
-			if (zinfo.cid >= curcid)
-				zselect = ZVERSION_OLDER;	/* updated after scan started */
-			else
-				zselect = ZVERSION_CURRENT; /* updated before scan started */
+			/*
+			 * we don't use prev_undo_xid to fetch the undo record for cid as
+			 * it is required only when transaction is current transaction in
+			 * which case there is no risk of transaction chain switching, so
+			 * we are safe.
+			 */
+			zinfo.cid = ZHeapTupleGetCid(ztuple, buffer, zinfo.urec_ptr,
+										 zinfo.trans_slot);
+			have_cid = true;
 		}
-		else if (TransactionIdIsInProgress(zinfo.xid))
-			zselect = ZVERSION_OLDER;
-		else if (TransactionIdDidCommit(zinfo.xid))
-			zselect = ZVERSION_CURRENT;
-		else
-			zselect = ZVERSION_OLDER;
-	}
-	else						/* undo tuple is the root tuple */
-	{
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-		{
-			if (zinfo.cid >= curcid)
-				zselect = ZVERSION_NONE; /* inserted after scan started */
-			else
-				zselect = ZVERSION_CURRENT;	/* inserted before scan started */
-		}
-		else if (TransactionIdIsInProgress(zinfo.xid))
-			zselect = ZVERSION_NONE;
-		else if (TransactionIdDidCommit(zinfo.xid))
-			zselect = ZVERSION_CURRENT;
-		else
-			zselect = ZVERSION_NONE;
+		zselect = ZHeapCheckCID(op, zinfo.cid, curcid);
 	}
 
 	if (zselect == ZVERSION_OLDER)
@@ -899,67 +867,119 @@ ZHeapTidOpFromInfomask(uint16 infomask)
  * ZHeapSelectVersionMVCC
  *
  * Decide, for a given MVCC snapshot, whether we should return the current
- * version of a tuple, an older version, or no version at all.
+ * version of a tuple, an older version, or no version at all.  We only have
+ * the XID available here, so if the CID turns out to be relevant, we must
+ * return ZVERSION_CHECK_CID; caller is responsible for calling ZHeapCheckCID
+ * with the appropriate CID to obtain a final answer.
  */
 static ZVersionSelector
-ZHeapSelectVersionMVCC(ZTupleTidOp op, TransactionId xid, CommandId cid,
-					   Snapshot snapshot)
+ZHeapSelectVersionMVCC(ZTupleTidOp op, TransactionId xid, Snapshot snapshot)
 {
 	Assert(IsMVCCSnapshot(snapshot));
 
+	if (TransactionIdIsCurrentTransactionId(xid))
+	{
+		/*
+		 * This transaction is still running and belongs to the current
+		 * session.  If the current CID has been used to stamp a tuple or
+		 * the snapshot belongs to an older CID, then we need the CID for
+		 * this tuple to make a final visibility decision.
+		 */
+		if (GetCurrentCommandIdUsed() ||
+			GetCurrentCommandId(false) != snapshot->curcid)
+			return ZVERSION_CHECK_CID;
+
+		/* Nothing has changed since our scan started. */
+		return (op == ZTUPLETID_GONE ? ZVERSION_NONE : ZVERSION_CURRENT);
+	}
+
+	if (XidInMVCCSnapshot(xid, snapshot) || !TransactionIdDidCommit(xid))
+	{
+		/*
+		 * The XID is not visible to us, either because it aborted or because
+		 * it's in our MVCC snapshot.  If this is a new tuple, that means we
+		 * can't see it at all; otherwise, we need to check older versions.
+		 */
+		return (op == ZTUPLETID_NEW ? ZVERSION_NONE : ZVERSION_OLDER);
+	}
+
+	/* The XID is visible to us. */
+	return (op == ZTUPLETID_GONE ? ZVERSION_NONE : ZVERSION_CURRENT);
+}
+
+/*
+ * ZHeapSelectVersionUpdate
+ *
+ * Decide whether we should try to update the current version of a tuple,
+ * or an older version, or no version at all.
+ *
+ * Like ZHeapSelectVersionMVCC, we may return ZVERSION_CHECK_CID; the caller
+ * will need to invoke ZHeapCheckCID to get a final answer.  The caller must
+ * provide the CID of the update operation; if it's the latest CID, we can
+ * make a decision without forcing the caller to fetch the tuple CID.
+ */
+static ZVersionSelector
+ZHeapSelectVersionUpdate(ZTupleTidOp op, TransactionId xid,
+						 CommandId visibility_cid)
+{
+	/* Shouldn't be looking at a delete or non-inplace update. */
+	Assert(op != ZTUPLETID_GONE);
+
+	if (TransactionIdIsCurrentTransactionId(xid))
+	{
+		/*
+		 * This transaction is still running and belongs to the current
+		 * session.  If the current CID has been used to stamp a tuple or
+		 * the snapshot belongs to an older CID, then we need the CID for
+		 * this tuple to make a final visibility decision.
+		 */
+		if (GetCurrentCommandIdUsed() ||
+			GetCurrentCommandId(false) != visibility_cid)
+			return ZVERSION_CHECK_CID;
+
+		/* Nothing has changed since our scan started. */
+		return ZVERSION_CURRENT;
+	}
+
+	if (TransactionIdIsInProgress(xid) || !TransactionIdDidCommit(xid))
+	{
+		/* The XID is still in progress, or aborted; we can't see it. */
+		return (op == ZTUPLETID_NEW ? ZVERSION_NONE : ZVERSION_OLDER);
+	}
+
+	/* The XID is visible to us. */
+	return ZVERSION_CURRENT;
+}
+
+/*
+ * ZHeapCheckCID
+ *
+ * For a tuple whose xid satisfies TransactionIdIsCurrentTransactionId(xid),
+ * this function makes a determination about tuple visibility based on CID.
+ */
+static ZVersionSelector
+ZHeapCheckCID(ZTupleTidOp op, CommandId tuple_cid, CommandId visibility_cid)
+{
 	if (op == ZTUPLETID_GONE)
 	{
-		if (TransactionIdIsCurrentTransactionId(xid))
-		{
-			if (cid >= snapshot->curcid)
-				return ZVERSION_OLDER;	/* deleted after scan started */
-			else
-				return ZVERSION_NONE;	/* deleted before scan started */
-		}
-		else if (XidInMVCCSnapshot(xid, snapshot))
-			return ZVERSION_OLDER;
-		else if (TransactionIdDidCommit(xid))
-			return ZVERSION_NONE;		/* tuple is deleted */
+		if (tuple_cid >= visibility_cid)
+			return ZVERSION_OLDER;		/* deleted after scan started */
 		else
-			return ZVERSION_OLDER;		/* transaction is aborted */
+			return ZVERSION_NONE;		/* deleted before scan started */
 	}
 	else if (op == ZTUPLETID_MODIFIED)
 	{
-		if (TransactionIdIsCurrentTransactionId(xid))
-		{
-			if (cid >= snapshot->curcid)
-			{
-				/* updated/locked after scan started */
-				return ZVERSION_OLDER;
-			}
-			else
-			{
-				/* updated or locked before scan started */
-				return ZVERSION_CURRENT;
-			}
-		}
-		else if (XidInMVCCSnapshot(xid, snapshot))
-			return ZVERSION_OLDER;
-		else if (TransactionIdDidCommit(xid))
-			return ZVERSION_CURRENT;
+		if (tuple_cid >= visibility_cid)
+			return ZVERSION_OLDER;		/* updated/locked after scan started */
 		else
-			return ZVERSION_OLDER;
+			return ZVERSION_CURRENT;	/* updated/locked before scan started */
 	}
-	else						/* undo tuple is the root tuple */
+	else
 	{
-		if (TransactionIdIsCurrentTransactionId(xid))
-		{
-			if (cid >= snapshot->curcid)
-				return ZVERSION_NONE; /* inserted after scan started */
-			else
-				return ZVERSION_CURRENT;	/* inserted before scan started */
-		}
-		else if (XidInMVCCSnapshot(xid, snapshot))
-			return ZVERSION_NONE;
-		else if (TransactionIdDidCommit(xid))
-			return ZVERSION_CURRENT;
+		if (tuple_cid >= visibility_cid)
+			return ZVERSION_NONE;		/* inserted after scan started */
 		else
-			return ZVERSION_NONE;
+			return ZVERSION_CURRENT;	/* inserted before scan started */
 	}
 
 	/* should never get here */
@@ -1109,18 +1129,6 @@ ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
 	ZHeapTupleGetTransInfo(zhtup, buffer, fetch_cid, transinfo_snapshot,
 						   &zinfo);
 
-	/*
-	 * If we decided not to fetch the CID, it's because we know that every
-	 * tuple which has been stamped with our XID was also stamped with a CID
-	 * less than snapshot->curcid. The exact value doesn't matter, so we can
-	 * just use FirstCommandId.  This might seem to be a problem in the case
-	 * where snapshot->curcid == FirstCommandId, but in that case there can't
-	 * be any tuples stamped with our XID at all, so won't matter what value
-	 * we pick here.
-	 */
-	if (!fetch_cid)
-		zinfo.cid = FirstCommandId;
-
 	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
 		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
 	{
@@ -1137,7 +1145,24 @@ ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
 			zselect = ZVERSION_CURRENT;
 	}
 	else if (snapshot->visibility_type == MVCC_VISIBILITY)
-		zselect = ZHeapSelectVersionMVCC(op, zinfo.xid, zinfo.cid, snapshot);
+	{
+		zselect = ZHeapSelectVersionMVCC(op, zinfo.xid, snapshot);
+
+		if (zselect == ZVERSION_CHECK_CID)
+		{
+			/*
+			 * ZBORKED: We should really rejigger this logic so that we don't
+			 * need to fetch the CID unless ZHeapSelectVersionMVCC actually
+			 * returns ZVERSION_CHECK_CID.  Rather than calling
+			 * ZHeapTupleGetTransInfo, We should probably call
+			 * GetTransactionSlotInfo first and then only call
+			 * FetchTransInfoFromUndo if necessary.  But ZHeapTupleGetTransInfo
+			 * also does some other stuff; more study is needed.
+			 */
+			Assert(fetch_cid);
+			zselect = ZHeapCheckCID(op, zinfo.cid, snapshot->curcid);
+		}
+	}
 	else if (snapshot->visibility_type == SELF_VISIBILITY)
 		zselect = ZHeapSelectVersionSelf(op, zinfo.xid);
 	else if (snapshot->visibility_type == DIRTY_VISIBILITY)
@@ -1198,6 +1223,7 @@ ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
 								ctid,
 								zinfo.trans_slot);
 
+	Assert(zselect == ZVERSION_CURRENT);
 	return zhtup;
 }
 
@@ -1219,6 +1245,7 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 	ItemId		lp;
 	ZHeapTupleTransInfo	zinfo;
 	ZVersionSelector	zselect;
+	bool		have_cid;
 
 	if (all_dead)
 		*all_dead = false;
@@ -1255,10 +1282,8 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 			ItemPointerSetOffsetNumber(&undo_tup.t_self, off);
 
 			FetchTransInfoFromUndo(&undo_tup, InvalidTransactionId, &zinfo);
+			have_cid = true;
 		}
-		else
-			zinfo.cid = ZHeapPageGetCid(buffer, zinfo.epoch_xid,
-										zinfo.urec_ptr, off);
 	}
 
 	/*
@@ -1275,14 +1300,24 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 		return NULL;
 	}
 
-	/* Check XID and CID against snapshot. */
+	/* Check XID against snapshot. */
 	if (IsMVCCSnapshot(snapshot))
-		zselect = ZHeapSelectVersionMVCC(ZTUPLETID_GONE, zinfo.xid,
-										 zinfo.cid, snapshot);
+		zselect = ZHeapSelectVersionMVCC(ZTUPLETID_GONE, zinfo.xid, snapshot);
 	else
 	{
 		/* ZBORKED: Why do we always use SnapshotSelf rules here? */
 		zselect = ZHeapSelectVersionSelf(ZTUPLETID_GONE, zinfo.xid);
+	}
+
+	/* If necessary, check CID against snapshot. */
+	if (zselect == ZVERSION_CHECK_CID)
+	{
+		if (!have_cid)
+			zinfo.cid = ZHeapPageGetCid(buffer, zinfo.epoch_xid,
+										zinfo.urec_ptr, off);
+
+		/* OK, now we can make a final visibility decision. */
+		zselect = ZHeapCheckCID(ZTUPLETID_GONE, zinfo.cid, snapshot->curcid);
 	}
 
 	if (zselect == ZVERSION_OLDER)
