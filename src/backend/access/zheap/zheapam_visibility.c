@@ -65,7 +65,7 @@ static ZTupleTidOp ZHeapTidOpFromInfomask(uint16 infomask);
 static ZVersionSelector ZHeapSelectVersionMVCC(ZTupleTidOp op,
 				   TransactionId xid, CommandId cid, Snapshot snapshot);
 static ZVersionSelector ZHeapSelectVersionSelf(ZTupleTidOp op,
-					   TransactionId xid, CommandId cid);
+					   TransactionId xid);
 static ZVersionSelector ZHeapSelectVersionDirty(ZTupleTidOp op,
 						uint16 infomask, ZHeapTupleTransInfo *zinfo,
 						Snapshot snapshot, int *snapshot_requests);
@@ -706,7 +706,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 		else
 		{
 			/* ZBORKED: Why do we always use SnapshotSelf rules here? */
-			zselect = ZHeapSelectVersionSelf(op, zinfo.xid, zinfo.cid);
+			zselect = ZHeapSelectVersionSelf(op, zinfo.xid);
 		}
 
 		/* Return the current version, or nothing, if appropriate. */
@@ -973,7 +973,7 @@ ZHeapSelectVersionMVCC(ZTupleTidOp op, TransactionId xid, CommandId cid,
  * current version of a tuple, an older version, or no version at all.
  */
 static ZVersionSelector
-ZHeapSelectVersionSelf(ZTupleTidOp op, TransactionId xid, CommandId cid)
+ZHeapSelectVersionSelf(ZTupleTidOp op, TransactionId xid)
 {
 	if (op == ZTUPLETID_GONE)
 	{
@@ -1139,7 +1139,7 @@ ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
 	else if (snapshot->visibility_type == MVCC_VISIBILITY)
 		zselect = ZHeapSelectVersionMVCC(op, zinfo.xid, zinfo.cid, snapshot);
 	else if (snapshot->visibility_type == SELF_VISIBILITY)
-		zselect = ZHeapSelectVersionSelf(op, zinfo.xid, zinfo.cid);
+		zselect = ZHeapSelectVersionSelf(op, zinfo.xid);
 	else if (snapshot->visibility_type == DIRTY_VISIBILITY)
 	{
 		int		requests = 0;
@@ -1282,8 +1282,7 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 	else
 	{
 		/* ZBORKED: Why do we always use SnapshotSelf rules here? */
-		zselect = ZHeapSelectVersionSelf(ZTUPLETID_GONE, zinfo.xid,
-										 zinfo.cid);
+		zselect = ZHeapSelectVersionSelf(ZTUPLETID_GONE, zinfo.xid);
 	}
 
 	if (zselect == ZVERSION_OLDER)
