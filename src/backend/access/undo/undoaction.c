@@ -263,7 +263,7 @@ UndoRecordBulkFetch(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 		urp_index++;
 
 		/* We have fetched all the undo records for the transaction. */
-		if (!UndoRecPtrIsValid(urecptr))
+		if (!UndoRecPtrIsValid(urecptr) || (prev_urec_ptr == to_urecptr))
 			break;
 
 		/*
@@ -280,7 +280,7 @@ UndoRecordBulkFetch(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 			*from_urecptr = urecptr;
 			break;
 		}
-	} while (prev_urec_ptr != to_urecptr);
+	} while (true);
 
 	/* Release the last buffer. */
 	if (BufferIsValid(buffer))
