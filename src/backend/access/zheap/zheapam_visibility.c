@@ -330,16 +330,8 @@ slot_is_frozen:
 	else
 	{
 		if (fetch_cid && TransactionIdIsCurrentTransactionId(zinfo->xid))
-		{
-			lp = PageGetItemId(page, offnum);
-			if (!ItemIdIsDeleted(lp))
-				zinfo->cid = ZHeapTupleGetCid(zhtup, buf, InvalidUndoRecPtr,
-											  InvalidXactSlotId);
-			else
-				zinfo->cid =
-					ZHeapPageGetCid(buf, zinfo->epoch_xid,
-									zinfo->urec_ptr, offnum);
-		}
+			zinfo->cid = ZHeapPageGetCid(buf, zinfo->epoch_xid,
+										 zinfo->urec_ptr, offnum);
 		else
 			zinfo->cid = InvalidCommandId;
 	}
