@@ -252,8 +252,6 @@ zheap_xlog_delete(XLogReaderState *record)
 	xlrec = (xl_zheap_delete *) ((char *) xlundohdr + SizeOfUndoHeader);
 	if (xlrec->flags & XLZ_DELETE_CONTAINS_TPD_SLOT)
 		tpd_trans_slot_id = (int *) ((char *) xlrec + SizeOfZHeapDelete);
-	else
-		*tpd_trans_slot_id = InvalidXactSlotId;
 
 	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
 	ItemPointerSetBlockNumber(&target_tid, blkno);
@@ -358,7 +356,7 @@ zheap_xlog_delete(XLogReaderState *record)
 	urecptr = zheap_prepare_undodelete(&zh_undo_info,
 									   &zheaptup,
 									   xlrec->prevxid,
-									   *tpd_trans_slot_id,
+									   tpd_trans_slot_id ? *tpd_trans_slot_id : InvalidXactSlotId,
 									   dummy_subXactToken,
 									   &undorecord, record, NULL);
 	InsertPreparedUndo();
