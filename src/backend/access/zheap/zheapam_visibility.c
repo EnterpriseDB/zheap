@@ -81,8 +81,8 @@ static ZVersionSelector ZHeapSelectVersionDirty(ZTupleTidOp op,
  * specified tuple.
  */
 void
-FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId xid,
-					   ZHeapTupleTransInfo *zinfo)
+FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
+					   TransactionId xid, ZHeapTupleTransInfo *zinfo)
 {
 	UnpackedUndoRecord *urec;
 	uint32	epoch;
@@ -99,9 +99,7 @@ FetchTransInfoFromUndo(ZHeapTuple undo_tup, TransactionId xid,
 		 * the latest version of the tuple in the undo rather than some
 		 * earlier one.)
 		 */
-		urec = UndoFetchRecord(zinfo->urec_ptr,
-							   ItemPointerGetBlockNumber(&undo_tup->t_self),
-							   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+		urec = UndoFetchRecord(zinfo->urec_ptr, blocknum, offnum,
 							   xid,
 							   &zinfo->urec_ptr,
 							   ZHeapSatisfyUndoRecord);
@@ -210,15 +208,8 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
 	GetTransactionSlotInfo(buffer, offnum, trans_slot, true, false, &zinfo);
 
 	if (vis_info & ITEMID_XACT_INVALID)
-	{
-		ZHeapTupleData undo_tup;
-
-		ItemPointerSetBlockNumber(&undo_tup.t_self,
-								  BufferGetBlockNumber(buffer));
-		ItemPointerSetOffsetNumber(&undo_tup.t_self, offnum);
-
-		FetchTransInfoFromUndo(&undo_tup, InvalidTransactionId, &zinfo);
-	}
+		FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), offnum,
+							   InvalidTransactionId, &zinfo);
 	else
 		zinfo.cid =
 			ZHeapPageGetCid(buffer, zinfo.epoch_xid, zinfo.urec_ptr, offnum);
@@ -262,6 +253,7 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
 	ItemId		lp;
 	Page		page;
 	ItemPointer tid = &(zhtup->t_self);
+	BlockNumber	blocknum = BufferGetBlockNumber(buf);
 	OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
 	bool		is_invalid_slot = false;
 
@@ -333,7 +325,7 @@ slot_is_frozen:
 			UndoLogIsDiscarded(zinfo->urec_ptr))
 			goto slot_is_frozen;
 
-		FetchTransInfoFromUndo(zhtup, InvalidTransactionId, zinfo);
+		FetchTransInfoFromUndo(blocknum, offnum, InvalidTransactionId, zinfo);
 	}
 	else
 	{
@@ -549,12 +541,13 @@ fetch_prior_undo_record:
 	if (zinfo.trans_slot != prev_trans_slot_id)
 	{
 		GetTransactionSlotInfo(buffer,
-							   ItemPointerGetOffsetNumber(&ztuple->t_self),
+							   offnum,
 							   zinfo.trans_slot,
 							   true,
 							   true,
 							   &zinfo);
-		FetchTransInfoFromUndo(ztuple, zinfo.xid, &zinfo);
+		FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), offnum,
+							   zinfo.xid, &zinfo);
 
 		Assert(TransactionIdDidCommit(zinfo.xid) ||
 			   ZHEAP_XID_IS_LOCKED_ONLY(ztuple->t_data->t_infomask));
@@ -650,8 +643,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 		 * different transaction.
 		 */
 		if (zinfo.trans_slot != prev_trans_slot_id)
-			ZHeapUpdateTransactionSlotInfo(zinfo.trans_slot, buffer,
-										   ItemPointerGetOffsetNumber(&ztuple->t_self),
+			ZHeapUpdateTransactionSlotInfo(zinfo.trans_slot, buffer, offnum,
 										   &zinfo);
 
 		op = ZHeapTidOpFromInfomask(ztuple->t_data->t_infomask);
@@ -667,7 +659,8 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 		 */
 		if (ZHeapTupleHasInvalidXact(ztuple->t_data->t_infomask))
 		{
-			FetchTransInfoFromUndo(ztuple, zinfo.xid, &zinfo);
+			FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), offnum,
+								   zinfo.xid, &zinfo);
 			have_cid = true;
 		}
 		else if (zinfo.cid != InvalidCommandId)
@@ -792,7 +785,8 @@ fetch_prior_undo_record:
 	 */
 	if (ZHeapTupleHasInvalidXact(ztuple->t_data->t_infomask))
 	{
-		FetchTransInfoFromUndo(ztuple, zinfo.xid, &zinfo);
+		FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), offnum,
+							   zinfo.xid, &zinfo);
 		have_cid = true;
 	}
 	else if (zinfo.cid != InvalidCommandId)
@@ -1275,13 +1269,8 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 
 		if (vis_info & ITEMID_XACT_INVALID)
 		{
-			ZHeapTupleData undo_tup;
-
-			ItemPointerSetBlockNumber(&undo_tup.t_self,
-									  BufferGetBlockNumber(buffer));
-			ItemPointerSetOffsetNumber(&undo_tup.t_self, off);
-
-			FetchTransInfoFromUndo(&undo_tup, InvalidTransactionId, &zinfo);
+			FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), off,
+								   InvalidTransactionId, &zinfo);
 			have_cid = true;
 		}
 	}
