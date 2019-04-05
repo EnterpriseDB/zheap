@@ -415,7 +415,8 @@ ZHeapTupleGetTransXID(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
  * looked up is returned and the function returns true.
  */
 static bool
-GetTupleFromUndoRecord(UndoRecPtr urec_ptr, Buffer buffer, OffsetNumber offnum,
+GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid,
+					   Buffer buffer, OffsetNumber offnum,
 					   ZHeapTuple *ztuple, bool free_ztuple,
 					   ZHeapTupleTransInfo *zinfo, ItemPointer ctid)
 {
@@ -426,7 +427,7 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, Buffer buffer, OffsetNumber offnum,
 	urec = UndoFetchRecord(urec_ptr,
 						   BufferGetBlockNumber(buffer),
 						   offnum,
-						   InvalidTransactionId,
+						   xid,
 						   NULL,
 						   ZHeapSatisfyUndoRecord);
 	if (urec == NULL)
@@ -514,7 +515,8 @@ fetch_prior_undo_record:
 	zinfo.urec_ptr = InvalidUndoRecPtr;
 	zinfo.trans_slot = InvalidXactSlotId;
 
-	if (!GetTupleFromUndoRecord(urec_ptr, buffer, offnum, &ztuple,
+	if (!GetTupleFromUndoRecord(urec_ptr, InvalidTransactionId,
+								buffer, offnum, &ztuple,
 								true, &zinfo, NULL))
 		return ztuple;
 
@@ -632,7 +634,8 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 		Assert(ztuple == NULL ||
 			   ItemPointerGetOffsetNumber(&ztuple->t_self) == offnum);
 
-		if (!GetTupleFromUndoRecord(urec_ptr, buffer, offnum, &ztuple,
+		if (!GetTupleFromUndoRecord(urec_ptr, prev_undo_xid, buffer,
+									offnum, &ztuple,
 									(ztuple != NULL), &zinfo, ctid))
 			return ztuple;
 
@@ -756,7 +759,8 @@ fetch_prior_undo_record:
 	zinfo.cid = InvalidCommandId;
 	zinfo.trans_slot = InvalidXactSlotId;
 
-	if (!GetTupleFromUndoRecord(urec_ptr, buffer, offnum, &ztuple,
+	if (!GetTupleFromUndoRecord(urec_ptr, prev_undo_xid, buffer,
+								offnum, &ztuple,
 								free_zhtup, &zinfo, ctid))
 	{
 		/* If undo is discarded, then current tuple is visible. */
