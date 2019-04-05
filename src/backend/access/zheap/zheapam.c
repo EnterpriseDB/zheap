@@ -4279,7 +4279,7 @@ lock_tuple:
 				   ItemIdGetLength(lp));
 		}
 
-		ZHeapTupleGetTransInfo(mytup, buf, false, InvalidSnapshot, &zinfo);
+		ZHeapTupleGetTransInfo(mytup, buf, false, &zinfo);
 		tup_trans_slot = zinfo.trans_slot;
 		tup_xid = zinfo.xid;
 		urec_ptr = zinfo.urec_ptr;
