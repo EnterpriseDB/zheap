@@ -234,6 +234,8 @@ extern void ZheapInitPage(Page page, Size pageSize);
 extern void zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
 					 BlockNumber last_blkno);
 extern void ZheapInitMetaPage(Relation rel, ForkNumber forkNum, bool already_exists);
+extern ZHeapTuple zheap_gettuple(Relation relation, Buffer buffer,
+			   OffsetNumber offnum);
 
 /* Zheap and undo record interaction related API's (zundo.c) */
 extern bool ZHeapSatisfyUndoRecord(UnpackedUndoRecord *uurec, BlockNumber blkno,

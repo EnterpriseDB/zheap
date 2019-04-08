@@ -119,13 +119,7 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup,
 				 */
 				Assert(ZHEAP_XID_IS_LOCKED_ONLY(zhtup->t_data->t_infomask));
 
-				undo_tup = palloc(ZHEAPTUPLESIZE + zhtup->t_len);
-				undo_tup->t_data = (ZHeapTupleHeader) ((char *) undo_tup + ZHEAPTUPLESIZE);
-
-				undo_tup->t_tableOid = zhtup->t_tableOid;
-				undo_tup->t_len = zhtup->t_len;
-				undo_tup->t_self = zhtup->t_self;
-				memcpy(undo_tup->t_data, zhtup->t_data, zhtup->t_len);
+				undo_tup = zheap_copytuple(zhtup);
 
 				/*
 				 * Ensure to clear the visibility related information from the
@@ -176,13 +170,7 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup,
 				 * For locked tuples, undo tuple data is always same as prior
 				 * tuple's data as we don't modify it.
 				 */
-				undo_tup = palloc(ZHEAPTUPLESIZE + zhtup->t_len);
-				undo_tup->t_data = (ZHeapTupleHeader) ((char *) undo_tup + ZHEAPTUPLESIZE);
-
-				undo_tup->t_tableOid = zhtup->t_tableOid;
-				undo_tup->t_len = zhtup->t_len;
-				undo_tup->t_self = zhtup->t_self;
-				memcpy(undo_tup->t_data, zhtup->t_data, zhtup->t_len);
+				undo_tup = zheap_copytuple(zhtup);
 
 				/*
 				 * Free the previous version of tuple, see comments in
