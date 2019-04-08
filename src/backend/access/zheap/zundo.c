@@ -100,8 +100,7 @@ ZHeapSatisfyUndoRecord(UnpackedUndoRecord *urec, BlockNumber blkno,
  */
 ZHeapTuple
 CopyTupleFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup,
-						int *trans_slot_id, CommandId *cid, bool free_zhtup,
-						Page page)
+						int *trans_slot_id, bool free_zhtup, Page page)
 {
 	ZHeapTuple	undo_tup;
 
@@ -153,8 +152,6 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup,
 					else
 						*trans_slot_id = ZHeapTupleHeaderGetXactSlot(undo_tup->t_data);
 				}
-				if (cid)
-					*cid = urec->uur_cid;
 			}
 			break;
 		case UNDO_XID_LOCK_ONLY:
@@ -418,7 +415,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 
 		/* don't free the tuple passed by caller */
 		undo_tup =
-			CopyTupleFromUndoRecord(urec, undo_tup, &zinfo.trans_slot, NULL,
+			CopyTupleFromUndoRecord(urec, undo_tup, &zinfo.trans_slot,
 									(undo_tup) == (&zhtup) ? false : true,
 									page);
 
