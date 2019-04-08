@@ -224,6 +224,7 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	uint8		vm_status = 0;
 	bool		lock_reacquired;
 	bool		skip_undo;
+	ZHeapPrepareUndoInfo zh_undo_info;
 
 	/*
 	 * We can skip inserting undo records if the tuples are to be marked as
@@ -325,15 +326,20 @@ reacquire_buffer:
 	CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
 
 	if (!skip_undo)
-		urecptr = zheap_prepare_undoinsert(relation->rd_id,
-										   BufferGetBlockNumber(buffer),
-										   InvalidOffsetNumber,
-										   prev_urecptr, xid, cid,
-										   specToken,
-										   UndoPersistenceForRelation(relation),
+	{
+		/* Prepare an undo record for this operation. */
+		zh_undo_info.reloid = relation->rd_id;
+		zh_undo_info.blkno = BufferGetBlockNumber(buffer);
+		zh_undo_info.offnum = InvalidOffsetNumber;
+		zh_undo_info.prev_urecptr = prev_urecptr;
+		zh_undo_info.xid = xid;
+		zh_undo_info.cid = cid;
+		zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
+
+		urecptr = zheap_prepare_undoinsert(&zh_undo_info, specToken,
 										   (options & HEAP_INSERT_SPECULATIVE) ? true : false,
 										   &undorecord, NULL, &undometa);
-
+	}
 	/*
 	 * Get the page visibility status from visibility map.  If the page is
 	 * all-visible, we need to clear it after inserting the tuple.  Note that,
@@ -5423,13 +5429,11 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
  * record fields, but can't allocate any new memory for it.
  */
 UndoRecPtr
-zheap_prepare_undoinsert(Oid reloid, BlockNumber blkno, OffsetNumber offnum,
-						 UndoRecPtr prev_urecptr, TransactionId xid,
-						 CommandId cid, uint32 specToken,
-						 UndoPersistence undo_persistence, bool specIns,
+zheap_prepare_undoinsert(ZHeapPrepareUndoInfo *zh_undo_info,
+						 uint32 specToken, bool specIns,
 						 UnpackedUndoRecord *undorecord,
 						 XLogReaderState *xlog_record,
-						 xl_undolog_meta * undometa)
+						 xl_undolog_meta *undometa)
 {
 	UndoRecPtr	urecptr = InvalidUndoRecPtr;
 
@@ -5443,14 +5447,14 @@ zheap_prepare_undoinsert(Oid reloid, BlockNumber blkno, OffsetNumber offnum,
 	undorecord->uur_type = UNDO_INSERT;
 	undorecord->uur_info = 0;
 	undorecord->uur_prevlen = 0;
-	undorecord->uur_reloid = reloid;
+	undorecord->uur_reloid = zh_undo_info->reloid;
 	undorecord->uur_prevxid = FrozenTransactionId;
-	undorecord->uur_xid = xid;
-	undorecord->uur_cid = cid;
+	undorecord->uur_xid = zh_undo_info->xid;
+	undorecord->uur_cid = zh_undo_info->cid;
 	undorecord->uur_fork = MAIN_FORKNUM;
-	undorecord->uur_blkprev = prev_urecptr;
-	undorecord->uur_block = blkno;
-	undorecord->uur_offset = offnum;
+	undorecord->uur_blkprev = zh_undo_info->prev_urecptr;
+	undorecord->uur_block = zh_undo_info->blkno;
+	undorecord->uur_offset = zh_undo_info->offnum;
 	undorecord->uur_tuple.len = 0;
 
 	/*
@@ -5473,8 +5477,8 @@ zheap_prepare_undoinsert(Oid reloid, BlockNumber blkno, OffsetNumber offnum,
 		undorecord->uur_payload.len = 0;
 
 	urecptr = PrepareUndoInsert(undorecord,
-								xid,
-								undo_persistence,
+								zh_undo_info->xid,
+								zh_undo_info->undo_persistence,
 								xlog_record,
 								undometa);
 

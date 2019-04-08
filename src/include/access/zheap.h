@@ -181,10 +181,8 @@ extern TransactionId zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer);
 extern void copy_zrelation_data(Relation srcRel, SMgrRelation dst);
 extern TransactionId zheap_compute_xid_horizon_for_tuples(Relation rel,
 									 ItemPointerData *tids, int nitems);
-extern UndoRecPtr zheap_prepare_undoinsert(Oid reloid, BlockNumber blkno,
-						 OffsetNumber offnum, UndoRecPtr prev_urecptr,
-						 TransactionId xid, CommandId cid, uint32 specToken,
-						 UndoPersistence undo_persistence, bool specIns,
+extern UndoRecPtr zheap_prepare_undoinsert(ZHeapPrepareUndoInfo * zh_undo_info,
+						 uint32 specToken, bool specIns,
 						 UnpackedUndoRecord *undorecord,
 						 XLogReaderState *xlog_record,
 						 xl_undolog_meta * undometa);
