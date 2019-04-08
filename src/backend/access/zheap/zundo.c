@@ -90,12 +90,10 @@ ZHeapSatisfyUndoRecord(UnpackedUndoRecord *urec, BlockNumber blkno,
 
 /*
  * CopyTupleFromUndoRecord
- *	Extract the tuple from undo record.  Deallocate the previous version
- *	of tuple and form the new version.
+ *	Extract the tuple from undo record.
  *
  *	trans_slot_id - If non-NULL, then populate it with the transaction slot of
  *			transaction that has modified the tuple.
- *  cid - output command id
  *	free_zhtup - if true, free the previous version of tuple.
  */
 ZHeapTuple
