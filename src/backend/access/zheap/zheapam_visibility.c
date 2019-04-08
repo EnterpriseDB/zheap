@@ -410,7 +410,7 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid,
 		return false;
 
 	*ztuple =
-		CopyTupleFromUndoRecord(urec, *ztuple, &zinfo->trans_slot, NULL,
+		CopyTupleFromUndoRecord(urec, *ztuple, &zinfo->trans_slot,
 								free_ztuple, BufferGetPage(buffer));
 
 	zinfo->urec_ptr = urec->uur_blkprev;

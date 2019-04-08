@@ -5376,7 +5376,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 		}
 
 		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
-										   NULL, (undo_tup) == (zhtup) ? false : true,
+										   (undo_tup) == (zhtup) ? false : true,
 										   BufferGetPage(buffer));
 
 		zinfo.xid = urec->uur_prevxid;
