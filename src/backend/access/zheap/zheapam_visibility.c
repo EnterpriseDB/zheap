@@ -2060,7 +2060,6 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 	OffsetNumber offnum;
 	Page		dp;
 	ZHeapTuple	tuple;
-	Size		tuple_len;
 	bool		tuple_inplace_updated = false;
 	Snapshot	snap;
 
@@ -2100,14 +2099,7 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 			return false;
 	}
 
-	tuple_len = ItemIdGetLength(lp);
-	tuple = palloc(ZHEAPTUPLESIZE + tuple_len);
-	tuple->t_data = (ZHeapTupleHeader) ((char *) tuple + ZHEAPTUPLESIZE);
-	tuple->t_tableOid = RelationGetRelid(relation);
-	tuple->t_len = tuple_len;
-	ItemPointerSet(&tuple->t_self, ItemPointerGetBlockNumber(tid), offnum);
-	memcpy(tuple->t_data,
-		   ((ZHeapTupleHeader) PageGetItem((Page) dp, lp)), tuple_len);
+	tuple = zheap_gettuple(relation, buffer, offnum);
 
 	if (tuple->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
 		tuple_inplace_updated = true;

@@ -4284,21 +4284,7 @@ lock_tuple:
 			goto next;
 		}
 		else
-		{
-			mytup = palloc(ZHEAPTUPLESIZE + ItemIdGetLength(lp));
-			mytup->t_data = (ZHeapTupleHeader) ((char *) (mytup) + ZHEAPTUPLESIZE);
-			mytup->t_len = ItemIdGetLength(lp);
-			mytup->t_tableOid = RelationGetRelid(rel);
-			ItemPointerSet(&(mytup->t_self), BufferGetBlockNumber(buf), offnum);
-
-			/*
-			 * We always need to make a copy of zheap tuple as once we release
-			 * the lock on buffer an in-place update can change the tuple.
-			 */
-			memcpy(mytup->t_data,
-				   ((ZHeapTupleHeader) PageGetItem(page, lp)),
-				   ItemIdGetLength(lp));
-		}
+			mytup = zheap_gettuple(rel, buf, offnum);
 
 		ZHeapTupleGetTransInfo(mytup, buf, false, &zinfo);
 		tup_trans_slot = zinfo.trans_slot;
@@ -8271,7 +8257,6 @@ zheap_get_latest_tid(Relation relation,
 	BlockNumber blk;
 	ItemPointerData ctid;
 	TransactionId priorXmax;
-	int			tup_len;
 
 	/* this is to avoid Assert failures on bad input */
 	if (!ItemPointerIsValid(tid))
@@ -8339,15 +8324,7 @@ zheap_get_latest_tid(Relation relation,
 		 * We always need to make a copy of zheap tuple; if an older version
 		 * is returned from the undo record, the passed in tuple gets freed.
 		 */
-		tup_len = ItemIdGetLength(lp);
-		tp = palloc(ZHEAPTUPLESIZE + tup_len);
-		tp->t_data = (ZHeapTupleHeader) (((char *) tp) + ZHEAPTUPLESIZE);
-		tp->t_tableOid = RelationGetRelid(relation);
-		tp->t_len = tup_len;
-		tp->t_self = ctid;
-
-		memcpy(tp->t_data, ((ZHeapTupleHeader) PageGetItem(page, lp)),
-			   tup_len);
+		tp = zheap_gettuple(relation, buffer, offnum);
 
 		/* Save the infomask. The tuple might get freed, as mentioned above */
 		infomask = tp->t_data->t_infomask;
