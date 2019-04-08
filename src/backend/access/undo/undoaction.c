@@ -35,6 +35,7 @@
 #define ROLLBACK_HT_SIZE	1024
 
 static void RollbackHTRemoveEntry(UndoRecPtr start_urec_ptr);
+static bool RollbackHTRequestExist(UndoRecPtr start_urec_ptr);
 
 /* This is the hash table to store all the rollabck requests. */
 static HTAB *RollbackHT;
@@ -396,6 +397,15 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		 */
 		if (!ConditionTransactionUndoActionLock(xid))
 			return;
+		/*
+		 * If we have come to execute undo actions from the worker then just
+		 * confirm whether the undo request is still pending in the hash table
+		 * or it's already completed because there is a possibility that the
+		 * backend has applied the undo action and rewound the insert pointer
+		 * and that might get used by another transaction.
+		 */
+		if (!rewind && !RollbackHTRequestExist(from_urecptr))
+			return;
 	}
 
 	/*
@@ -531,18 +541,15 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 
 	if (nopartial)
 	{
+		/* Undo action is applied so delete the hash table entry. */
+		RollbackHTRemoveEntry(from_urecptr);
+
 		/*
 		 * Set undo action apply completed in the transaction header if this
 		 * is a main transaction and we have not rewound its undo.
 		 */
 		if (!rewind)
 		{
-			/*
-			 * Undo action is applied so delete the hash table entry and
-			 * release the undo action lock.
-			 */
-			RollbackHTRemoveEntry(from_urecptr);
-
 			/*
 			 * Prepare and update the progress of the undo action apply in the
 			 * transaction header.
@@ -841,6 +848,27 @@ RollbackHTCleanup(Oid dbid)
 	}
 
 	LWLockRelease(RollbackHTLock);
+}
+
+/*
+ * RollbackHTRequestExist - Check whether the rollback request exist in the
+ * rollback hash table or not.
+ */
+static bool
+RollbackHTRequestExist(UndoRecPtr start_urec_ptr)
+{
+	RollbackHashEntry	*rh;
+
+	LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
+
+	rh = (RollbackHashEntry *) hash_search(RollbackHT, &start_urec_ptr,
+										   HASH_FIND, NULL);
+	LWLockRelease(RollbackHTLock);
+
+	if (rh == NULL)
+		return false;
+
+	return true;
 }
 
 /*
