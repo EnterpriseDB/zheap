@@ -1294,7 +1294,6 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 	{
 		ItemId		itemid;
 		ZHeapTuple	targtuple;
-		Size		targztuple_len;
 		bool		sample_it = false;
 		TransactionId xid;
 
@@ -1324,17 +1323,8 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 		}
 
 		/* Allocate memory for target tuple. */
-		targztuple_len = ItemIdGetLength(itemid);
-		targtuple = palloc(ZHEAPTUPLESIZE + targztuple_len);
-		targtuple->t_len = targztuple_len;
-		targtuple->t_data = (ZHeapTupleHeader) ((char *) targtuple + ZHEAPTUPLESIZE);
-		targtuple->t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
-		ItemPointerSet(&targtuple->t_self, scan->rs_cblock, scan->rs_cindex);
-
-		/* Copy target tuple data. */
-		memcpy(targtuple->t_data,
-			   ((ZHeapTupleHeader) PageGetItem((Page) targpage, itemid)),
-			   targztuple_len);
+		targtuple = zheap_gettuple(scan->rs_base.rs_rd, scan->rs_cbuf,
+								   scan->rs_cindex);
 
 		switch (ZHeapTupleSatisfiesOldestXmin(&targtuple, OldestXmin, scan->rs_cbuf, &xid, NULL))
 		{
@@ -1574,8 +1564,7 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 			{
 				ItemId		itemid;
 				bool		visible;
-				ZHeapTuple	loctup = NULL;
-				Size		loctup_len;
+				ZHeapTuple	loctup;
 				ItemPointerData tid;
 
 				/* Skip invalid tuple pointers. */
@@ -1583,24 +1572,9 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 				if (!ItemIdIsNormal(itemid))
 					continue;
 
-				ItemPointerSet(&tid, blockno, tupoffset);
-				loctup_len = ItemIdGetLength(itemid);
-
-				loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
-				loctup->t_data = (ZHeapTupleHeader) ((char *) loctup +
-													 ZHEAPTUPLESIZE);
-
-				loctup->t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
-				loctup->t_len = loctup_len;
-				loctup->t_self = tid;
-
-				/*
-				 * We always need to make a copy of zheap tuple as once we
-				 * release the buffer an in-place update can change the tuple.
-				 */
-				memcpy(loctup->t_data,
-					   ((ZHeapTupleHeader) PageGetItem((Page) page, itemid)),
-					   loctup->t_len);
+				loctup = zheap_gettuple(scan->rs_base.rs_rd, scan->rs_cbuf,
+										tupoffset);
+				tid = loctup->t_self;
 
 				if (all_visible)
 				{

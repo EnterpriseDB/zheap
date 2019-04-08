@@ -559,3 +559,35 @@ zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
 	((PageHeader) page)->pd_lower =
 		((char *) metap + sizeof(ZHeapMetaPageData)) - (char *) page;
 }
+
+/*
+ * zheap_gettuple
+ *
+ * Copy a raw tuple from a zheap page, forming a ZHeapTuple.
+ */
+ZHeapTuple
+zheap_gettuple(Relation relation, Buffer buffer, OffsetNumber offnum)
+{
+	Page	dp;
+	ItemId	lp;
+	Size	tuple_len;
+	ZHeapTupleHeader	item;
+	ZHeapTuple	tuple;
+
+	dp = BufferGetPage(buffer);
+	lp = PageGetItemId(dp, offnum);
+
+	Assert(offnum >= FirstOffsetNumber && offnum <= PageGetMaxOffsetNumber(dp));
+	Assert(ItemIdIsNormal(lp));
+
+	tuple_len = ItemIdIsDeleted(lp) ? 0 : ItemIdGetLength(lp);
+	tuple = palloc(ZHEAPTUPLESIZE + tuple_len);
+	tuple->t_tableOid = RelationGetRelid(relation);
+	tuple->t_len = tuple_len;
+	ItemPointerSet(&tuple->t_self, BufferGetBlockNumber(buffer), offnum);
+	item = (ZHeapTupleHeader) PageGetItem(dp, lp);
+	tuple->t_data = (ZHeapTupleHeader) ((char *) tuple + ZHEAPTUPLESIZE);
+	memcpy(tuple->t_data, item, tuple_len);
+
+	return tuple;
+}

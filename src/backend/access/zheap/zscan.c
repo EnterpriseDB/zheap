@@ -453,7 +453,6 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 		{
 			ZHeapTuple	loctup = NULL;
 			ZHeapTuple	resulttup = NULL;
-			Size		loctup_len;
 			bool		valid = false;
 			ItemPointerData	tid;
 
@@ -475,22 +474,7 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 			}
 			else
 			{
-				loctup_len = ItemIdGetLength(lpp);
-
-				loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
-				loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
-
-				loctup->t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
-				loctup->t_len = loctup_len;
-				loctup->t_self = tid;
-
-				/*
-				 * We always need to make a copy of zheap tuple as once we
-				 * release the buffer, an in-place update can change the tuple.
-				 */
-				memcpy(loctup->t_data,
-					   ((ZHeapTupleHeader) PageGetItem((Page) dp, lpp)),
-					   loctup->t_len);
+				loctup = zheap_gettuple(scan->rs_base.rs_rd, buffer, lineoff);
 
 				if (all_visible)
 				{
@@ -961,28 +945,11 @@ get_next_tuple:
 		if (ItemIdIsNormal(lpp))
 		{
 			ZHeapTuple	tuple = NULL;
-			ZHeapTuple loctup = NULL;
-			Size		loctup_len;
+			ZHeapTuple	loctup;
 			bool		valid = false;
-			ItemPointerData	tid;
 
-			ItemPointerSet(&tid, page, lineoff);
-
-			loctup_len = ItemIdGetLength(lpp);
-
-			loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
-			loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
-
-			loctup->t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
-			loctup->t_len = loctup_len;
-			loctup->t_self = tid;
-
-			/*
-			 * We always need to make a copy of zheap tuple as once we release
-			 * the buffer an in-place update can change the tuple.
-			 */
-			memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lpp)), loctup->t_len);
-
+			loctup = zheap_gettuple(scan->rs_base.rs_rd, scan->rs_cbuf,
+									lineoff);
 			tuple = ZHeapTupleSatisfies(loctup, snapshot, scan->rs_cbuf, NULL);
 			valid = tuple ? true : false;
 
@@ -995,7 +962,7 @@ get_next_tuple:
 			 * we're seeing some prior version of that. We handle that case
 			 * in ZHeapTupleHasSerializableConflictOut.
 			 */
-			CheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tid,
+			CheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tuple->t_self,
 											scan->rs_cbuf, snapshot);
 
 			if (valid)
@@ -1282,7 +1249,6 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 			ItemId		lpp;
 			ZHeapTuple	loctup = NULL;
 			ZHeapTuple	resulttup = NULL;
-			Size		loctup_len;
 			bool		valid = false;
 			ItemPointerData tid;
 
@@ -1290,21 +1256,8 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 			if (!ItemIdIsNormal(lpp))
 				continue;
 
-			ItemPointerSet(&tid, page, offnum);
-			loctup_len = ItemIdGetLength(lpp);
-
-			loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
-			loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
-
-			loctup->t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
-			loctup->t_len = loctup_len;
-			loctup->t_self = tid;
-
-			/*
-			 * We always need to make a copy of zheap tuple as once we release
-			 * the buffer an in-place update can change the tuple.
-			 */
-			memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lpp)), loctup->t_len);
+			loctup = zheap_gettuple(scan->rs_base.rs_rd, buffer, offnum);
+			tid = loctup->t_self;
 
 			resulttup = ZHeapTupleSatisfies(loctup, snapshot, buffer, NULL);
 			valid = resulttup ? true : false;
@@ -1385,7 +1338,6 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	ZHeapTuple	loctup = NULL;
 	ZHeapTupleData	loctup_tmp;
 	ZHeapTuple	resulttup = NULL;
-	Size		loctup_len;
 
 	if (all_dead)
 		*all_dead = false;
@@ -1422,20 +1374,7 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	}
 	else
 	{
-		loctup_len = ItemIdGetLength(lp);
-
-		loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
-		loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
-
-		loctup->t_tableOid = RelationGetRelid(relation);
-		loctup->t_len = loctup_len;
-		loctup->t_self = *tid;
-
-		/*
-		 * We always need to make a copy of zheap tuple as once we release the
-		 * buffer an in-place update can change the tuple.
-		 */
-		memcpy(loctup->t_data, ((ZHeapTupleHeader) PageGetItem((Page) dp, lp)), loctup->t_len);
+		loctup = zheap_gettuple(relation, buffer, offnum);
 
 		/* If it's visible per the snapshot, we must return it */
 		resulttup = ZHeapTupleSatisfies(loctup, snapshot, buffer, NULL);
@@ -1529,7 +1468,6 @@ zheap_fetch(Relation relation,
 	ItemId		lp;
 	Buffer		buffer;
 	Page		page;
-	Size		tup_len;
 	OffsetNumber offnum;
 	bool		valid;
 	ItemPointerData	ctid;
@@ -1603,20 +1541,8 @@ zheap_fetch(Relation relation,
 		/*
 		 * fill in *tuple fields
 		 */
-		tup_len = ItemIdGetLength(lp);
+		*tuple = zheap_gettuple(relation, buffer, offnum);
 
-		*tuple = palloc(ZHEAPTUPLESIZE + tup_len);
-		(*tuple)->t_data = (ZHeapTupleHeader) ((char *) (*tuple) + ZHEAPTUPLESIZE);
-
-		(*tuple)->t_tableOid = RelationGetRelid(relation);
-		(*tuple)->t_len = tup_len;
-		(*tuple)->t_self = *tid;
-
-		/*
-		 * We always need to make a copy of zheap tuple as once we release
-		 * the lock on buffer an in-place update can change the tuple.
-		 */
-		memcpy((*tuple)->t_data, ((ZHeapTupleHeader) PageGetItem(page, lp)), tup_len);
 		ItemPointerSetInvalid(&ctid);
 
 		/*
