@@ -146,11 +146,11 @@ SELECT a FROM arrtest ORDER BY a;
 (4 rows)
 
 UPDATE arrtest SET a[4] = NULL WHERE a[2] IS NULL;
-SELECT a FROM arrtest WHERE a[2] IS NULL;
+SELECT a FROM arrtest WHERE a[2] IS NULL ORDER BY a;
         a        
 -----------------
- [4:4]={NULL}
  {1,NULL,3,NULL}
+ [4:4]={NULL}
 (2 rows)
 
 DELETE FROM arrtest WHERE a[2] IS NULL AND b IS NULL;

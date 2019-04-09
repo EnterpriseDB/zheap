@@ -93,7 +93,7 @@ SELECT b[1:1][2][2],
 INSERT INTO arrtest(a) VALUES('{1,null,3}');
 SELECT a FROM arrtest ORDER BY a;
 UPDATE arrtest SET a[4] = NULL WHERE a[2] IS NULL;
-SELECT a FROM arrtest WHERE a[2] IS NULL;
+SELECT a FROM arrtest WHERE a[2] IS NULL ORDER BY a;
 DELETE FROM arrtest WHERE a[2] IS NULL AND b IS NULL;
 SELECT a,b,c FROM arrtest;
 
