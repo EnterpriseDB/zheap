@@ -217,7 +217,11 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 			LWLockRelease(&log->discard_lock);
 
 			if (need_discard)
+			{
+				LWLockAcquire(&log->discard_update_lock, LW_EXCLUSIVE);
 				UndoLogDiscard(undo_recptr, latest_discardxid);
+				LWLockRelease(&log->discard_update_lock);
+			}
 
 			break;
 		}
