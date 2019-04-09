@@ -624,15 +624,6 @@ zheap_xlog_update(XLogReaderState *record)
 	initStringInfo(&undorecord.uur_tuple);
 
 	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &oldtup.t_len,
-						   sizeof(uint32));
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &oldtup.t_self,
-						   sizeof(ItemPointerData));
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &oldtup.t_tableOid,
-						   sizeof(Oid));
-	appendBinaryStringInfo(&undorecord.uur_tuple,
 						   (char *) oldtup.t_data,
 						   oldtup.t_len);
 
