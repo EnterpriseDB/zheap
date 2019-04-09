@@ -1156,8 +1156,6 @@ zheap_tuple_updated:
 		xl_zheap_header xlhdr;
 		XLogRecPtr	recptr;
 		XLogRecPtr	RedoRecPtr;
-		uint32		totalundotuplen = 0;
-		Size		dataoff;
 		bool		doPageWrites;
 
 		/*
@@ -1198,9 +1196,7 @@ prepare_xlog:
 		{
 			xlrec.flags |= XLZ_HAS_DELETE_UNDOTUPLE;
 
-			totalundotuplen = *((uint32 *) &undorecord.uur_tuple.data[0]);
-			dataoff = sizeof(uint32) + sizeof(ItemPointerData) + sizeof(Oid);
-			zhtuphdr = (ZHeapTupleHeader) & undorecord.uur_tuple.data[dataoff];
+			zhtuphdr = (ZHeapTupleHeader) undorecord.uur_tuple.data;
 
 			xlhdr.t_infomask2 = zhtuphdr->t_infomask2;
 			xlhdr.t_infomask = zhtuphdr->t_infomask;
@@ -1220,7 +1216,7 @@ prepare_xlog:
 			XLogRegisterData((char *) &xlhdr, SizeOfZHeapHeader);
 			/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
 			XLogRegisterData((char *) zhtuphdr + SizeofZHeapTupleHeader,
-							 totalundotuplen - SizeofZHeapTupleHeader);
+							 undorecord.uur_tuple.len - SizeofZHeapTupleHeader);
 		}
 
 		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
@@ -2582,22 +2578,13 @@ reacquire_buffer:
 	initStringInfo(&undorecord.uur_tuple);
 
 	/*
-	 * Copy the entire old tuple including it's header in the undo record. We
+	 * Copy the entire old tuple into the undo record. We
 	 * need this to reconstruct the old tuple if current tuple is not visible
 	 * to some other transaction.  We choose to write the complete tuple in
 	 * undo record for update operation so that we can reuse the space of old
 	 * tuples for non-inplace-updates after the transaction performing the
 	 * operation commits.
 	 */
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &oldtup.t_len,
-						   sizeof(uint32));
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &oldtup.t_self,
-						   sizeof(ItemPointerData));
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) &oldtup.t_tableOid,
-						   sizeof(Oid));
 	appendBinaryStringInfo(&undorecord.uur_tuple,
 						   (char *) oldtup.t_data,
 						   oldtup.t_len);
@@ -5511,21 +5498,12 @@ zheap_prepare_undodelete(ZHeapPrepareUndoInfo * zhUndoInfo, ZHeapTuple zhtup,
 	initStringInfo(&undorecord->uur_tuple);
 
 	/*
-	 * Copy the entire old tuple including it's header in the undo record. We
+	 * Copy the entire old tuple into the undo record. We
 	 * need this to reconstruct the tuple if current tuple is not visible to
 	 * some other transaction.  We choose to write the complete tuple in undo
 	 * record for delete operation so that we can reuse the space after the
 	 * transaction performing the operation commits.
 	 */
-	appendBinaryStringInfo(&undorecord->uur_tuple,
-						   (char *) &zhtup->t_len,
-						   sizeof(uint32));
-	appendBinaryStringInfo(&undorecord->uur_tuple,
-						   (char *) &zhtup->t_self,
-						   sizeof(ItemPointerData));
-	appendBinaryStringInfo(&undorecord->uur_tuple,
-						   (char *) &zhtup->t_tableOid,
-						   sizeof(Oid));
 	appendBinaryStringInfo(&undorecord->uur_tuple,
 						   (char *) zhtup->t_data,
 						   zhtup->t_len);
@@ -5747,14 +5725,10 @@ log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 	char	   *newp = NULL;
 	int			oldlen,
 				newlen;
-	uint32		totalundotuplen;
-	Size		dataoff;
 	int			bufflags = REGBUF_STANDARD;
 	uint8		info = XLOG_ZHEAP_UPDATE;
 
-	totalundotuplen = *((uint32 *) &undorecord.uur_tuple.data[0]);
-	dataoff = sizeof(uint32) + sizeof(ItemPointerData) + sizeof(Oid);
-	zhtuphdr = (ZHeapTupleHeader) & undorecord.uur_tuple.data[dataoff];
+	zhtuphdr = (ZHeapTupleHeader) undorecord.uur_tuple.data;
 
 	if (inplace_update)
 	{
@@ -5763,7 +5737,7 @@ log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 		 * tuple is replaced in page where old tuple was present.
 		 */
 		oldp = (char *) zhtuphdr + zhtuphdr->t_hoff;
-		oldlen = totalundotuplen - zhtuphdr->t_hoff;
+		oldlen = undorecord.uur_tuple.len - zhtuphdr->t_hoff;
 		newp = (char *) oldtup->t_data + oldtup->t_data->t_hoff;
 		newlen = oldtup->t_len - oldtup->t_data->t_hoff;
 
@@ -5904,7 +5878,7 @@ prepare_xlog:
 		XLogRegisterData((char *) &xlundotuphdr, SizeOfZHeapHeader);
 		/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
 		XLogRegisterData((char *) zhtuphdr + SizeofZHeapTupleHeader,
-						 totalundotuplen - SizeofZHeapTupleHeader);
+						 undorecord.uur_tuple.len - SizeofZHeapTupleHeader);
 	}
 
 	XLogRegisterBuffer(0, newbuf, bufflags);
