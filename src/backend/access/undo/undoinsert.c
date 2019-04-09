@@ -376,14 +376,18 @@ UndoRecordUpdateTransInfo(int idx)
 	urec_ptr = xact_urec_info[idx].urecptr;
 
 	/*
-	 * Acquire the discard lock before accessing the undo record so that
-	 * discard worker can't remove the record while we are in process of
+	 * Acquire the discard_update_lock before accessing the undo record so
+	 * that discard worker can't remove the record while we are in process of
 	 * reading it.
 	 */
-	LWLockAcquire(&log->discard_lock, LW_SHARED);
-
-	if (!UndoRecordIsValid(urec_ptr))
+	LWLockAcquire(&log->discard_update_lock, LW_SHARED);
+	/* Check if it is already discarded. */
+	if (UndoLogIsDiscarded(urec_ptr))
+	{
+		/* Release lock and return. */
+		LWLockRelease(&log->discard_update_lock);
 		return;
+	}
 
 	/*
 	 * Update the next transactions start urecptr in the transaction header.
@@ -441,7 +445,7 @@ UndoRecordUpdateTransInfo(int idx)
 		Assert(idx < MAX_BUFFER_PER_UNDO);
 	} while (true);
 
-	LWLockRelease(&log->discard_lock);
+	LWLockRelease(&log->discard_update_lock);
 }
 
 /*
