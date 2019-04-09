@@ -158,24 +158,15 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup,
 		case UNDO_UPDATE:
 		case UNDO_INPLACE_UPDATE:
 			{
-				Size		offset = 0;
-				uint32		undo_tup_len;
-
-				undo_tup_len = *((uint32 *) &urec->uur_tuple.data[offset]);
-
-				undo_tup = palloc(ZHEAPTUPLESIZE + undo_tup_len);
-				undo_tup->t_data = (ZHeapTupleHeader) ((char *) undo_tup + ZHEAPTUPLESIZE);
-
-				memcpy(&undo_tup->t_len, &urec->uur_tuple.data[offset], sizeof(uint32));
-				offset += sizeof(uint32);
-
-				memcpy(&undo_tup->t_self, &urec->uur_tuple.data[offset], sizeof(ItemPointerData));
-				offset += sizeof(ItemPointerData);
-
-				memcpy(&undo_tup->t_tableOid, &urec->uur_tuple.data[offset], sizeof(Oid));
-				offset += sizeof(Oid);
-
-				memcpy(undo_tup->t_data, (ZHeapTupleHeader) & urec->uur_tuple.data[offset], undo_tup_len);
+				undo_tup = palloc(ZHEAPTUPLESIZE + urec->uur_tuple.len);
+				undo_tup->t_len = urec->uur_tuple.len;
+				ItemPointerSet(&undo_tup->t_self,
+							   urec->uur_block, urec->uur_offset);
+				undo_tup->t_tableOid = urec->uur_reloid;
+				undo_tup->t_data = (ZHeapTupleHeader)
+					((char *) undo_tup + ZHEAPTUPLESIZE);
+				memcpy(undo_tup->t_data, urec->uur_tuple.data,
+					   urec->uur_tuple.len);
 			}
 			break;
 		default:
@@ -1299,20 +1290,13 @@ RestoreTupleFromUndoRecord(UnpackedUndoRecord *urec, Page page,
 		case UNDO_UPDATE:
 		case UNDO_INPLACE_UPDATE:
 			{
-				uint32		undo_tup_len;
-				Size		offset = 0;
-
-				undo_tup_len = *((uint32 *) &urec->uur_tuple.data[offset]);
+				uint32		undo_tup_len = urec->uur_tuple.len;
 
 				/* change the item id length */
 				ItemIdChangeLen(lp, undo_tup_len);
 
-				/* skip ctid and tableoid stored in undo tuple */
-				offset += sizeof(uint32) + sizeof(ItemPointerData) +
-					sizeof(Oid);
-				memcpy(zhtup,
-					   (ZHeapTupleHeader) & urec->uur_tuple.data[offset],
-					   undo_tup_len);
+				/* restore data bytes */
+				memcpy(zhtup, urec->uur_tuple.data, undo_tup_len);
 			}
 			break;
 		case UNDO_INSERT:
