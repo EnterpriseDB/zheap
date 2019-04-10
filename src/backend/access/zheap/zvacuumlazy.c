@@ -260,7 +260,7 @@ reacquire_slot:
 											   &prev_urecptr,
 											   &lock_reacquired,
 											   false,
-											   true,
+											   InvalidBuffer,
 											   NULL);
 	if (lock_reacquired)
 		goto reacquire_slot;
