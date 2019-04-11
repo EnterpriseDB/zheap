@@ -37,7 +37,7 @@ static void RestoreXactFromUndoRecord(UnpackedUndoRecord *urec, Buffer buffer,
 						  bool tpd_offset_map,
 						  bool *is_tpd_map_updated);
 static int TransSlotFromUndoRecord(UnpackedUndoRecord *urec,
-						ZHeapTuple zhtup, Page page);
+						ZHeapTupleHeader hdr, Page page);
 
 /*
  * Per-undorecord callback from UndoFetchRecord to check whether
@@ -175,19 +175,47 @@ CopyTupleFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup,
 	if (free_zhtup)
 		zheap_freetuple(zhtup);
 	if (trans_slot_id)
-		*trans_slot_id = TransSlotFromUndoRecord(urec, undo_tup, page);
+		*trans_slot_id = TransSlotFromUndoRecord(urec, undo_tup->t_data, page);
 
 	return undo_tup;
 }
 
 /*
+ * UpdateTupleHeaderFromUndoRecord
+ *
+ * Update the caller-supplied tuple header using the information from the
+ * undo record supplied by the caller.  This is basically a cut-down version
+ * of CopyTupleFromUndoRecord for callers that don't care about the whole
+ * tuple.  The updated transaction slot information for the tuple is returned.
+ */
+int
+UpdateTupleHeaderFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTupleHeader hdr,
+								Page page)
+{
+	if (urec->uur_type == UNDO_INSERT)
+	{
+		Assert(ZHEAP_XID_IS_LOCKED_ONLY(hdr->t_infomask));
+		hdr->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
+	}
+	else
+	{
+		Assert(urec->uur_tuple.len >= SizeofZHeapTupleHeader);
+		memcpy(hdr, urec->uur_tuple.data, SizeofZHeapTupleHeader);
+	}
+
+	return TransSlotFromUndoRecord(urec, hdr, page);
+}
+
+/*
  * Extract transaction slot information from an undo record.
  *
- * 'zhtup' must be the tuple reconstructed by CopyTupleFromUndoRecord; for
- * an inserted record it may instead be the tuple taken from the page.
+ * 'hdr' must be the reconstructed tuple header; see CopyTupleFromUndoRecord
+ * or UpdateTupleHeaderFromUndoRecord.  For an inserted record it could
+ * instead be the tuple taken from the page itself.
  */
 static int
-TransSlotFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup, Page page)
+TransSlotFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTupleHeader hdr,
+						Page page)
 {
 	int trans_slot_id;
 
@@ -197,7 +225,7 @@ TransSlotFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup, Page page)
 		 * There is no slot information in the payload, so just extract it
 		 * from the tuple itself.
 		 */
-		trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
+		trans_slot_id = ZHeapTupleHeaderGetXactSlot(hdr);
 	}
 	else
 	{
@@ -262,7 +290,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 				   TransactionId priorXmax, bool nobuflock)
 {
 	ZHeapTupleData zhtup;
-	ZHeapTuple	undo_tup = NULL;
+	ZHeapTupleHeaderData hdr;
 	ItemPointer tid = &(tuple->t_self);
 	ItemId		lp;
 	Page		page;
@@ -311,9 +339,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 
 		/*
 		 * XXX for now we shall get a visible undo tuple for the given dirty
-		 * snapshot. The tuple data is needed below in CopyTupleFromUndoRecord
-		 * and some undo records will not have tuple data and mask info with
-		 * them.
+		 * snapshot. This is a waste; we really only need the tuple header.
 		 */
 		vis_tuple = ZHeapGetVisibleTuple(offnum, snapshot, buf, NULL);
 		Assert(vis_tuple != NULL);
@@ -339,7 +365,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		goto tuple_is_valid;
 	}
 
-	undo_tup = &zhtup;
+	memcpy(&hdr, zhtup.t_data, SizeofZHeapTupleHeader);
 
 	/*
 	 * Current xid on tuple must not precede RecentGlobalXmin as it will be
@@ -358,8 +384,8 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		Assert(prev_trans_slot_id != ZHTUP_SLOT_FROZEN);
 
 		urec = UndoFetchRecord(zinfo.urec_ptr,
-							   ItemPointerGetBlockNumber(&undo_tup->t_self),
-							   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+							   ItemPointerGetBlockNumber(tid),
+							   ItemPointerGetOffsetNumber(tid),
 							   zinfo.xid,
 							   NULL,
 							   ZHeapSatisfyUndoRecord);
@@ -378,11 +404,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 			break;
 		}
 
-		/* don't free the tuple passed by caller */
-		undo_tup =
-			CopyTupleFromUndoRecord(urec, undo_tup, &zinfo.trans_slot,
-									(undo_tup) == (&zhtup) ? false : true,
-									page);
+		zinfo.trans_slot = UpdateTupleHeaderFromUndoRecord(urec, &hdr, page);
 
 		Assert(!TransactionIdPrecedes(urec->uur_prevxid, RecentGlobalXmin));
 
@@ -396,22 +418,19 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		 */
 		if (prev_trans_slot_id != zinfo.trans_slot)
 			ZHeapUpdateTransactionSlotInfo(zinfo.trans_slot, buf,
-										   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+										   ItemPointerGetOffsetNumber(tid),
 										   &zinfo);
 
 		/*
 		 * If the tuple has invalid xact flag, we may have to fetch the
 		 * correct xact info from other slot.
 		 */
-		if (ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
+		if (ZHeapTupleHasInvalidXact(hdr.t_infomask))
 			FetchTransInfoFromUndo(BufferGetBlockNumber(buf), offnum,
 								   zinfo.xid, &zinfo);
 	} while (UndoRecPtrIsValid(zinfo.urec_ptr));
 
 tuple_is_valid:
-	if (undo_tup && undo_tup != &zhtup)
-		pfree(undo_tup);
-
 	if (nobuflock)
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 

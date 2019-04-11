@@ -5317,7 +5317,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 	BlockNumber blk;
 	OffsetNumber offnum;
 	UnpackedUndoRecord *urec;
-	ZHeapTuple	undo_tup;
+	ZHeapTupleHeaderData hdr;
 	ZHeapTupleTransInfo zinfo;
 
 	zinfo.trans_slot = ZHeapTupleHeaderGetXactSlot(zhtup->t_data);
@@ -5325,7 +5325,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 	offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
 	GetTransactionSlotInfo(buffer, offnum, zinfo.trans_slot, true, false,
 						   &zinfo);
-	undo_tup = zhtup;
+	memcpy(&hdr, zhtup->t_data, SizeofZHeapTupleHeader);
 	zinfo.xid = InvalidTransactionId;
 
 	while (true)
@@ -5358,16 +5358,14 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 			break;
 		}
 
-		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
-										   (undo_tup) == (zhtup) ? false : true,
-										   BufferGetPage(buffer));
+		trans_slot_id =
+			UpdateTupleHeaderFromUndoRecord(urec, &hdr, BufferGetPage(buffer));
 
 		zinfo.xid = urec->uur_prevxid;
 		zinfo.urec_ptr = urec->uur_blkprev;
 		UndoRecordRelease(urec);
 		if (!UndoRecPtrIsValid(zinfo.urec_ptr))
 		{
-			zheap_freetuple(undo_tup);
 			result = FrozenTransactionId;
 			break;
 		}
@@ -5379,10 +5377,8 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 		 */
 		if (trans_slot_id != zinfo.trans_slot)
 			ZHeapUpdateTransactionSlotInfo(trans_slot_id,
-										   buffer,
-										   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+										   buffer, offnum,
 										   &zinfo);
-		zhtup = undo_tup;
 	}
 
 	return result;
