@@ -35,14 +35,14 @@ List *
 ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 								   UndoRecPtr urec_ptr)
 {
-	ZHeapTuple	undo_tup;
+	ZHeapTupleHeaderData	hdr;
 	UnpackedUndoRecord *urec = NULL;
 	ZMultiLockMember *mlmember;
 	List	   *multilockmembers = NIL;
 	int			trans_slot_id = -1;
 	uint8		uur_type;
 
-	undo_tup = zhtup;
+	memcpy(&hdr, zhtup->t_data, SizeofZHeapTupleHeader);
 	do
 	{
 		urec = UndoFetchRecord(urec_ptr,
@@ -60,7 +60,6 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 		if (!TransactionIdIsCurrentTransactionId(urec->uur_xid))
 			break;
 
-
 		uur_type = urec->uur_type;
 
 		if (uur_type == UNDO_INSERT || uur_type == UNDO_MULTI_INSERT)
@@ -72,10 +71,7 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 			break;
 		}
 
-		/* don't free the tuple passed by caller */
-		undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
-										   (undo_tup) == (zhtup) ? false : true,
-										   NULL);
+		trans_slot_id = UpdateTupleHeaderFromUndoRecord(urec, &hdr, NULL);
 
 		if (uur_type == UNDO_XID_LOCK_ONLY ||
 			uur_type == UNDO_XID_LOCK_FOR_UPDATE ||
@@ -94,7 +90,7 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 			mlmember->xid = urec->uur_xid;
 			mlmember->trans_slot_id = trans_slot;
 
-			if (ZHEAP_XID_IS_EXCL_LOCKED(undo_tup->t_data->t_infomask))
+			if (ZHEAP_XID_IS_EXCL_LOCKED(hdr.t_infomask))
 				mlmember->mode = LockTupleExclusive;
 			else
 				mlmember->mode = LockTupleNoKeyExclusive;
@@ -138,8 +134,6 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 		UndoRecordRelease(urec);
 		urec = NULL;
 	}
-	if (undo_tup && undo_tup != zhtup)
-		pfree(undo_tup);
 
 	return multilockmembers;
 }
@@ -157,7 +151,7 @@ List *
 ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 					 bool nobuflock)
 {
-	ZHeapTuple	undo_tup;
+	ZHeapTupleHeaderData hdr;
 	UnpackedUndoRecord *urec = NULL;
 	UndoRecPtr	urec_ptr;
 	ZMultiLockMember *mlmember;
@@ -221,7 +215,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 		urec_ptr = trans_slots[slot_no].urec_ptr;
 		trans_slot_id = slot_no + 1;
-		undo_tup = zhtup;
+		memcpy(&hdr, zhtup->t_data, SizeofZHeapTupleHeader);
 
 		/*
 		 * If the page contains TPD slots and it's not pruned, the last slot
@@ -336,9 +330,8 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				break;
 			}
 
-			/* don't free the tuple passed by caller */
-			undo_tup = CopyTupleFromUndoRecord(urec, undo_tup, &trans_slot_id,
-											   (undo_tup) == (zhtup) ? false : true,
+			trans_slot_id =
+				UpdateTupleHeaderFromUndoRecord(urec, &hdr, 
 											   BufferGetPage(buf));
 
 			if (uur_type == UNDO_XID_LOCK_ONLY ||
@@ -360,7 +353,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				mlmember->subxid = subxid;
 				mlmember->trans_slot_id = prev_trans_slot_id;
 
-				if (ZHEAP_XID_IS_EXCL_LOCKED(undo_tup->t_data->t_infomask))
+				if (ZHEAP_XID_IS_EXCL_LOCKED(hdr.t_infomask))
 					mlmember->mode = LockTupleExclusive;
 				else
 					mlmember->mode = LockTupleNoKeyExclusive;
@@ -409,9 +402,6 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			UndoRecordRelease(urec);
 			urec = NULL;
 		}
-
-		if (undo_tup && undo_tup != zhtup)
-			pfree(undo_tup);
 	}
 
 	/* be tidy */
