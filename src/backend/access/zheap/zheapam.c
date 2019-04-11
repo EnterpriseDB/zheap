@@ -861,7 +861,8 @@ check_tup_satisfies_update:
 					zheap_exec_pending_rollback(relation,
 												buffer,
 												xwait_trans_slot,
-												xwait);
+												xwait,
+												NULL);
 
 				if (!isCommitted)
 				{
@@ -1760,7 +1761,7 @@ check_tup_satisfies_update:
 				 */
 				if (isAborted &&
 					zheap_exec_pending_rollback(relation, buffer,
-												xwait_trans_slot, xwait))
+												xwait_trans_slot, xwait, NULL))
 					goto check_tup_satisfies_update;
 			}
 
@@ -1857,8 +1858,8 @@ check_tup_satisfies_update:
 			 * yet, then apply them before modifying the page.
 			 */
 			if (!isCommitted)
-				zheap_exec_pending_rollback(relation, buffer,
-											xwait_trans_slot, xwait);
+				zheap_exec_pending_rollback(relation, buffer, xwait_trans_slot,
+											xwait, NULL);
 
 			if (!isCommitted)
 			{
@@ -3769,8 +3770,8 @@ check_tup_satisfies_update:
 			 * yet, then apply them before modifying the page.
 			 */
 			if (!TransactionIdIsCurrentTransactionId(xwait))
-				zheap_exec_pending_rollback(relation, *buffer,
-											xwait_trans_slot, xwait);
+				zheap_exec_pending_rollback(relation, *buffer, xwait_trans_slot,
+											xwait, NULL);
 
 			if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask, tup_xid,
 											&single_locker_xid, NULL, &zhtup))
@@ -4090,7 +4091,7 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		 * For aborted transaction, if the undo actions are not applied yet,
 		 * then apply them before modifying the page.
 		 */
-		zheap_exec_pending_rollback(rel, buf, trans_slot_id, xid);
+		zheap_exec_pending_rollback(rel, buf, trans_slot_id, xid, NULL);
 
 		/*
 		 * If it was only a locker, then the lock is completely gone now and
@@ -8617,7 +8618,8 @@ copy_zrelation_data(Relation srcRel, SMgrRelation dst)
 			/* If it's a zheap page, apply the pending undo actions */
 			if (PageGetSpecialSize(BufferGetPage(buffer)) !=
 				MAXALIGN(sizeof(TPDPageOpaqueData)))
-				zbuffer_exec_pending_rollback(srcRel, buffer, &tpd_blkno);
+				zheap_exec_pending_rollback(srcRel, buffer, InvalidXactSlotId,
+											InvalidTransactionId, &tpd_blkno);
 		}
 
 		target_blkno = blkno;
