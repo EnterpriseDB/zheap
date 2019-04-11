@@ -585,7 +585,7 @@ check_tup_satisfies_update:
 	any_multi_locker_member_alive = true;
 	result = ZHeapTupleSatisfiesUpdate(relation, &zheaptup, cid, buffer, &ctid,
 									   &zinfo, &tup_subxid, &single_locker_xid,
-									   &single_locker_trans_slot, false, false,
+									   &single_locker_trans_slot, false,
 									   snapshot, &in_place_updated_or_locked);
 
 	if (result == TM_Invisible)
@@ -1524,7 +1524,7 @@ check_tup_satisfies_update:
 	result = ZHeapTupleSatisfiesUpdate(relation, &oldtup, cid, buffer, &ctid,
 									   &zinfo, &tup_subxid,
 									   &single_locker_xid,
-									   &single_locker_trans_slot, false, false,
+									   &single_locker_trans_slot, false,
 									   snapshot, &in_place_updated_or_locked);
 	tup_trans_slot_id = zinfo.trans_slot;
 	tup_xid = zinfo.xid;
@@ -3148,7 +3148,7 @@ check_tup_satisfies_update:
 	result = ZHeapTupleSatisfiesUpdate(relation, &zhtup, cid, *buffer, &ctid,
 									   &zinfo, &tup_subxid,
 									   &single_locker_xid,
-									   &single_locker_trans_slot, false, eval,
+									   &single_locker_trans_slot, eval,
 									   snapshot, &in_place_updated_or_locked);
 	tup_trans_slot_id = zinfo.trans_slot;
 	tup_xid = zinfo.xid;

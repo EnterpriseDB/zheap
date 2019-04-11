@@ -711,16 +711,15 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 static bool
 UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 						 CommandId curcid, Buffer buffer,
-						 ItemPointer ctid, int trans_slot,
-						 TransactionId prev_undo_xid, bool free_zhtup,
-						 bool *in_place_updated_or_locked)
+						 ItemPointer ctid, int trans_slot)
 {
-	int			prev_trans_slot_id = trans_slot;
+	TransactionId	prev_undo_xid = InvalidTransactionId;
 	ZTupleTidOp	op;
 	ZVersionSelector	zselect;
 	ZHeapTupleTransInfo	zinfo;
 	OffsetNumber    offnum = ItemPointerGetOffsetNumber(&ztuple->t_self);
 	bool		have_cid = false;
+	bool		free_zhtup = false;
 
 	/*
 	 * tuple is modified after the scan is started, fetch the prior record
@@ -729,7 +728,7 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 fetch_prior_undo_record:
 	if (!GetTupleFromUndoRecord(urec_ptr, prev_undo_xid, buffer,
 								offnum, &ztuple,
-								free_zhtup, &zinfo, ctid))
+								false, &zinfo, ctid))
 	{
 		/* If undo is discarded, then current tuple is visible. */
 		zselect = ZVERSION_CURRENT;
@@ -743,7 +742,7 @@ fetch_prior_undo_record:
 	 * Change the undo chain if the undo tuple is stamped with the different
 	 * transaction slot.
 	 */
-	if (zinfo.trans_slot != prev_trans_slot_id)
+	if (zinfo.trans_slot != trans_slot)
 		ZHeapUpdateTransactionSlotInfo(zinfo.trans_slot, buffer,
 									   ItemPointerGetOffsetNumber(&ztuple->t_self),
 									   &zinfo);
@@ -799,7 +798,7 @@ fetch_prior_undo_record:
 		/* Note the values required to fetch prior tuple in undo chain. */
 		urec_ptr = zinfo.urec_ptr;
 		prev_undo_xid = zinfo.xid;
-		prev_trans_slot_id = zinfo.trans_slot;
+		trans_slot = zinfo.trans_slot;
 		free_zhtup = true;
 
 		/* And then go fetch it. */
@@ -1337,7 +1336,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 						  ZHeapTupleTransInfo *zinfo,
 						  SubTransactionId *subxid,
 						  TransactionId *single_locker_xid,
-						  int *single_locker_trans_slot, bool free_zhtup,
+						  int *single_locker_trans_slot,
 						  bool lock_allowed, Snapshot snapshot,
 						  bool *in_place_updated_or_locked)
 {
@@ -1389,10 +1388,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 												   curcid,
 												   buffer,
 												   ctid,
-												   zinfo->trans_slot,
-												   InvalidTransactionId,
-												   free_zhtup,
-												   in_place_updated_or_locked);
+												   zinfo->trans_slot);
 				if (visible)
 					return TM_SelfModified;
 				else
@@ -1408,10 +1404,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 											   curcid,
 											   buffer,
 											   ctid,
-											   zinfo->trans_slot,
-											   InvalidTransactionId,
-											   free_zhtup,
-											   in_place_updated_or_locked);
+											   zinfo->trans_slot);
 
 			if (visible)
 			{
@@ -1446,10 +1439,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 											   curcid,
 											   buffer,
 											   ctid,
-											   zinfo->trans_slot,
-											   InvalidTransactionId,
-											   free_zhtup,
-											   in_place_updated_or_locked);
+											   zinfo->trans_slot);
 
 			/*
 			 * If updating transaction id is aborted and the tuple is visible
@@ -1515,10 +1505,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 												   curcid,
 												   buffer,
 												   ctid,
-												   zinfo->trans_slot,
-												   InvalidTransactionId,
-												   free_zhtup,
-												   in_place_updated_or_locked);
+												   zinfo->trans_slot);
 				if (visible)
 				{
 					if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
@@ -1549,10 +1536,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 											   curcid,
 											   buffer,
 											   ctid,
-											   zinfo->trans_slot,
-											   InvalidTransactionId,
-											   free_zhtup,
-											   in_place_updated_or_locked);
+											   zinfo->trans_slot);
 
 			if (visible)
 			{
@@ -1583,10 +1567,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 											   curcid,
 											   buffer,
 											   ctid,
-											   zinfo->trans_slot,
-											   InvalidTransactionId,
-											   free_zhtup,
-											   in_place_updated_or_locked);
+											   zinfo->trans_slot);
 
 			/*
 			 * If updating transaction id is aborted and the tuple is visible
