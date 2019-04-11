@@ -502,12 +502,10 @@ zheap_delete(Relation relation, ItemPointer tid,
 	TM_Result	result;
 	FullTransactionId fxid = GetTopFullTransactionId();
 	TransactionId xid = XidFromFullTransactionId(fxid);
-	TransactionId tup_xid,
-				oldestXidHavingUndo,
+	TransactionId oldestXidHavingUndo,
 				single_locker_xid;
 	SubTransactionId tup_subxid = InvalidSubTransactionId,
 				subxid = InvalidSubTransactionId;
-	CommandId	tup_cid;
 	ItemId		lp;
 	ZHeapTupleData zheaptup;
 	ZHeapPrepareUndoInfo zh_undo_info;
@@ -521,8 +519,7 @@ zheap_delete(Relation relation, ItemPointer tid,
 				prev_urecptr;
 	ItemPointerData ctid;
 	uint32		epoch = EpochFromFullTransactionId(fxid);
-	int			tup_trans_slot_id,
-				trans_slot_id,
+	int			trans_slot_id,
 				new_trans_slot_id,
 				single_locker_trans_slot;
 	uint16		new_infomask,
@@ -572,7 +569,7 @@ zheap_delete(Relation relation, ItemPointer tid,
 	if (ItemIdIsDeleted(lp))
 	{
 		ctid = *tid;
-		ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
+		ZHeapPageGetNewCtid(buffer, &ctid, &zinfo.xid, &zinfo.cid);
 		result = TM_Updated;
 		goto zheap_tuple_updated;
 	}
@@ -590,9 +587,6 @@ check_tup_satisfies_update:
 									   &zinfo, &tup_subxid, &single_locker_xid,
 									   &single_locker_trans_slot, false, false,
 									   snapshot, &in_place_updated_or_locked);
-	tup_trans_slot_id = zinfo.trans_slot;
-	tup_xid = zinfo.xid;
-	tup_cid = zinfo.cid;
 
 	if (result == TM_Invisible)
 	{
@@ -624,8 +618,8 @@ check_tup_satisfies_update:
 		}
 		else
 		{
-			xwait = tup_xid;
-			xwait_trans_slot = tup_trans_slot_id;
+			xwait = zinfo.xid;
+			xwait_trans_slot = zinfo.trans_slot;
 		}
 
 		infomask = zheaptup.t_data->t_infomask;
@@ -799,7 +793,7 @@ check_tup_satisfies_update:
 			if (ItemIdIsDeleted(lp))
 			{
 				ctid = *tid;
-				ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
+				ZHeapPageGetNewCtid(buffer, &ctid, &zinfo.xid, &zinfo.cid);
 				result = TM_Updated;
 				goto zheap_tuple_updated;
 			}
@@ -839,7 +833,8 @@ check_tup_satisfies_update:
 			 * the tuple, we won't be able to identify that by infomask/xid on
 			 * the tuple, rather we need to fetch the locker xid.
 			 */
-			if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
+			if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
+											zinfo.xid,
 											&single_locker_xid, NULL, &zheaptup))
 				goto check_tup_satisfies_update;
 
@@ -879,8 +874,10 @@ check_tup_satisfies_update:
 					 * while applying the undo action then we must reverify
 					 * the tuple.
 					 */
-					if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
-													&single_locker_xid, NULL, &zheaptup))
+					if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
+													zinfo.xid,
+													&single_locker_xid,
+													NULL, &zheaptup))
 						goto check_tup_satisfies_update;
 				}
 
@@ -983,9 +980,9 @@ zheap_tuple_updated:
 			ItemPointerSetMovedPartitions(&tmfd->ctid);
 		else
 			tmfd->ctid = ctid;
-		tmfd->xmax = tup_xid;
+		tmfd->xmax = zinfo.xid;
 		if (result == TM_SelfModified)
-			tmfd->cmax = tup_cid;
+			tmfd->cmax = zinfo.cid;
 		else
 			tmfd->cmax = InvalidCommandId;
 		UnlockReleaseBuffer(buffer);
@@ -1041,7 +1038,7 @@ zheap_tuple_updated:
 		if (ItemIdIsDeleted(lp))
 		{
 			ctid = *tid;
-			ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
+			ZHeapPageGetNewCtid(buffer, &ctid, &zinfo.xid, &zinfo.cid);
 			result = TM_Updated;
 			goto zheap_tuple_updated;
 		}
@@ -1068,8 +1065,8 @@ zheap_tuple_updated:
 	 */
 	if (ZHeapTupleHeaderGetXactSlot((ZHeapTupleHeader) (zheaptup.t_data)) == ZHTUP_SLOT_FROZEN)
 	{
-		tup_trans_slot_id = ZHTUP_SLOT_FROZEN;
-		tup_xid = InvalidTransactionId;
+		zinfo.trans_slot = ZHTUP_SLOT_FROZEN;
+		zinfo.xid = InvalidTransactionId;
 	}
 
 	temp_infomask = zheaptup.t_data->t_infomask;
@@ -1083,7 +1080,7 @@ zheap_tuple_updated:
 		temp_infomask &= ~ZHEAP_MULTI_LOCKERS;
 
 	/* Compute the new xid and infomask to store into the tuple. */
-	compute_new_xid_infomask(&zheaptup, buffer, tup_xid, tup_trans_slot_id,
+	compute_new_xid_infomask(&zheaptup, buffer, zinfo.xid, zinfo.trans_slot,
 							 temp_infomask, xid, trans_slot_id,
 							 single_locker_xid, LockTupleExclusive, ForUpdate,
 							 &new_infomask, &new_trans_slot_id);
@@ -1103,8 +1100,8 @@ zheap_tuple_updated:
 	 */
 	oldestXidHavingUndo = GetXidFromEpochXid(
 											 pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
-	if (TransactionIdPrecedes(tup_xid, oldestXidHavingUndo))
-		tup_xid = FrozenTransactionId;
+	if (TransactionIdPrecedes(zinfo.xid, oldestXidHavingUndo))
+		zinfo.xid = FrozenTransactionId;
 
 	CheckForSerializableConflictIn(relation, &(zheaptup.t_self), buffer);
 
@@ -1118,8 +1115,8 @@ zheap_tuple_updated:
 	zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
 	urecptr = zheap_prepare_undodelete(&zh_undo_info,
 									   &zheaptup,
-									   tup_xid,
-									   tup_trans_slot_id,
+									   zinfo.xid,
+									   zinfo.trans_slot,
 									   subxid,
 									   &undorecord, NULL, &undometa);
 
@@ -1178,7 +1175,7 @@ zheap_tuple_updated:
 		xlundohdr.urec_ptr = urecptr;
 		xlundohdr.blkprev = prev_urecptr;
 
-		xlrec.prevxid = tup_xid;
+		xlrec.prevxid = zinfo.xid;
 		xlrec.offnum = ItemPointerGetOffsetNumber(&zheaptup.t_self);
 		xlrec.infomask = zheaptup.t_data->t_infomask;
 		xlrec.trans_slot_id = trans_slot_id;
@@ -1214,15 +1211,15 @@ prepare_xlog:
 			xlhdr.t_infomask = zhtuphdr->t_infomask;
 			xlhdr.t_hoff = zhtuphdr->t_hoff;
 		}
-		if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+		if (zinfo.trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
 			xlrec.flags |= XLZ_DELETE_CONTAINS_TPD_SLOT;
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
 		XLogRegisterData((char *) &xlrec, SizeOfZHeapDelete);
 		if (xlrec.flags & XLZ_DELETE_CONTAINS_TPD_SLOT)
-			XLogRegisterData((char *) &tup_trans_slot_id,
-							 sizeof(tup_trans_slot_id));
+			XLogRegisterData((char *) &zinfo.trans_slot,
+							 sizeof(zinfo.trans_slot));
 		if (xlrec.flags & XLZ_HAS_DELETE_UNDOTUPLE)
 		{
 			XLogRegisterData((char *) &xlhdr, SizeOfZHeapHeader);
