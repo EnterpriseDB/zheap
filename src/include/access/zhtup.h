@@ -303,7 +303,7 @@ extern void GetTransactionSlotInfo(Buffer buf, OffsetNumber offset,
 					   struct ZHeapTupleTransInfo *zinfo);
 extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf,
 				  UndoRecPtr urec_ptr, ItemPointer ctid);
-extern void ZHeapTupleGetSubXid(ZHeapTuple zhtup, Buffer buf,
+extern void ZHeapTupleGetSubXid(Buffer buf, OffsetNumber offnum,
 					UndoRecPtr urec_ptr, SubTransactionId *subxid);
 extern void ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf,
 					   UndoRecPtr urec_ptr, uint32 *specToken);
