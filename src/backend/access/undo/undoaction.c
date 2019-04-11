@@ -243,11 +243,11 @@ UndoRecordBulkFetch(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 		 */
 		if (one_page)
 			urecptr = uur->uur_blkprev;
-		else if (uur->uur_prevlen > 0 || UndoRecPtrIsValid(uur->uur_prevurp))
-			urecptr = UndoGetPrevUndoRecptr(prev_urec_ptr, uur->uur_prevlen,
-											uur->uur_prevurp);
-		else
+		else if (prev_urec_ptr == to_urecptr || uur->uur_info & UREC_INFO_TRANSACTION)
 			urecptr = InvalidUndoRecPtr;
+		else
+			urecptr = UndoGetPrevUndoRecptr(prev_urec_ptr,  uur->uur_prevurp,
+											buffer);
 
 		/* We have consumed all elements of the urp_array so expand its size. */
 		if (urp_index >= urp_array_size)
@@ -532,7 +532,7 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 		 * of non commited transaction without buffer lock.
 		 */
 		LWLockAcquire(&log->rewind_lock, LW_EXCLUSIVE);
-		UndoLogRewind(to_urecptr, uur->uur_prevlen);
+		UndoLogRewind(to_urecptr);
 		LWLockRelease(&log->rewind_lock);
 
 		UndoRecordRelease(uur);

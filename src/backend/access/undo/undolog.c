@@ -389,40 +389,6 @@ UndoLogGetLastXactStartPoint(UndoLogNumber logno)
 }
 
 /*
- * Store last undo record's length on undo meta so that it can be persistent
- * across restart.
- */
-void
-UndoLogSetPrevLen(UndoLogNumber logno, uint16 prevlen)
-{
-	UndoLogControl *log = get_undo_log_by_number(logno);
-
-	Assert(log != NULL);
-
-	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
-	log->meta.prevlen = prevlen;
-	LWLockRelease(&log->mutex);
-}
-
-/*
- * Get the last undo record's length.
- */
-uint16
-UndoLogGetPrevLen(UndoLogNumber logno)
-{
-	UndoLogControl *log = get_undo_log_by_number(logno);
-	uint16	prevlen;
-
-	Assert(log != NULL);
-
-	LWLockAcquire(&log->mutex, LW_SHARED);
-	prevlen = log->meta.prevlen;
-	LWLockRelease(&log->mutex);
-
-	return prevlen;
-}
-
-/*
  * Is this record is the first record for any transaction.
  */
 bool
@@ -1191,7 +1157,7 @@ UndoLogGetNextInsertPtr(UndoLogNumber logno, TransactionId xid)
  * Rewind the undo log insert position also set the prevlen in the mata
  */
 void
-UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen)
+UndoLogRewind(UndoRecPtr insert_urp)
 {
 	UndoLogNumber	logno = UndoRecPtrGetLogNo(insert_urp);
 	UndoLogControl *log = get_undo_log_by_number(logno);
@@ -1199,7 +1165,6 @@ UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen)
 
 	LWLockAcquire(&log->mutex, LW_EXCLUSIVE);
 	log->meta.insert = insert;
-	log->meta.prevlen = prevlen;
 
 	/*
 	 * Force the wal log on next undo allocation. So that during recovery undo
@@ -1214,7 +1179,6 @@ UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen)
 
 		xlrec.logno = logno;
 		xlrec.insert = insert;
-		xlrec.prevlen = prevlen;
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
@@ -2673,7 +2637,6 @@ undolog_xlog_rewind(XLogReaderState *record)
 
 	log = get_undo_log_by_number(xlrec->logno);
 	log->meta.insert = xlrec->insert;
-	log->meta.prevlen = xlrec->prevlen;
 }
 
 void

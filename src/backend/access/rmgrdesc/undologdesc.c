@@ -48,11 +48,9 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, "logno %u xid %u insert " UndoLogOffsetFormat
 						 " last_xact_start " UndoLogOffsetFormat
-						 " prevlen=%d"
 						 " is_first_record=%d",
 						 xlrec->logno, xlrec->xid, xlrec->meta.insert,
 						 xlrec->meta.last_xact_start,
-						 xlrec->meta.prevlen,
 						 xlrec->meta.is_first_rec);
 	}
 	else if (info == XLOG_UNDOLOG_DISCARD)
@@ -67,8 +65,8 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 	{
 		xl_undolog_rewind *xlrec = (xl_undolog_rewind *) rec;
 
-		appendStringInfo(buf, "logno %u insert " UndoLogOffsetFormat " prevlen %d",
-						 xlrec->logno, xlrec->insert, xlrec->prevlen);
+		appendStringInfo(buf, "logno %u insert " UndoLogOffsetFormat,
+						 xlrec->logno, xlrec->insert);
 	}
 	else if (info == XLOG_UNDOLOG_SWITCH)
 	{

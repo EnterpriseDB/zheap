@@ -2163,7 +2163,6 @@ zheap_tuple_updated:
 		 */
 		undorecord.uur_rmid = RM_ZHEAP_ID;
 		undorecord.uur_info = 0;
-		undorecord.uur_prevlen = 0;
 		undorecord.uur_reloid = relation->rd_id;
 		undorecord.uur_prevxid = tup_xid;
 		undorecord.uur_xid = xid;
@@ -2565,7 +2564,6 @@ reacquire_buffer:
 	 */
 	undorecord.uur_rmid = RM_ZHEAP_ID;
 	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;
 	undorecord.uur_reloid = relation->rd_id;
 	undorecord.uur_prevxid = tup_xid;
 	undorecord.uur_xid = xid;
@@ -2675,7 +2673,6 @@ reacquire_buffer:
 		new_undorecord.uur_rmid = RM_ZHEAP_ID;
 		new_undorecord.uur_type = UNDO_INSERT;
 		new_undorecord.uur_info = 0;
-		new_undorecord.uur_prevlen = 0;
 		new_undorecord.uur_reloid = relation->rd_id;
 		new_undorecord.uur_prevxid = xid;
 		new_undorecord.uur_xid = xid;
@@ -4639,7 +4636,6 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	else
 		undorecord.uur_type = UNDO_XID_LOCK_ONLY;
 	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;
 	undorecord.uur_reloid = rel->rd_id;
 	undorecord.uur_prevxid = tup_xid;
 	undorecord.uur_xid = xid;
@@ -5486,7 +5482,6 @@ zheap_prepare_undodelete(ZHeapPrepareUndoInfo * zhUndoInfo, ZHeapTuple zhtup,
 	undorecord->uur_rmid = RM_ZHEAP_ID;
 	undorecord->uur_type = UNDO_DELETE;
 	undorecord->uur_info = 0;
-	undorecord->uur_prevlen = 0;
 	undorecord->uur_reloid = zhUndoInfo->reloid;
 	undorecord->uur_prevxid = tup_xid;
 	undorecord->uur_xid = zhUndoInfo->xid;
@@ -7811,10 +7806,6 @@ reacquire_buffer:
 				undorecord[i].uur_rmid = RM_ZHEAP_ID;
 				undorecord[i].uur_type = UNDO_MULTI_INSERT;
 				undorecord[i].uur_info = 0;
-				undorecord[i].uur_prevlen = 0;	/* Fixme - need to figure out
-												 * how to set this value and
-												 * then decide whether to WAL
-												 * log it */
 				undorecord[i].uur_reloid = relation->rd_id;
 				undorecord[i].uur_prevxid = FrozenTransactionId;
 				undorecord[i].uur_xid = xid;

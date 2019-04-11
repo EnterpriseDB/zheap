@@ -351,7 +351,6 @@ FetchLatestUndoPtrForXid(UndoRecPtr urecptr, UnpackedUndoRecord *uur_start,
 						 UndoLogControl *log)
 {
 	UndoRecPtr next_urecptr, from_urecptr;
-	uint16	prevlen;
 	UndoLogOffset next_insert;
 	UnpackedUndoRecord *uur;
 	bool refetch = false;
@@ -370,7 +369,6 @@ FetchLatestUndoPtrForXid(UndoRecPtr urecptr, UnpackedUndoRecord *uur_start,
 		}
 
 		next_urecptr = uur->uur_next;
-		prevlen = UndoLogGetPrevLen(log->logno);
 
 		/*
 		 * If this is the last transaction in the log then calculate the latest
@@ -393,7 +391,8 @@ FetchLatestUndoPtrForXid(UndoRecPtr urecptr, UnpackedUndoRecord *uur_start,
 				continue;
 			}
 
-			from_urecptr = UndoGetPrevUndoRecptr(next_insert, prevlen, InvalidUndoRecPtr);
+			from_urecptr = UndoGetPrevUndoRecptr(next_insert, InvalidUndoRecPtr,
+												 InvalidBuffer);
 			break;
 		}
 		else if ((UndoRecPtrGetLogNo(next_urecptr) != log->logno) &&
@@ -408,7 +407,8 @@ FetchLatestUndoPtrForXid(UndoRecPtr urecptr, UnpackedUndoRecord *uur_start,
 			next_insert = UndoLogGetNextInsertPtr(log->logno, uur->uur_xid);
 
 			Assert(UndoRecPtrIsValid(next_insert));
-			from_urecptr = UndoGetPrevUndoRecptr(next_insert, prevlen, InvalidUndoRecPtr);
+			from_urecptr = UndoGetPrevUndoRecptr(next_insert, InvalidUndoRecPtr,
+												 InvalidBuffer);
 			break;
 		}
 		else
@@ -427,7 +427,8 @@ FetchLatestUndoPtrForXid(UndoRecPtr urecptr, UnpackedUndoRecord *uur_start,
 			if (UndoRecPtrGetLogNo(next_urecptr) == log->logno)
 			{
 				from_urecptr =
-					UndoGetPrevUndoRecptr(next_urecptr, next_uur->uur_prevlen, InvalidUndoRecPtr);
+					UndoGetPrevUndoRecptr(next_urecptr, InvalidUndoRecPtr,
+														InvalidBuffer);
 				UndoRecordRelease(next_uur);
 				break;
 			}

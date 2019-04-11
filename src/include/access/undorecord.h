@@ -208,7 +208,7 @@ extern Size UndoRecordExpectedSize(UnpackedUndoRecord *uur);
 extern Size UnpackedUndoRecordSize(UnpackedUndoRecord *uur);
 extern bool InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 				 int starting_byte, int *already_written,
-				 int remaining_bytes, bool header_only);
+				 int remaining_bytes, uint16 undo_len, bool header_only);
 extern bool UnpackUndoRecord(UnpackedUndoRecord *uur, Page page,
 				 int starting_byte, int *already_decoded, bool header_only,
 				 bool copy_data);

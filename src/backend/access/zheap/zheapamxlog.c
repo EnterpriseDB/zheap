@@ -605,7 +605,6 @@ zheap_xlog_update(XLogReaderState *record)
 	/* prepare an undo record */
 	undorecord.uur_rmid = RM_ZHEAP_ID;
 	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;
 	undorecord.uur_reloid = xlundohdr->reloid;
 	undorecord.uur_prevxid = xlrec->prevxid;
 	undorecord.uur_xid = xid;
@@ -706,7 +705,6 @@ zheap_xlog_update(XLogReaderState *record)
 		newundorecord.uur_rmid = RM_ZHEAP_ID;
 		newundorecord.uur_type = UNDO_INSERT;
 		newundorecord.uur_info = 0;
-		newundorecord.uur_prevlen = 0;
 		newundorecord.uur_reloid = xlnewundohdr->reloid;
 		newundorecord.uur_prevxid = xid;
 		newundorecord.uur_xid = xid;
@@ -1292,7 +1290,6 @@ zheap_xlog_lock(XLogReaderState *record)
 	else
 		undorecord.uur_type = UNDO_XID_LOCK_ONLY;
 	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;
 	undorecord.uur_reloid = xlundohdr->reloid;
 	undorecord.uur_prevxid = xlrec->prev_xid;
 	undorecord.uur_xid = xid;
@@ -1512,7 +1509,6 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			undorecord[i].uur_rmid = RM_ZHEAP_ID;
 			undorecord[i].uur_type = UNDO_MULTI_INSERT;
 			undorecord[i].uur_info = 0;
-			undorecord[i].uur_prevlen = 0;
 			undorecord[i].uur_reloid = xlundohdr->reloid;
 			undorecord[i].uur_prevxid = xid;
 			undorecord[i].uur_prevxid = FrozenTransactionId;
@@ -1937,7 +1933,6 @@ zheap_xlog_unused(XLogReaderState *record)
 	undorecord.uur_rmid = RM_ZHEAP_ID;
 	undorecord.uur_type = UNDO_ITEMID_UNUSED;
 	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;
 	undorecord.uur_reloid = xlundohdr->reloid;
 	undorecord.uur_prevxid = xid;
 	undorecord.uur_xid = xid;
