@@ -263,12 +263,10 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 				   TransactionId priorXmax, bool nobuflock)
 {
 	ZHeapTupleData zhtup;
-	UnpackedUndoRecord *urec = NULL;
 	ZHeapTuple	undo_tup = NULL;
 	ItemPointer tid = &(tuple->t_self);
 	ItemId		lp;
 	Page		page;
-	int			prev_trans_slot_id;
 	OffsetNumber offnum;
 	bool		valid = false;
 	ZHeapTupleTransInfo	zinfo;
@@ -318,8 +316,7 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		 * and some undo records will not have tuple data and mask info with
 		 * them.
 		 */
-		vis_tuple = ZHeapGetVisibleTuple(ItemPointerGetOffsetNumber(tid),
-										 snapshot, buf, NULL);
+		vis_tuple = ZHeapGetVisibleTuple(offnum, snapshot, buf, NULL);
 		Assert(vis_tuple != NULL);
 		zhtup.t_data = vis_tuple->t_data;
 		zhtup.t_len = vis_tuple->t_len;
@@ -356,7 +353,9 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 
 	do
 	{
-		prev_trans_slot_id = zinfo.trans_slot;
+		UnpackedUndoRecord *urec;
+		int		prev_trans_slot_id = zinfo.trans_slot;
+
 		Assert(prev_trans_slot_id != ZHTUP_SLOT_FROZEN);
 
 		urec = UndoFetchRecord(zinfo.urec_ptr,
@@ -376,7 +375,8 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		if (TransactionIdEquals(urec->uur_xid, priorXmax))
 		{
 			valid = true;
-			goto tuple_is_valid;
+			UndoRecordRelease(urec);
+			break;
 		}
 
 		/* don't free the tuple passed by caller */
@@ -407,13 +407,9 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 		if (ZHeapTupleHasInvalidXact(undo_tup->t_data->t_infomask))
 			FetchTransInfoFromUndo(BufferGetBlockNumber(buf), offnum,
 								   zinfo.xid, &zinfo);
-
-		urec = NULL;
 	} while (UndoRecPtrIsValid(zinfo.urec_ptr));
 
 tuple_is_valid:
-	if (urec)
-		UndoRecordRelease(urec);
 	if (undo_tup && undo_tup != &zhtup)
 		pfree(undo_tup);
 
