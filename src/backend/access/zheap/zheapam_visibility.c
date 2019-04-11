@@ -415,6 +415,7 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid,
 
 	zinfo->urec_ptr = urec->uur_blkprev;
 	zinfo->xid = urec->uur_prevxid;
+	zinfo->cid = InvalidCommandId;
 
 	/*
 	 * We don't allow XIDs with an age of more than 2 billion in undo, so
@@ -487,10 +488,8 @@ GetTupleFromUndoForAbortedXact(UndoRecPtr urec_ptr, Buffer buffer, int trans_slo
 	OffsetNumber	offnum = ItemPointerGetOffsetNumber(&ztuple->t_self);
 
 	prev_undo_xid = InvalidTransactionId;
-fetch_prior_undo_record:
-	zinfo.urec_ptr = InvalidUndoRecPtr;
-	zinfo.trans_slot = InvalidXactSlotId;
 
+fetch_prior_undo_record:
 	if (!GetTupleFromUndoRecord(urec_ptr, InvalidTransactionId,
 								buffer, offnum, &ztuple,
 								true, &zinfo, NULL))
@@ -604,10 +603,6 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 		ZTupleTidOp			op;
 		ZVersionSelector	zselect;
 		bool		have_cid = false;
-
-		zinfo.urec_ptr = InvalidUndoRecPtr;
-		zinfo.cid = InvalidCommandId;
-		zinfo.trans_slot = InvalidXactSlotId;
 
 		Assert(ztuple == NULL ||
 			   ItemPointerGetOffsetNumber(&ztuple->t_self) == offnum);
@@ -732,10 +727,6 @@ UndoTupleSatisfiesUpdate(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 	 * from undo to see if it is visible.
 	 */
 fetch_prior_undo_record:
-	zinfo.urec_ptr = InvalidUndoRecPtr;
-	zinfo.cid = InvalidCommandId;
-	zinfo.trans_slot = InvalidXactSlotId;
-
 	if (!GetTupleFromUndoRecord(urec_ptr, prev_undo_xid, buffer,
 								offnum, &ztuple,
 								free_zhtup, &zinfo, ctid))
