@@ -927,6 +927,13 @@ typedef struct TwoPhaseFileHeader
 	uint16		gidlen;			/* length of the GID - GID follows the header */
 	XLogRecPtr	origin_lsn;		/* lsn of this record at origin node */
 	TimestampTz origin_timestamp;	/* time of prepare at origin node */
+
+	/*
+	 * We need the locations of start and end undo record pointers when rollbacks
+	 * are to be performed for prepared transactions using zheap relations.
+	 */
+	UndoRecPtr	start_urec_ptr[UndoPersistenceLevels];
+	UndoRecPtr	end_urec_ptr[UndoPersistenceLevels];
 } TwoPhaseFileHeader;
 
 /*
@@ -1001,7 +1008,8 @@ save_state_data(const void *data, uint32 len)
  * Initializes data structure and inserts the 2PC file header record.
  */
 void
-StartPrepare(GlobalTransaction gxact)
+StartPrepare(GlobalTransaction gxact, UndoRecPtr *start_urec_ptr,
+			 UndoRecPtr *end_urec_ptr)
 {
 	PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
 	PGXACT	   *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
@@ -1032,6 +1040,11 @@ StartPrepare(GlobalTransaction gxact)
 	hdr.database = proc->databaseId;
 	hdr.prepared_at = gxact->prepared_at;
 	hdr.owner = gxact->owner;
+
+	/* save the start and end undo record pointers */
+	memcpy(hdr.start_urec_ptr, start_urec_ptr, sizeof(hdr.start_urec_ptr));
+	memcpy(hdr.end_urec_ptr, end_urec_ptr, sizeof(hdr.end_urec_ptr));
+
 	hdr.nsubxacts = xactGetCommittedChildren(&children);
 	hdr.ncommitrels = smgrGetPendingDeletes(true, &commitrels);
 	hdr.nabortrels = smgrGetPendingDeletes(false, &abortrels);
@@ -1468,6 +1481,9 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	RelFileNode *delrels;
 	int			ndelrels;
 	SharedInvalidationMessage *invalmsgs;
+	int			i;
+	UndoRecPtr start_urec_ptr[UndoPersistenceLevels];
+	UndoRecPtr end_urec_ptr[UndoPersistenceLevels];
 
 	/*
 	 * Validate the GID, and lock the GXACT to ensure that two backends do not
@@ -1504,6 +1520,38 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	bufptr += MAXALIGN(hdr->nabortrels * sizeof(RelFileNode));
 	invalmsgs = (SharedInvalidationMessage *) bufptr;
 	bufptr += MAXALIGN(hdr->ninvalmsgs * sizeof(SharedInvalidationMessage));
+
+	/* save the start and end undo record pointers */
+	memcpy(start_urec_ptr, hdr->start_urec_ptr, sizeof(start_urec_ptr));
+	memcpy(end_urec_ptr, hdr->end_urec_ptr, sizeof(end_urec_ptr));
+
+	/*
+	 * Perform undo actions, if there are undologs for this transaction.
+	 * We need to perform undo actions while we are still in transaction.
+	 * Never push rollbacks of temp tables to undo worker.
+	 */
+	for (i = 0; i < UndoPersistenceLevels; i++)
+	{
+		if (end_urec_ptr[i] != InvalidUndoRecPtr && !isCommit)
+		{
+			bool	result = false;
+			uint64	rollback_size = 0;
+
+			if (i != UNDO_TEMP)
+				rollback_size = end_urec_ptr[i] - start_urec_ptr[i];
+
+			if (rollback_size >= rollback_overflow_size * 1024 * 1024)
+				result = PushRollbackReq(end_urec_ptr[i], start_urec_ptr[i], InvalidOid);
+
+			/*
+			 * ZBORKED: set rellock = true, as we do *not* actually have all
+			 * the locks, but that'll probably deadlock?
+			 */
+			if (!result)
+				execute_undo_actions(end_urec_ptr[i], start_urec_ptr[i], true,
+									 true, true);
+		}
+	}
 
 	/* compute latestXid among all children */
 	latestXid = TransactionIdLatest(xid, hdr->nsubxacts, children);

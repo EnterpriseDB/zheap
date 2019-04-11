@@ -583,7 +583,7 @@ CREATE TRIGGER rw_view1_ins_trig AFTER INSERT ON base_tbl
 CREATE VIEW rw_view1 AS SELECT a AS aa, b AS bb FROM base_tbl;
 
 INSERT INTO rw_view1 VALUES (3, 'Row 3');
-select * from base_tbl;
+select * from base_tbl ORDER BY a;
 
 DROP VIEW rw_view1;
 DROP TRIGGER rw_view1_ins_trig on base_tbl;
@@ -917,7 +917,7 @@ SELECT * FROM base_tbl;
 ALTER VIEW rw_view2 SET (check_option=cascaded);
 INSERT INTO rw_view2 VALUES (100); -- ok, but not in view (doesn't fail rw_view1's check)
 UPDATE rw_view2 SET a = 200 WHERE a = 5; -- ok, but not in view (doesn't fail rw_view1's check)
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl ORDER BY a;
 
 -- Neither local nor cascaded check options work with INSTEAD rules
 
@@ -932,7 +932,7 @@ INSERT INTO rw_view2 VALUES (20); -- ok, but not in view (doesn't fail rw_view1'
 UPDATE rw_view2 SET a = 30 WHERE a = 5; -- ok, but not in view (doesn't fail rw_view1's check)
 INSERT INTO rw_view2 VALUES (5); -- ok
 UPDATE rw_view2 SET a = -5 WHERE a = 5; -- ok, but not in view (doesn't fail rw_view2's check)
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl ORDER BY a;
 
 DROP TABLE base_tbl CASCADE;
 DROP FUNCTION rw_view1_trig_fn();

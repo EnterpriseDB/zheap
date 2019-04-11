@@ -41,6 +41,7 @@
 #include <limits.h>
 
 #include "access/htup_details.h"
+#include "access/zheap.h"
 #include "nodes/bitmapset.h"
 #include "nodes/tidbitmap.h"
 #include "storage/lwlock.h"
@@ -53,7 +54,7 @@
  * the per-page bitmaps variable size.  We just legislate that the size
  * is this:
  */
-#define MAX_TUPLES_PER_PAGE  MaxHeapTuplesPerPage
+#define MAX_TUPLES_PER_PAGE  Max(MaxHeapTuplesPerPage, MaxZHeapTuplesPerPage)
 
 /*
  * When we have to switch over to lossy storage, we use a data structure

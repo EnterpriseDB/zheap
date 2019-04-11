@@ -149,7 +149,7 @@ ALTER TABLE e_star* ADD COLUMN e int4;
 
 --UPDATE e_star* SET e = 42;
 
-SELECT * FROM e_star*;
+SELECT * FROM e_star* ORDER BY class, aa, cc, ee;
 
 ALTER TABLE a_star* ADD COLUMN a text;
 
@@ -163,7 +163,7 @@ SELECT relname, reltoastrelid <> 0 AS has_toast_table
 --   SET a = text 'gazpacho'
 --   WHERE aa > 4;
 
-SELECT class, aa, a FROM a_star*;
+SELECT class, aa, a FROM a_star* ORDER BY class, aa, a;
 
 
 --

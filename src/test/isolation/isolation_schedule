@@ -1,3 +1,7 @@
+test: zheap_mvcc
+test: zheap_non-inplace-update
+test: zheap_tpd
+test: zheap_tidscan
 test: read-only-anomaly
 test: read-only-anomaly-2
 test: read-only-anomaly-3
@@ -83,3 +87,4 @@ test: plpgsql-toast
 test: truncate-conflict
 test: serializable-parallel
 test: serializable-parallel-2
+test: tpd_offset_map_updation

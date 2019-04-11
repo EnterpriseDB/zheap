@@ -26,6 +26,8 @@
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
+#include "access/tableam.h"
+#include "access/zheap.h"
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
 #include "storage/freespace.h"

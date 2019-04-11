@@ -967,7 +967,7 @@ FETCH c1;
 (1 row)
 
 UPDATE uctest SET f1 = 8 WHERE CURRENT OF c1;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 |  f2   
 ----+-------
   3 | three
@@ -975,7 +975,7 @@ SELECT * FROM uctest;
 (2 rows)
 
 COMMIT;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 |  f2   
 ----+-------
   3 | three
@@ -984,7 +984,7 @@ SELECT * FROM uctest;
 
 -- Check repeated-update and update-then-delete cases
 BEGIN;
-DECLARE c1 CURSOR FOR SELECT * FROM uctest;
+DECLARE c1 CURSOR FOR SELECT * FROM uctest WHERE f1 = 3;
 FETCH c1;
  f1 |  f2   
 ----+-------
@@ -992,7 +992,7 @@ FETCH c1;
 (1 row)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 |  f2   
 ----+-------
   8 | one
@@ -1000,7 +1000,7 @@ SELECT * FROM uctest;
 (2 rows)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 |  f2   
 ----+-------
   8 | one
@@ -1015,21 +1015,21 @@ FETCH RELATIVE 0 FROM c1;
 (1 row)
 
 DELETE FROM uctest WHERE CURRENT OF c1;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 | f2  
 ----+-----
   8 | one
 (1 row)
 
 DELETE FROM uctest WHERE CURRENT OF c1; -- no-op
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 | f2  
 ----+-----
   8 | one
 (1 row)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1; -- no-op
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 | f2  
 ----+-----
   8 | one
@@ -1042,7 +1042,7 @@ FETCH RELATIVE 0 FROM c1;
 (1 row)
 
 ROLLBACK;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 |  f2   
 ----+-------
   3 | three
@@ -1050,7 +1050,7 @@ SELECT * FROM uctest;
 (2 rows)
 
 BEGIN;
-DECLARE c1 CURSOR FOR SELECT * FROM uctest FOR UPDATE;
+DECLARE c1 CURSOR FOR SELECT * FROM uctest ORDER BY 1 FOR UPDATE;
 FETCH c1;
  f1 |  f2   
 ----+-------
@@ -1058,7 +1058,7 @@ FETCH c1;
 (1 row)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 |  f2   
 ----+-------
   8 | one
@@ -1066,7 +1066,7 @@ SELECT * FROM uctest;
 (2 rows)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 |  f2   
 ----+-------
   8 | one
@@ -1074,21 +1074,21 @@ SELECT * FROM uctest;
 (2 rows)
 
 DELETE FROM uctest WHERE CURRENT OF c1;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 | f2  
 ----+-----
   8 | one
 (1 row)
 
 DELETE FROM uctest WHERE CURRENT OF c1; -- no-op
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 | f2  
 ----+-----
   8 | one
 (1 row)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1; -- no-op
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 | f2  
 ----+-----
   8 | one
@@ -1099,7 +1099,7 @@ FETCH RELATIVE 0 FROM c1;
 ERROR:  cursor can only scan forward
 HINT:  Declare it with SCROLL option to enable backward scan.
 ROLLBACK;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1 |  f2   
 ----+-------
   3 | three
@@ -1109,7 +1109,7 @@ SELECT * FROM uctest;
 -- Check inheritance cases
 CREATE TEMP TABLE ucchild () inherits (uctest);
 INSERT INTO ucchild values(100, 'hundred');
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1  |   f2    
 -----+---------
    3 | three
@@ -1118,7 +1118,7 @@ SELECT * FROM uctest;
 (3 rows)
 
 BEGIN;
-DECLARE c1 CURSOR FOR SELECT * FROM uctest FOR UPDATE;
+DECLARE c1 CURSOR FOR SELECT * FROM uctest ORDER BY 1 FOR UPDATE;
 FETCH 1 FROM c1;
  f1 |  f2   
 ----+-------
@@ -1146,7 +1146,7 @@ FETCH 1 FROM c1;
 (0 rows)
 
 COMMIT;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1  |   f2    
 -----+---------
   13 | three
@@ -1186,7 +1186,7 @@ FETCH 1 FROM c1;
 (1 row)
 
 UPDATE uctest SET f1 = f1 + 10 WHERE CURRENT OF c1;
-SELECT * FROM uctest;
+SELECT * FROM uctest ORDER BY 1;
  f1  |   f2    
 -----+---------
   13 | three
@@ -1236,7 +1236,7 @@ CREATE TEMP VIEW ucview AS SELECT * FROM uctest;
 CREATE RULE ucrule AS ON DELETE TO ucview DO INSTEAD
   DELETE FROM uctest WHERE f1 = OLD.f1;
 BEGIN;
-DECLARE c1 CURSOR FOR SELECT * FROM ucview;
+DECLARE c1 CURSOR FOR SELECT * FROM ucview ORDER BY 1;
 FETCH FROM c1;
  f1 |  f2   
 ----+-------

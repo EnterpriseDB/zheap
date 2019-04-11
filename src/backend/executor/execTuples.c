@@ -60,6 +60,9 @@
 #include "access/htup_details.h"
 #include "access/tupdesc_details.h"
 #include "access/tuptoaster.h"
+#include "access/zheap.h"
+#include "access/zheaputils.h"
+#include "access/zhtup.h"
 #include "funcapi.h"
 #include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
@@ -987,6 +990,176 @@ slot_deform_heap_tuple(TupleTableSlot *slot, HeapTuple tuple, uint32 *offp,
 }
 
 
+
+/*
+ * TupleTableSlotOps implementation for ZheapHeapTupleTableSlot.
+ */
+
+static void
+tts_zheap_init(TupleTableSlot *slot)
+{
+}
+
+static void
+tts_zheap_release(TupleTableSlot *slot)
+{
+}
+
+static void
+tts_zheap_clear(TupleTableSlot *slot)
+{
+	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
+
+	/*
+	 * Free the memory for heap tuple if allowed. A tuple coming from zheap
+	 * can never be freed. But we may have materialized a tuple from zheap.
+	 * Such a tuple can be freed.
+	 */
+	if (TTS_SHOULDFREE(slot))
+	{
+		zheap_freetuple(zslot->tuple);
+		slot->tts_flags &= ~TTS_FLAG_SHOULDFREE;
+	}
+
+#if 0
+	if (ZheapIsValid(bslot->zheap))
+		ReleaseZheap(bslot->zheap);
+#endif
+
+	slot->tts_nvalid = 0;
+	slot->tts_flags |= TTS_FLAG_EMPTY;
+	zslot->tuple = NULL;
+}
+
+static void
+tts_zheap_getsomeattrs(TupleTableSlot *slot, int natts)
+{
+	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
+
+	Assert(!TTS_EMPTY(slot));
+	slot_deform_ztuple(slot, zslot->tuple, &zslot->off, natts);
+}
+
+static Datum
+tts_zheap_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
+{
+	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
+
+	return zheap_getsysattr(zslot->tuple, InvalidBuffer, attnum,
+							slot->tts_tupleDescriptor, isnull);
+}
+
+/*
+ * Materialize the heap tuple contained in the given slot into its own memory
+ * context.
+ */
+static void
+tts_zheap_materialize(TupleTableSlot *slot)
+{
+	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
+	MemoryContext oldContext;
+
+	Assert(!TTS_EMPTY(slot));
+
+	/* If already materialized nothing to do. */
+	if (TTS_SHOULDFREE(slot))
+		return;
+
+	slot->tts_flags |= TTS_FLAG_SHOULDFREE;
+
+	oldContext = MemoryContextSwitchTo(slot->tts_mcxt);
+
+	if (zslot->tuple)
+		zslot->tuple = zheap_copytuple(zslot->tuple);
+	else
+	{
+		/*
+		 * The tuple contained in this slot is not allocated in the memory
+		 * context of the given slot (else it would have TTS_SHOULDFREE set).
+		 * Copy the tuple into the given slot's memory context.
+		 */
+		zslot->tuple = zheap_form_tuple(slot->tts_tupleDescriptor,
+										slot->tts_values,
+										slot->tts_isnull);
+	}
+	MemoryContextSwitchTo(oldContext);
+
+#if 0
+	/*
+	 * TODO: I expect a ZheapHeapTupleTableSlot to always have a zheap to be
+	 * associated with it OR the tuple is materialized. In the later case we
+	 * won't come here. So, we should always see a valid zheap here to be
+	 * unpinned.
+	 */
+	if (zslot->tuple))
+	{
+		ReleaseZheap(bslot->zheap);
+		bslot->zheap = InvalidZheap;
+	}
+#endif
+
+	/*
+	 * Have to deform from scratch, otherwise tts_values[] entries could point
+	 * into the non-materialized tuple (which might be gone when accessed).
+	 */
+	slot->tts_nvalid = 0;
+	zslot->off = 0;
+}
+
+static void
+tts_zheap_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
+{
+	HeapTuple tuple;
+	MemoryContext oldcontext;
+
+	// PBORKED: This is a horrible implementation
+
+	oldcontext = MemoryContextSwitchTo(dstslot->tts_mcxt);
+	tuple = ExecCopySlotHeapTuple(srcslot);
+	MemoryContextSwitchTo(oldcontext);
+
+	ExecForceStoreHeapTuple(tuple, dstslot);
+	ExecMaterializeSlot(dstslot);
+
+	pfree(tuple);
+}
+
+static HeapTuple
+tts_zheap_copy_heap_tuple(TupleTableSlot *slot)
+{
+	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
+
+	Assert(!TTS_EMPTY(slot));
+
+	if (!zslot->tuple)
+		tts_zheap_materialize(slot);
+
+	return zheap_to_heap(zslot->tuple, slot->tts_tupleDescriptor);
+}
+
+/*
+ * Return a minimal tuple constructed from the contents of the slot.
+ *
+ * We always return a new minimal tuple so no copy, per say, is needed.
+ *
+ * TODO:
+ * This function is exact copy of tts_zheap_get_minimal_tuple() and thus the
+ * callback should point to that one instead of a new implementation. But
+ * there's one TODO there which might change tts_heap_get_minimal_tuple().
+ */
+static MinimalTuple
+tts_zheap_copy_minimal_tuple(TupleTableSlot *slot)
+{
+	slot_getallattrs(slot);
+
+	return heap_form_minimal_tuple(slot->tts_tupleDescriptor,
+								   slot->tts_values, slot->tts_isnull);
+}
+
+/*
+ * TupleTableSlotOps for each of TupleTableSlotTypes. These are used to
+ * identify the type of slot.
+ */
 const TupleTableSlotOps TTSOpsVirtual = {
 	.base_slot_size = sizeof(VirtualTupleTableSlot),
 	.init = tts_virtual_init,
@@ -1058,6 +1231,22 @@ const TupleTableSlotOps TTSOpsBufferHeapTuple = {
 	.copy_minimal_tuple = tts_buffer_heap_copy_minimal_tuple
 };
 
+const TupleTableSlotOps TTSOpsZHeapTuple = {
+	.base_slot_size = sizeof(ZHeapTupleTableSlot),
+	.init = tts_zheap_init,
+	.release = tts_zheap_release,
+	.clear = tts_zheap_clear,
+	.getsomeattrs = tts_zheap_getsomeattrs,
+	.getsysattr = tts_zheap_getsysattr,
+	.materialize = tts_zheap_materialize,
+	.copyslot = tts_zheap_copyslot,
+
+	.get_heap_tuple = NULL,
+	.get_minimal_tuple = NULL,
+
+	.copy_heap_tuple = tts_zheap_copy_heap_tuple,
+	.copy_minimal_tuple = tts_zheap_copy_minimal_tuple
+};
 
 /* ----------------------------------------------------------------
  *				  tuple table create/delete functions
@@ -1424,6 +1613,43 @@ ExecStoreMinimalTuple(MinimalTuple mtup,
 	return slot;
 }
 
+/* --------------------------------
+ *		ExecStoreZTuple
+ *
+ *		This function is same as ExecStoreTuple except that it used to store a
+ *		physical zheap tuple into a specified slot in the tuple table.
+ *
+ *		NOTE: Unlike ExecStoreTuple, it's possible that buffer is valid and
+ *		should_free is true. Because, slot->tts_ztuple may be a copy of the
+ *		tuple allocated locally. So, we want to free the tuple even after
+ *		keeping a pin/lock to the previously valid buffer.
+ */
+TupleTableSlot *
+ExecStoreZTuple(ZHeapTuple tuple,
+				TupleTableSlot *slot,
+				Buffer buffer,
+				bool shouldFree)
+{
+	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
+	/*
+	 * sanity checks
+	 */
+	Assert(slot != NULL);
+	Assert(TTS_IS_ZHEAP(slot));
+	tts_zheap_clear(slot);
+
+	slot->tts_nvalid = 0;
+	zslot->tuple = tuple;
+	zslot->off = 0;
+	slot->tts_flags &= ~TTS_FLAG_EMPTY;
+	slot->tts_tid = tuple->t_self;
+
+	if (shouldFree)
+		slot->tts_flags |= TTS_FLAG_SHOULDFREE;
+
+	return slot;
+}
+
 /*
  * Store a HeapTuple into any kind of slot, performing conversion if
  * necessary.
@@ -1482,6 +1708,24 @@ ExecForceStoreMinimalTuple(MinimalTuple mtup,
 						  slot->tts_values, slot->tts_isnull);
 		ExecStoreVirtualTuple(slot);
 	}
+}
+
+
+ZHeapTuple
+ExecGetZHeapTupleFromSlot(TupleTableSlot *slot)
+{
+	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
+
+	if (!TTS_IS_ZHEAP(slot))
+		elog(ERROR, "unsupported");
+
+	if (TTS_EMPTY(slot))
+		return NULL;
+
+	if (!zslot->tuple)
+		slot->tts_ops->materialize(slot);
+
+	return zslot->tuple;
 }
 
 /* --------------------------------

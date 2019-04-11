@@ -16,6 +16,7 @@
 #include "access/htup.h"
 #include "access/xlogdefs.h"
 #include "datatype/timestamp.h"
+#include "access/zhtup.h"
 #include "lib/pairingheap.h"
 #include "storage/buf.h"
 
@@ -137,6 +138,13 @@ typedef struct SnapshotData
 	 */
 	TransactionId xmin;			/* all XID < xmin are visible to me */
 	TransactionId xmax;			/* all XID >= xmax are invisible to me */
+
+	/*
+	 * This if for the new type of locks for sub-transactions for zheap.
+	 * This is filled in ZHeapTupleSatisfiesDirty, if the tuple is modified
+	 * by a sub-transaction.  This allows us to wait on subtransactions.
+	 */
+	SubTransactionId subxid;
 
 	/*
 	 * For normal MVCC snapshot this contains the all xact IDs that are in

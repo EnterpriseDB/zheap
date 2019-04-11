@@ -879,6 +879,8 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	if (MultiXactIdPrecedes(MultiXactCutoff, OldHeap->rd_rel->relminmxid))
 		MultiXactCutoff = OldHeap->rd_rel->relminmxid;
 
+	// ZBORKED / PBORKED: change API so table_copy_for_cluster can set
+
 	/* return selected values to caller */
 	*pFreezeXid = FreezeXid;
 	*pCutoffMulti = MultiXactCutoff;
@@ -1118,9 +1120,26 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 	/* set rel1's frozen Xid and minimum MultiXid */
 	if (relform1->relkind != RELKIND_INDEX)
 	{
-		Assert(TransactionIdIsNormal(frozenXid));
+		Relation	rel;
+
+		/*
+		 * ZBORKED:
+		 *
+		 * We don't have multixact or frozenXid concept for zheap. This is a
+		 * hack to keep Asserts, probably we need some pluggable API here to
+		 * set frozen and multixact cutoff xid's.
+		 *
+		 * ISTM we should just get rid of these asserts.
+		 */
+		rel = heap_open(r1, NoLock);
+		if (!RelationStorageIsZHeap(rel))
+		{
+			Assert(TransactionIdIsNormal(frozenXid));
+			Assert(MultiXactIdIsValid(cutoffMulti));
+		}
+		heap_close(rel, NoLock);
+
 		relform1->relfrozenxid = frozenXid;
-		Assert(MultiXactIdIsValid(cutoffMulti));
 		relform1->relminmxid = cutoffMulti;
 	}
 

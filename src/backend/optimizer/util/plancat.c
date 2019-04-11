@@ -974,10 +974,6 @@ estimate_rel_size(Relation rel, int32 *attr_widths,
 				*allvisfrac = 0;
 				break;
 			}
-			/* coerce values in pg_class to more desirable types */
-			relpages = (BlockNumber) rel->rd_rel->relpages;
-			reltuples = (double) rel->rd_rel->reltuples;
-			relallvisible = (BlockNumber) rel->rd_rel->relallvisible;
 
 			/*
 			 * Discount the metapage while estimating the number of tuples.

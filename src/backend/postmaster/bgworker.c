@@ -20,7 +20,9 @@
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "postmaster/bgworker_internals.h"
+#include "postmaster/discardworker.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/undoworker.h"
 #include "replication/logicallauncher.h"
 #include "replication/logicalworker.h"
 #include "storage/dsm.h"
@@ -129,6 +131,15 @@ static const struct
 	},
 	{
 		"ApplyWorkerMain", ApplyWorkerMain
+	},
+	{
+		"UndoLauncherMain", UndoLauncherMain
+	},
+	{
+		"UndoWorkerMain", UndoWorkerMain
+	},
+	{
+		"DiscardWorkerMain", DiscardWorkerMain
 	}
 };
 

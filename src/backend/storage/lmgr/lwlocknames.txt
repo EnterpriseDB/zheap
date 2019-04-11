@@ -49,3 +49,6 @@ MultiXactTruncationLock				41
 OldSnapshotTimeMapLock				42
 LogicalRepWorkerLock				43
 CLogTruncationLock					44
+UndoLogLock							45
+RollbackHTLock							46
+UndoWorkerLock					47

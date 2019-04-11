@@ -121,6 +121,7 @@ bool		allowSystemTableMods = false;
 int			work_mem = 1024;
 int			maintenance_work_mem = 16384;
 int			max_parallel_maintenance_workers = 2;
+int         rollback_overflow_size = 64;
 
 /*
  * Primary determinants of sizes of shared-memory structures.

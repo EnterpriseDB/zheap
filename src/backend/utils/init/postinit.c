@@ -559,6 +559,7 @@ BaseInit(void)
 	InitSync();
 	smgrinit();
 	InitBufferPoolAccess();
+	UndoLogInit();
 }
 
 
