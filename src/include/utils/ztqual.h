@@ -56,7 +56,7 @@ extern HTSU_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,
 						  ZHeapTupleTransInfo *zinfo,
 						  SubTransactionId *subxid,
 						  TransactionId *single_locker_xid, int *single_locker_trans_slot,
-						  bool free_zhtup, bool lock_allowed, Snapshot snapshot,
+						  bool lock_allowed, Snapshot snapshot,
 						  bool *in_place_updated_or_locked);
 extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin,
 					   Buffer buffer);
