@@ -670,8 +670,8 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple ztuple,
 				 * transaction in which case there is no risk of transaction
 				 * chain switching, so we are safe.
 				 */
-				zinfo.cid = ZHeapTupleGetCid(ztuple, buffer, zinfo.urec_ptr,
-											 zinfo.trans_slot);
+				zinfo.cid = ZHeapPageGetCid(buffer, zinfo.epoch_xid,
+											zinfo.urec_ptr, offnum);
 				have_cid = true;
 			}
 
@@ -787,8 +787,8 @@ fetch_prior_undo_record:
 			 * which case there is no risk of transaction chain switching, so
 			 * we are safe.
 			 */
-			zinfo.cid = ZHeapTupleGetCid(ztuple, buffer, zinfo.urec_ptr,
-										 zinfo.trans_slot);
+			zinfo.cid = ZHeapPageGetCid(buffer, zinfo.epoch_xid,
+										zinfo.urec_ptr, offnum);
 			have_cid = true;
 		}
 		zselect = ZHeapCheckCID(op, zinfo.cid, curcid);
