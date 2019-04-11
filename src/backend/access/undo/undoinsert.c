@@ -174,6 +174,7 @@ static int UndoGetBufferSlot(RelFileNode rnode, BlockNumber blk,
 				  ReadBufferMode rbm,
 				  UndoPersistence persistence,
 				  XLogReaderState *xlog_record);
+static uint16 UndoGetPrevRecordLen(UndoRecPtr urp, Buffer input_buffer);
 
 /*
  * Check whether the undo record is discarded or not.  If it's already discarded
@@ -409,7 +410,7 @@ UndoRecordUpdateTransInfo(int idx)
 
 			/* Overwrite the previously written undo. */
 			if (InsertUndoRecord(&xact_urec_info[idx].uur, page, starting_byte,
-				&already_written, 0, true))
+				&already_written, 0, 0, true))
 			{
 				MarkBufferDirty(buffer);
 				break;
@@ -434,7 +435,7 @@ UndoRecordUpdateTransInfo(int idx)
 			 * insert into next block.
 			 */
 			if (InsertUndoRecord(&xact_urec_info[idx].uur, page, starting_byte,
-				&already_written, remaining_bytes, true))
+				&already_written, remaining_bytes, 0, true))
 				break;
 			else
 				remaining_bytes -= (BLCKSZ - starting_byte);
@@ -600,6 +601,9 @@ resize:
 
 			if (log_switched)
 			{
+				uint16		prevlen;
+				UndoRecPtr	prevloginserturp;
+
 				/*
 				 * If undo log is switched then during rollback we can not
 				 * go to the previous undo record of the transaction by prevlen
@@ -608,8 +612,16 @@ resize:
 				 */
 				Assert(prevlogno != InvalidUndoLogNumber);
 				log = UndoLogGet(prevlogno);
-				urec->uur_prevurp = MakeUndoRecPtr(prevlogno,
-												   log->meta.insert - log->meta.prevlen);
+
+				/* Compute insert undo pointer of the previous undo log. */
+				prevloginserturp = MakeUndoRecPtr(prevlogno, log->meta.insert);
+
+				/* Fetch length of the last undo record of the previous log. */
+				prevlen = UndoGetPrevRecordLen(prevloginserturp, InvalidBuffer);
+
+				/* Compute the last record's undo record pointer. */
+				urec->uur_prevurp =
+					MakeUndoRecPtr(prevlogno, log->meta.insert - prevlen);
 			}
 			else
 				urec->uur_prevurp = InvalidUndoRecPtr;
@@ -948,8 +960,6 @@ InsertPreparedUndo(void)
 	uint16		remaining_bytes;
 	UndoRecPtr	urp;
 	UnpackedUndoRecord *uur;
-	UndoLogOffset offset;
-	UndoLogControl *log;
 
 	/* There must be atleast one prepared undo record. */
 	Assert(prepare_idx > 0);
@@ -967,32 +977,8 @@ InsertPreparedUndo(void)
 		already_written = 0;
 		bufidx = 0;
 		starting_byte = UndoRecPtrGetPageOffset(urp);
-		offset = UndoRecPtrGetOffset(urp);
 
-		log = UndoLogGet(UndoRecPtrGetLogNo(urp));
-		Assert(AmAttachedToUndoLog(log) || InRecovery);
-
-		/*
-		 * Store the previous undo record length in the header.  We can read
-		 * meta.prevlen without locking, because only we can write to it.
-		 */
-		uur->uur_prevlen = log->meta.prevlen;
-
-		/*
-		 * If starting a new log then there is no prevlen to store.
-		 */
-		if (offset == UndoLogBlockHeaderSize)
-			uur->uur_prevlen = 0;
-
-		/*
-		 * if starting from a new page then consider block header size in
-		 * prevlen calculation.
-		 */
-		else if (starting_byte == UndoLogBlockHeaderSize)
-			uur->uur_prevlen += UndoLogBlockHeaderSize;
-
-		undo_len = 0;
-		remaining_bytes = UndoRecordExpectedSize(uur);
+		undo_len = remaining_bytes = UndoRecordExpectedSize(uur);
 
 		do
 		{
@@ -1018,9 +1004,8 @@ InsertPreparedUndo(void)
 				 * succeed then recall the routine with the next page.
 				 */
 				if (InsertUndoRecord(uur, page, starting_byte, &already_written,
-									 0, false))
+									 0, undo_len, false))
 				{
-					undo_len += already_written;
 					MarkBufferDirty(buffer);
 					break;
 				}
@@ -1046,11 +1031,8 @@ InsertPreparedUndo(void)
 				 * already_written count and local work header.
 				 */
 				if (InsertUndoRecord(uur, page, starting_byte, &already_written,
-					remaining_bytes, false))
-				{
-					undo_len += already_written;
+					remaining_bytes, undo_len, false))
 					break;
-				}
 				else
 					remaining_bytes -= (BLCKSZ - starting_byte);
 			}
@@ -1060,14 +1042,11 @@ InsertPreparedUndo(void)
 			 * in total undo length.
 			 */
 			starting_byte = UndoLogBlockHeaderSize;
-			undo_len += UndoLogBlockHeaderSize;
 			bufidx++;
 
 			/* undo record can't use buffers more than MAX_BUFFER_PER_UNDO. */
 			Assert(bufidx < MAX_BUFFER_PER_UNDO);
 		} while (true);
-
-		UndoLogSetPrevLen(UndoRecPtrGetLogNo(urp), undo_len);
 
 		/*
 		 * Set the current undo location for a transaction.  This is required
@@ -1314,6 +1293,99 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 }
 
 /*
+ * UndoGetPrevRecordLen - read length of the previous undo record.
+ *
+ * This function will take an undo record pointer as an input and read the
+ * length of the previous undo record which is stored at the end of the previous
+ * undo record.  If the previous undo record is split then this will add the
+ * undo block header size in the total length.
+ */
+static uint16
+UndoGetPrevRecordLen(UndoRecPtr urp, Buffer input_buffer)
+{
+	UndoLogControl *log;
+	UndoLogNumber logno = UndoRecPtrGetLogNo(urp);
+	UndoLogOffset page_offset = UndoRecPtrGetPageOffset(urp);
+	BlockNumber	  cur_blk = UndoRecPtrGetBlockNum(urp);
+	Buffer	buffer = input_buffer;
+	char   *page;
+	char	prevlen[2];
+	RelFileNode rnode;
+	int		byte_to_read = sizeof(uint16);
+	char	persistence;
+	uint16	prev_rec_len = 0;
+
+	/* Get relfilenode and undo persistence */
+	logno = UndoRecPtrGetLogNo(urp);
+	log = UndoLogGet(logno);
+	UndoRecPtrAssignRelFileNode(rnode, urp);
+	persistence = RelPersistenceForUndoPersistence(log->meta.persistence);
+
+	/*
+	 * If caller has passed invalid buffer then read the buffer.
+	 */
+	if (!BufferIsValid(buffer))
+		buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
+										   RBM_NORMAL, NULL, persistence);
+
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+	page = (char *)BufferGetPage(buffer);
+
+	/*
+	 * Length if the previous undo record is store at the end of that record
+	 * so just fetch last 2 bytes.
+	 */
+	while(byte_to_read > 0)
+	{
+		page_offset -= 1;
+
+		/*
+		 * Read first prevlen byte from current page if page_offset hasn't
+		 * reach to undo block header.  Otherwise move to the previous page.
+		 */
+		if (page_offset >= UndoLogBlockHeaderSize)
+		{
+			prevlen[byte_to_read - 1] = page[page_offset];
+			byte_to_read -= 1;
+		}
+		else
+		{
+			/* Release the buffer if we have locally read it. */
+			if (input_buffer != buffer)
+				UnlockReleaseBuffer(buffer);
+			else
+				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+			cur_blk -= 1;
+			persistence = RelPersistenceForUndoPersistence(log->meta.persistence);
+			buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
+											   RBM_NORMAL, NULL,
+											   persistence);
+			LockBuffer(buffer, BUFFER_LOCK_SHARE);
+			page_offset = BLCKSZ;
+			page = (char *)BufferGetPage(buffer);
+		}
+	}
+
+	prev_rec_len = *(uint16 *) (prevlen);
+
+	/*
+	 * If previous undo record is not completely stored in this page then add
+	 * UndoLogBlockHeaderSize in total length so that the call can use this
+	 * length to compute the undo record pointer of the previous undo record.
+	 */
+	if (UndoRecPtrGetPageOffset(urp) - UndoLogBlockHeaderSize < prev_rec_len)
+		prev_rec_len += UndoLogBlockHeaderSize;
+
+	/* Release the buffer if we have locally read it. */
+	if (input_buffer != buffer)
+		UnlockReleaseBuffer(buffer);
+	else
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+
+	return prev_rec_len;
+ }
+
+/*
  * Return the previous undo record pointer.
  *
  * A valid value of prevurp indicates that the previous undo record
@@ -1322,7 +1394,7 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
  * by using current urp and the prevlen.
  */
 UndoRecPtr
-UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen, UndoRecPtr prevurp)
+UndoGetPrevUndoRecptr(UndoRecPtr urp, UndoRecPtr prevurp, Buffer buffer)
 {
 	if (UndoRecPtrIsValid(prevurp))
 		return prevurp;
@@ -1330,6 +1402,10 @@ UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen, UndoRecPtr prevurp)
 	{
 		UndoLogNumber logno = UndoRecPtrGetLogNo(urp);
 		UndoLogOffset offset = UndoRecPtrGetOffset(urp);
+		uint16	prevlen;
+
+		/* Read length of the previous undo record. */
+		prevlen = UndoGetPrevRecordLen(urp, buffer);
 
 		/* calculate the previous undo record pointer */
 		return MakeUndoRecPtr(logno, offset - prevlen);

@@ -204,20 +204,6 @@ typedef struct UndoLogMetaData
 	UndoLogOffset last_xact_start;	/* last transactions start undo offset */
 
 	bool		is_first_rec;
-
-	/*
-	 * last undo record's length. We need to save this in undo meta and WAL
-	 * log so that the value can be preserved across restart so that the first
-	 * undo record after the restart can get this value properly.  This will
-	 * be used going to the previous record of the transaction during
-	 * rollback. In case the transaction have done some operation before
-	 * checkpoint and remaining after checkpoint in such case if we can't get
-	 * the previous record prevlen which which before checkpoint we can not
-	 * properly rollback.  And, undo worker is also fetch this value when
-	 * rolling back the last transaction in the undo log for locating the last
-	 * undo record of the transaction.
-	 */
-	uint16		prevlen;
 } UndoLogMetaData;
 
 /* Record the undo log number used for a transaction. */
@@ -320,7 +306,7 @@ extern UndoRecPtr UndoLogGetCurrentLocation(UndoPersistence persistence);
 extern UndoRecPtr UndoLogGetFirstValidRecord(UndoLogNumber logno);
 extern UndoRecPtr UndoLogGetNextInsertPtr(UndoLogNumber logno,
 						TransactionId xid);
-extern void UndoLogRewind(UndoRecPtr insert_urp, uint16 prevlen);
+extern void UndoLogRewind(UndoRecPtr insert_urp);
 extern bool IsTransactionFirstRec(TransactionId xid);
 extern void UndoLogSetPrevLen(UndoLogNumber logno, uint16 prevlen);
 extern uint16 UndoLogGetPrevLen(UndoLogNumber logno);
