@@ -172,14 +172,15 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	int			slot_no;
 	int			total_trans_slots = 0;
 	BlockNumber tpd_blkno = InvalidBlockNumber;
+	BlockNumber	blkno = ItemPointerGetBlockNumber(&zhtup->t_self);
+	OffsetNumber offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
 
 	if (nobuflock)
 	{
 		ItemId		lp;
 
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		lp = PageGetItemId(BufferGetPage(buf),
-						   ItemPointerGetOffsetNumber(&zhtup->t_self));
+		lp = PageGetItemId(BufferGetPage(buf), offnum);
 
 		/*
 		 * It is quite possible that once we reacquire the lock on buffer,
@@ -293,8 +294,8 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 			prev_trans_slot_id = trans_slot_id;
 			urec = UndoFetchRecord(urec_ptr,
-								   ItemPointerGetBlockNumber(&undo_tup->t_self),
-								   ItemPointerGetOffsetNumber(&undo_tup->t_self),
+								   blkno,
+								   offnum,
 								   InvalidTransactionId,
 								   NULL,
 								   ZHeapSatisfyUndoRecord);
@@ -309,7 +310,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			if (!urec)
 				break;
 
-			ZHeapTupleGetSubXid(undo_tup, buf, urec_ptr, &subxid);
+			ZHeapTupleGetSubXid(buf, offnum, urec_ptr, &subxid);
 
 			/*
 			 * Exclude undo records inserted by my own transaction.  We

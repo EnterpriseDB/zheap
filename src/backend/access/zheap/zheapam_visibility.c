@@ -1161,7 +1161,7 @@ ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
 			Assert(snapshot->speculativeToken != 0);
 		}
 		if ((requests & SNAPSHOT_REQUESTS_SUBXID) != 0)
-			ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr,
+			ZHeapTupleGetSubXid(buffer, offnum, zinfo.urec_ptr,
 								&snapshot->subxid);
 	}
 	else
@@ -1354,6 +1354,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 	CommandId	cur_comm_cid = GetCurrentCommandId(false);
 	bool		visible;
 	bool		fetch_cid = true;
+	OffsetNumber offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
 
 	*single_locker_xid = InvalidTransactionId;
 	*single_locker_trans_slot = InvalidXactSlotId;
@@ -1424,7 +1425,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			if (visible)
 			{
 				if (subxid)
-					ZHeapTupleGetSubXid(zhtup, buffer, zinfo->urec_ptr,
+					ZHeapTupleGetSubXid(buffer, offnum, zinfo->urec_ptr,
 										subxid);
 
 				return HeapTupleBeingUpdated;
@@ -1566,7 +1567,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			if (visible)
 			{
 				if (subxid)
-					ZHeapTupleGetSubXid(zhtup, buffer, zinfo->urec_ptr,
+					ZHeapTupleGetSubXid(buffer, offnum, zinfo->urec_ptr,
 										subxid);
 
 				return HeapTupleBeingUpdated;
@@ -1824,6 +1825,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple *ztuple, TransactionId OldestXmin,
 	ZHeapTuple	zhtup = *ztuple;
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	ZHeapTupleTransInfo	zinfo;
+	OffsetNumber offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
 
 	Assert(ItemPointerIsValid(&zhtup->t_self));
 	Assert(zhtup->t_tableOid != InvalidOid);
@@ -1850,7 +1852,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple *ztuple, TransactionId OldestXmin,
 		{
 			/* Get Sub transaction id */
 			if (subxid)
-				ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr, subxid);
+				ZHeapTupleGetSubXid(buffer, offnum, zinfo.urec_ptr, subxid);
 
 			return HEAPTUPLE_DELETE_IN_PROGRESS;
 		}
@@ -1918,7 +1920,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple *ztuple, TransactionId OldestXmin,
 	{
 		/* Get Sub transaction id */
 		if (subxid)
-			ZHeapTupleGetSubXid(zhtup, buffer, zinfo.urec_ptr, subxid);
+			ZHeapTupleGetSubXid(buffer, offnum, zinfo.urec_ptr, subxid);
 		return HEAPTUPLE_INSERT_IN_PROGRESS;	/* in insertion by other */
 	}
 	else if (TransactionIdDidCommit(zinfo.xid))
