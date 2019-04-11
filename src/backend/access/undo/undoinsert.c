@@ -1100,11 +1100,13 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
 										   RelPersistenceForUndoPersistence(persistence));
 
 		urec->uur_buffer = buffer;
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
 	}
+	else if (!keep_buffer)
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
 
 	while (true)
 	{
-		LockBuffer(buffer, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buffer);
 
 		/*
@@ -1133,14 +1135,13 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
 			UnlockReleaseBuffer(buffer);
 			urec->uur_buffer = InvalidBuffer;
 		}
-		else
-			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
 		/* Go to next block. */
 		cur_blk++;
 		buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
 								RBM_NORMAL, NULL,
 								RelPersistenceForUndoPersistence(persistence));
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
 	}
 
 	/*
@@ -1149,7 +1150,7 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
 	 */
 	if (is_undo_rec_split)
 		UnlockReleaseBuffer(buffer);
-	else
+	else if (!keep_buffer)
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 }
 
@@ -1322,10 +1323,12 @@ UndoGetPrevRecordLen(UndoRecPtr urp, Buffer input_buffer)
 	 * If caller has passed invalid buffer then read the buffer.
 	 */
 	if (!BufferIsValid(buffer))
+	{
 		buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
 										   RBM_NORMAL, NULL, persistence);
 
-	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+	}
 	page = (char *)BufferGetPage(buffer);
 
 	/*
@@ -1350,8 +1353,6 @@ UndoGetPrevRecordLen(UndoRecPtr urp, Buffer input_buffer)
 			/* Release the buffer if we have locally read it. */
 			if (input_buffer != buffer)
 				UnlockReleaseBuffer(buffer);
-			else
-				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 			cur_blk -= 1;
 			persistence = RelPersistenceForUndoPersistence(log->meta.persistence);
 			buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
@@ -1376,8 +1377,6 @@ UndoGetPrevRecordLen(UndoRecPtr urp, Buffer input_buffer)
 	/* Release the buffer if we have locally read it. */
 	if (input_buffer != buffer)
 		UnlockReleaseBuffer(buffer);
-	else
-		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
 	return prev_rec_len;
  }

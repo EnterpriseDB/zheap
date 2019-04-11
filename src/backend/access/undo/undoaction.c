@@ -171,7 +171,7 @@ UndoRecordBulkFetch(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 			/* Release the previous buffer */
 			if (BufferIsValid(buffer))
 			{
-				ReleaseBuffer(buffer);
+				UnlockReleaseBuffer(buffer);
 				buffer = InvalidBuffer;
 			}
 
@@ -285,7 +285,7 @@ UndoRecordBulkFetch(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 
 	/* Release the last buffer. */
 	if (BufferIsValid(buffer))
-		ReleaseBuffer(buffer);
+		UnlockReleaseBuffer(buffer);
 
 	*nrecords = urp_index;
 
