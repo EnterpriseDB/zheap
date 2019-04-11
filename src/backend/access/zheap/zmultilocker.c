@@ -494,7 +494,8 @@ ZMultiLockMembersWait(Relation rel, List *mlmembers, ZHeapTuple zhtup,
 		if (TransactionIdDidAbort(memxid))
 		{
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
-			zheap_exec_pending_rollback(rel, buf, mlmember->trans_slot_id, memxid);
+			zheap_exec_pending_rollback(rel, buf, mlmember->trans_slot_id,
+										memxid, NULL);
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 
 			if (TransactionIdIsValid(update_xact) && memxid == update_xact)
