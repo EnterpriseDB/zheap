@@ -4068,9 +4068,11 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_mode),
 								HWLOCKMODE_from_locktupmode(required_mode)))
 		{
+			OffsetNumber offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
+
 			*needwait = true;
 			if (subxid)
-				ZHeapTupleGetSubXid(zhtup, buf, urec_ptr, subxid);
+				ZHeapTupleGetSubXid(buf, offnum, urec_ptr, subxid);
 		}
 
 		/*
@@ -7424,7 +7426,7 @@ ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
  * purpose, then we might need to deal with ZHEAP_INVALID_XACT_SLOT.
  */
 void
-ZHeapTupleGetSubXid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
+ZHeapTupleGetSubXid(Buffer buf, OffsetNumber offnum, UndoRecPtr urec_ptr,
 					SubTransactionId *subxid)
 {
 	UnpackedUndoRecord *urec;
@@ -7433,8 +7435,8 @@ ZHeapTupleGetSubXid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 
 	Assert(UndoRecPtrIsValid(urec_ptr));
 	urec = UndoFetchRecord(urec_ptr,
-						   ItemPointerGetBlockNumber(&zhtup->t_self),
-						   ItemPointerGetOffsetNumber(&zhtup->t_self),
+						   BufferGetBlockNumber(buf),
+						   offnum,
 						   InvalidTransactionId,
 						   NULL,
 						   ZHeapSatisfyUndoRecord);
