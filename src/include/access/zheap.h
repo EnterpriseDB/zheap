@@ -254,9 +254,7 @@ extern ZHeapTuple CopyTupleFromUndoRecord(UnpackedUndoRecord *urec,
 extern bool ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 				   TransactionId priorXmax, bool nobuflock);
 extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
-							int slot_no, TransactionId xwait);
-extern void zbuffer_exec_pending_rollback(Relation rel, Buffer buf,
-							  BlockNumber *tpd_blkno);
+				   int slot_no, TransactionId xwait, BlockNumber *tpd_blkno);
 
 /* in zheap/zvacuumlazy.c */
 struct VacuumParams;

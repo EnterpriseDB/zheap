@@ -424,93 +424,85 @@ tuple_is_valid:
 }
 
 /*
- * zheap_exec_pending_rollback - Execute pending rollback actions for the
- *	given buffer (page).
+ * zheap_exec_pending_rollback - apply any pending rollback on the input buffer
  *
- * This function expects that the input buffer is locked.  We will release and
- * reacquire the buffer lock in this function, the same can be done in all the
- * callers of this function, but that is just a code duplication, so we instead
- * do it here.
- */
-bool
-zheap_exec_pending_rollback(Relation rel, Buffer buffer, int slot_no,
-							TransactionId xwait)
-{
-	Page		page;
-	PageHeader	phdr;
-	ZHeapTupleTransInfo	zinfo;
-
-	page = BufferGetPage(buffer);
-	phdr = (PageHeader) page;
-
-	/*
-	 * If the caller reacquired the lock before calling this function,
-	 * rollback could have been performed by some other backend or the
-	 * undo-worker.  In that case, the TPD entry can be pruned away.
-	 */
-	if (slot_no > ZHEAP_PAGE_TRANS_SLOTS && !ZHeapPageHasTPDSlot(phdr))
-		return false;
-
-	GetTransactionSlotInfo(buffer, InvalidOffsetNumber, slot_no,
-						   true, true, &zinfo);
-
-	/*
-	 * If the caller reacquired the lock before calling this function,
-	 * rollback could have been performed by some other backend or the
-	 * undo-worker.  In that case, the TPD slot can be frozen since the TPD
-	 * entry can be pruned away.
-	 */
-	Assert(zinfo.trans_slot != ZHTUP_SLOT_FROZEN ||
-		   (ZHeapPageHasTPDSlot(phdr) && slot_no >= ZHEAP_PAGE_TRANS_SLOTS));
-
-	if (xwait != zinfo.xid)
-		return false;
-
-	/*
-	 * Release buffer lock before applying undo actions.
-	 */
-	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-
-	process_and_execute_undo_actions_page(zinfo.urec_ptr, rel, buffer,
-										  GetEpochFromEpochXid(zinfo.epoch_xid),
-										  zinfo.xid, slot_no);
-
-	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-
-	return true;
-}
-
-/*
- * zbuffer_exec_pending_rollback - apply any pending rollback on the input buffer
- *
- * This method traverses all the transaction slots of the current page including
- * tpd slots and applies any pending aborts on the page.
+ * trans_slot_id  - If a valid slot number is passed then it will apply
+ * the undo actions for that slot unless already applied, otherwise it
+ * traverses all the transaction slots of the current page including tpd
+ * slots and applies any pending aborts on the page.  If the input
+ * trans_slot_id is valid then the caller must have a buffer lock on the input
+ * buffer.
+ * xid - Transaction id for which pending actions need to be applied.  If
+ * the given slot contains different xid, then we can consider that
+ * actions are already applied and the slot has been reused by a
+ * different transaction.
  *
  * It expects the caller has an exclusive lock on the relation. It also returns
- * the corresponding TPD block number in case it has rolled back any transactions
- * from the corresponding TPD page, if any.
+ * the corresponding TPD block number in case it has rolled back any
+ * transactions from the corresponding TPD page, if any.
  */
-void
-zbuffer_exec_pending_rollback(Relation rel, Buffer buf, BlockNumber *tpd_blkno)
+bool
+zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
+							TransactionId xid, BlockNumber *tpd_blkno)
 {
 	int			slot_no;
 	int			total_trans_slots = 0;
 	uint32		epoch;
-	TransactionId xid;
 	UndoRecPtr	urec_ptr;
 	TransInfo  *trans_slots = NULL;
 	bool		any_tpd_slot_rolled_back = false;
 
-	Assert(tpd_blkno != NULL);
-
 	/*
-	 * Fetch all the transaction information from the page and its
-	 * corresponding TPD page.
+	 * If the caller has passed a valid slot then only apply undo actions for
+	 * xid in that slot.
 	 */
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots,
-											  tpd_blkno);
-	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	if (trans_slot_id != InvalidXactSlotId)
+	{
+		Page		page;
+		PageHeader	phdr;
+		TransInfo	slotinfo;
+		ZHeapTupleTransInfo zinfo;
+
+		page = BufferGetPage(buf);
+		phdr = (PageHeader) page;
+
+		/*
+		 * If the caller reacquired the lock before calling this function,
+		 * rollback could have been performed by some other backend or the
+		 * undo-worker.  In that case, the TPD entry can be pruned away.
+		 */
+		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS &&
+			!ZHeapPageHasTPDSlot(phdr))
+			return false;
+
+		GetTransactionSlotInfo(buf, InvalidOffsetNumber, trans_slot_id,
+							   true, true, &zinfo);
+		/* Undo actions already applied for the transaction so nothing to do. */
+		if (xid != zinfo.xid)
+			return false;
+
+		slotinfo.xid_epoch = zinfo.epoch_xid;
+		slotinfo.xid = zinfo.xid;
+		slotinfo.urec_ptr = zinfo.urec_ptr;
+		total_trans_slots = 1;
+		trans_slots = &slotinfo;
+
+		/* Release buffer lock before applying undo actions. */
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	}
+	else
+	{
+		Assert(tpd_blkno != NULL);
+
+		/*
+		 * Fetch all the transaction information from the page and its
+		 * corresponding TPD page.
+		 */
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots,
+												  tpd_blkno);
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	}
 
 	for (slot_no = 0; slot_no < total_trans_slots; slot_no++)
 	{
@@ -529,9 +521,10 @@ zbuffer_exec_pending_rollback(Relation rel, Buffer buf, BlockNumber *tpd_blkno)
 		if (TransactionIdIsValid(xid) && TransactionIdDidAbort(xid))
 		{
 			/* Remember if we've rolled back a transaction from a TPD-slot. */
-			if ((slot_no >= ZHEAP_PAGE_TRANS_SLOTS - 1) &&
+			if (tpd_blkno != NULL && (slot_no >= ZHEAP_PAGE_TRANS_SLOTS - 1) &&
 				BlockNumberIsValid(*tpd_blkno))
 				any_tpd_slot_rolled_back = true;
+
 			process_and_execute_undo_actions_page(urec_ptr, rel, buf, epoch,
 												  xid, slot_no);
 		}
@@ -541,11 +534,15 @@ zbuffer_exec_pending_rollback(Relation rel, Buffer buf, BlockNumber *tpd_blkno)
 	 * If we've not rolled back anything from TPD slot, there is no need set
 	 * the TPD buffer.
 	 */
-	if (!any_tpd_slot_rolled_back)
+	if (tpd_blkno != NULL && !any_tpd_slot_rolled_back)
 		*tpd_blkno = InvalidBlockNumber;
 
-	/* be tidy */
-	pfree(trans_slots);
+	/* Reacquire the lock if we have released it. */
+	if (trans_slot_id != InvalidXactSlotId)
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	else
+		pfree(trans_slots);
+	return true;
 }
 
 /*
