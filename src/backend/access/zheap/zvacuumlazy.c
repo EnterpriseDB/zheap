@@ -281,7 +281,6 @@ reacquire_slot:
 	undorecord.uur_rmid = RM_ZHEAP_ID;
 	undorecord.uur_type = UNDO_ITEMID_UNUSED;
 	undorecord.uur_info = 0;
-	undorecord.uur_prevlen = 0;
 	undorecord.uur_reloid = onerel->rd_id;
 	undorecord.uur_prevxid = xid;
 	undorecord.uur_xid = xid;

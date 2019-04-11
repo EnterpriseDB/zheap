@@ -40,7 +40,7 @@ UndoRecordExpectedSize(UnpackedUndoRecord *uur)
 {
 	Size		size;
 
-	size = SizeOfUndoRecordHeader;
+	size = SizeOfUndoRecordHeader + sizeof(uint16);
 	if ((uur->uur_info & UREC_INFO_RELATION_DETAILS) != 0)
 		size += SizeOfUndoRecordRelationDetails;
 	if ((uur->uur_info & UREC_INFO_BLOCK) != 0)
@@ -109,7 +109,7 @@ UnpackedUndoRecordSize(UnpackedUndoRecord *uur)
 bool
 InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 				 int starting_byte, int *already_written, int remaining_bytes,
-				 bool header_only)
+				 uint16 undo_len, bool header_only)
 {
 	char	   *writeptr = (char *) page + starting_byte;
 	char	   *endptr = (char *) page + BLCKSZ;
@@ -117,6 +117,9 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 
 	/* The undo record must contain a valid information. */
 	Assert(uur->uur_info != 0);
+
+	/* If caller is not updating only header then must provide valid length. */
+	Assert(header_only || undo_len > 0);
 
 	/*
 	 * If this is the first call, copy the UnpackedUndoRecord into the
@@ -129,7 +132,6 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		work_hdr.urec_rmid = uur->uur_rmid;
 		work_hdr.urec_type = uur->uur_type;
 		work_hdr.urec_info = uur->uur_info;
-		work_hdr.urec_prevlen = uur->uur_prevlen;
 		work_hdr.urec_reloid = uur->uur_reloid;
 		work_hdr.urec_prevxid = uur->uur_prevxid;
 		work_hdr.urec_xid = uur->uur_xid;
@@ -155,7 +157,6 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 		Assert(work_hdr.urec_rmid == uur->uur_rmid);
 		Assert(work_hdr.urec_type == uur->uur_type);
 		Assert(work_hdr.urec_info == uur->uur_info);
-		Assert(work_hdr.urec_prevlen == uur->uur_prevlen);
 		Assert(work_hdr.urec_reloid == uur->uur_reloid);
 		Assert(work_hdr.urec_prevxid == uur->uur_prevxid);
 		Assert(work_hdr.urec_xid == uur->uur_xid);
@@ -239,6 +240,12 @@ InsertUndoRecord(UnpackedUndoRecord *uur, Page page,
 							 &my_bytes_written, already_written))
 			return false;
 	}
+
+	/* Insert undo record length at the end of the record. */
+	if (!InsertUndoBytes((char *) &undo_len, sizeof(uint16),
+						 &writeptr, endptr,
+						 &my_bytes_written, already_written))
+		return false;
 
 	/* Hooray! */
 	return true;
@@ -333,7 +340,6 @@ UnpackUndoRecord(UnpackedUndoRecord *uur, Page page, int starting_byte,
 	uur->uur_rmid = work_hdr.urec_rmid;
 	uur->uur_type = work_hdr.urec_type;
 	uur->uur_info = work_hdr.urec_info;
-	uur->uur_prevlen = work_hdr.urec_prevlen;
 	uur->uur_reloid = work_hdr.urec_reloid;
 	uur->uur_prevxid = work_hdr.urec_prevxid;
 	uur->uur_xid = work_hdr.urec_xid;

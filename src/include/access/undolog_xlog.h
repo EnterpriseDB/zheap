@@ -63,7 +63,6 @@ typedef struct xl_undolog_rewind
 {
 	UndoLogNumber logno;
 	UndoLogOffset insert;
-	uint16		prevlen;
 } xl_undolog_rewind;
 
 extern void undolog_desc(StringInfo buf, XLogReaderState *record);
