@@ -725,6 +725,143 @@ ConditionalXactLockTableWait(TransactionId xid)
 }
 
 /*
+ *		SubXactLockTableInsert
+ *
+ * Insert a lock showing that the current subtransaction is running ---
+ * this is done when a subtransaction performs the operation.  The lock can
+ * then be used to wait for the subtransaction to finish.
+ */
+void
+SubXactLockTableInsert(SubTransactionId	subxid)
+{
+	LOCKTAG		tag;
+	TransactionId	xid;
+	ResourceOwner currentOwner;
+
+	/* Acquire lock only if we doesn't already hold that lock. */
+	if (HasCurrentSubTransactionLock())
+		return;
+
+	xid = GetTopTransactionId();
+
+	/*
+	 * Acquire lock on the transaction XID.  (We assume this cannot block.) We
+	 * have to ensure that the lock is assigned to the transaction's own
+	 * ResourceOwner.
+	 */
+	currentOwner = CurrentResourceOwner;
+	CurrentResourceOwner = GetCurrentTransactionResOwner();
+
+	SET_LOCKTAG_SUBTRANSACTION(tag, xid, subxid);
+	(void) LockAcquire(&tag, ExclusiveLock, false, false);
+
+	CurrentResourceOwner = currentOwner;
+
+	SetCurrentSubTransactionLocked();
+}
+
+/*
+ *		SubXactLockTableDelete
+ *
+ * Delete the lock showing that the given subtransaction is running.
+ * (This is never used for main transaction IDs; those locks are only
+ * released implicitly at transaction end.  But we do use it for
+ * subtransactions in zheap.)
+ */
+void
+SubXactLockTableDelete(SubTransactionId	subxid)
+{
+	LOCKTAG		tag;
+	TransactionId	xid = GetTopTransactionId();
+
+	SET_LOCKTAG_SUBTRANSACTION(tag, xid, subxid);
+
+	LockRelease(&tag, ExclusiveLock, false);
+}
+
+/*
+ *		SubXactLockTableWait
+ *
+ * Wait for the specified subtransaction to commit or abort.  Here, instead of
+ * waiting on xid, we wait on xid + subTransactionId.  Whenever any concurrent
+ * transaction finds conflict then it will create a lock tag by (slot xid +
+ * subtransaction id from the undo) and wait on that.
+ *
+ * Unlike XactLockTableWait, we don't need to wait for topmost transaction to
+ * finish as we release the lock only when the transaction (committed/aborted)
+ * is recorded in clog.  This has some overhead in terms of maintianing unique
+ * xid locks for subtransactions during commit, but that shouldn't be much as
+ * we release the locks immediately after transaction is recorded in clog.
+ * This function is designed for zheap where we don't have xids assigned for
+ * subtransaction, so we can't really figure out if the subtransaction is
+ * still in progress.
+ */
+void
+SubXactLockTableWait(TransactionId xid, SubTransactionId subxid, Relation rel,
+					 ItemPointer ctid, XLTW_Oper oper)
+{
+	LOCKTAG		tag;
+	XactLockTableWaitInfo	info;
+	ErrorContextCallback callback;
+
+	/*
+	 * If an operation is specified, set up our verbose error context
+	 * callback.
+	 */
+	if (oper != XLTW_None)
+	{
+		Assert(RelationIsValid(rel));
+		Assert(ItemPointerIsValid(ctid));
+
+		info.rel = rel;
+		info.ctid = ctid;
+		info.oper = oper;
+
+		callback.callback = XactLockTableWaitErrorCb;
+		callback.arg = &info;
+		callback.previous = error_context_stack;
+		error_context_stack = &callback;
+	}
+
+	Assert(TransactionIdIsValid(xid));
+	Assert(!TransactionIdEquals(xid, GetTopTransactionIdIfAny()));
+	Assert(subxid != InvalidSubTransactionId);
+
+	SET_LOCKTAG_SUBTRANSACTION(tag, xid, subxid);
+
+	(void) LockAcquire(&tag, ShareLock, false, false);
+
+	LockRelease(&tag, ShareLock, false);
+
+	if (oper != XLTW_None)
+		error_context_stack = callback.previous;
+}
+
+/*
+ *		ConditionalSubXactLockTableWait
+ *
+ * As above, but only lock if we can get the lock without blocking.
+ * Returns true if the lock was acquired.
+ */
+bool
+ConditionalSubXactLockTableWait(TransactionId xid, SubTransactionId subxid)
+{
+	LOCKTAG		tag;
+
+	Assert(TransactionIdIsValid(xid));
+	Assert(!TransactionIdEquals(xid, GetTopTransactionIdIfAny()));
+
+	SET_LOCKTAG_SUBTRANSACTION(tag, xid, subxid);
+
+	if (LockAcquire(&tag, ShareLock, false, true) == LOCKACQUIRE_NOT_AVAIL)
+		return false;
+
+	LockRelease(&tag, ShareLock, false);
+
+	return true;
+}
+
+/*
  *		SpeculativeInsertionLockAcquire
  *
  * Insert a lock showing that the given transaction ID is inserting a tuple,
@@ -769,6 +906,17 @@ SpeculativeInsertionLockRelease(TransactionId xid)
 	SET_LOCKTAG_SPECULATIVE_INSERTION(tag, xid, speculativeInsertionToken);
 
 	LockRelease(&tag, ExclusiveLock, false);
+}
+
+/*
+ *		GetSpeculativeInsertionToken
+ *
+ * Return the value of speculative insertion token.
+ */
+uint32
+GetSpeculativeInsertionToken(void)
+{
+	return speculativeInsertionToken;
 }
 
 /*

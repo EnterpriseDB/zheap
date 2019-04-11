@@ -33,5 +33,12 @@
 { oid => '3580', oid_symbol => 'BRIN_AM_OID',
   descr => 'block range index (BRIN) access method',
   amname => 'brin', amhandler => 'brinhandler', amtype => 'i' },
+{ oid => '4001', oid_symbol => 'HEAP_TABLE_AM_OID',
+  descr => 'heap table access method',
+  amname => 'heap', amhandler => 'heap_tableam_handler', amtype => 't' },
+{ oid => '8193', oid_symbol => 'ZHEAP_TABLE_AM_OID',
+  descr => 'zheap table access method',
+  amname => 'zheap', amhandler => 'zheap_tableam_handler', amtype => 't' },
+
 
 ]

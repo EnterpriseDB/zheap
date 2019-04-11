@@ -830,7 +830,7 @@ ldelete:;
 											  estate->es_snapshot,
 											  inputslot, estate->es_output_cid,
 											  LockTupleExclusive, LockWaitBlock,
-											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
+											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION | TUPLE_LOCK_FLAG_WEIRD,
 											  &tmfd);
 
 					switch (result)
@@ -1370,7 +1370,7 @@ lreplace:;
 											  estate->es_snapshot,
 											  inputslot, estate->es_output_cid,
 											  lockmode, LockWaitBlock,
-											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
+											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION | TUPLE_LOCK_FLAG_WEIRD,
 											  &tmfd);
 
 					switch (result)
@@ -1516,7 +1516,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 	test = table_lock_tuple(relation, conflictTid,
 							estate->es_snapshot,
 							existing, estate->es_output_cid,
-							lockmode, LockWaitBlock, 0,
+							lockmode, LockWaitBlock, TUPLE_LOCK_FLAG_WEIRD,
 							&tmfd);
 	switch (test)
 	{
@@ -1559,6 +1559,15 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 			break;
 
 		case TM_SelfModified:
+#ifdef ZBORKED
+			/*
+			 * ZHEAP accepts this, but this isn't ok from a layering POV (and
+			 * I'm doubtful about the correctness). See 1e9d17cc240.
+			 *
+			 * Unlike heap, we expect HeapTupleSelfUpdated in the same scenario
+			 * as the new tuple could have been in-place updated.
+			 */
+#endif
 
 			/*
 			 * This state should never be reached. As a dirty snapshot is used

@@ -459,8 +459,66 @@ XLogInsert(RmgrId rmid, uint8 info)
 		rdt = XLogRecordAssemble(rmid, info, RedoRecPtr, doPageWrites,
 								 &fpw_lsn);
 
-		EndPos = XLogInsertRecord(rdt, fpw_lsn, curinsert_flags);
+		EndPos = XLogInsertRecord(rdt, fpw_lsn, InvalidXLogRecPtr,
+								  curinsert_flags);
 	} while (EndPos == InvalidXLogRecPtr);
+
+	XLogResetInsertion();
+
+	return EndPos;
+}
+
+/*
+ * XLogInsertExtended
+ *		Like XLogInsert, but with extra options.
+ *
+ * The internal logic of this function is almost same as XLogInsert, but there
+ * are some differences: unlike XLogInsert, this function will not retry for WAL
+ * insert if the page image inclusion decision got changed instead it will
+ * return immediately, and it will not calculate the latest value of RedoRecPtr
+ * like XLogInsert, instead it will take that as input from caller so that if
+ * the caller has not included the tuple info (because page image is not present
+ * in the WAL) it can start over again if including page image decision got
+ * changed later during WAL insertion.
+ */
+XLogRecPtr
+XLogInsertExtended(RmgrId rmid, uint8 info, XLogRecPtr RedoRecPtr,
+				   bool doPageWrites)
+{
+	XLogRecPtr	EndPos;
+	XLogRecPtr	fpw_lsn;
+	XLogRecData *rdt;
+
+	/* XLogBeginInsert() must have been called. */
+	if (!begininsert_called)
+		elog(ERROR, "XLogBeginInsert was not called");
+
+	/*
+	 * The caller can set rmgr bits, XLR_SPECIAL_REL_UPDATE and
+	 * XLR_CHECK_CONSISTENCY; the rest are reserved for use by me.
+	 */
+	if ((info & ~(XLR_RMGR_INFO_MASK |
+				  XLR_SPECIAL_REL_UPDATE |
+				  XLR_CHECK_CONSISTENCY)) != 0)
+		elog(PANIC, "invalid xlog info mask %02X", info);
+
+	TRACE_POSTGRESQL_WAL_INSERT(rmid, info);
+
+	/*
+	 * In bootstrap mode, we don't actually log anything but XLOG resources;
+	 * return a phony record pointer.
+	 */
+	if (IsBootstrapProcessingMode() && rmid != RM_XLOG_ID)
+	{
+		XLogResetInsertion();
+		EndPos = SizeOfXLogLongPHD; /* start of 1st chkpt record */
+		return EndPos;
+	}
+
+	rdt = XLogRecordAssemble(rmid, info, RedoRecPtr, doPageWrites,
+							 &fpw_lsn);
+
+	EndPos = XLogInsertRecord(rdt, fpw_lsn, RedoRecPtr, curinsert_flags);
 
 	XLogResetInsertion();
 
@@ -783,8 +841,14 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	 * Fill in the fields in the record header. Prev-link is filled in later,
 	 * once we know where in the WAL the record will be inserted. The CRC does
 	 * not include the record header yet.
+	 *
+	 * Since zheap storage always use TopTransactionId, if this xlog is for the
+	 * zheap then get the TopTransactionId.
 	 */
-	rechdr->xl_xid = GetCurrentTransactionIdIfAny();
+	if (rmid == RM_ZHEAP_ID)
+		rechdr->xl_xid = GetTopTransactionIdIfAny();
+	else
+		rechdr->xl_xid = GetCurrentTransactionIdIfAny();
 	rechdr->xl_tot_len = total_len;
 	rechdr->xl_info = info;
 	rechdr->xl_rmid = rmid;

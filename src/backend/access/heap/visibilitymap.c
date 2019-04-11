@@ -87,6 +87,8 @@
 
 #include "access/heapam_xlog.h"
 #include "access/visibilitymap.h"
+#include "access/zheapam_xlog.h"
+#include "access/zheap.h"
 #include "access/xlog.h"
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
@@ -254,7 +256,10 @@ visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
 #endif
 
 	Assert(InRecovery || XLogRecPtrIsInvalid(recptr));
-	Assert(InRecovery || BufferIsValid(heapBuf));
+
+	/* For zheap we do not set heapBuf's status hence can be invalid */
+	Assert(RelationStorageIsZHeap(rel) ||
+			(InRecovery || BufferIsValid(heapBuf)));
 	Assert(flags & VISIBILITYMAP_VALID_BITS);
 
 	/* Check that we have the right heap page pinned, if present */
@@ -281,20 +286,32 @@ visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
 			if (XLogRecPtrIsInvalid(recptr))
 			{
 				Assert(!InRecovery);
-				recptr = log_heap_visible(rel->rd_node, heapBuf, vmBuf,
-										  cutoff_xid, flags);
-
-				/*
-				 * If data checksums are enabled (or wal_log_hints=on), we
-				 * need to protect the heap page from being torn.
-				 */
-				if (XLogHintBitIsNeeded())
+				if (RelationStorageIsZHeap(rel))
 				{
-					Page		heapPage = BufferGetPage(heapBuf);
+					recptr = log_zheap_visible(rel->rd_node, heapBuf, vmBuf,
+											   cutoff_xid, flags);
+					/*
+					 * We do not have a page wise visibility flag in zheap.
+					 * So no need to set LSN on zheap page.
+					 */
+				}
+				else
+				{
+					recptr = log_heap_visible(rel->rd_node, heapBuf, vmBuf,
+											  cutoff_xid, flags);
 
-					/* caller is expected to set PD_ALL_VISIBLE first */
-					Assert(PageIsAllVisible(heapPage));
-					PageSetLSN(heapPage, recptr);
+					/*
+					 * If data checksums are enabled (or wal_log_hints=on), we
+					 * need to protect the heap page from being torn.
+					 */
+					if (XLogHintBitIsNeeded())
+					{
+						Page		heapPage = BufferGetPage(heapBuf);
+
+						/* caller is expected to set PD_ALL_VISIBLE first */
+						Assert(PageIsAllVisible(heapPage));
+						PageSetLSN(heapPage, recptr);
+					}
 				}
 			}
 			PageSetLSN(page, recptr);

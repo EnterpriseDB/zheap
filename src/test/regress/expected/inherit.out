@@ -154,7 +154,7 @@ UPDATE ONLY a SET aa='zzzzz' WHERE aa='aaaaa';
 UPDATE b SET aa='zzz' WHERE aa='aaa';
 UPDATE ONLY b SET aa='zzz' WHERE aa='aaa';
 UPDATE a SET aa='zzzzzz' WHERE aa LIKE 'aaa%';
-SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid;
+SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid order by relname, aa;
  relname |    aa    
 ---------+----------
  a       | zzzz
@@ -228,7 +228,7 @@ SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid;
  d       | dddddddd |    |    | 
 (6 rows)
 
-SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid;
+SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid order by relname, aa;
  relname |   aa   
 ---------+--------
  a       | zzzz
@@ -273,7 +273,7 @@ SELECT relname, d.* FROM ONLY d, pg_class where d.tableoid = pg_class.oid;
 (6 rows)
 
 UPDATE b SET aa='new';
-SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid;
+SELECT relname, a.* FROM a, pg_class where a.tableoid = pg_class.oid order by relname, aa;
  relname |    aa    
 ---------+----------
  a       | zzzz
@@ -347,7 +347,7 @@ SELECT relname, d.* FROM d, pg_class where d.tableoid = pg_class.oid;
  d       | new |    |    | 
 (6 rows)
 
-SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid;
+SELECT relname, a.* FROM ONLY a, pg_class where a.tableoid = pg_class.oid order by relname, aa;
  relname |   aa   
 ---------+--------
  a       | zzzz

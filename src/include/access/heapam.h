@@ -20,6 +20,7 @@
 #include "access/skey.h"
 #include "access/table.h"		/* for backward compatibility */
 #include "access/tableam.h"
+#include "access/genham.h"
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
 #include "storage/bufpage.h"
@@ -81,16 +82,6 @@ typedef struct IndexFetchHeapData
 	Buffer		xs_cbuf;		/* current heap buffer in scan, if any */
 	/* NB: if xs_cbuf is not InvalidBuffer, we hold a pin on that buffer */
 } IndexFetchHeapData;
-
-/* Result codes for HeapTupleSatisfiesVacuum */
-typedef enum
-{
-	HEAPTUPLE_DEAD,				/* tuple is dead and deletable */
-	HEAPTUPLE_LIVE,				/* tuple is live (committed, no deleter) */
-	HEAPTUPLE_RECENTLY_DEAD,	/* tuple is dead, but not deletable yet */
-	HEAPTUPLE_INSERT_IN_PROGRESS,	/* inserting xact is still in progress */
-	HEAPTUPLE_DELETE_IN_PROGRESS	/* deleting xact is still in progress */
-} HTSV_Result;
 
 /* ----------------
  *		function prototypes for heap access method

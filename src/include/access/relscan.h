@@ -92,6 +92,15 @@ typedef struct IndexFetchTableData
 	Relation	rel;
 } IndexFetchTableData;
 
+
+typedef struct IndexFetchZHeapData
+{
+	IndexFetchTableData xs_base;
+
+	Buffer		xs_cbuf;		/* current heap buffer in scan, if any */
+	/* NB: if xs_cbuf is not InvalidBuffer, we hold a pin on that buffer */
+} IndexFetchZHeapData;
+
 /*
  * We use the same IndexScanDescData structure for both amgettuple-based
  * and amgetbitmap-based index scans.  Some fields are only relevant in

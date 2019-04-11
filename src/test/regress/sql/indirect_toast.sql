@@ -12,17 +12,23 @@ SELECT descr, substring(make_tuple_indirect(indtoasttest)::text, 1, 200) FROM in
 UPDATE indtoasttest SET cnt = cnt +1 RETURNING substring(indtoasttest::text, 1, 200);
 
 -- modification without modifying assigned value
-UPDATE indtoasttest SET cnt = cnt +1, f1 = f1 RETURNING substring(indtoasttest::text, 1, 200);
+WITH updated AS (
+	UPDATE indtoasttest SET cnt = cnt +1, f1 = f1 RETURNING substring(indtoasttest::text, 1, 200))
+	SELECT * FROM updated ORDER BY substring;
 
 -- modification modifying, but effectively not changing
-UPDATE indtoasttest SET cnt = cnt +1, f1 = f1||'' RETURNING substring(indtoasttest::text, 1, 200);
+WITH updated AS (
+	UPDATE indtoasttest SET cnt = cnt +1, f1 = f1||'' RETURNING substring(indtoasttest::text, 1, 200))
+	SELECT * FROM updated ORDER BY substring;
 
-UPDATE indtoasttest SET cnt = cnt +1, f1 = '-'||f1||'-' RETURNING substring(indtoasttest::text, 1, 200);
+WITH updated AS (
+	UPDATE indtoasttest SET cnt = cnt +1, f1 = '-'||f1||'-' RETURNING substring(indtoasttest::text, 1, 200))
+	SELECT * FROM updated ORDER BY substring;
 
-SELECT substring(indtoasttest::text, 1, 200) FROM indtoasttest;
+SELECT substring(indtoasttest::text, 1, 200) FROM indtoasttest ORDER BY 1;
 -- check we didn't screw with main/toast tuple visibility
 VACUUM FREEZE indtoasttest;
-SELECT substring(indtoasttest::text, 1, 200) FROM indtoasttest;
+SELECT substring(indtoasttest::text, 1, 200) FROM indtoasttest ORDER BY 1;
 
 -- now create a trigger that forces all Datums to be indirect ones
 CREATE FUNCTION update_using_indirect()
@@ -40,22 +46,30 @@ CREATE TRIGGER indtoasttest_update_indirect
         EXECUTE PROCEDURE update_using_indirect();
 
 -- modification without changing varlenas
-UPDATE indtoasttest SET cnt = cnt +1 RETURNING substring(indtoasttest::text, 1, 200);
+WITH updated AS (
+	UPDATE indtoasttest SET cnt = cnt +1 RETURNING substring(indtoasttest::text, 1, 200))
+	SELECT * FROM updated ORDER BY substring;
 
 -- modification without modifying assigned value
-UPDATE indtoasttest SET cnt = cnt +1, f1 = f1 RETURNING substring(indtoasttest::text, 1, 200);
+WITH updated AS (
+	UPDATE indtoasttest SET cnt = cnt +1, f1 = f1 RETURNING substring(indtoasttest::text, 1, 200))
+	SELECT * FROM updated ORDER BY substring;
 
 -- modification modifying, but effectively not changing
-UPDATE indtoasttest SET cnt = cnt +1, f1 = f1||'' RETURNING substring(indtoasttest::text, 1, 200);
+WITH updated AS (
+	UPDATE indtoasttest SET cnt = cnt +1, f1 = f1||'' RETURNING substring(indtoasttest::text, 1, 200))
+	SELECT * FROM updated ORDER BY substring;
 
-UPDATE indtoasttest SET cnt = cnt +1, f1 = '-'||f1||'-' RETURNING substring(indtoasttest::text, 1, 200);
+WITH updated AS (
+	UPDATE indtoasttest SET cnt = cnt +1, f1 = '-'||f1||'-' RETURNING substring(indtoasttest::text, 1, 200))
+	SELECT * FROM updated ORDER BY substring;
 
 INSERT INTO indtoasttest(descr, f1, f2) VALUES('one-toasted,one-null, via indirect', repeat('1234567890',30000), NULL);
 
-SELECT substring(indtoasttest::text, 1, 200) FROM indtoasttest;
+SELECT substring(indtoasttest::text, 1, 200) FROM indtoasttest ORDER BY 1;
 -- check we didn't screw with main/toast tuple visibility
 VACUUM FREEZE indtoasttest;
-SELECT substring(indtoasttest::text, 1, 200) FROM indtoasttest;
+SELECT substring(indtoasttest::text, 1, 200) FROM indtoasttest ORDER BY 1;
 
 DROP TABLE indtoasttest;
 DROP FUNCTION update_using_indirect();

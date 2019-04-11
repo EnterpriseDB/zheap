@@ -47,3 +47,8 @@ PG_RMGR(RM_COMMIT_TS_ID, "CommitTs", commit_ts_redo, commit_ts_desc, commit_ts_i
 PG_RMGR(RM_REPLORIGIN_ID, "ReplicationOrigin", replorigin_redo, replorigin_desc, replorigin_identify, NULL, NULL, NULL)
 PG_RMGR(RM_GENERIC_ID, "Generic", generic_redo, generic_desc, generic_identify, NULL, NULL, generic_mask)
 PG_RMGR(RM_LOGICALMSG_ID, "LogicalMessage", logicalmsg_redo, logicalmsg_desc, logicalmsg_identify, NULL, NULL, NULL)
+PG_RMGR(RM_UNDOLOG_ID, "UndoLog", undolog_redo, undolog_desc, undolog_identify, NULL, NULL, NULL)
+PG_RMGR(RM_ZHEAP_ID, "Zheap", zheap_redo, zheap_desc, zheap_identify, NULL, NULL, zheap_mask)
+PG_RMGR(RM_ZHEAP2_ID, "Zheap2", zheap2_redo, zheap2_desc, zheap2_identify, NULL, NULL, zheap_mask)
+PG_RMGR(RM_UNDOACTION_ID, "UndoAction", undoaction_redo, undoaction_desc, undoaction_identify, NULL, NULL, NULL)
+PG_RMGR(RM_TPD_ID, "TPD", tpd_redo, tpd_desc, tpd_identify, NULL, NULL, zheap_mask)

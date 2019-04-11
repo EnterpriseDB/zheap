@@ -1,5 +1,5 @@
 CREATE EXTENSION pageinspect;
-CREATE TABLE test_rel_forks (a int);
+CREATE TABLE test_rel_forks (a int) USING heap;
 -- Make sure there are enough blocks in the heap for the FSM to be created.
 INSERT INTO test_rel_forks SELECT i from generate_series(1,2000) i;
 -- set up FSM and VM

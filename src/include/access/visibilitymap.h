@@ -25,6 +25,8 @@
 /* Flags for bit map */
 #define VISIBILITYMAP_ALL_VISIBLE	0x01
 #define VISIBILITYMAP_ALL_FROZEN	0x02
+/* Used for zheap two-phase vacuum */
+#define VISIBILITYMAP_POTENTIAL_ALL_VISIBLE 0x02
 #define VISIBILITYMAP_VALID_BITS	0x03	/* OR of all valid visibilitymap
 											 * flags bits */
 

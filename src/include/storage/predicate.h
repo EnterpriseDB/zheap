@@ -57,16 +57,17 @@ extern void SetSerializableTransactionSnapshot(Snapshot snapshot,
 extern void RegisterPredicateLockingXid(TransactionId xid);
 extern void PredicateLockRelation(Relation relation, Snapshot snapshot);
 extern void PredicateLockPage(Relation relation, BlockNumber blkno, Snapshot snapshot);
-extern void PredicateLockTuple(Relation relation, HeapTuple tuple, Snapshot snapshot);
+extern void PredicateLockTid(Relation relation, ItemPointer, Snapshot snapshot,
+							   TransactionId targetxmin);
 extern void PredicateLockPageSplit(Relation relation, BlockNumber oldblkno, BlockNumber newblkno);
 extern void PredicateLockPageCombine(Relation relation, BlockNumber oldblkno, BlockNumber newblkno);
 extern void TransferPredicateLocksToHeapRelation(Relation relation);
 extern void ReleasePredicateLocks(bool isCommit, bool isReadOnlySafe);
 
 /* conflict detection (may also trigger rollback) */
-extern void CheckForSerializableConflictOut(bool valid, Relation relation, HeapTuple tuple,
-								Buffer buffer, Snapshot snapshot);
-extern void CheckForSerializableConflictIn(Relation relation, HeapTuple tuple, Buffer buffer);
+extern void CheckForSerializableConflictOut(bool valid, Relation relation, void *stup,
+							Buffer buffer, Snapshot snapshot);
+extern void CheckForSerializableConflictIn(Relation relation, ItemPointer tid, Buffer buffer);
 extern void CheckTableForSerializableConflictIn(Relation relation);
 
 /* final rollback checking */
@@ -78,6 +79,8 @@ extern void PostPrepare_PredicateLocks(TransactionId xid);
 extern void PredicateLockTwoPhaseFinish(TransactionId xid, bool isCommit);
 extern void predicatelock_twophase_recover(TransactionId xid, uint16 info,
 							   void *recdata, uint32 len);
+
+extern bool IsSerializableXact(void);
 
 /* parallel query support */
 extern SerializableXactHandle ShareSerializableXact(void);

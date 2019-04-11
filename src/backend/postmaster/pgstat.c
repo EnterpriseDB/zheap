@@ -1963,6 +1963,28 @@ pgstat_count_heap_insert(Relation rel, PgStat_Counter n)
 }
 
 /*
+ * pgstat_count_zheap_update - count a inplace tuple update
+ */
+void
+pgstat_count_zheap_update(Relation rel)
+{
+	PgStat_TableStatus *pgstat_info = rel->pgstat_info;
+
+	if (pgstat_info != NULL)
+	{
+		/* We have to log the effect at the proper transactional level */
+		int			nest_level = GetCurrentTransactionNestLevel();
+
+		if (pgstat_info->trans == NULL ||
+			pgstat_info->trans->nest_level != nest_level)
+			add_tabstat_xact_level(pgstat_info, nest_level);
+
+		/* t_tuples_hot_updated is nontransactional, so just advance it */
+		pgstat_info->t_counts.t_tuples_hot_updated++;
+	}
+}
+
+/*
  * pgstat_count_heap_update - count a tuple update
  */
 void
@@ -3461,6 +3483,9 @@ pgstat_get_wait_event_type(uint32 wait_event_info)
 		case PG_WAIT_IO:
 			event_type = "IO";
 			break;
+		case PG_WAIT_PAGE_TRANS_SLOT:
+			event_type = "TransSlot";
+			break;
 		default:
 			event_type = "???";
 			break;
@@ -3538,6 +3563,9 @@ pgstat_get_wait_event(uint32 wait_event_info)
 				event_name = pgstat_get_wait_io(w);
 				break;
 			}
+		case PG_WAIT_PAGE_TRANS_SLOT:
+			event_name = "TransSlot";
+			break;
 		default:
 			event_name = "unknown wait event";
 			break;
@@ -3601,7 +3629,13 @@ pgstat_get_wait_activity(WaitEventActivity w)
 		case WAIT_EVENT_WAL_WRITER_MAIN:
 			event_name = "WalWriterMain";
 			break;
-			/* no default case, so that compiler will warn */
+		case WAIT_EVENT_UNDO_DISCARD_WORKER_MAIN:
+			event_name = "UndoDiscardWorkerMain";
+			break;
+		case WAIT_EVENT_UNDO_LAUNCHER_MAIN:
+			event_name = "UndoLauncherMain";
+			break;
+		/* no default case, so that compiler will warn */
 	}
 
 	return event_name;
@@ -3992,6 +4026,28 @@ pgstat_get_wait_io(WaitEventIO w)
 		case WAIT_EVENT_TWOPHASE_FILE_WRITE:
 			event_name = "TwophaseFileWrite";
 			break;
+		case WAIT_EVENT_UNDO_CHECKPOINT_READ:
+			event_name = "UndoCheckpointRead";
+			break;
+		case WAIT_EVENT_UNDO_CHECKPOINT_WRITE:
+			event_name = "UndoCheckpointWrite";
+			break;
+		case WAIT_EVENT_UNDO_CHECKPOINT_SYNC:
+			event_name = "UndoCheckpointSync";
+			break;
+		case WAIT_EVENT_UNDO_FILE_READ:
+			event_name = "UndoFileRead";
+			break;
+		case WAIT_EVENT_UNDO_FILE_WRITE:
+			event_name = "UndoFileWrite";
+			break;
+		case WAIT_EVENT_UNDO_FILE_FLUSH:
+			event_name = "UndoFileFlush";
+			break;
+		case WAIT_EVENT_UNDO_FILE_SYNC:
+			event_name = "UndoFileSync";
+			break;
+
 		case WAIT_EVENT_WALSENDER_TIMELINE_HISTORY_READ:
 			event_name = "WALSenderTimelineHistoryRead";
 			break;
