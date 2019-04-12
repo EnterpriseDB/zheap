@@ -100,7 +100,7 @@ extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
 extern void zbuffer_exec_pending_rollback(Relation rel, Buffer buf,
 										  BlockNumber *tpd_blkno);
 extern void zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
-			 int options, BulkInsertState bistate);
+			 int options, BulkInsertState bistate, uint32 specToken);
 extern void simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot);
 extern TM_Result zheap_delete(Relation relation, ItemPointer tid,
 						CommandId cid, Snapshot crosscheck, Snapshot snapshot,

@@ -802,7 +802,7 @@ ztoast_save_datum(Relation rel, Datum value,
 		memcpy(VARDATA(&chunk_data), data_p, chunk_size);
 		toasttup = zheap_form_tuple(toasttupDesc, t_values, t_isnull);
 
-		zheap_insert(toastrel, toasttup, mycid, options, NULL);
+		zheap_insert(toastrel, toasttup, mycid, options, NULL, 0);
 
 		/*
 		 * Create the index entry.  We cheat a little here by not using
