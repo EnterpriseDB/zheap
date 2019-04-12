@@ -435,6 +435,9 @@ extern XLogRecPtr XactLogAbortRecord(TimestampTz abort_time,
 extern void xact_redo(XLogReaderState *record);
 
 extern void XactPerformUndoActionsIfPending(void);
+extern void CurrentXactPerformUndoActions(void);
+extern void SetUndoActionsPtr(void);
+
 /* xactdesc.c */
 extern void xact_desc(StringInfo buf, XLogReaderState *record);
 extern const char *xact_identify(uint8 info);
