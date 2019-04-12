@@ -91,103 +91,10 @@ ZHeapSatisfyUndoRecord(UnpackedUndoRecord *urec, BlockNumber blkno,
 }
 
 /*
- * CopyTupleFromUndoRecord
- *	Extract the tuple from undo record.
- *
- *	trans_slot_id - If non-NULL, then populate it with the transaction slot of
- *			transaction that has modified the tuple.
- *	free_zhtup - if true, free the previous version of tuple.
- */
-ZHeapTuple
-CopyTupleFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTuple zhtup,
-						int *trans_slot_id, bool free_zhtup, Page page)
-{
-	ZHeapTuple	undo_tup;
-
-	switch (urec->uur_type)
-	{
-		case UNDO_INSERT:
-			{
-				Assert(zhtup != NULL);
-
-				/*
-				 * We need to deal with undo of root tuple only for a special
-				 * case where during non-inplace update operation, we
-				 * propagate the lockers information to the freshly inserted
-				 * tuple. But, we've to make sure the inserted tuple is locked
-				 * only.
-				 */
-				Assert(ZHEAP_XID_IS_LOCKED_ONLY(zhtup->t_data->t_infomask));
-
-				undo_tup = zheap_copytuple(zhtup);
-
-				/*
-				 * Ensure to clear the visibility related information from the
-				 * tuple.  This is required for the cases where the passed in
-				 * tuple has lock only flags set on it.
-				 */
-				undo_tup->t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
-			}
-			break;
-		case UNDO_XID_LOCK_ONLY:
-		case UNDO_XID_LOCK_FOR_UPDATE:
-		case UNDO_XID_MULTI_LOCK_ONLY:
-			{
-				ZHeapTupleHeader undo_tup_hdr;
-
-				Assert(zhtup != NULL);
-
-				undo_tup_hdr = (ZHeapTupleHeader) urec->uur_tuple.data;
-
-				/*
-				 * For locked tuples, undo tuple data is always same as prior
-				 * tuple's data as we don't modify it.
-				 */
-				undo_tup = zheap_copytuple(zhtup);
-
-				/*
-				 * override the tuple header values with values fetched from
-				 * undo record
-				 */
-				undo_tup->t_data->t_infomask2 = undo_tup_hdr->t_infomask2;
-				undo_tup->t_data->t_infomask = undo_tup_hdr->t_infomask;
-				undo_tup->t_data->t_hoff = undo_tup_hdr->t_hoff;
-			}
-			break;
-		case UNDO_DELETE:
-		case UNDO_UPDATE:
-		case UNDO_INPLACE_UPDATE:
-			{
-				undo_tup = palloc(ZHEAPTUPLESIZE + urec->uur_tuple.len);
-				undo_tup->t_len = urec->uur_tuple.len;
-				ItemPointerSet(&undo_tup->t_self,
-							   urec->uur_block, urec->uur_offset);
-				undo_tup->t_tableOid = urec->uur_reloid;
-				undo_tup->t_data = (ZHeapTupleHeader)
-					((char *) undo_tup + ZHEAPTUPLESIZE);
-				memcpy(undo_tup->t_data, urec->uur_tuple.data,
-					   urec->uur_tuple.len);
-			}
-			break;
-		default:
-			elog(ERROR, "unsupported undo record type");
-	}
-
-	if (free_zhtup)
-		zheap_freetuple(zhtup);
-	if (trans_slot_id)
-		*trans_slot_id = TransSlotFromUndoRecord(urec, undo_tup->t_data, page);
-
-	return undo_tup;
-}
-
-/*
  * UpdateTupleHeaderFromUndoRecord
  *
  * Update the caller-supplied tuple header using the information from the
- * undo record supplied by the caller.  This is basically a cut-down version
- * of CopyTupleFromUndoRecord for callers that don't care about the whole
- * tuple.  The updated transaction slot information for the tuple is returned.
+ * undo record supplied by the caller.
  */
 int
 UpdateTupleHeaderFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTupleHeader hdr,
@@ -195,11 +102,30 @@ UpdateTupleHeaderFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTupleHeader hdr,
 {
 	if (urec->uur_type == UNDO_INSERT)
 	{
+		/*
+		 * We need to deal with undo of root tuple only for a special
+		 * case where during non-inplace update operation, we
+		 * propagate the lockers information to the freshly inserted
+		 * tuple. But, we've to make sure the inserted tuple is locked
+		 * only.
+		 */
 		Assert(ZHEAP_XID_IS_LOCKED_ONLY(hdr->t_infomask));
+
+		/*
+		 * Ensure to clear the visibility related information from the
+		 * tuple.  This is required for the cases where the passed in
+		 * tuple has lock only flags set on it.
+		 */
 		hdr->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
 	}
 	else
 	{
+		/*
+		 * Any other record type we encounter should contain either a
+		 * complete tuple (UNDO_DELETE, UNDO_UPDATE, UNDO_INPLACE_UPDATE)
+		 * or at least a ZHeapTupleHeader (UNDO_XID_LOCK_ONLY,
+		 * UNDO_XID_LOCK_FOR_UPDATE, UNDO_XID_MULTI_LOCK_ONLY).
+		 */
 		Assert(urec->uur_tuple.len >= SizeofZHeapTupleHeader);
 		memcpy(hdr, urec->uur_tuple.data, SizeofZHeapTupleHeader);
 	}
@@ -210,9 +136,9 @@ UpdateTupleHeaderFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTupleHeader hdr,
 /*
  * Extract transaction slot information from an undo record.
  *
- * 'hdr' must be the reconstructed tuple header; see CopyTupleFromUndoRecord
- * or UpdateTupleHeaderFromUndoRecord.  For an inserted record it could
- * instead be the tuple taken from the page itself.
+ * 'hdr' must be the tuple header which UpdateTupleHeaderFromUndoRecord
+ * reconstructed.  For an inserted record it could instead be the tuple taken
+ * from the page itself.
  */
 static int
 TransSlotFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTupleHeader hdr,
