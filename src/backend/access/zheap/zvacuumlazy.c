@@ -35,6 +35,7 @@
 
 #include "access/genam.h"
 #include "access/tpd.h"
+#include "access/vacuumblk.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "access/zhtup.h"
@@ -745,7 +746,8 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params,  LVRelStats *vacrelstats,
 				lazy_vacuum_index(Irel[i],
 								  &indstats[i],
 								  vacrelstats,
-								  vac_strategy);
+								  vac_strategy,
+								  elevel);
 
 			pgstat_progress_update_param(PROGRESS_VACUUM_NUM_INDEX_VACUUMS,
 										 vacrelstats->num_index_scans + 1);
@@ -1143,7 +1145,8 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params,  LVRelStats *vacrelstats,
 			lazy_vacuum_index(Irel[i],
 							  &indstats[i],
 							  vacrelstats,
-							  vac_strategy);
+							  vac_strategy,
+							  elevel);
 
 		pgstat_progress_update_param(PROGRESS_VACUUM_NUM_INDEX_VACUUMS,
 									 vacrelstats->num_index_scans + 1);
@@ -1182,7 +1185,8 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params,  LVRelStats *vacrelstats,
 
 	/* Do post-vacuum cleanup and statistics update for each index */
 	for (i = 0; i < nindexes; i++)
-		lazy_cleanup_index(Irel[i], indstats[i], vacrelstats, vac_strategy);
+		lazy_cleanup_index(Irel[i], indstats[i], vacrelstats, vac_strategy,
+						   elevel);
 
 	/*
 	 * This is pretty messy, but we split it up so that we can skip emitting
@@ -1297,7 +1301,7 @@ lazy_vacuum_zheap_rel(Relation onerel, VacuumParams *params,
 	 * Optionally truncate the relation.
 	 */
 	if (should_attempt_truncation(onerel, vacrelstats))
-		lazy_truncate_heap(onerel, vacrelstats, vac_strategy);
+		lazy_truncate_heap(onerel, vacrelstats, vac_strategy, elevel);
 
 	/* Report that we are now doing final cleanup. */
 	pgstat_progress_update_param(PROGRESS_VACUUM_PHASE,
