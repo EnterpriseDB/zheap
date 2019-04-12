@@ -1112,7 +1112,7 @@ tts_zheap_copyslot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 	HeapTuple tuple;
 	MemoryContext oldcontext;
 
-	// PBORKED: This is a horrible implementation
+	// ZBORKED: This is a horrible implementation
 
 	oldcontext = MemoryContextSwitchTo(dstslot->tts_mcxt);
 	tuple = ExecCopySlotHeapTuple(srcslot);
@@ -1710,17 +1710,25 @@ ExecForceStoreMinimalTuple(MinimalTuple mtup,
 	}
 }
 
-
 ZHeapTuple
 ExecGetZHeapTupleFromSlot(TupleTableSlot *slot)
 {
 	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
 
-	if (!TTS_IS_ZHEAP(slot))
-		elog(ERROR, "unsupported");
-
 	if (TTS_EMPTY(slot))
 		return NULL;
+
+	/*
+	 * ZBORKED: to fix the memory management for this, the API should be
+	 * like ExecFetchSlotHeapTuple()'s.
+	 */
+	if (!TTS_IS_ZHEAP(slot))
+	{
+		slot_getallattrs(slot);
+		return zheap_form_tuple(slot->tts_tupleDescriptor,
+								slot->tts_values,
+								slot->tts_isnull);
+	}
 
 	if (!zslot->tuple)
 		slot->tts_ops->materialize(slot);

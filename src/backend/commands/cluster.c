@@ -879,8 +879,6 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	if (MultiXactIdPrecedes(MultiXactCutoff, OldHeap->rd_rel->relminmxid))
 		MultiXactCutoff = OldHeap->rd_rel->relminmxid;
 
-	// ZBORKED / PBORKED: change API so table_copy_for_cluster can set
-
 	/* return selected values to caller */
 	*pFreezeXid = FreezeXid;
 	*pCutoffMulti = MultiXactCutoff;

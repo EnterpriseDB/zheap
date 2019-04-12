@@ -212,6 +212,7 @@
 #include "storage/procarray.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/ztqual.h"
 
 /* Uncomment the next line to test the graceful degradation code. */
 /* #define TEST_OLDSERXID */

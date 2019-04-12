@@ -14,6 +14,8 @@
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
+
 #include "access/tpd.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
@@ -46,8 +48,9 @@ zheap_xlog_insert(XLogReaderState *record)
 	ItemPointerData target_tid;
 	XLogRedoAction action;
 	int			*tpd_trans_slot_id = NULL;
-	TransactionId	xid = XLogRecGetXid(record);
-	uint32	xid_epoch = GetEpochForXid(xid);
+	FullTransactionId fxid = XLogRecGetFullXid(record);
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
 	bool	skip_undo;
 
 	xlrec = (xl_zheap_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
@@ -121,7 +124,7 @@ zheap_xlog_insert(XLogReaderState *record)
 		else
 			undorecord.uur_payload.len = 0;
 
-		urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, record,
+		urecptr = PrepareUndoInsert(&undorecord, fxid, UNDO_PERMANENT, record,
 									NULL);
 		InsertPreparedUndo();
 
@@ -254,8 +257,9 @@ zheap_xlog_delete(XLogReaderState *record)
 	XLogRedoAction action;
 	Relation	reln;
 	ItemId	lp = NULL;
-	TransactionId	xid = XLogRecGetXid(record);
-	uint32	xid_epoch = GetEpochForXid(xid);
+	FullTransactionId fxid = XLogRecGetFullXid(record);
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
 	int		*tpd_trans_slot_id = NULL;
 	bool		hasPayload = false;
 
@@ -407,7 +411,7 @@ zheap_xlog_delete(XLogReaderState *record)
 	if (!hasPayload)
 		undorecord.uur_payload.len = 0;
 
-	urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, record,
+	urecptr = PrepareUndoInsert(&undorecord, fxid, UNDO_PERMANENT, record,
 								NULL);
 	InsertPreparedUndo();
 
@@ -496,8 +500,9 @@ zheap_xlog_update(XLogReaderState *record)
 	XLogRedoAction oldaction, newaction;
 	Relation	reln;
 	ItemId	lp = NULL;
-	TransactionId	xid = XLogRecGetXid(record);
-	uint32	xid_epoch = GetEpochForXid(xid);
+	FullTransactionId fxid = XLogRecGetFullXid(record);
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
 	int			*old_tup_trans_slot_id = NULL;
 	int			*new_trans_slot_id = NULL;
 	int			trans_slot_id;
@@ -710,7 +715,7 @@ zheap_xlog_update(XLogReaderState *record)
 		if (!hasPayload)
 			undorecord.uur_payload.len = 0;
 
-		urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, record,
+		urecptr = PrepareUndoInsert(&undorecord, fxid, UNDO_PERMANENT, record,
 									NULL);
 	}
 	else
@@ -777,13 +782,13 @@ zheap_xlog_update(XLogReaderState *record)
 		undorec[0] = undorecord;
 		undorec[1] = newundorecord;
 
-		UndoSetPrepareSize(undorec, 2, xid, UNDO_PERMANENT, record, NULL);
+		UndoSetPrepareSize(undorec, 2, fxid, UNDO_PERMANENT, record, NULL);
 		undorecord = undorec[0];
 		newundorecord = undorec[1];
 
-		urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, record,
+		urecptr = PrepareUndoInsert(&undorecord, fxid, UNDO_PERMANENT, record,
 									NULL);
-		newurecptr = PrepareUndoInsert(&newundorecord, xid, UNDO_PERMANENT,
+		newurecptr = PrepareUndoInsert(&newundorecord, fxid, UNDO_PERMANENT,
 									   record, NULL);
 
 		Assert (newurecptr == xlnewundohdr->urec_ptr);
@@ -1291,8 +1296,9 @@ zheap_xlog_lock(XLogReaderState *record)
 	XLogRedoAction action;
 	Relation    reln;
 	ItemId  lp = NULL;
-	TransactionId	xid = XLogRecGetXid(record);
-	uint32	xid_epoch = GetEpochForXid(xid);
+	FullTransactionId fxid = XLogRecGetFullXid(record);
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
 	int		*trans_slot_for_urec = NULL;
 	int		*tup_trans_slot_id = NULL;
 	int		undo_slot_no;
@@ -1391,7 +1397,7 @@ zheap_xlog_lock(XLogReaderState *record)
 							   sizeof(SubTransactionId));
 	}
 
-	urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, record,
+	urecptr = PrepareUndoInsert(&undorecord, fxid, UNDO_PERMANENT, record,
 								NULL);
 	InsertPreparedUndo();
 
@@ -1476,8 +1482,9 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	char		*ranges_data;
 	int			*tpd_trans_slot_id = NULL;
 	Size		ranges_data_size = 0;
-	TransactionId	xid = XLogRecGetXid(record);
-	uint32	xid_epoch = GetEpochForXid(xid);
+	FullTransactionId fxid = XLogRecGetFullXid(record);
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
 	ZHeapFreeOffsetRanges	*zfree_offset_ranges;
 	bool		skip_undo;
 
@@ -1569,11 +1576,11 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 			ranges_data_size += undorecord[i].uur_payload.len;
 		}
 
-		UndoSetPrepareSize(undorecord, nranges, xid, UNDO_PERMANENT, record, NULL);
+		UndoSetPrepareSize(undorecord, nranges, fxid, UNDO_PERMANENT, record, NULL);
 		for (i = 0; i < nranges; i++)
 		{
 			undorecord[i].uur_blkprev = urecptr;
-			urecptr = PrepareUndoInsert(&undorecord[i], xid, UNDO_PERMANENT,
+			urecptr = PrepareUndoInsert(&undorecord[i], fxid, UNDO_PERMANENT,
 										record, NULL);
 		}
 
@@ -1938,8 +1945,9 @@ zheap_xlog_unused(XLogReaderState *record)
 	xl_zheap_unused *xlrec;
 	UnpackedUndoRecord	undorecord;
 	UndoRecPtr	urecptr;
-	TransactionId	xid = XLogRecGetXid(record);
-	uint32	xid_epoch = GetEpochForXid(xid);
+	FullTransactionId fxid = XLogRecGetFullXid(record);
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	uint32	xid_epoch = EpochFromFullTransactionId(fxid);
 	uint16	i, uncnt;
 	Buffer		buffer;
 	OffsetNumber *unused;
@@ -1982,13 +1990,13 @@ zheap_xlog_unused(XLogReaderState *record)
 	undorecord.uur_offset = 0;
 	undorecord.uur_tuple.len = 0;
 	undorecord.uur_payload.len = uncnt * sizeof(OffsetNumber);
-	undorecord.uur_payload.data = 
+	undorecord.uur_payload.data =
 			(char *) palloc(uncnt * sizeof(OffsetNumber));
 	memcpy(undorecord.uur_payload.data,
 		   (char *) unused,
 		   undorecord.uur_payload.len);
 
-	urecptr = PrepareUndoInsert(&undorecord, xid, UNDO_PERMANENT, record,
+	urecptr = PrepareUndoInsert(&undorecord, fxid, UNDO_PERMANENT, record,
 								NULL);
 	InsertPreparedUndo();
 

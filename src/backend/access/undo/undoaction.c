@@ -13,6 +13,7 @@
 
 #include "postgres.h"
 
+#include "access/table.h"
 #include "access/tpd.h"
 #include "access/undoaction_xlog.h"
 #include "access/undolog.h"

@@ -731,7 +731,6 @@ GuessControlValues(void)
 	ControlFile.checkPointCopy.oldestMultiDB = InvalidOid;
 	ControlFile.checkPointCopy.time = (pg_time_t) time(NULL);
 	ControlFile.checkPointCopy.oldestActiveXid = InvalidTransactionId;
-	ControlFile.checkPointCopy.nextXid = 0;
 	ControlFile.checkPointCopy.oldestXidWithEpochHavingUndo = 0;
 
 	ControlFile.state = DB_SHUTDOWNED;

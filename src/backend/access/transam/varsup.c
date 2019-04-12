@@ -301,6 +301,61 @@ AdvanceNextFullTransactionIdPastXid(TransactionId xid)
 }
 
 /*
+ * ZBORKED: Document, test, and move to a better place?
+ *
+ * Should always be safe due to protections against too old transactions
+ * running on the master.
+ */
+FullTransactionId
+XLogRecGetFullXid(XLogReaderState *record)
+{
+	TransactionId	xid = XLogRecGetXid(record);
+	uint32		epoch;
+	TransactionId next_xid;
+
+	/* this function isn't safe otherwise, as it depends on the current replay state */
+	Assert(AmStartupProcess() || !IsUnderPostmaster);
+
+	/* see AdvanceNextFullTransactionIdPastXid() as to why this is safe*/
+
+	next_xid = XidFromFullTransactionId(ShmemVariableCache->nextFullXid);
+	epoch = EpochFromFullTransactionId(ShmemVariableCache->nextFullXid);
+
+	/*
+	 * If xid is numerically bigger than next_xid, it has to be from the last
+	 * epoch.
+	 */
+	if (unlikely(xid > next_xid))
+		epoch--;
+
+	return FullTransactionIdFromEpochAndXid(epoch, xid);
+}
+
+/*
+ * ZBORKED: Blindly written - and should be removed ASAP
+ */
+uint32
+GetEpochForXid(TransactionId xid)
+{
+	FullTransactionId next_fxid;
+	TransactionId next_xid;
+	uint32		epoch;
+
+	next_fxid = ReadNextFullTransactionId();
+	next_xid = XidFromFullTransactionId(next_fxid);
+	epoch = EpochFromFullTransactionId(next_fxid);
+
+	/*
+	 * If xid is numerically bigger than next_xid, it has to be from the last
+	 * epoch.
+	 */
+	if (unlikely(xid > next_xid))
+		epoch--;
+
+	return epoch;
+}
+
+/*
  * Advance the cluster-wide value for the oldest valid clog entry.
  *
  * We must acquire CLogTruncationLock to advance the oldestClogXid. It's not

@@ -514,7 +514,7 @@ UndoGetBufferSlot(RelFileNode rnode,
  */
 static UndoRecPtr
 UndoRecordAllocate(UnpackedUndoRecord *undorecords, int nrecords,
-				   TransactionId txid, UndoPersistence upersistence,
+				   FullTransactionId fxid, UndoPersistence upersistence,
 				   XLogReaderState *xlog_record,
 				   xl_undolog_meta *undometa)
 {
@@ -522,6 +522,7 @@ UndoRecordAllocate(UnpackedUndoRecord *undorecords, int nrecords,
 	UndoLogControl *log;
 	UndoRecordSize size;
 	UndoRecPtr	urecptr;
+	TransactionId txid = XidFromFullTransactionId(fxid);
 	bool		need_xact_hdr = false;
 	bool		log_switched = false;
 	int			i;
@@ -554,7 +555,7 @@ resize:
 		if (need_xact_hdr && i == 0)
 		{
 			urec->uur_next = InvalidUndoRecPtr;
-			urec->uur_xidepoch = GetEpochForXid(txid);
+			urec->uur_xidepoch = EpochFromFullTransactionId(fxid);
 			urec->uur_progress = 0;
 
 			/* During recovery, get the database id from the undo log state. */
@@ -678,22 +679,23 @@ resize:
  */
 void
 UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
-				   TransactionId xid, UndoPersistence upersistence,
+				   FullTransactionId fxid, UndoPersistence upersistence,
 				   XLogReaderState *xlog_record,
 				   xl_undolog_meta *undometa)
 {
-	TransactionId txid;
+	FullTransactionId txid;
 
 	/* Get the top transaction id. */
-	if (xid == InvalidTransactionId)
+	if (!FullTransactionIdIsValid(fxid))
 	{
 		Assert(!InRecovery);
-		txid = GetTopTransactionId();
+		txid = GetTopFullTransactionId();
 	}
 	else
 	{
-		Assert(InRecovery || (xid == GetTopTransactionId()));
-		txid = xid;
+		Assert(InRecovery ||
+			   FullTransactionIdEquals(fxid, GetTopFullTransactionId()));
+		txid = fxid;
 	}
 
 	prepared_urec_ptr = UndoRecordAllocate(undorecords, nrecords, txid,
@@ -726,7 +728,7 @@ UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
  * for the top most transactions.
  */
 UndoRecPtr
-PrepareUndoInsert(UnpackedUndoRecord *urec, TransactionId xid,
+PrepareUndoInsert(UnpackedUndoRecord *urec, FullTransactionId fxid,
 				  UndoPersistence upersistence,
 				  XLogReaderState *xlog_record,
 				  xl_undolog_meta *undometa)
@@ -736,7 +738,7 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, TransactionId xid,
 	RelFileNode rnode;
 	UndoRecordSize cur_size = 0;
 	BlockNumber cur_blk;
-	TransactionId txid;
+	FullTransactionId txid;
 	int			starting_byte;
 	int			index = 0;
 	int			bufidx;
@@ -747,11 +749,11 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, TransactionId xid,
 		elog(ERROR, "already reached the maximum prepared limit");
 
 
-	if (xid == InvalidTransactionId)
+	if (!FullTransactionIdIsValid(fxid))
 	{
 		/* During recovery, we must have a valid transaction id. */
 		Assert(!InRecovery);
-		txid = GetTopTransactionId();
+		txid = GetTopFullTransactionId();
 	}
 	else
 	{
@@ -759,8 +761,9 @@ PrepareUndoInsert(UnpackedUndoRecord *urec, TransactionId xid,
 		 * Assign the top transaction id because undo log only stores mapping
 		 * for the top most transactions.
 		 */
-		Assert(InRecovery || (xid == GetTopTransactionId()));
-		txid = xid;
+		Assert(InRecovery ||
+			   FullTransactionIdEquals(fxid, GetTopFullTransactionId()));
+		txid = fxid;
 	}
 
 	if (!UndoRecPtrIsValid(prepared_urec_ptr))

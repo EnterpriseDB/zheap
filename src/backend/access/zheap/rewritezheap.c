@@ -71,8 +71,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "access/heapam.h"	/* for heap_sync() */
 #include "access/rewritezheap.h"
 #include "access/tuptoaster.h"
+#include "access/zheap.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/smgr.h"
@@ -292,10 +294,10 @@ raw_zheap_insert(RewriteZheapState state, ZHeapTuple tup)
 		 * frozen.
 		 */
 		heaptup = ztoast_insert_or_update(state->rs_new_rel, tup, NULL,
-										  HEAP_INSERT_FROZEN |
-										  HEAP_INSERT_SKIP_FSM |
+										  ZHEAP_INSERT_FROZEN |
+										  ZHEAP_INSERT_SKIP_FSM |
 										  (state->rs_use_wal ?
-										   0 : HEAP_INSERT_SKIP_WAL));
+										   0 : ZHEAP_INSERT_SKIP_WAL));
 	}
 	else
 		heaptup = tup;

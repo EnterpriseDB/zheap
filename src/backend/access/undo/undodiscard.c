@@ -253,7 +253,7 @@ void
 UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 {
 	TransactionId	oldestXidHavingUndo = oldestXmin;
-	uint64			epoch = GetEpochForXid(oldestXmin);
+	uint32			epoch = GetEpochForXid(oldestXmin);
 	UndoLogControl *log = NULL;
 
 	/*
@@ -318,7 +318,7 @@ UndoDiscard(TransactionId oldestXmin, bool *hibernate)
  * At the commit time, discard all the undo logs.
  */
 void
-UndoLogDiscardAll()
+UndoLogDiscardAll(void)
 {
 	UndoLogControl *log = NULL;
 

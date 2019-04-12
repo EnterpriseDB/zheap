@@ -16,7 +16,6 @@
 #include "access/htup_details.h"
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
-#include "access/zheap.h"
 #include "access/zhtup.h"
 
 /*

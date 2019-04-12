@@ -196,7 +196,6 @@ typedef struct TransactionStateData
 	bool		didLogXid;		/* has xid been included in WAL record? */
 	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
 	bool		chain;			/* start a new block after this one */
-	int			parallelModeLevel;		/* Enter/ExitParallelMode counter */
 	bool		subXactLock;		/* has lock created for subtransaction? */
 	 /* start and end undo record location for each persistence level */
 	UndoRecPtr	start_urec_ptr[UndoPersistenceLevels];

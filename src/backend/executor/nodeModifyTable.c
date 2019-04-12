@@ -1564,7 +1564,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 			 * ZHEAP accepts this, but this isn't ok from a layering POV (and
 			 * I'm doubtful about the correctness). See 1e9d17cc240.
 			 *
-			 * Unlike heap, we expect HeapTupleSelfUpdated in the same scenario
+			 * Unlike heap, we expect TM_SelfModified in the same scenario
 			 * as the new tuple could have been in-place updated.
 			 */
 #endif

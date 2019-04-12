@@ -104,7 +104,10 @@ undo_xlog_page(XLogReaderState *record)
 			if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
 			{
 				if (TransactionIdIsValid(xlrec->xid))
-					xid_epoch = GetEpochForXid(xlrec->xid);
+				{
+					FullTransactionId fxid = XLogRecGetFullXid(record);
+					xid_epoch = EpochFromFullTransactionId(fxid);
+				}
 				TPDPageSetTransactionSlotInfo(buf, xlrec->trans_slot_id,
 											  xid_epoch,
 											  xlrec->xid, xlrec->urec_ptr);

@@ -195,8 +195,8 @@ typedef struct VacuumParams
 
 typedef struct LVRelStats
 {
-	/* hasindex = true means two-pass strategy; false means one-pass */
-	bool		hasindex;
+	/* useindex = true means two-pass strategy; false means one-pass */
+	bool		useindex;
 	/* Overall statistics about rel */
 	BlockNumber old_rel_pages;	/* previous value of pg_class.relpages */
 	BlockNumber rel_pages;		/* total number of pages */
@@ -208,6 +208,8 @@ typedef struct LVRelStats
 	double		new_rel_tuples; /* new estimated total # of tuples */
 	double		new_live_tuples;	/* new estimated total # of live tuples */
 	double		new_dead_tuples;	/* new estimated total # of dead tuples */
+	double		nleft_dead_tuples;	/* # of dead tuples we left */
+	double		nleft_dead_itemids;	/* # of dead item pointers we left */
 	BlockNumber pages_removed;
 	double		tuples_deleted;
 	BlockNumber nonempty_pages; /* actually, last nonempty page + 1 */
@@ -264,7 +266,7 @@ extern bool vacuum_is_relation_owner(Oid relid, Form_pg_class reltuple,
 extern Relation vacuum_open_relation(Oid relid, RangeVar *relation,
 					 int options, bool verbose, LOCKMODE lmode);
 
-// PBORKED & ZBORKED
+// ZBORKED
 /* in commands/vacuumlazy.c */
 extern void lazy_vacuum_rel(Relation onerel, int options,
 				VacuumParams *params, BufferAccessStrategy bstrategy);
@@ -276,13 +278,13 @@ extern void lazy_cleanup_index(Relation indrel, IndexBulkDeleteResult *stats,
 							   BufferAccessStrategy vac_strategy);
 extern void lazy_record_dead_tuple(LVRelStats *vacrelstats,
 					   ItemPointer itemptr);
-extern bool should_attempt_truncation(LVRelStats *vacrelstats);
+extern bool should_attempt_truncation(Relation rel, LVRelStats *vacrelstats);
 extern void lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats,
 							   BufferAccessStrategy vac_strategy);
 
 /* in commands/zvacuumlazy.c */
-extern void lazy_vacuum_zheap_rel(Relation onerel, int options,
-					VacuumParams *params, BufferAccessStrategy bstrategy);
+extern void lazy_vacuum_zheap_rel(Relation onerel, VacuumParams *params,
+								  BufferAccessStrategy bstrategy);
 
 /* in commands/analyze.c */
 extern void analyze_rel(Oid relid, RangeVar *relation,

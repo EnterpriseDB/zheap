@@ -24,6 +24,16 @@
 #include "storage/undofile.h"
 #include "utils/memutils.h"
 
+/* Populate a file tag describing an undofile.c segment file. */
+#define INIT_UNDOFILETAG(a,xx_logno,xx_tbspc,xx_segno) \
+( \
+   memset(&(a), 0, sizeof(FileTag)), \
+   (a).handler = SYNC_HANDLER_UNDO, \
+   (a).rnode.spcNode = (xx_tbspc), \
+   (a).rnode.relNode = (xx_logno), \
+   (a).segno = (xx_segno) \
+)
+
 /* intervals for calling AbsorbFsyncRequests in undofile_sync */
 #define FSYNCS_PER_ABSORB		10
 
@@ -67,8 +77,6 @@ typedef struct
 
 static HTAB *pendingOpsTable = NULL;
 static MemoryContext pendingOpsCxt;
-
-static CycleCtr undofile_sync_cycle_ctr = 0;
 
 static File undofile_open_segment_file(Oid relNode, Oid spcNode, int segno,
 									   bool missing_ok);
@@ -174,38 +182,12 @@ undofile_read(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	}
 }
 
-static void
-register_dirty_segment(SMgrRelation reln, ForkNumber forknum, int segno, File file)
-{
-	/* Temp relations should never be fsync'd */
-	Assert(!SmgrIsTemp(reln));
-
-	if (pendingOpsTable)
-	{
-		/* push it into local pending-ops table */
-		undofile_requestsync(reln->smgr_rnode.node, forknum, segno);
-	}
-	else
-	{
-		if (ForwardFsyncRequest(reln->smgr_rnode.node, forknum, segno))
-			return;				/* passed it off successfully */
-
-		ereport(DEBUG1,
-				(errmsg("could not forward fsync request because request queue is full")));
-
-		if (FileSync(file, WAIT_EVENT_DATA_FILE_SYNC) < 0)
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not fsync file \"%s\": %m",
-							FilePathName(file))));
-	}
-}
-
 void
 undofile_write(SMgrRelation reln, ForkNumber forknum,
 			   BlockNumber blocknum, char *buffer,
 			   bool skipFsync)
 {
+	FileTag     tag;
 	File		file;
 	off_t		seekpos;
 	int			nbytes;
@@ -233,8 +215,23 @@ undofile_write(SMgrRelation reln, ForkNumber forknum,
 						nbytes, BLCKSZ)));
 	}
 
+	/* Tell checkpointer this file is dirty. */
 	if (!skipFsync && !SmgrIsTemp(reln))
-		register_dirty_segment(reln, forknum, blocknum / UNDOSEG_SIZE, file);
+	{
+		INIT_UNDOFILETAG(tag,
+						 reln->smgr_rnode.node.relNode,
+						 reln->smgr_rnode.node.spcNode,
+						 blocknum / UNDOSEG_SIZE);
+
+		if (!RegisterSyncRequest(&tag, SYNC_REQUEST, false /*retryOnError*/))
+		{
+			if (FileSync(file, WAIT_EVENT_DATA_FILE_SYNC) < 0)
+				ereport(data_sync_elevel(ERROR),
+						(errcode_for_file_access(),
+						 errmsg("could not fsync file \"%s\": %m",
+								FilePathName(file))));
+		}
+	}
 }
 
 void
@@ -281,199 +278,6 @@ void
 undofile_immedsync(SMgrRelation reln, ForkNumber forknum)
 {
 	elog(ERROR, "undofile_immedsync is not supported");
-}
-
-void
-undofile_preckpt(void)
-{
-}
-
-void
-undofile_requestsync(RelFileNode rnode, ForkNumber forknum, int segno)
-{
-	MemoryContext oldcxt = MemoryContextSwitchTo(pendingOpsCxt);
-	PendingOperationEntry *entry;
-	bool		found;
-
-	Assert(pendingOpsTable);
-
-	if (forknum == FORGET_UNDO_SEGMENT_FSYNC)
-	{
-		entry = (PendingOperationEntry *) hash_search(pendingOpsTable,
-													  &rnode,
-													  HASH_FIND,
-													  NULL);
-		if (entry)
-			entry->requests = bms_del_member(entry->requests, segno);
-	}
-	else
-	{
-		entry = (PendingOperationEntry *) hash_search(pendingOpsTable,
-													  &rnode,
-													  HASH_ENTER,
-													  &found);
-		if (!found)
-		{
-			entry->cycle_ctr = undofile_sync_cycle_ctr;
-			entry->requests = bms_make_singleton(segno);
-		}
-		else
-			entry->requests = bms_add_member(entry->requests, segno);
-	}
-
-	MemoryContextSwitchTo(oldcxt);
-}
-
-void
-undofile_forgetsync(Oid logno, Oid tablespace, int segno)
-{
-	RelFileNode rnode;
-
-	rnode.dbNode = 9;
-	rnode.spcNode = tablespace;
-	rnode.relNode = logno;
-
-	if (pendingOpsTable)
-		undofile_requestsync(rnode, FORGET_UNDO_SEGMENT_FSYNC, segno);
-	else if (IsUnderPostmaster)
-	{
-		while (!ForwardFsyncRequest(rnode, FORGET_UNDO_SEGMENT_FSYNC, segno))
-			pg_usleep(10000L);
-	}
-}
-
-void
-undofile_sync(void)
-{
-	static bool undofile_sync_in_progress = false;
-
-	HASH_SEQ_STATUS hstat;
-	PendingOperationEntry *entry;
-	int			absorb_counter;
-	int			segno;
-
-	if (!pendingOpsTable)
-		elog(ERROR, "cannot sync without a pendingOpsTable");
-
-	AbsorbFsyncRequests();
-
-	if (undofile_sync_in_progress)
-	{
-		/* prior try failed, so update any stale cycle_ctr values */
-		hash_seq_init(&hstat, pendingOpsTable);
-		while ((entry = (PendingOperationEntry *) hash_seq_search(&hstat)) != NULL)
-			entry->cycle_ctr = undofile_sync_cycle_ctr;
-	}
-
-	undofile_sync_cycle_ctr++;
-	undofile_sync_in_progress = true;
-
-	absorb_counter = FSYNCS_PER_ABSORB;
-	hash_seq_init(&hstat, pendingOpsTable);
-	while ((entry = (PendingOperationEntry *) hash_seq_search(&hstat)) != NULL)
-	{
-		Bitmapset	   *requests;
-
-		/* Skip entries that arrived after we arrived. */
-		if (entry->cycle_ctr == undofile_sync_cycle_ctr)
-			continue;
-
-		Assert((CycleCtr) (entry->cycle_ctr + 1) == undofile_sync_cycle_ctr);
-
-		if (!enableFsync)
-			continue;
-
-		requests = entry->requests;
-		entry->requests = NULL;
-
-		segno = -1;
-		while ((segno = bms_next_member(requests, segno)) >= 0)
-		{
-			File		file;
-
-			if (!enableFsync)
-				continue;
-
-			file = undofile_open_segment_file(entry->rnode.relNode,
-											  entry->rnode.spcNode,
-											  segno, true /* missing_ok */);
-
-			/*
-			 * The file may be gone due to concurrent discard.  We'll ignore
-			 * that, but only if we find a cancel request for this segment in
-			 * the queue.
-			 *
-			 * It's also possible that we succeed in opening a segment file
-			 * that is subsequently recycled (renamed to represent a new range
-			 * of undo log), in which case we'll fsync that later file
-			 * instead.  That is rare and harmless.
-			 */
-			if (file <= 0)
-			{
-				char		name[MAXPGPATH];
-
-				/*
-				 * Put the request back into the bitset in a way that can't
-				 * fail due to memory allocation.
-				 */
-				entry->requests = bms_join(entry->requests, requests);
-				/*
-				 * Check if a forgetsync request has arrived to delete that
-				 * segment.
-				 */
-				AbsorbFsyncRequests();
-				if (bms_is_member(segno, entry->requests))
-				{
-					UndoLogSegmentPath(entry->rnode.relNode,
-									   segno,
-									   entry->rnode.spcNode,
-									   name);
-					ereport(ERROR,
-							(errcode_for_file_access(),
-							 errmsg("could not fsync file \"%s\": %m", name)));
-				}
-				/* It must have been removed, so we can safely skip it. */
-				continue;
-			}
-
-			elog(LOG, "fsync()ing %s", FilePathName(file));	/* TODO: remove me */
-			if (FileSync(file, WAIT_EVENT_UNDO_FILE_SYNC) < 0)
-			{
-				char		name[MAXPGPATH];
-
-				strcpy(name, FilePathName(file));
-				FileClose(file);
-
-				/*
-				 * Keep the failed requests, but merge with any new ones.  The
-				 * requirement to be able to do this without risk of failure
-				 * prevents us from using a smaller bitmap that doesn't bother
-				 * tracking leading zeros.  Perhaps another data structure
-				 * would be better.
-				 */
-				entry->requests = bms_join(entry->requests, requests);
-				ereport(ERROR,
-						(errcode_for_file_access(),
-						 errmsg("could not fsync file \"%s\": %m", name)));
-			}
-			requests = bms_del_member(requests, segno);
-			FileClose(file);
-
-			if (--absorb_counter <= 0)
-			{
-				AbsorbFsyncRequests();
-				absorb_counter = FSYNCS_PER_ABSORB;
-			}
-		}
-
-		bms_free(requests);
-	}
-
-	undofile_sync_in_progress = true;
-}
-
-void undofile_postckpt(void)
-{
 }
 
 static File undofile_open_segment_file(Oid relNode, Oid spcNode, int segno,
@@ -549,4 +353,33 @@ static File undofile_get_segment_file(SMgrRelation reln, int segno)
 	}
 
 	return state->mru_file;
+}
+
+int
+undofile_syncfiletag(const FileTag *tag, char *path)
+{
+	SMgrRelation reln = smgropen(tag->rnode, InvalidBackendId);
+	File        file;
+
+	UndoLogSegmentPath(tag->rnode.relNode, tag->segno, tag->rnode.spcNode,
+					   path);
+
+	file = undofile_get_segment_file(reln, tag->segno);
+	if (file <= 0)
+	{
+		/* errno set by undofile_get_segment_file() */
+		return -1;
+	}
+
+	return FileSync(file, WAIT_EVENT_UNDO_FILE_SYNC);
+}
+
+void
+undofile_forget_sync(UndoLogNumber logno, BlockNumber segno, Oid tablespace)
+{
+	FileTag     tag;
+
+	INIT_UNDOFILETAG(tag, logno, tablespace, segno);
+
+	(void) RegisterSyncRequest(&tag, SYNC_FORGET_REQUEST, true /*retryOnError*/);
 }

@@ -13,7 +13,9 @@
 #ifndef UNDOFILE_H
 #define UNDOFILE_H
 
+#include "access/undolog.h"
 #include "storage/smgr.h"
+#include "storage/sync.h"
 
 /* Prototypes of functions exposed to SMgr. */
 extern void undofile_init(void);
@@ -44,7 +46,9 @@ extern void undofile_pre_ckpt(void);
 extern void undofile_sync(void);
 extern void undofile_post_ckpt(void);
 
-/* Functions used by undolog.c. */
-extern void undofile_forgetsync(Oid logno, Oid tablespace, int segno);
+extern int undofile_syncfiletag(const FileTag *tag, char *path);
+
+extern void undofile_forget_sync(UndoLogNumber logno, BlockNumber segno,
+								 Oid tablespace);
 
 #endif

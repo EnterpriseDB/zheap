@@ -19,6 +19,7 @@
 #include "access/skey.h"
 #include "nodes/lockoptions.h"
 #include "storage/buf.h"
+#include "storage/bufmgr.h"
 #include "storage/itemptr.h"
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
@@ -28,34 +29,6 @@ typedef struct BulkInsertStateData *BulkInsertState;
 /* struct definitions appear in relscan.h */
 typedef struct HeapScanDescData *HeapScanDesc;
 typedef struct ParallelTableScanDescData *ParallelTableScanDesc;
-
-/*
- * When heap_update, heap_delete, or heap_lock_tuple fail because the target
- * tuple is already outdated, they fill in this struct to provide information
- * to the caller about what happened.
- * ctid is the target's ctid link: it is the same as the target's TID if the
- * target was deleted, or the location of the replacement tuple if the target
- * was updated.
- * xmax is the outdating transaction's XID.  If the caller wants to visit the
- * replacement tuple, it must check that this matches before believing the
- * replacement is really a match.
- * cmax is the outdating command's CID, but only when the failure code is
- * HeapTupleSelfUpdated (i.e., something in the current transaction outdated
- * the tuple); otherwise cmax is zero.  (We make this restriction because
- * HeapTupleHeaderGetCmax doesn't work for tuples outdated in other
- * transactions.)
- * in_place_updated_or_locked indicates whether the tuple is updated or locked.
- * We need to re-verify the tuple even if it is just marked as locked, because
- * previously someone could have updated it in place.
- */
-typedef struct HeapUpdateFailureData
-{
-	ItemPointerData ctid;
-	TransactionId xmax;
-	CommandId	cmax;
-	bool		traversed;
-	bool        in_place_updated_or_locked;
-} HeapUpdateFailureData;
 
 /* Result codes for HeapTupleSatisfiesVacuum */
 typedef enum
@@ -78,22 +51,6 @@ typedef enum
 	ZHEAPTUPLE_ABORT_IN_PROGRESS		/* rollback is still pending */
 } ZHTSV_Result;
 
-/*
- * Possible lock modes for a tuple.
- */
-typedef enum LockTupleMode
-{
-	/* SELECT FOR KEY SHARE */
-	LockTupleKeyShare,
-	/* SELECT FOR SHARE */
-	LockTupleShare,
-	/* SELECT FOR NO KEY UPDATE, and UPDATEs that don't modify key columns */
-	LockTupleNoKeyExclusive,
-	/* SELECT FOR UPDATE, UPDATEs that modify key columns, and DELETE */
-	LockTupleExclusive
-} LockTupleMode;
-
-#define MaxLockTupleMode	LockTupleExclusive
 
 
 static const struct
@@ -138,6 +95,6 @@ extern void GetVisibilityMapPins(Relation relation, Buffer buffer1,
 					Buffer *vmbuffer1, Buffer *vmbuffer2);
 extern void RelationAddExtraBlocks(Relation relation, BulkInsertState bistate);
 extern Buffer ReadBufferBI(Relation relation, BlockNumber targetBlock,
-					BulkInsertState bistate);
+					ReadBufferMode mode, BulkInsertState bistate);
 
 #endif   /* GENHAM_H */

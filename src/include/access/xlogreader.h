@@ -229,6 +229,7 @@ extern bool DecodeXLogRecord(XLogReaderState *state, XLogRecord *record,
 #define XLogRecGetInfo(decoder) ((decoder)->decoded_record->xl_info)
 #define XLogRecGetRmid(decoder) ((decoder)->decoded_record->xl_rmid)
 #define XLogRecGetXid(decoder) ((decoder)->decoded_record->xl_xid)
+extern FullTransactionId XLogRecGetFullXid(XLogReaderState *record);
 #define XLogRecGetOrigin(decoder) ((decoder)->record_origin)
 #define XLogRecGetData(decoder) ((decoder)->main_data)
 #define XLogRecGetDataLen(decoder) ((decoder)->main_data_len)

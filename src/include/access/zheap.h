@@ -18,6 +18,7 @@
 
 #include "access/genham.h"
 #include "access/hio.h"
+#include "access/tableam.h"
 #include "access/undoinsert.h"
 #include "access/zhtup.h"
 #include "utils/rel.h"
@@ -76,6 +77,13 @@ typedef ZHeapMetaPageData *ZHeapMetaPage;
 #define ZHeapPageGetMeta(page) \
 		((ZHeapMetaPage) PageGetContents(page))
 
+/* "options" flag bits for heap_insert */
+#define ZHEAP_INSERT_SKIP_WAL	TABLE_INSERT_SKIP_WAL
+#define ZHEAP_INSERT_SKIP_FSM	TABLE_INSERT_SKIP_FSM
+#define ZHEAP_INSERT_FROZEN		TABLE_INSERT_FROZEN
+#define ZHEAP_INSERT_NO_LOGICAL	TABLE_INSERT_NO_LOGICAL
+#define ZHEAP_INSERT_SPECULATIVE 0x0010
+
 extern void zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
 					BlockNumber last_blkno);
 extern void ZheapInitMetaPage(Relation rel, ForkNumber forkNum);
@@ -86,18 +94,18 @@ extern void zbuffer_exec_pending_rollback(Relation rel, Buffer buf,
 extern void zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate);
 extern void simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot);
-extern HTSU_Result zheap_delete(Relation relation, ItemPointer tid,
+extern TM_Result zheap_delete(Relation relation, ItemPointer tid,
 						CommandId cid, Snapshot crosscheck, Snapshot snapshot,
-						bool wait, HeapUpdateFailureData *hufd, bool changingPart);
-extern HTSU_Result zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
+						bool wait, TM_FailureData *tmfd, bool changingPart);
+extern TM_Result zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 					CommandId cid, Snapshot crosscheck, Snapshot snapshot, bool wait,
-					HeapUpdateFailureData *hufd, LockTupleMode *lockmode);
-extern HTSU_Result zheap_lock_tuple(Relation relation, ItemPointer tid,
+					TM_FailureData *tmfd, LockTupleMode *lockmode);
+extern TM_Result zheap_lock_tuple(Relation relation, ItemPointer tid,
 					CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 					bool follow_updates, bool eval, Snapshot snapshot,
-					ZHeapTuple tuple, Buffer *buffer, HeapUpdateFailureData *hufd);
-extern void zheap_finish_speculative(Relation relation, ZHeapTuple tuple);
-extern void zheap_abort_speculative(Relation relation, ZHeapTuple tuple);
+					ZHeapTuple tuple, Buffer *buffer, TM_FailureData *tmfd);
+extern void zheap_finish_speculative(Relation relation, ItemPointer tid);
+extern void zheap_abort_speculative(Relation relation, ItemPointer tid);
 extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
 									  OffsetNumber offset, uint32 epoch,
 									  TransactionId xid, UndoRecPtr *ureptr,
@@ -181,14 +189,15 @@ extern TableScanDesc zheap_beginscan(Relation relation, Snapshot snapshot,
 			   bool is_bitmapscan,
 			   bool is_samplescan,
 			   bool temp_snap);
+extern void zheap_endscan(TableScanDesc sscan);
 extern void zheap_setscanlimits(TableScanDesc scan, BlockNumber startBlk,
 				   BlockNumber endBlk);
 extern ZHeapTuple zheap_getnext(TableScanDesc scan, ScanDirection direction);
 extern void zheap_update_snapshot(TableScanDesc scan, Snapshot snapshot);
-extern struct TupleTableSlot * zheap_getnextslot(TableScanDesc scan, ScanDirection direction, struct TupleTableSlot *slot);
+extern bool zheap_getnextslot(TableScanDesc scan, ScanDirection direction, struct TupleTableSlot *slot);
 struct TBMIterateResult;
-extern bool zheap_scan_bitmap_pagescan(TableScanDesc sscan, struct TBMIterateResult *tbmres);
-extern bool zheap_scan_bitmap_pagescan_next(TableScanDesc sscan, struct TupleTableSlot *slot);
+extern bool zheap_scan_bitmap_next_block(TableScanDesc sscan, struct TBMIterateResult *tbmres);
+extern bool zheap_scan_bitmap_next_tuple(TableScanDesc sscan, struct TBMIterateResult *tbmres, struct TupleTableSlot *slot);
 
 extern ZHeapTuple zheap_search_buffer(ItemPointer tid, Relation relation,
 									  Buffer buffer, Snapshot snapshot,
@@ -198,7 +207,7 @@ extern bool zheap_search(ItemPointer tid, Relation relation, Snapshot snapshot,
 
 extern bool zheap_fetch(Relation relation, Snapshot snapshot,
 				ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
-				bool keep_buf, Relation stats_relation);
+				bool keep_buf);
 extern bool zheap_fetch_undo(Relation relation, Snapshot snapshot,
 				ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
 				Relation stats_relation);

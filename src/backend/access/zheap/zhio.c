@@ -46,7 +46,7 @@ RelationGetBufferForZTuple(Relation relation, Size len,
 						   BulkInsertState bistate,
 						   Buffer *vmbuffer, Buffer *vmbuffer_other)
 {
-	bool		use_fsm = !(options & HEAP_INSERT_SKIP_FSM);
+	bool		use_fsm = !(options & TABLE_INSERT_SKIP_FSM);
 	Buffer		buffer = InvalidBuffer;
 	Page		page;
 	Size		pageFreeSpace = 0,
@@ -54,8 +54,6 @@ RelationGetBufferForZTuple(Relation relation, Size len,
 	BlockNumber targetBlock,
 				otherBlock;
 	bool		needLock = false;
-	bool		recheck = true;
-	bool		tpdPage = false;
 
 	/* Bulk insert is not supported for updates, only inserts. */
 	Assert(otherBuffer == InvalidBuffer || !bistate);
@@ -110,29 +108,16 @@ RelationGetBufferForZTuple(Relation relation, Size len,
 		 * We have no cached target page, so ask the FSM for an initial
 		 * target.
 		 */
-		targetBlock = GetPageWithFreeSpace(relation, len + saveFreeSpace);
-
-		/*
-		 * If the FSM knows nothing of the rel, try the last page before we
-		 * give up and extend.  This avoids one-tuple-per-page syndrome during
-		 * bootstrapping or in a recently-started system.
-		 */
-		if (targetBlock == InvalidBlockNumber)
-		{
-			BlockNumber nblocks = RelationGetNumberOfBlocks(relation);
-
-			/*
-			 * In zheap, first page is always a meta page, so we need to
-			 * skip it for tuple insertions.
-			 */
-			if (nblocks > ZHEAP_METAPAGE + 1)
-				targetBlock = nblocks - 1;
-		}
+		targetBlock = GetPageWithFreeSpace(relation,
+										   len + saveFreeSpace,
+										   false);
 	}
 
 loop:
 	while (targetBlock != InvalidBlockNumber)
 	{
+		bool		other_buffer_locked = false;
+
 		/*
 		 * Read and exclusive-lock the target block, as well as the other
 		 * block if one was given, taking suitable care with lock ordering and
@@ -149,10 +134,9 @@ loop:
 		if (otherBuffer == InvalidBuffer)
 		{
 			/* easy case */
-			buffer = ReadBufferBI(relation, targetBlock, bistate);
+			buffer = ReadBufferBI(relation, targetBlock, RBM_NORMAL, bistate);
 			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-			tpdPage = CheckBufferHasTPDPage(buffer);
 		}
 		else if (otherBlock == targetBlock)
 		{
@@ -160,7 +144,6 @@ loop:
 			buffer = otherBuffer;
 			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-			tpdPage = CheckBufferHasTPDPage(buffer);
 		}
 		else if (otherBlock < targetBlock)
 		{
@@ -169,7 +152,8 @@ loop:
 			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-			tpdPage = CheckBufferHasTPDPage(buffer);
+
+			other_buffer_locked = true;
 		}
 		else
 		{
@@ -177,22 +161,44 @@ loop:
 			buffer = ReadBuffer(relation, targetBlock);
 			visibilitymap_pin(relation, targetBlock, vmbuffer);
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-			tpdPage = CheckBufferHasTPDPage(buffer);
 
 			/*
-			 * Not a zheap page, exit and extend the relation.  We can continue
-			 * and try getting another page from FSM, but not sure if we can
-			 * succeed as we might again get same page.
+			 * ZBORKED: This is my (Andres') adaption of the previously (in
+			 * code) undocumented workaround around lock-ordering issue in tpd
+			 * pages that was originally added in
+			 * https://github.com/EnterpriseDB/zheap/commit/e4d3f718991b673ca3f6b02f5562366f7bc67b6d
+			 *
+			 * Whenever we need two buffers for updating a tuple
+			 * (non-inplace), we use the rule "lock lower numbered buffer
+			 * first" to avoid deadlocks. But, in zheap this is not the
+			 * sufficient condition.  It's possible that the new buffer is a
+			 * pruned TPD buffer and some other backend is trying to use it
+			 * while holding lock on a zheap buffer with higher block number.
+			 *
+			 * To avoid deadlocking, we simply don't lock otherBuffer. We
+			 * below update the FSM to remove TPD pages from the FSM -
+			 * otherwise we'd potentially encounter this over-and-over.
 			 */
-			if (tpdPage)
+			if (!CheckBufferHasTPDPage(buffer))
 			{
-				UnlockReleaseBuffer(buffer);
-				break;
+				LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
+				other_buffer_locked = true;
 			}
-			LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
 		}
 
-		if (!tpdPage)
+		if (targetBlock == ZHEAP_METAPAGE || CheckBufferHasTPDPage(buffer))
+		{
+			/*
+			 * ZBORKED: I (Andres) had to implement this because the previous
+			 * code was plainly broken, and caused problems due to the newer
+			 * fsm_local_map() logic.  We could handle the ZHEAP_METAPAGE case
+			 * before locking (but be careful, it needs to be in the loop),
+			 * but I'm doubtful it's worth it, because we still need to update
+			 * the FSM etc.
+			 */
+			pageFreeSpace = 0;
+		}
+		else
 		{
 			/*
 			 * We now have the target page (and the other buffer, if any) pinned
@@ -215,11 +221,12 @@ loop:
 			 * done a bit of extra work for no gain, but there's no real harm
 			 * done.
 			 *
+			 * ZBORKED:
 			 * Fixme: GetVisibilityMapPins use PageIsAllVisible which is not
 			 * required for zheap, so either we need to rewrite that function or
 			 * somehow avoid the usage of that call.
 			 */
-			if (otherBuffer == InvalidBuffer || buffer <= otherBuffer)
+			if (otherBuffer == InvalidBuffer || targetBlock <= otherBlock)
 				GetVisibilityMapPins(relation, buffer, otherBuffer,
 									 targetBlock, otherBlock, vmbuffer,
 									 vmbuffer_other);
@@ -233,11 +240,31 @@ loop:
 			 * we're done.
 			 */
 			page = BufferGetPage(buffer);
+
+			/*
+			 * If necessary initialize page, it'll be used soon.  We could avoid
+			 * dirtying the buffer here, and rely on the caller to do so whenever
+			 * it puts a tuple onto the page, but there seems not much benefit in
+			 * doing so.
+			 */
+			if (PageIsNew(page))
+			{
+				ZheapInitPage(page, BufferGetPageSize(buffer));
+				MarkBufferDirty(buffer);
+			}
+
 			pageFreeSpace = PageGetZHeapFreeSpace(page);
 			if (len + saveFreeSpace <= pageFreeSpace)
 			{
 				/* use this page as future insert target, too */
 				RelationSetTargetBlock(relation, targetBlock);
+
+				/*
+				 * In case we used an in-memory map of available blocks, reset it
+				 * for next use.
+				 */
+				FSMClearLocalMap();
+
 				return buffer;
 			}
 		}
@@ -253,15 +280,13 @@ loop:
 			ReleaseBuffer(buffer);
 		else if (otherBlock != targetBlock)
 		{
-			LockBuffer(otherBuffer, BUFFER_LOCK_UNLOCK);
+			if (other_buffer_locked)
+				LockBuffer(otherBuffer, BUFFER_LOCK_UNLOCK);
 			ReleaseBuffer(buffer);
 		}
 
-		/*
-		 * If this a tpd page or FSM doesn't need to be updated, always fall
-		 * out of the loop and extend.
-		 */
-		if (!use_fsm || tpdPage)
+		/* Without FSM, always fall out of the loop and extend */
+		if (!use_fsm)
 			break;
 
 		/*
@@ -284,7 +309,6 @@ loop:
 	 */
 	needLock = !RELATION_IS_LOCAL(relation);
 
-recheck:
 	/*
 	 * If we need the lock but are not able to acquire it immediately, we'll
 	 * consider extending the relation by multiple blocks at a time to manage
@@ -304,7 +328,9 @@ recheck:
 			 * Check if some other backend has extended a block for us while
 			 * we were waiting on the lock.
 			 */
-			targetBlock = GetPageWithFreeSpace(relation, len + saveFreeSpace);
+			targetBlock = GetPageWithFreeSpace(relation,
+											   len + saveFreeSpace,
+											   false);
 
 			/*
 			 * If some other waiter has already extended the relation, we
@@ -330,29 +356,7 @@ recheck:
 	 * it worth keeping an accurate file length in shared memory someplace,
 	 * rather than relying on the kernel to do it for us?
 	 */
-	buffer = ReadBufferBI(relation, P_NEW, bistate);
-
-	/*
-	 * We can be certain that locking the otherBuffer first is OK, since it
-	 * must have a lower page number.  We don't lock other buffer while holding
-	 * extension lock.  See comments below.
-	 */
-	if (otherBuffer != InvalidBuffer && !needLock)
-		LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
-
-	/*
-	 * Now acquire lock on the new page.
-	 */
-	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-
-	/*
-	 * Release the file-extension lock; it's now OK for someone else to extend
-	 * the relation some more.  Note that we cannot release this lock before
-	 * we have buffer lock on the new page, or we risk a race condition
-	 * against vacuumlazy.c --- see comments therein.
-	 */
-	if (needLock)
-		UnlockRelationForExtension(relation, ExclusiveLock);
+	buffer = ReadBufferBI(relation, P_NEW, RBM_ZERO_AND_LOCK, bistate);
 
 	/*
 	 * We need to initialize the empty new page.  Double-check that it really
@@ -368,26 +372,55 @@ recheck:
 
 	Assert(BufferGetBlockNumber(buffer) != ZHEAP_METAPAGE);
 	ZheapInitPage(page, BufferGetPageSize(buffer));
+	MarkBufferDirty(buffer);
 
 	/*
-	 * We don't acquire lock on otherBuffer while holding extension lock as it
-	 * can create a deadlock against extending TPD entry where we take extension
-	 * lock while holding the heap buffer lock.  See TPDAllocatePageAndAddEntry.
+	 * Release the file-extension lock; it's now OK for someone else to extend
+	 * the relation some more.
 	 */
-	if (needLock &&
-		otherBuffer != InvalidBuffer &&
-		BufferGetBlockNumber(buffer) > otherBlock)
+	if (needLock)
+		UnlockRelationForExtension(relation, ExclusiveLock);
+
+	/*
+	 * Lock the other buffer. It's guaranteed to be of a lower page number
+	 * than the new page. To conform with the deadlock prevent rules, we ought
+	 * to lock otherBuffer first, but that would give other backends a chance
+	 * to put tuples on our page. To reduce the likelihood of that, attempt to
+	 * lock the other buffer conditionally, that's very likely to work.
+	 * Otherwise we need to lock buffers in the correct order, and retry if
+	 * the space has been used in the mean time.
+	 *
+	 * Alternatively, we could acquire the lock on otherBuffer before
+	 * extending the relation, but that'd require holding the lock while
+	 * performing IO, which seems worse than an unlikely retry.
+	 */
+	if (otherBuffer != InvalidBuffer)
 	{
-		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-		LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-		recheck = true;
-	}	
-	if (len > PageGetZHeapFreeSpace(page))
+		Assert(otherBuffer != buffer);
+
+		if (unlikely(!ConditionalLockBuffer(otherBuffer)))
+		{
+			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+			LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+			/*
+			 * Because the buffer was unlocked for a while, it's possible,
+			 * although unlikely, that the page was filled. If so, just retry
+			 * from start.
+			 */
+			if (len > PageGetHeapFreeSpace(page))
+			{
+				LockBuffer(otherBuffer, BUFFER_LOCK_UNLOCK);
+				UnlockReleaseBuffer(buffer);
+
+				goto loop;
+			}
+		}
+	}
+
+	if (len > PageGetHeapFreeSpace(page))
 	{
-		if (recheck)
-			goto recheck;
-		
 		/* We should not get here given the test at the top */
 		elog(PANIC, "tuple is too big: size %zu", len);
 	}
@@ -402,6 +435,9 @@ recheck:
 	 * good bet most of the time.  So for now, don't add it to FSM yet.
 	 */
 	RelationSetTargetBlock(relation, BufferGetBlockNumber(buffer));
+
+	/* This should already be cleared by now, but make sure it is. */
+	FSMClearLocalMap();
 
 	return buffer;
 }

@@ -279,10 +279,7 @@ extern bool zheap_attisnull(ZHeapTuple tup, int attnum, TupleDesc tupleDesc);
 		((attnum) > 0) ? \
 		( \
 			((attnum) > (int) ZHeapTupleHeaderGetNatts((tup)->t_data)) ? \
-			( \
-				(*(isnull) = true), \
-				(Datum)NULL \
-			) \
+				getmissingattr((tupleDesc), (attnum), (isnull)) \
 			: \
 				zfastgetattr((tup), (attnum), (tupleDesc), (isnull)) \
 		) \
