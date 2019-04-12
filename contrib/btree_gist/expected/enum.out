@@ -48,6 +48,8 @@ SELECT count(*) FROM enumtmp WHERE a >  'g'::rainbow;
 
 CREATE INDEX enumidx ON enumtmp USING gist ( a );
 SET enable_seqscan=off;
+SET enable_bitmapscan=off;
+SET enable_indexonlyscan=off;
 SELECT count(*) FROM enumtmp WHERE a <  'g'::rainbow;
  count 
 -------
@@ -80,12 +82,10 @@ SELECT count(*) FROM enumtmp WHERE a >  'g'::rainbow;
 
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM enumtmp WHERE a >= 'g'::rainbow;
-                  QUERY PLAN                   
------------------------------------------------
+                QUERY PLAN                 
+-------------------------------------------
  Aggregate
-   ->  Bitmap Heap Scan on enumtmp
-         Recheck Cond: (a >= 'g'::rainbow)
-         ->  Bitmap Index Scan on enumidx
-               Index Cond: (a >= 'g'::rainbow)
-(5 rows)
+   ->  Index Scan using enumidx on enumtmp
+         Index Cond: (a >= 'g'::rainbow)
+(3 rows)
 

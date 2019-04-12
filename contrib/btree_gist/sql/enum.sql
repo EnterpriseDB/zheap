@@ -23,6 +23,8 @@ SELECT count(*) FROM enumtmp WHERE a >  'g'::rainbow;
 CREATE INDEX enumidx ON enumtmp USING gist ( a );
 
 SET enable_seqscan=off;
+SET enable_bitmapscan=off;
+SET enable_indexonlyscan=off;
 
 SELECT count(*) FROM enumtmp WHERE a <  'g'::rainbow;
 
