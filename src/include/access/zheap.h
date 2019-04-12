@@ -248,9 +248,6 @@ extern ZHeapTuple zheap_gettuple(Relation relation, Buffer buffer,
 /* Zheap and undo record interaction related API's (zundo.c) */
 extern bool ZHeapSatisfyUndoRecord(UnpackedUndoRecord *uurec, BlockNumber blkno,
 					   OffsetNumber offset, TransactionId xid);
-extern ZHeapTuple CopyTupleFromUndoRecord(UnpackedUndoRecord *urec,
-										  ZHeapTuple zhtup, int *trans_slot_id,
-										  bool free_zhtup, Page page);
 extern int UpdateTupleHeaderFromUndoRecord(UnpackedUndoRecord *urec,
 								ZHeapTupleHeader hdr, Page page);
 extern bool ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
