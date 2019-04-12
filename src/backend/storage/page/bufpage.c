@@ -20,7 +20,6 @@
 #include "pgstat.h"
 #include "access/zhtup.h"
 #include "access/zheap.h"
-#include "storage/bufmgr.h"
 #include "storage/checksum.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"

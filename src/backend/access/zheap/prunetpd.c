@@ -195,7 +195,7 @@ free_tpd_page:
 		 */
 		if (TPDFreePage(rel, tpdbuf, strategy))
 			RecordPageWithFreeSpace(rel, BufferGetBlockNumber(tpdbuf),
-									freespace);
+									freespace, InvalidBlockNumber);
 	}
 
 	return prstate.nunused;

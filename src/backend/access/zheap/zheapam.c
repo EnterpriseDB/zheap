@@ -41,6 +41,7 @@
 #include "access/relscan.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
+#include "access/relation.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/tpd.h"
@@ -60,6 +61,7 @@
 #include "catalog/catalog.h"
 #include "executor/tuptable.h"
 #include "miscadmin.h"
+#include "nodes/tidbitmap.h"
 #include "pgstat.h"
 #include "postmaster/undoloop.h"
 #include "storage/bufmgr.h"
@@ -72,7 +74,15 @@
 #include "utils/inval.h"
 #include "utils/memdebug.h"
 #include "utils/rel.h"
-#include "utils/tqual.h"
+#include "utils/ztqual.h"
+
+
+/*
+ * ZBORKED: don't want to include heapam.h to avoid mistakes - the syncscan
+ * stuff should probably be moved to a different header.
+ */
+extern BlockNumber ss_get_location(Relation rel, BlockNumber relnblocks);
+extern void ss_report_location(Relation rel, BlockNumber location);
 
  /*
   * Possible lock modes for a tuple.
@@ -105,9 +115,9 @@ static void log_zheap_update(Relation reln, UnpackedUndoRecord undorecord,
 					int new_trans_slot_id, bool inplace_update,
 					bool all_visible_cleared, bool new_all_visible_cleared,
 					xl_undolog_meta *undometa);
-static HTSU_Result
+static TM_Result
 zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
-						 TransactionId xid, LockTupleMode mode, LockOper lockopr,
+						 FullTransactionId fxid, LockTupleMode mode, LockOper lockopr,
 						 CommandId cid, bool *rollback_and_relocked);
 static void zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 					  TransactionId tup_xid, TransactionId xid,
@@ -611,7 +621,7 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 {
 
 	/*
-	 * In zheap, we don't support the optimization for HEAP_INSERT_SKIP_WAL.
+	 * In zheap, we don't support the optimization for TABLE_INSERT_SKIP_WAL.
 	 * If we skip writing/using WAL, we must force the relation down to disk
 	 * (using heap_sync) before it's safe to commit the transaction. This
 	 * requires writing out any dirty buffers of that relation and then doing
@@ -619,8 +629,8 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 	 * as well. It is difficult to keep track of dirty undo buffers and fsync
 	 * them at end of the operation in some function similar to heap_sync.
 	 * But, if we're freezing the tuple during insertion, we can use the
-	 * HEAP_INSERT_SKIP_WAL optimization since we don't write undo for the same.
-	 * Thus just skip the optimization if only HEAP_INSERT_SKIP_WAL is specified.
+	 * TABLE_INSERT_SKIP_WAL optimization since we don't write undo for the same.
+	 * Thus just skip the optimization if only TABLE_INSERT_SKIP_WAL is specified.
 	 */
 
 	/*
@@ -639,7 +649,7 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 	tup->t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
 	tup->t_data->t_infomask2 &= ~ZHEAP_XACT_SLOT;
 
-	if (options & HEAP_INSERT_FROZEN)
+	if (options & ZHEAP_INSERT_FROZEN)
 		ZHeapTupleHeaderSetXactSlot(tup->t_data, ZHTUP_SLOT_FROZEN);
 	tup->t_tableOid = RelationGetRelid(relation);
 
@@ -821,13 +831,15 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	 * We can skip inserting undo records if the tuples are to be marked
 	 * as frozen.
 	 */
-	skip_undo = (options & HEAP_INSERT_FROZEN);
+	skip_undo = (options & ZHEAP_INSERT_FROZEN);
 
+	/* We don't need a transaction id if we are skipping undo */
 	if (!skip_undo)
 	{
-		/* We don't need a transaction id if we are skipping undo */
-		xid = GetTopTransactionId();
-		epoch = GetEpochForXid(xid);
+		FullTransactionId fxid = GetTopFullTransactionId();
+
+		xid = XidFromFullTransactionId(fxid);
+		epoch = EpochFromFullTransactionId(fxid);
 	}
 
 	/*
@@ -895,7 +907,7 @@ reacquire_buffer:
 		Assert(trans_slot_id != InvalidXactSlotId);
 	}
 
-	if (options & HEAP_INSERT_SPECULATIVE)
+	if (options & ZHEAP_INSERT_SPECULATIVE)
 	{
 		/*
 		 * We can't skip writing undo speculative insertions as we have to
@@ -945,7 +957,7 @@ reacquire_buffer:
 		 * information required only on master node to detect conflicts for
 		 * Insert .. On Conflict.
 		 */
-		if (options & HEAP_INSERT_SPECULATIVE)
+		if (options & ZHEAP_INSERT_SPECULATIVE)
 		{
 			uint32 specToken;
 
@@ -960,7 +972,7 @@ reacquire_buffer:
 			undorecord.uur_payload.len = 0;
 
 		urecptr = PrepareUndoInsert(&undorecord,
-									InvalidTransactionId,
+									InvalidFullTransactionId,
 									UndoPersistenceForRelation(relation),
 									NULL,
 									&undometa);
@@ -995,7 +1007,7 @@ reacquire_buffer:
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
 
-	if (!(options & HEAP_INSERT_FROZEN))
+	if (!(options & ZHEAP_INSERT_FROZEN))
 		ZHeapTupleHeaderSetXactSlot(zheaptup->t_data, trans_slot_id);
 
 	RelationPutZHeapTuple(relation, buffer, zheaptup);
@@ -1072,7 +1084,7 @@ reacquire_buffer:
 
 		if (all_visible_cleared)
 			xlrec.flags |= XLZ_INSERT_ALL_VISIBLE_CLEARED;
-		if (options & HEAP_INSERT_SPECULATIVE)
+		if (options & ZHEAP_INSERT_SPECULATIVE)
 			xlrec.flags |= XLZ_INSERT_IS_SPECULATIVE;
 		if (skip_undo)
 			xlrec.flags |= XLZ_INSERT_IS_FROZEN;
@@ -1212,26 +1224,30 @@ prepare_xlog:
 void
 simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot)
 {
-	HTSU_Result result;
-	HeapUpdateFailureData hufd;
+	TM_Result result;
+	TM_FailureData tmfd;
 
 	result = zheap_delete(relation, tid,
 						 GetCurrentCommandId(true), InvalidSnapshot, snapshot,
 						 true, /* wait for commit */
-						 &hufd, false /* changingPart */);
+						 &tmfd, false /* changingPart */);
 	switch (result)
 	{
-		case HeapTupleSelfUpdated:
+		case TM_SelfModified:
 			/* Tuple was already updated in current command? */
 			elog(ERROR, "tuple already updated by self");
 			break;
 
-		case HeapTupleMayBeUpdated:
+		case TM_Ok:
 			/* done successfully */
 			break;
 
-		case HeapTupleUpdated:
+		case TM_Updated:
 			elog(ERROR, "tuple concurrently updated");
+			break;
+
+		case TM_Deleted:
+			elog(ERROR, "tuple concurrently deleted");
 			break;
 
 		default:
@@ -1250,13 +1266,14 @@ simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot)
  * XXX - Visibility map and page is all visible checks are required to support
  * index-only scans on zheap.
  */
-HTSU_Result
+TM_Result
 zheap_delete(Relation relation, ItemPointer tid,
 			 CommandId cid, Snapshot crosscheck, Snapshot snapshot, bool wait,
-			 HeapUpdateFailureData *hufd, bool changingPart)
+			 TM_FailureData *tmfd, bool changingPart)
 {
-	HTSU_Result result;
-	TransactionId xid = GetTopTransactionId();
+	TM_Result result;
+	FullTransactionId fxid = GetTopFullTransactionId();
+	TransactionId xid = XidFromFullTransactionId(fxid);
 	TransactionId	tup_xid,
 					oldestXidHavingUndo,
 					single_locker_xid;
@@ -1272,7 +1289,7 @@ zheap_delete(Relation relation, ItemPointer tid,
 	Buffer		vmbuffer = InvalidBuffer;
 	UndoRecPtr	urecptr, prev_urecptr;
 	ItemPointerData	ctid;
-	uint32		epoch = GetEpochForXid(xid);
+	uint32		epoch = EpochFromFullTransactionId(fxid);
 	int			tup_trans_slot_id,
 				trans_slot_id,
 				new_trans_slot_id,
@@ -1325,7 +1342,7 @@ zheap_delete(Relation relation, ItemPointer tid,
 	{
 		ctid = *tid;
 		ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
-		result = HeapTupleUpdated;
+		result = TM_Updated;
 		goto zheap_tuple_updated;
 	}
 
@@ -1344,15 +1361,15 @@ check_tup_satisfies_update:
 									   &single_locker_trans_slot, false, false,
 									   snapshot, &in_place_updated_or_locked);
 
-	if (result == HeapTupleInvisible)
+	if (result == TM_Invisible)
 	{
 		UnlockReleaseBuffer(buffer);
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("attempted to delete invisible tuple")));
 	}
-	else if ((result == HeapTupleBeingUpdated ||
-			 ((result == HeapTupleMayBeUpdated) &&
+	else if ((result == TM_BeingModified ||
+			 ((result == TM_Ok) &&
 			  ZHeapTupleHasMultiLockers(zheaptup.t_data->t_infomask))) &&
 			  wait)
 	{
@@ -1441,7 +1458,7 @@ check_tup_satisfies_update:
 
 					if (mlmember->mode >= LockTupleExclusive)
 					{
-						result = HeapTupleMayBeUpdated;
+						result = TM_Ok;
 						/*
 						 * There is no other active locker on the tuple except
 						 * current transaction id, so we can delete the tuple.
@@ -1550,7 +1567,7 @@ check_tup_satisfies_update:
 			{
 				ctid = *tid;
 				ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
-				result = HeapTupleUpdated;
+				result = TM_Updated;
 				goto zheap_tuple_updated;
 			}
 
@@ -1676,11 +1693,13 @@ check_tup_satisfies_update:
 		/*
 		 * We may overwrite if previous xid is aborted or committed, but only
 		 * locked the tuple without updating it.
+		 * ZBORKED: This, and many other places, needs to return TM_Deleted if
+		 * appropriate
 		 */
-		if (result != HeapTupleMayBeUpdated)
-			result = can_continue ? HeapTupleMayBeUpdated : HeapTupleUpdated;
+		if (result != TM_Ok)
+			result = can_continue ? TM_Ok : TM_Updated;
 	}
-	else if (result == HeapTupleUpdated
+	else if (result == TM_Updated
 			 && ZHeapTupleHasMultiLockers(zheaptup.t_data->t_infomask))
 	{
 		/*
@@ -1718,7 +1737,7 @@ check_tup_satisfies_update:
 
 				if (mlmember->mode >= LockTupleExclusive)
 				{
-					result = HeapTupleMayBeUpdated;
+					result = TM_Ok;
 					/*
 					 * There is no other active locker on the tuple except
 					 * current transaction id, so we can delete the tuple.
@@ -1732,35 +1751,36 @@ check_tup_satisfies_update:
 
 	}
 
-	if (crosscheck != InvalidSnapshot && result == HeapTupleMayBeUpdated)
+	if (crosscheck != InvalidSnapshot && result == TM_Ok)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
 		if (!ZHeapTupleSatisfies(&zheaptup, crosscheck, buffer, NULL))
-			result = HeapTupleUpdated;
+			result = TM_Updated;
 	}
 
 zheap_tuple_updated:
-	if (result != HeapTupleMayBeUpdated)
+	if (result != TM_Ok)
 	{
-		Assert(result == HeapTupleSelfUpdated ||
-			   result == HeapTupleUpdated ||
-			   result == HeapTupleBeingUpdated);
+		Assert(result == TM_SelfModified ||
+			   result == TM_Updated ||
+			   result == TM_Deleted ||
+			   result == TM_BeingModified);
 		Assert(ItemIdIsDeleted(lp) ||
 			   IsZHeapTupleModified(zheaptup.t_data->t_infomask));
 
 		/* If item id is deleted, tuple can't be marked as moved. */
 		if (!ItemIdIsDeleted(lp) &&
 			ZHeapTupleIsMoved(zheaptup.t_data->t_infomask))
-			ItemPointerSetMovedPartitions(&hufd->ctid);
+			ItemPointerSetMovedPartitions(&tmfd->ctid);
 		else
-			hufd->ctid = ctid;
-		hufd->xmax = tup_xid;
-		if (result == HeapTupleSelfUpdated)
-			hufd->cmax = tup_cid;
+			tmfd->ctid = ctid;
+		tmfd->xmax = tup_xid;
+		if (result == TM_SelfModified)
+			tmfd->cmax = tup_cid;
 		else
-			hufd->cmax = InvalidCommandId;
+			tmfd->cmax = InvalidCommandId;
 		UnlockReleaseBuffer(buffer);
-		hufd->in_place_updated_or_locked = in_place_updated_or_locked;
+		tmfd->in_place_updated_or_locked = in_place_updated_or_locked;
 		if (have_tuple_lock)
 			UnlockTupleTuplock(relation, &(zheaptup.t_self), LockTupleExclusive);
 		if (vmbuffer != InvalidBuffer)
@@ -1812,7 +1832,7 @@ zheap_tuple_updated:
 		{
 			ctid = *tid;
 			ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
-			result = HeapTupleUpdated;
+			result = TM_Updated;
 			goto zheap_tuple_updated;
 		}
 
@@ -1948,7 +1968,7 @@ zheap_tuple_updated:
 		undorecord.uur_payload.len = 0;
 
 	urecptr = PrepareUndoInsert(&undorecord,
-								InvalidTransactionId,
+								InvalidFullTransactionId,
 								UndoPersistenceForRelation(relation),
 								NULL,
 								&undometa);
@@ -2136,7 +2156,7 @@ prepare_xlog:
 
 	pgstat_count_heap_delete(relation);
 
-	return HeapTupleMayBeUpdated;
+	return TM_Ok;
 }
 
 /*
@@ -2152,13 +2172,14 @@ prepare_xlog:
  *
  * For input and output values, see heap_update.
  */
-HTSU_Result
+TM_Result
 zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 			 CommandId cid, Snapshot crosscheck, Snapshot snapshot, bool wait,
-			 HeapUpdateFailureData *hufd, LockTupleMode *lockmode)
+			 TM_FailureData *tmfd, LockTupleMode *lockmode)
 {
-	HTSU_Result result;
-	TransactionId xid = GetTopTransactionId();
+	TM_Result result;
+	FullTransactionId fxid = GetTopFullTransactionId();
+	TransactionId xid = XidFromFullTransactionId(fxid);
 	TransactionId tup_xid,
 				  save_tup_xid,
 				  oldestXidHavingUndo,
@@ -2185,7 +2206,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	Size		newtupsize,
 				oldtupsize,
 				pagefree;
-	uint32		epoch = GetEpochForXid(xid);
+	uint32		epoch = EpochFromFullTransactionId(fxid);
 	int			tup_trans_slot_id,
 				trans_slot_id,
 				new_trans_slot_id,
@@ -2240,7 +2261,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	 * Note that we get a copy here, so we need not worry about relcache flush
 	 * happening midway through.
 	 */
-	inplace_upd_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_HOT);
+	inplace_upd_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_ALL);
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 
 	block = ItemPointerGetBlockNumber(otid);
@@ -2270,7 +2291,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	{
 		ctid = *otid;
 		ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
-		result = HeapTupleUpdated;
+		result = TM_Updated;
 
 		/*
 		 * Since tuple data is gone let's be conservative about lock mode.
@@ -2365,15 +2386,15 @@ check_tup_satisfies_update:
 									   &single_locker_trans_slot, false, false,
 									   snapshot, &in_place_updated_or_locked);
 
-	if (result == HeapTupleInvisible)
+	if (result == TM_Invisible)
 	{
 		UnlockReleaseBuffer(buffer);
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("attempted to update invisible tuple")));
 	}
-	else if ((result == HeapTupleBeingUpdated ||
-			 ((result == HeapTupleMayBeUpdated) &&
+	else if ((result == TM_BeingModified ||
+			 ((result == TM_Ok) &&
 			  ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask))) &&
 			  wait)
 	{
@@ -2450,7 +2471,7 @@ check_tup_satisfies_update:
 
 					if (mlmember->mode >= *lockmode)
 					{
-						result = HeapTupleMayBeUpdated;
+						result = TM_Ok;
 
 						/*
 						 * There is no other active locker on the tuple except
@@ -2551,7 +2572,7 @@ check_tup_satisfies_update:
 				{
 					ctid = *otid;
 					ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
-					result = HeapTupleUpdated;
+					result = TM_Updated;
 					goto zheap_tuple_updated;
 				}
 
@@ -2669,7 +2690,7 @@ check_tup_satisfies_update:
 			{
 				ctid = *otid;
 				ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
-				result = HeapTupleUpdated;
+				result = TM_Updated;
 				goto zheap_tuple_updated;
 			}
 
@@ -2755,10 +2776,10 @@ check_tup_satisfies_update:
 		 * We may overwrite if previous xid is aborted or committed, but only
 		 * locked the tuple without updating it.
 		 */
-		if (result != HeapTupleMayBeUpdated)
-			result = can_continue ? HeapTupleMayBeUpdated : HeapTupleUpdated;
+		if (result != TM_Ok)
+			result = can_continue ? TM_Ok : TM_Updated;
 	}
-	else if (result == HeapTupleMayBeUpdated)
+	else if (result == TM_Ok)
 	{
 		/*
 		 * There is no active locker on the tuple, so we avoid grabbing
@@ -2767,12 +2788,12 @@ check_tup_satisfies_update:
 		checked_lockers = true;
 		locker_remains = false;
 	}
-	else if (result == HeapTupleUpdated &&
+	else if (result == TM_Updated &&
 			 ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask))
 	{
 		/*
 		 * If a tuple is updated and is visible to our snapshot, we allow to update
-		 * it;  Else, we return HeapTupleUpdated and visit EvalPlanQual path to
+		 * it;  Else, we return TM_Updated and visit EvalPlanQual path to
 		 * check whether the quals still match.  In that path, we also lock the
 		 * tuple so that nobody can update it before us.
 		 *
@@ -2817,7 +2838,7 @@ check_tup_satisfies_update:
 
 				if (mlmember->mode >= *lockmode)
 				{
-					result = HeapTupleMayBeUpdated;
+					result = TM_Ok;
 
 					/*
 					 * There is no other active locker on the tuple except
@@ -2834,35 +2855,36 @@ check_tup_satisfies_update:
 
 	}
 
-	if (crosscheck != InvalidSnapshot && result == HeapTupleMayBeUpdated)
+	if (crosscheck != InvalidSnapshot && result == TM_Ok)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
 		if (!ZHeapTupleSatisfies(&oldtup, crosscheck, buffer, NULL))
-			result = HeapTupleUpdated;
+			result = TM_Updated;
 	}
 
 zheap_tuple_updated:
-	if (result != HeapTupleMayBeUpdated)
+	if (result != TM_Ok)
 	{
-		Assert(result == HeapTupleSelfUpdated ||
-			   result == HeapTupleUpdated ||
-			   result == HeapTupleBeingUpdated);
+		Assert(result == TM_SelfModified ||
+			   result == TM_Updated ||
+			   result == TM_Deleted ||
+			   result == TM_BeingModified);
 		Assert(ItemIdIsDeleted(lp) ||
 			   IsZHeapTupleModified(oldtup.t_data->t_infomask));
 
 		/* If item id is deleted, tuple can't be marked as moved. */
 		if (!ItemIdIsDeleted(lp) &&
 			ZHeapTupleIsMoved(oldtup.t_data->t_infomask))
-			ItemPointerSetMovedPartitions(&hufd->ctid);
+			ItemPointerSetMovedPartitions(&tmfd->ctid);
 		else
-			hufd->ctid = ctid;
-		hufd->xmax = tup_xid;
-		if (result == HeapTupleSelfUpdated)
-			hufd->cmax = tup_cid;
+			tmfd->ctid = ctid;
+		tmfd->xmax = tup_xid;
+		if (result == TM_SelfModified)
+			tmfd->cmax = tup_cid;
 		else
-			hufd->cmax = InvalidCommandId;
+			tmfd->cmax = InvalidCommandId;
 		UnlockReleaseBuffer(buffer);
-		hufd->in_place_updated_or_locked = in_place_updated_or_locked;
+		tmfd->in_place_updated_or_locked = in_place_updated_or_locked;
 		if (have_tuple_lock)
 			UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 		if (vmbuffer != InvalidBuffer)
@@ -2946,7 +2968,7 @@ zheap_tuple_updated:
 		{
 			ctid = *otid;
 			ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
-			result = HeapTupleUpdated;
+			result = TM_Updated;
 			goto zheap_tuple_updated;
 		}
 
@@ -3063,7 +3085,7 @@ zheap_tuple_updated:
 		}
 
 		urecptr = PrepareUndoInsert(&undorecord,
-									InvalidTransactionId,
+									InvalidFullTransactionId,
 									UndoPersistenceForRelation(relation),
 									NULL,
 									&undometa);
@@ -3432,7 +3454,7 @@ reacquire_buffer:
 			undorecord.uur_payload.len = 0;
 
 		urecptr = PrepareUndoInsert(&undorecord,
-									InvalidTransactionId,
+									InvalidFullTransactionId,
 									UndoPersistenceForRelation(relation),
 									NULL,
 									&undometa);
@@ -3493,7 +3515,7 @@ reacquire_buffer:
 
 		undorec[0] = undorecord;
 		undorec[1] = new_undorecord;
-		UndoSetPrepareSize(undorec, 2, InvalidTransactionId,
+		UndoSetPrepareSize(undorec, 2, InvalidFullTransactionId,
 						   UndoPersistenceForRelation(relation), NULL, &undometa);
 
 		/* copy updated record (uur_info might got updated )*/
@@ -3501,7 +3523,7 @@ reacquire_buffer:
 		new_undorecord = undorec[1];
 
 		urecptr = PrepareUndoInsert(&undorecord,
-									InvalidTransactionId,
+									InvalidFullTransactionId,
 									UndoPersistenceForRelation(relation),
 									NULL,
 									NULL);
@@ -3517,7 +3539,7 @@ reacquire_buffer:
 			new_undorecord.uur_blkprev = new_prev_urecptr;
 
 		new_urecptr = PrepareUndoInsert(&new_undorecord,
-										InvalidTransactionId,
+										InvalidFullTransactionId,
 										UndoPersistenceForRelation(relation),
 										NULL,
 										NULL);
@@ -3829,7 +3851,7 @@ reacquire_buffer:
 	bms_free(modified_attrs);
 
 	bms_free(key_attrs);
-	return HeapTupleMayBeUpdated;
+	return TM_Ok;
 }
 
 /*
@@ -4146,18 +4168,19 @@ prepare_xlog:
  * as it is not clear whether we ever need all_frozen kind of concept for
  * zheap.
  */
-HTSU_Result
+TM_Result
 zheap_lock_tuple(Relation relation, ItemPointer tid,
 				 CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 				 bool follow_updates, bool eval, Snapshot snapshot,
-				 ZHeapTuple tuple, Buffer *buffer, HeapUpdateFailureData *hufd)
+				 ZHeapTuple tuple, Buffer *buffer, TM_FailureData *tmfd)
 {
-	HTSU_Result result;
+	TM_Result result;
 	ZHeapTupleData	zhtup;
 	UndoRecPtr	prev_urecptr;
 	ItemId		lp;
 	Page		page;
 	ItemPointerData	ctid;
+	FullTransactionId fxid = GetTopFullTransactionId();
 	TransactionId xid,
 				  tup_xid,
 				  single_locker_xid;
@@ -4177,8 +4200,8 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 	bool		lock_reacquired;
 	bool		rollback_and_relocked;
 
-	xid = GetTopTransactionId();
-	epoch = GetEpochForXid(xid);
+	xid = XidFromFullTransactionId(fxid);
+	epoch = EpochFromFullTransactionId(fxid);
 	lockopr = eval ? LockForUpdate : LockOnly;
 
 	*buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
@@ -4199,7 +4222,7 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 	{
 		ctid = *tid;
 		ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-		result = HeapTupleUpdated;
+		result = TM_Updated;
 		goto failed;
 	}
 
@@ -4227,7 +4250,7 @@ check_tup_satisfies_update:
 									   &tup_cid, &single_locker_xid,
 									   &single_locker_trans_slot, false, eval,
 									   snapshot, &in_place_updated_or_locked);
-	if (result == HeapTupleInvisible)
+	if (result == TM_Invisible)
 	{
 		/* ZBORKED? this previously didn't set up a tuple */
 		tuple->t_tableOid = RelationGetRelid(relation);
@@ -4237,12 +4260,12 @@ check_tup_satisfies_update:
 		memcpy(tuple->t_data, zhtup.t_data, zhtup.t_len);
 
 		/* Give caller an opportunity to throw a more specific error. */
-		result = HeapTupleInvisible;
+		result = TM_Invisible;
 		goto out_locked;
 	}
-	else if (result == HeapTupleBeingUpdated ||
-			 result == HeapTupleUpdated ||
-			 (result == HeapTupleMayBeUpdated &&
+	else if (result == TM_BeingModified ||
+			 result == TM_Updated ||
+			 (result == TM_Ok &&
 			  ZHeapTupleHasMultiLockers(zhtup.t_data->t_infomask)))
 	{
 		TransactionId	xwait;
@@ -4308,7 +4331,7 @@ check_tup_satisfies_update:
 					if (mlmember->mode >= mode)
 					{
 						list_free_deep(mlmembers);
-						result = HeapTupleMayBeUpdated;
+						result = TM_Ok;
 						goto out_unlocked;
 					}
 				}
@@ -4326,7 +4349,7 @@ check_tup_satisfies_update:
 						   ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
 						   ZHEAP_XID_IS_EXCL_LOCKED(infomask));
 					{
-						result = HeapTupleMayBeUpdated;
+						result = TM_Ok;
 						goto out_unlocked;
 					}
 					break;
@@ -4335,7 +4358,7 @@ check_tup_satisfies_update:
 						ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
 						ZHEAP_XID_IS_EXCL_LOCKED(infomask))
 					{
-						result = HeapTupleMayBeUpdated;
+						result = TM_Ok;
 						goto out_unlocked;
 					}
 					break;
@@ -4343,14 +4366,14 @@ check_tup_satisfies_update:
 					if (ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
 						ZHEAP_XID_IS_EXCL_LOCKED(infomask))
 					{
-						result = HeapTupleMayBeUpdated;
+						result = TM_Ok;
 						goto out_unlocked;
 					}
 					break;
 				case LockTupleExclusive:
 					if (ZHEAP_XID_IS_EXCL_LOCKED(infomask))
 					{
-						result = HeapTupleMayBeUpdated;
+						result = TM_Ok;
 						goto out_unlocked;
 					}
 					break;
@@ -4380,10 +4403,10 @@ check_tup_satisfies_update:
 					if (!ZHeapTupleIsMoved(zhtup.t_data->t_infomask) &&
 						!ItemPointerEquals(&zhtup.t_self, &ctid))
 					{
-						HTSU_Result res;
+						TM_Result res;
 
 						res = zheap_lock_updated_tuple(relation, &zhtup, &ctid,
-													   xid, mode, lockopr, cid,
+													   fxid, mode, lockopr, cid,
 													   &rollback_and_relocked);
 
 						/*
@@ -4396,7 +4419,7 @@ check_tup_satisfies_update:
 							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 							goto check_tup_satisfies_update;
 						}
-						else if (res != HeapTupleMayBeUpdated)
+						else if (res != TM_Ok)
 						{
 							result = res;
 							/* recovery code expects to have buffer lock held */
@@ -4419,7 +4442,7 @@ check_tup_satisfies_update:
 				{
 					ctid = *tid;
 					ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-					result = HeapTupleUpdated;
+					result = TM_Updated;
 					goto failed;
 				}
 
@@ -4473,7 +4496,7 @@ check_tup_satisfies_update:
 				{
 					ctid = *tid;
 					ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-					result = HeapTupleUpdated;
+					result = TM_Updated;
 					goto failed;
 				}
 
@@ -4534,7 +4557,7 @@ check_tup_satisfies_update:
 				{
 					ctid = *tid;
 					ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-					result = HeapTupleUpdated;
+					result = TM_Ok;
 					goto failed;
 				}
 
@@ -4581,7 +4604,7 @@ check_tup_satisfies_update:
 			{
 				ctid = *tid;
 				ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-				result = HeapTupleUpdated;
+				result = TM_Updated;
 				goto failed;
 			}
 
@@ -4596,7 +4619,7 @@ check_tup_satisfies_update:
 			require_sleep = false;
 		}
 
-		if (require_sleep && result == HeapTupleUpdated)
+		if (require_sleep && result == TM_Updated)
 		{
 			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 			goto failed;
@@ -4623,7 +4646,7 @@ check_tup_satisfies_update:
 				 * This can only happen if wait_policy is Skip and the lock
 				 * couldn't be obtained.
 				 */
-				result = HeapTupleWouldBlock;
+				result = TM_WouldBlock;
 				/* recovery code expects to have buffer lock held */
 				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 				goto failed;
@@ -4676,7 +4699,7 @@ check_tup_satisfies_update:
 																  NULL,
 																  &upd_xact_aborted))
 							{
-								result = HeapTupleWouldBlock;
+								result = TM_WouldBlock;
 								/* recovery code expects to have buffer lock held */
 								LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 								goto failed;
@@ -4719,7 +4742,7 @@ check_tup_satisfies_update:
 						{
 							if (!ConditionalSubXactLockTableWait(xwait, xwait_subxid))
 							{
-								result = HeapTupleWouldBlock;
+								result = TM_WouldBlock;
 								/* recovery code expects to have buffer lock held */
 								LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 								goto failed;
@@ -4727,7 +4750,7 @@ check_tup_satisfies_update:
 						}
 						else if (!ConditionalXactLockTableWait(xwait))
 						{
-								result = HeapTupleWouldBlock;
+								result = TM_WouldBlock;
 								/* recovery code expects to have buffer lock held */
 								LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 								goto failed;
@@ -4754,13 +4777,13 @@ check_tup_satisfies_update:
 			/* if there are updates, follow the update chain */
 			if (follow_updates && !ZHEAP_XID_IS_LOCKED_ONLY(infomask))
 			{
-				HTSU_Result res;
+				TM_Result res;
 
 				if (!ZHeapTupleIsMoved(zhtup.t_data->t_infomask) &&
 					!ItemPointerEquals(&zhtup.t_self, &ctid))
 				{
 					res = zheap_lock_updated_tuple(relation, &zhtup, &ctid,
-												   xid, mode, lockopr, cid,
+												   fxid, mode, lockopr, cid,
 												   &rollback_and_relocked);
 
 					/*
@@ -4773,7 +4796,7 @@ check_tup_satisfies_update:
 						LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 						goto check_tup_satisfies_update;
 					}
-					else if (res != HeapTupleMayBeUpdated)
+					else if (res != TM_Ok)
 					{
 						result = res;
 						/* recovery code expects to have buffer lock held */
@@ -4796,7 +4819,7 @@ check_tup_satisfies_update:
 			{
 				ctid = *tid;
 				ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-				result = HeapTupleUpdated;
+				result = TM_Updated;
 				goto failed;
 			}
 
@@ -4897,7 +4920,7 @@ check_tup_satisfies_update:
 								   &current_tup_xid, NULL, NULL, false);
 			if (xid_infomask_changed(zhtup.t_data->t_infomask, infomask) ||
 				!TransactionIdEquals(current_tup_xid, xwait))
-				goto check_tup_satisfies_update;		
+				goto check_tup_satisfies_update;
 		}
 
 		/*
@@ -4907,12 +4930,12 @@ check_tup_satisfies_update:
 		 */
 		if (!require_sleep ||
 			ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask) ||
-			result == HeapTupleMayBeUpdated)
-			result = HeapTupleMayBeUpdated;
+			result == TM_Ok)
+			result = TM_Ok;
 		else
-			result = HeapTupleUpdated;
+			result = TM_Updated;
 	}
-	else if (result == HeapTupleMayBeUpdated)
+	else if (result == TM_Ok)
 	{
 		TransactionId	xwait;
 		uint16			infomask;
@@ -4957,7 +4980,7 @@ check_tup_satisfies_update:
 					if (mlmember->mode >= mode)
 					{
 						list_free_deep(mlmembers);
-						result = HeapTupleMayBeUpdated;
+						result = TM_Ok;
 						goto out_locked;
 					}
 				}
@@ -5013,25 +5036,25 @@ check_tup_satisfies_update:
 	}
 
 failed:
-	if (result != HeapTupleMayBeUpdated)
+	if (result != TM_Ok)
 	{
-		Assert(result == HeapTupleSelfUpdated || result == HeapTupleUpdated ||
-			   result == HeapTupleWouldBlock);
+		Assert(result == TM_SelfModified || result == TM_Deleted ||
+			   result == TM_Updated || result == TM_WouldBlock);
 		Assert(ItemIdIsDeleted(lp) ||
 			   IsZHeapTupleModified(zhtup.t_data->t_infomask));
 
 		/* If item id is deleted, tuple can't be marked as moved. */
 		if (!ItemIdIsDeleted(lp) &&
 			ZHeapTupleIsMoved(zhtup.t_data->t_infomask))
-			ItemPointerSetMovedPartitions(&hufd->ctid);
+			ItemPointerSetMovedPartitions(&tmfd->ctid);
 		else
-			hufd->ctid = ctid;
-		hufd->xmax = tup_xid;
-		if (result == HeapTupleSelfUpdated)
-			hufd->cmax = tup_cid;
+			tmfd->ctid = ctid;
+		tmfd->xmax = tup_xid;
+		if (result == TM_SelfModified)
+			tmfd->cmax = tup_cid;
 		else
-			hufd->cmax = InvalidCommandId;
-		hufd->in_place_updated_or_locked = in_place_updated_or_locked;
+			tmfd->cmax = InvalidCommandId;
+		tmfd->in_place_updated_or_locked = in_place_updated_or_locked;
 		goto out_locked;
 	}
 
@@ -5069,7 +5092,7 @@ failed:
 		{
 			ctid = *tid;
 			ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-			result = HeapTupleUpdated;
+			result = TM_Updated;
 			goto failed;
 		}
 
@@ -5116,7 +5139,7 @@ failed:
 
 	memcpy(tuple->t_data, zhtup.t_data, zhtup.t_len);
 
-	result = HeapTupleMayBeUpdated;
+	result = TM_Ok;
 
 out_locked:
 	LockBuffer(*buffer, BUFFER_LOCK_UNLOCK);
@@ -5144,10 +5167,10 @@ out_unlocked:
  * does the current transaction need to wait, fail, or can it continue if
  * it wanted to acquire a lock of the given mode (required_mode)?  "needwait"
  * is set to true if waiting is necessary; if it can continue, then
- * HeapTupleMayBeUpdated is returned.  To notify the caller if some pending
+ * TM_Ok is returned.  To notify the caller if some pending
  * rollback is applied, rollback_and_relocked is set to true.
  */
-static HTSU_Result
+static TM_Result
 test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 						   UndoRecPtr urec_ptr, LockTupleMode old_mode,
 						   TransactionId xid, int trans_slot_id,
@@ -5169,7 +5192,7 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		 * very rare but can happen if multiple transactions are trying to
 		 * lock an ancient version of the same tuple.
 		 */
-		return HeapTupleSelfUpdated;
+		return TM_SelfModified;
 	}
 	else if (TransactionIdIsInProgress(xid))
 	{
@@ -5191,7 +5214,7 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		 * If we set needwait above, then this value doesn't matter;
 		 * otherwise, this value signals to caller that it's okay to proceed.
 		 */
-		return HeapTupleMayBeUpdated;
+		return TM_Ok;
 	}
 	else if (TransactionIdDidAbort(xid))
 	{
@@ -5211,7 +5234,7 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 
 		*rollback_and_relocked = true;
 
-		return HeapTupleMayBeUpdated;
+		return TM_Ok;
 	}
 	else if (TransactionIdDidCommit(xid))
 	{
@@ -5231,18 +5254,18 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		 * always be checked.
 		 */
 		if (!has_update)
-			return HeapTupleMayBeUpdated;
+			return TM_Ok;
 
 		if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_mode),
 								HWLOCKMODE_from_locktupmode(required_mode)))
 			/* bummer */
-			return HeapTupleUpdated;
+			return TM_Updated;
 
-		return HeapTupleMayBeUpdated;
+		return TM_Ok;
 	}
 
 	/* Not in progress, not aborted, not committed -- must have crashed */
-	return HeapTupleMayBeUpdated;
+	return TM_Ok;
 }
 
 /*
@@ -5263,13 +5286,13 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
  * new version is committed, we only care to lock its latest version.
  *
  */
-static HTSU_Result
+static TM_Result
 zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
-						 TransactionId xid, LockTupleMode mode,
+						 FullTransactionId fxid, LockTupleMode mode,
 						 LockOper lockopr, CommandId cid,
 						 bool *rollback_and_relocked)
 {
-	HTSU_Result result;
+	TM_Result result;
 	ZHeapTuple	mytup;
 	UndoRecPtr	prev_urecptr;
 	Buffer		buf;
@@ -5278,7 +5301,8 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 	TransactionId	tup_xid;
 	int			tup_trans_slot;
 	TransactionId	priorXmax = InvalidTransactionId;
-	uint32		epoch;
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	uint32		epoch = EpochFromFullTransactionId(fxid);
 	uint64		epoch_xid;
 	int			trans_slot_id;
 	bool		lock_reacquired;
@@ -5296,7 +5320,7 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 		uint16	old_infomask;
 		UndoRecPtr	urec_ptr;
 
-		if (!zheap_fetch(rel, SnapshotAny, ctid, &mytup, &buf, false, NULL))
+		if (!zheap_fetch(rel, SnapshotAny, ctid, &mytup, &buf, false))
 		{
 			/*
 			 * if we fail to find the updated version of the tuple, it's
@@ -5306,7 +5330,7 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 			 * caller.
 			 */
 			if (mytup == NULL)
-				return HeapTupleMayBeUpdated;
+				return TM_Ok;
 
 			/*
 			 * If we reached the end of the chain, we're done, so return
@@ -5314,12 +5338,12 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 			 */
 			if (TransactionIdIsValid(priorXmax) &&
 				!ValidateTuplesXact(mytup, SnapshotAny, buf, priorXmax, true))
-				return HeapTupleMayBeUpdated;
+				return TM_Ok;
 
 			/* deleted or moved to another partition, so forget about it */
 			if (ZHeapTupleIsMoved(mytup->t_data->t_infomask) ||
 				ItemPointerEquals(&(mytup->t_self), ctid))
-				return HeapTupleMayBeUpdated;
+				return TM_Ok;
 
 			/* updated row should have xid matching this xmax */
 			ZHeapTupleGetTransInfo(mytup, buf, NULL, NULL, &priorXmax, NULL,
@@ -5344,7 +5368,7 @@ lock_tuple:
 			!ValidateTuplesXact(mytup, SnapshotAny, buf, priorXmax, false))
 		{
 			UnlockReleaseBuffer(buf);
-			return HeapTupleMayBeUpdated;
+			return TM_Ok;
 		}
 
 		ZHeapTupleGetTransInfo(mytup, buf, &tup_trans_slot, &epoch_xid,
@@ -5359,7 +5383,7 @@ lock_tuple:
 		if (!IsZHeapTupleModified(old_infomask) &&
 			TransactionIdDidAbort(tup_xid))
 		{
-			result = HeapTupleMayBeUpdated;
+			result = TM_Ok;
 			goto out_locked;
 		}
 
@@ -5424,7 +5448,7 @@ lock_tuple:
 						goto out_locked;
 					}
 
-					if (result == HeapTupleSelfUpdated)
+					if (result == TM_SelfModified)
 					{
 						list_free_deep(mlmembers);
 						goto next;
@@ -5446,7 +5470,7 @@ lock_tuple:
 						list_free_deep(mlmembers);
 						goto lock_tuple;
 					}
-					if (result != HeapTupleMayBeUpdated)
+					if (result != TM_Ok)
 					{
 						list_free_deep(mlmembers);
 						goto out_locked;
@@ -5518,7 +5542,7 @@ lock_tuple:
 				 * either.  We just need to skip this tuple and continue
 				 * locking the next version in the update chain.
 				 */
-				if (result == HeapTupleSelfUpdated)
+				if (result == TM_SelfModified)
 					goto next;
 
 				if (needwait)
@@ -5533,14 +5557,13 @@ lock_tuple:
 										  XLTW_LockUpdated);
 					goto lock_tuple;
 				}
-				if (result != HeapTupleMayBeUpdated)
+				if (result != TM_Ok)
 				{
 					goto out_locked;
 				}
 			}
 		}
 
-		epoch = GetEpochForXid(xid);
 		offnum = ItemPointerGetOffsetNumber(&mytup->t_self);
 
 		/*
@@ -5607,7 +5630,7 @@ next:
 			ItemPointerEquals(&mytup->t_self, ctid) ||
 			ZHEAP_XID_IS_LOCKED_ONLY(mytup->t_data->t_infomask))
 		{
-			result = HeapTupleMayBeUpdated;
+			result = TM_Ok;
 			goto out_locked;
 		}
 
@@ -5632,7 +5655,7 @@ next:
 		UnlockReleaseBuffer(buf);
 	}
 
-	result = HeapTupleMayBeUpdated;
+	result = TM_Ok;
 
 out_locked:
 	UnlockReleaseBuffer(buf);
@@ -5770,7 +5793,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	}
 
 	urecptr = PrepareUndoInsert(&undorecord,
-								InvalidTransactionId,
+								InvalidFullTransactionId,
 								UndoPersistenceForRelation(rel),
 								NULL,
 								&undometa);
@@ -6149,7 +6172,7 @@ infomask_is_computed:
  * the information of speculative insertion on tuple.
  */
 void
-zheap_finish_speculative(Relation relation, ZHeapTuple tuple)
+zheap_finish_speculative(Relation relation, ItemPointer tid)
 {
 	Buffer		buffer;
 	Page		page;
@@ -6157,11 +6180,11 @@ zheap_finish_speculative(Relation relation, ZHeapTuple tuple)
 	ItemId		lp = NULL;
 	ZHeapTupleHeader zhtup;
 
-	buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(&(tuple->t_self)));
+	buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	page = (Page) BufferGetPage(buffer);
 
-	offnum = ItemPointerGetOffsetNumber(&(tuple->t_self));
+	offnum = ItemPointerGetOffsetNumber(tid);
 	if (PageGetMaxOffsetNumber(page) >= offnum)
 		lp = PageGetItemId(page, offnum);
 
@@ -6173,7 +6196,7 @@ zheap_finish_speculative(Relation relation, ZHeapTuple tuple)
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
 
-	Assert(ZHeapTupleHeaderIsSpeculative(tuple->t_data));
+	Assert(ZHeapTupleHeaderIsSpeculative(zhtup));
 
 	MarkBufferDirty(buffer);
 
@@ -6186,7 +6209,7 @@ zheap_finish_speculative(Relation relation, ZHeapTuple tuple)
 		xl_zheap_confirm xlrec;
 		XLogRecPtr	recptr;
 
-		xlrec.offnum = ItemPointerGetOffsetNumber(&tuple->t_self);
+		xlrec.offnum = ItemPointerGetOffsetNumber(tid);
 		xlrec.flags = XLZ_SPEC_INSERT_SUCCESS;
 
 		XLogBeginInsert();
@@ -6220,12 +6243,12 @@ zheap_finish_speculative(Relation relation, ZHeapTuple tuple)
  * differently.
  */
 void
-zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
+zheap_abort_speculative(Relation relation, ItemPointer tid)
 {
 	TransactionId xid = GetTopTransactionId();
 	TransactionId	current_tup_xid;
-	ItemPointer tid = &(tuple->t_self);
 	ItemId		lp;
+	ZHeapTupleData tp;
 	ZHeapTupleHeader zhtuphdr;
 	Page		page;
 	BlockNumber block;
@@ -6247,6 +6270,11 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 	Assert(ItemIdIsNormal(lp));
 
 	zhtuphdr = (ZHeapTupleHeader) PageGetItem(page, lp);
+
+	tp.t_tableOid = RelationGetRelid(relation);
+	tp.t_data = zhtuphdr;
+	tp.t_len = ItemIdGetLength(lp);
+	tp.t_self = *tid;
 
 	trans_slot_id = ZHeapTupleHeaderGetXactSlot(zhtuphdr);
 	/*
@@ -6297,7 +6325,7 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 		xl_zheap_confirm xlrec;
 		XLogRecPtr	recptr;
 
-		xlrec.offnum = ItemPointerGetOffsetNumber(&tuple->t_self);
+		xlrec.offnum = ItemPointerGetOffsetNumber(tid);
 		xlrec.flags = XLZ_SPEC_INSERT_FAILED;
 		xlrec.trans_slot_id = trans_slot_id;
 
@@ -6317,10 +6345,10 @@ zheap_abort_speculative(Relation relation, ZHeapTuple tuple)
 
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
-	if (ZHeapTupleHasExternal(tuple))
+	if (ZHeapTupleHasExternal(&tp))
 	{
 		Assert(!IsToastRelation(relation));
-		ztoast_delete(relation, tuple, true);
+		ztoast_delete(relation, &tp, true);
 	}
 
 	/*
@@ -8751,6 +8779,7 @@ ZheapInitMetaPage(Relation rel, ForkNumber forkNum)
 static void
 zinitscan(ZHeapScanDesc scan, ScanKey key, bool keep_startblock)
 {
+	ParallelBlockTableScanDesc bpscan = NULL;
 	bool		allow_strat;
 	bool		allow_sync;
 
@@ -8765,10 +8794,13 @@ zinitscan(ZHeapScanDesc scan, ScanKey key, bool keep_startblock)
 	 * results for a non-MVCC snapshot, the caller must hold some higher-level
 	 * lock that ensures the interesting tuple(s) won't change.)
 	 */
-	if (scan->rs_scan.rs_parallel != NULL)
-		scan->rs_scan.rs_nblocks = scan->rs_scan.rs_parallel->phs_nblocks;
+	if (scan->rs_base.rs_parallel != NULL)
+	{
+		bpscan = (ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
+		scan->rs_nblocks = bpscan->phs_nblocks;
+	}
 	else
-		scan->rs_scan.rs_nblocks = RelationGetNumberOfBlocks(scan->rs_scan.rs_rd);
+		scan->rs_nblocks = RelationGetNumberOfBlocks(scan->rs_base.rs_rd);
 
 	/*
 	 * If the table is large relative to NBuffers, use a bulk-read access
@@ -8782,11 +8814,11 @@ zinitscan(ZHeapScanDesc scan, ScanKey key, bool keep_startblock)
 	 * Note that heap_parallelscan_initialize has a very similar test; if you
 	 * change this, consider changing that one, too.
 	 */
-	if (!RelationUsesLocalBuffers(scan->rs_scan.rs_rd) &&
-		scan->rs_scan.rs_nblocks > NBuffers / 4)
+	if (!RelationUsesLocalBuffers(scan->rs_base.rs_rd) &&
+		scan->rs_nblocks > NBuffers / 4)
 	{
-		allow_strat = scan->rs_scan.rs_allow_strat;
-		allow_sync = scan->rs_scan.rs_allow_sync;
+		allow_strat = scan->rs_base.rs_allow_strat;
+		allow_sync = scan->rs_base.rs_allow_sync;
 	}
 	else
 		allow_strat = allow_sync = false;
@@ -8804,10 +8836,10 @@ zinitscan(ZHeapScanDesc scan, ScanKey key, bool keep_startblock)
 		scan->rs_strategy = NULL;
 	}
 
-	if (scan->rs_scan.rs_parallel != NULL)
+	if (scan->rs_base.rs_parallel != NULL)
 	{
 		/* For parallel scan, believe whatever ParallelHeapScanDesc says. */
-		scan->rs_scan.rs_syncscan = scan->rs_scan.rs_parallel->phs_syncscan;
+		scan->rs_base.rs_syncscan = scan->rs_base.rs_parallel->phs_syncscan;
 	}
 	else if (keep_startblock)
 	{
@@ -8816,23 +8848,23 @@ zinitscan(ZHeapScanDesc scan, ScanKey key, bool keep_startblock)
 		 * so that rewinding a cursor doesn't generate surprising results.
 		 * Reset the active syncscan setting, though.
 		 */
-		scan->rs_scan.rs_syncscan = (allow_sync && synchronize_seqscans);
+		scan->rs_base.rs_syncscan = (allow_sync && synchronize_seqscans);
 	}
 	else if (allow_sync && synchronize_seqscans)
 	{
-		scan->rs_scan.rs_syncscan = true;
-		scan->rs_scan.rs_startblock = ss_get_location(scan->rs_scan.rs_rd, scan->rs_scan.rs_nblocks);
+		scan->rs_base.rs_syncscan = true;
+		scan->rs_startblock = ss_get_location(scan->rs_base.rs_rd, scan->rs_nblocks);
 		/* Skip metapage */
-		if (scan->rs_scan.rs_startblock == ZHEAP_METAPAGE)
-			scan->rs_scan.rs_startblock = ZHEAP_METAPAGE + 1;
+		if (scan->rs_startblock == ZHEAP_METAPAGE)
+			scan->rs_startblock = ZHEAP_METAPAGE + 1;
 	}
 	else
 	{
-		scan->rs_scan.rs_syncscan = false;
-		scan->rs_scan.rs_startblock = ZHEAP_METAPAGE + 1;
+		scan->rs_base.rs_syncscan = false;
+		scan->rs_startblock = ZHEAP_METAPAGE + 1;
 	}
 
-	scan->rs_scan.rs_numblocks = InvalidBlockNumber;
+	scan->rs_numblocks = InvalidBlockNumber;
 	scan->rs_inited = false;
 	scan->rs_cbuf = InvalidBuffer;
 	scan->rs_cblock = InvalidBlockNumber;
@@ -8843,15 +8875,15 @@ zinitscan(ZHeapScanDesc scan, ScanKey key, bool keep_startblock)
 	 * copy the scan key, if appropriate
 	 */
 	if (key != NULL)
-		memcpy(scan->rs_scan.rs_key, key, scan->rs_scan.rs_nkeys * sizeof(ScanKeyData));
+		memcpy(scan->rs_base.rs_key, key, scan->rs_base.rs_nkeys * sizeof(ScanKeyData));
 
 	/*
 	 * Currently, we don't have a stats counter for bitmap heap scans (but the
 	 * underlying bitmap index scans will be counted) or sample scans (we only
 	 * update stats for tuple fetches there)
 	 */
-	if (!scan->rs_scan.rs_bitmapscan && !scan->rs_scan.rs_samplescan)
-		pgstat_count_heap_scan(scan->rs_scan.rs_rd);
+	if (!scan->rs_base.rs_bitmapscan && !scan->rs_base.rs_samplescan)
+		pgstat_count_heap_scan(scan->rs_base.rs_rd);
 }
 
 /* ----------------
@@ -8866,9 +8898,9 @@ zheap_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
 
 	if (set_params)
 	{
-		scan->rs_scan.rs_allow_strat = allow_strat;
-		scan->rs_scan.rs_allow_sync = allow_sync;
-		scan->rs_scan.rs_pageatatime = allow_pagemode && IsMVCCSnapshot(scan->rs_scan.rs_snapshot);
+		scan->rs_base.rs_allow_strat = allow_strat;
+		scan->rs_base.rs_allow_sync = allow_sync;
+		scan->rs_base.rs_pageatatime = allow_pagemode && IsMVCCSnapshot(scan->rs_base.rs_snapshot);
 	}
 
 	/*
@@ -8881,21 +8913,6 @@ zheap_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
 	 * reinitialize scan descriptor
 	 */
 	zinitscan(scan, key, true);
-
-	/*
-	 * reset parallel scan, if present
-	 */
-	if (scan->rs_scan.rs_parallel != NULL)
-	{
-		ParallelTableScanDesc parallel_scan;
-
-		/*
-		 * Caller is responsible for making sure that all workers have
-		 * finished the scan before calling this.
-		 */
-		parallel_scan = scan->rs_scan.rs_parallel;
-		pg_atomic_write_u64(&parallel_scan->phs_nallocated, 0);
-	}
 }
 
 /*
@@ -8928,23 +8945,23 @@ zheap_beginscan(Relation relation, Snapshot snapshot,
 	 */
 	scan = (ZHeapScanDesc) palloc(sizeof(ZHeapScanDescData));
 
-	scan->rs_scan.rs_rd = relation;
-	scan->rs_scan.rs_snapshot = snapshot;
-	scan->rs_scan.rs_nkeys = nkeys;
-	scan->rs_scan.rs_bitmapscan = is_bitmapscan;
-	scan->rs_scan.rs_samplescan = is_samplescan;
+	scan->rs_base.rs_rd = relation;
+	scan->rs_base.rs_snapshot = snapshot;
+	scan->rs_base.rs_nkeys = nkeys;
+	scan->rs_base.rs_bitmapscan = is_bitmapscan;
+	scan->rs_base.rs_samplescan = is_samplescan;
 	scan->rs_strategy = NULL;	/* set in zinitscan */
-	scan->rs_scan.rs_startblock = 0;	/* set in initscan */
-	scan->rs_scan.rs_allow_strat = allow_strat;
-	scan->rs_scan.rs_allow_sync = allow_sync;
-	scan->rs_scan.rs_temp_snap = temp_snap;
-	scan->rs_scan.rs_parallel = parallel_scan;
+	scan->rs_startblock = 0;	/* set in initscan */
+	scan->rs_base.rs_allow_strat = allow_strat;
+	scan->rs_base.rs_allow_sync = allow_sync;
+	scan->rs_base.rs_temp_snap = temp_snap;
+	scan->rs_base.rs_parallel = parallel_scan;
 	scan->rs_ntuples = 0; // ZBORKED ?
 
 	/*
 	 * we can use page-at-a-time mode if it's an MVCC-safe snapshot
 	 */
-	scan->rs_scan.rs_pageatatime = allow_pagemode && snapshot && IsMVCCSnapshot(snapshot);
+	scan->rs_base.rs_pageatatime = allow_pagemode && snapshot && IsMVCCSnapshot(snapshot);
 
 	/*
 	 * For a seqscan in a serializable transaction, acquire a predicate lock
@@ -8968,13 +8985,43 @@ zheap_beginscan(Relation relation, Snapshot snapshot,
 	 * initscan() and we don't want to allocate memory again
 	 */
 	if (nkeys > 0)
-		scan->rs_scan.rs_key = (ScanKey) palloc(sizeof(ScanKeyData) * nkeys);
+		scan->rs_base.rs_key = (ScanKey) palloc(sizeof(ScanKeyData) * nkeys);
 	else
-		scan->rs_scan.rs_key = NULL;
+		scan->rs_base.rs_key = NULL;
 
 	zinitscan(scan, key, false);
 
 	return (TableScanDesc) scan;
+}
+
+void
+zheap_endscan(TableScanDesc sscan)
+{
+	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
+
+	/* Note: no locking manipulations needed */
+
+	/*
+	 * unpin scan buffers
+	 */
+	if (BufferIsValid(scan->rs_cbuf))
+		ReleaseBuffer(scan->rs_cbuf);
+
+	/*
+	 * decrement relation reference count and free scan descriptor storage
+	 */
+	RelationDecrementReferenceCount(scan->rs_base.rs_rd);
+
+	if (scan->rs_base.rs_key)
+		pfree(scan->rs_base.rs_key);
+
+	if (scan->rs_strategy != NULL)
+		FreeAccessStrategy(scan->rs_strategy);
+
+	if (scan->rs_base.rs_temp_snap)
+		UnregisterSnapshot(scan->rs_base.rs_snapshot);
+
+	pfree(scan);
 }
 
 /*
@@ -8989,18 +9036,18 @@ zheap_setscanlimits(TableScanDesc sscan, BlockNumber startBlk, BlockNumber numBl
 	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
 
 	Assert(!scan->rs_inited);	/* else too late to change */
-	Assert(!scan->rs_scan.rs_syncscan); /* else rs_startblock is
+	Assert(!scan->rs_base.rs_syncscan); /* else rs_startblock is
 											 * significant */
 
 	/*
 	 * Check startBlk is valid (but allow case of zero blocks...).
 	 * Consider meta-page as well.
 	 */
-	Assert(startBlk == 0 || startBlk < scan->rs_scan.rs_nblocks ||
+	Assert(startBlk == 0 || startBlk < scan->rs_nblocks ||
 			startBlk == ZHEAP_METAPAGE + 1);
 
-	scan->rs_scan.rs_startblock = startBlk;
-	scan->rs_scan.rs_numblocks = numBlks;
+	scan->rs_startblock = startBlk;
+	scan->rs_numblocks = numBlks;
 }
 
 /* ----------------
@@ -9017,8 +9064,8 @@ zheap_update_snapshot(TableScanDesc sscan, Snapshot snapshot)
 	Assert(IsMVCCSnapshot(snapshot));
 
 	RegisterSnapshot(snapshot);
-	scan->rs_scan.rs_snapshot = snapshot;
-	scan->rs_scan.rs_temp_snap = true;
+	scan->rs_base.rs_snapshot = snapshot;
+	scan->rs_base.rs_temp_snap = true;
 }
 
 /*
@@ -9043,7 +9090,7 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 	uint8		vmstatus;
 	Buffer		vmbuffer = InvalidBuffer;
 
-	Assert(page < scan->rs_scan.rs_nblocks);
+	Assert(page < scan->rs_nblocks);
 
 	/* release previous scan buffer, if any */
 	if (BufferIsValid(scan->rs_cbuf))
@@ -9068,7 +9115,7 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 	CHECK_FOR_INTERRUPTS();
 
 	/* read page using selected strategy */
-	buffer = ReadBufferExtended(scan->rs_scan.rs_rd, MAIN_FORKNUM, page,
+	buffer = ReadBufferExtended(scan->rs_base.rs_rd, MAIN_FORKNUM, page,
 								RBM_NORMAL, scan->rs_strategy);
 	scan->rs_cblock = page;
 
@@ -9095,14 +9142,14 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 		UnlockReleaseBuffer(buffer);
 		return false;
 	}
-	else if (!scan->rs_scan.rs_pageatatime)
+	else if (!scan->rs_base.rs_pageatatime)
 	{
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 		scan->rs_cbuf = buffer;
 		return true;
 	}
 
-	snapshot = scan->rs_scan.rs_snapshot;
+	snapshot = scan->rs_base.rs_snapshot;
 
 	/*
 	 * Prune and repair fragmentation for the whole page, if possible.
@@ -9111,7 +9158,7 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 	 */
 	/* heap_page_prune_opt(scan->rs_rd, buffer); */
 
-	TestForOldSnapshot(snapshot, scan->rs_scan.rs_rd, dp);
+	TestForOldSnapshot(snapshot, scan->rs_base.rs_rd, dp);
 	lines = PageGetMaxOffsetNumber(dp);
 	ntup = 0;
 
@@ -9129,7 +9176,7 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 	 * page. That's how index-only scans work fine in hot standby.
 	 */
 
-	vmstatus = visibilitymap_get_status(scan->rs_scan.rs_rd, page, &vmbuffer);
+	vmstatus = visibilitymap_get_status(scan->rs_base.rs_rd, page, &vmbuffer);
 
 	all_visible = (vmstatus & VISIBILITYMAP_ALL_VISIBLE) &&
 				  !snapshot->takenDuringRecovery;
@@ -9175,7 +9222,7 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 				loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
 				loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
 
-				loctup->t_tableOid = RelationGetRelid(scan->rs_scan.rs_rd);
+				loctup->t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
 				loctup->t_len = loctup_len;
 				loctup->t_self = tid;
 
@@ -9209,7 +9256,7 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 			 * we're seeing some prior version of that. We handle that case
 			 * in ZHeapTupleHasSerializableConflictOut.
 			 */
-			CheckForSerializableConflictOut(valid, scan->rs_scan.rs_rd, (void *) &tid,
+			CheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tid,
 											buffer, snapshot);
 
 			if (valid)
@@ -9256,22 +9303,28 @@ zheapgettup_pagemode(ZHeapScanDesc scan,
 			/*
 			 * return null immediately if relation is empty
 			 */
-			if (scan->rs_scan.rs_nblocks == ZHEAP_METAPAGE + 1 ||
-				scan->rs_scan.rs_numblocks == ZHEAP_METAPAGE + 1)
+			if (scan->rs_nblocks == ZHEAP_METAPAGE + 1 ||
+				scan->rs_numblocks == ZHEAP_METAPAGE + 1)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				tuple = NULL;
 				return tuple;
 			}
-			if (scan->rs_scan.rs_parallel != NULL)
+			if (scan->rs_base.rs_parallel != NULL)
 			{
-				table_parallelscan_startblock_init(&scan->rs_scan);
+				ParallelBlockTableScanDesc pbscan =
+				(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
 
-				page = table_parallelscan_nextpage(&scan->rs_scan);
+				table_block_parallelscan_startblock_init(scan->rs_base.rs_rd,
+														 pbscan);
+
+				page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
+														 pbscan);
 
 				/* Skip metapage */
 				if (page == ZHEAP_METAPAGE)
-					page = table_parallelscan_nextpage(&scan->rs_scan);
+					page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
+															 pbscan);
 
 				/* Other processes might have already finished the scan. */
 				if (page == InvalidBlockNumber)
@@ -9282,8 +9335,8 @@ zheapgettup_pagemode(ZHeapScanDesc scan,
 				}
 			}
 			else
-				page = scan->rs_scan.rs_startblock;		/* first page */
-			valid = zheapgetpage(&scan->rs_scan, page);
+				page = scan->rs_startblock;		/* first page */
+			valid = zheapgetpage(&scan->rs_base, page);
 			if (!valid)
 				goto get_next_page;
 
@@ -9307,15 +9360,15 @@ zheapgettup_pagemode(ZHeapScanDesc scan,
 	else if (backward)
 	{
 		/* backward parallel scan not supported */
-		Assert(scan->rs_scan.rs_parallel == NULL);
+		Assert(scan->rs_base.rs_parallel == NULL);
 
 		if (!scan->rs_inited)
 		{
 			/*
 			 * return null immediately if relation is empty
 			 */
-			if (scan->rs_scan.rs_nblocks == ZHEAP_METAPAGE + 1 ||
-				scan->rs_scan.rs_numblocks == ZHEAP_METAPAGE + 1)
+			if (scan->rs_nblocks == ZHEAP_METAPAGE + 1 ||
+				scan->rs_numblocks == ZHEAP_METAPAGE + 1)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				tuple = NULL;
@@ -9328,13 +9381,13 @@ zheapgettup_pagemode(ZHeapScanDesc scan,
 			 * time, and much more likely that we'll just bollix things for
 			 * forward scanners.
 			 */
-			scan->rs_scan.rs_syncscan = false;
+			scan->rs_base.rs_syncscan = false;
 			/* start from last page of the scan */
-			if (scan->rs_scan.rs_startblock > ZHEAP_METAPAGE + 1)
-				page = scan->rs_scan.rs_startblock - 1;
+			if (scan->rs_startblock > ZHEAP_METAPAGE + 1)
+				page = scan->rs_startblock - 1;
 			else
-				page = scan->rs_scan.rs_nblocks - 1;
-			valid = zheapgetpage(&scan->rs_scan, page);
+				page = scan->rs_nblocks - 1;
+			valid = zheapgetpage(&scan->rs_base, page);
 			if (!valid)
 				goto get_next_page;
 		}
@@ -9397,24 +9450,29 @@ get_next_page:
 	{
 		if (backward)
 		{
-			finished = (page == scan->rs_scan.rs_startblock) ||
-				(scan->rs_scan.rs_numblocks != InvalidBlockNumber ? --scan->rs_scan.rs_numblocks == 0 : false);
+			finished = (page == scan->rs_startblock) ||
+				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
 			if (page == ZHEAP_METAPAGE + 1)
-				page = scan->rs_scan.rs_nblocks;
+				page = scan->rs_nblocks;
 			page--;
 		}
-		else if (scan->rs_scan.rs_parallel != NULL)
+		else if (scan->rs_base.rs_parallel != NULL)
 		{
-			page = table_parallelscan_nextpage(&scan->rs_scan);
+			ParallelBlockTableScanDesc pbscan =
+			(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
+
+			page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
+													 pbscan);
 			/* Skip metapage */
 			if (page == ZHEAP_METAPAGE)
-				page = table_parallelscan_nextpage(&scan->rs_scan);
+				page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
+														 pbscan);
 			finished = (page == InvalidBlockNumber);
 		}
 		else
 		{
 			page++;
-			if (page >= scan->rs_scan.rs_nblocks)
+			if (page >= scan->rs_nblocks)
 				page = 0;
 
 			if (page == ZHEAP_METAPAGE)
@@ -9423,13 +9481,13 @@ get_next_page:
 				 * Since, we're skipping the metapage, we should update the scan
 				 * location if sync scan is enabled.
 				 */
-				if (scan->rs_scan.rs_syncscan)
-					ss_report_location(scan->rs_scan.rs_rd, page);
+				if (scan->rs_base.rs_syncscan)
+					ss_report_location(scan->rs_base.rs_rd, page);
 				page++;
 			}
 
-			finished = (page == scan->rs_scan.rs_startblock) ||
-				(scan->rs_scan.rs_numblocks != InvalidBlockNumber ? --scan->rs_scan.rs_numblocks == 0 : false);
+			finished = (page == scan->rs_startblock) ||
+				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
 
 			/*
 			 * Report our new scan position for synchronization purposes. We
@@ -9443,8 +9501,8 @@ get_next_page:
 			 * a little bit backwards on every invocation, which is confusing.
 			 * We don't guarantee any specific ordering in general, though.
 			 */
-			if (scan->rs_scan.rs_syncscan)
-				ss_report_location(scan->rs_scan.rs_rd, page);
+			if (scan->rs_base.rs_syncscan)
+				ss_report_location(scan->rs_base.rs_rd, page);
 		}
 
 		/*
@@ -9461,7 +9519,7 @@ get_next_page:
 			return tuple;
 		}
 
-		valid = zheapgetpage(&scan->rs_scan, page);
+		valid = zheapgetpage(&scan->rs_base, page);
 		if (!valid)
 			continue;
 
@@ -9489,7 +9547,7 @@ zheapgettup(ZHeapScanDesc scan,
 		   ScanDirection dir)
 {
 	ZHeapTuple	tuple = scan->rs_cztup;
-	Snapshot	snapshot = scan->rs_scan.rs_snapshot;
+	Snapshot	snapshot = scan->rs_base.rs_snapshot;
 	bool		backward = ScanDirectionIsBackward(dir);
 	BlockNumber page;
 	bool		finished;
@@ -9510,21 +9568,27 @@ zheapgettup(ZHeapScanDesc scan,
 			/*
 			 * return null immediately if relation is empty
 			 */
-			if (scan->rs_scan.rs_nblocks == ZHEAP_METAPAGE + 1 ||
-				scan->rs_scan.rs_numblocks == ZHEAP_METAPAGE + 1)
+			if (scan->rs_nblocks == ZHEAP_METAPAGE + 1 ||
+				scan->rs_numblocks == ZHEAP_METAPAGE + 1)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				return NULL;
 			}
-			if (scan->rs_scan.rs_parallel != NULL)
+			if (scan->rs_base.rs_parallel != NULL)
 			{
-				table_parallelscan_startblock_init(&scan->rs_scan);
+				ParallelBlockTableScanDesc pbscan =
+				(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
 
-				page = table_parallelscan_nextpage(&scan->rs_scan);
+				table_block_parallelscan_startblock_init(scan->rs_base.rs_rd,
+														 pbscan);
+
+				page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
+														 pbscan);
 
 				/* Skip metapage */
 				if (page == ZHEAP_METAPAGE)
-					page = table_parallelscan_nextpage(&scan->rs_scan);
+					page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
+															 pbscan);
 
 				/* Other processes might have already finished the scan. */
 				if (page == InvalidBlockNumber)
@@ -9534,8 +9598,8 @@ zheapgettup(ZHeapScanDesc scan,
 				}
 			}
 			else
-				page = scan->rs_scan.rs_startblock;		/* first page */
-			valid = zheapgetpage(&scan->rs_scan, page);
+				page = scan->rs_startblock;		/* first page */
+			valid = zheapgetpage(&scan->rs_base, page);
 			if (!valid)
 				goto get_next_page;
 			lineoff = FirstOffsetNumber;		/* first offnum */
@@ -9552,7 +9616,7 @@ zheapgettup(ZHeapScanDesc scan,
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 
 		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(snapshot, scan->rs_scan.rs_rd, dp);
+		TestForOldSnapshot(snapshot, scan->rs_base.rs_rd, dp);
 		lines = PageGetMaxOffsetNumber(dp);
 		/* page and lineoff now reference the physically next tid */
 
@@ -9561,15 +9625,15 @@ zheapgettup(ZHeapScanDesc scan,
 	else if (backward)
 	{
 		/* backward parallel scan not supported */
-		Assert(scan->rs_scan.rs_parallel == NULL);
+		Assert(scan->rs_base.rs_parallel == NULL);
 
 		if (!scan->rs_inited)
 		{
 			/*
 			 * return null immediately if relation is empty
 			 */
-			if (scan->rs_scan.rs_nblocks == ZHEAP_METAPAGE + 1 ||
-				scan->rs_scan.rs_numblocks == ZHEAP_METAPAGE + 1)
+			if (scan->rs_nblocks == ZHEAP_METAPAGE + 1 ||
+				scan->rs_numblocks == ZHEAP_METAPAGE + 1)
 			{
 				Assert(!BufferIsValid(scan->rs_cbuf));
 				return NULL;
@@ -9581,13 +9645,13 @@ zheapgettup(ZHeapScanDesc scan,
 			 * time, and much more likely that we'll just bollix things for
 			 * forward scanners.
 			 */
-			scan->rs_scan.rs_syncscan = false;
+			scan->rs_base.rs_syncscan = false;
 			/* start from last page of the scan */
-			if (scan->rs_scan.rs_startblock > ZHEAP_METAPAGE + 1)
-				page = scan->rs_scan.rs_startblock - 1;
+			if (scan->rs_startblock > ZHEAP_METAPAGE + 1)
+				page = scan->rs_startblock - 1;
 			else
-				page = scan->rs_scan.rs_nblocks - 1;
-			valid = zheapgetpage(&scan->rs_scan, page);
+				page = scan->rs_nblocks - 1;
+			valid = zheapgetpage(&scan->rs_base, page);
 			if (!valid)
 				goto get_next_page;
 		}
@@ -9600,7 +9664,7 @@ zheapgettup(ZHeapScanDesc scan,
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 
 		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(snapshot, scan->rs_scan.rs_rd, dp);
+		TestForOldSnapshot(snapshot, scan->rs_base.rs_rd, dp);
 		lines = PageGetMaxOffsetNumber(dp);
 
 		if (!scan->rs_inited)
@@ -9653,7 +9717,7 @@ get_next_tuple:
 			loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
 			loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
 
-			loctup->t_tableOid = RelationGetRelid(scan->rs_scan.rs_rd);
+			loctup->t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
 			loctup->t_len = loctup_len;
 			loctup->t_self = tid;
 
@@ -9675,7 +9739,7 @@ get_next_tuple:
 			 * we're seeing some prior version of that. We handle that case
 			 * in ZHeapTupleHasSerializableConflictOut.
 			 */
-			CheckForSerializableConflictOut(valid, scan->rs_scan.rs_rd, (void *) &tid,
+			CheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tid,
 											scan->rs_cbuf, snapshot);
 
 			if (valid)
@@ -9715,24 +9779,29 @@ get_next_page:
 		 */
 		if (backward)
 		{
-			finished = (page == scan->rs_scan.rs_startblock) ||
-				(scan->rs_scan.rs_numblocks != InvalidBlockNumber ? --scan->rs_scan.rs_numblocks == 0 : false);
+			finished = (page == scan->rs_startblock) ||
+				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
 			if (page == ZHEAP_METAPAGE + 1)
-				page = scan->rs_scan.rs_nblocks;
+				page = scan->rs_nblocks;
 			page--;
 		}
-		else if (scan->rs_scan.rs_parallel != NULL)
+		else if (scan->rs_base.rs_parallel != NULL)
 		{
-			page = table_parallelscan_nextpage(&scan->rs_scan);
+			ParallelBlockTableScanDesc pbscan =
+			(ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
+
+			page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
+													 pbscan);
 			/* Skip metapage */
 			if (page == ZHEAP_METAPAGE)
-				page = table_parallelscan_nextpage(&scan->rs_scan);
+				page = table_block_parallelscan_nextpage(scan->rs_base.rs_rd,
+														 pbscan);
 			finished = (page == InvalidBlockNumber);
 		}
 		else
 		{
 			page++;
-			if (page >= scan->rs_scan.rs_nblocks)
+			if (page >= scan->rs_nblocks)
 				page = 0;
 
 			if (page == ZHEAP_METAPAGE)
@@ -9741,13 +9810,13 @@ get_next_page:
 				 * Since, we're skipping the metapage, we should update the scan
 				 * location if sync scan is enabled.
 				 */
-				if (scan->rs_scan.rs_syncscan)
-					ss_report_location(scan->rs_scan.rs_rd, page);
+				if (scan->rs_base.rs_syncscan)
+					ss_report_location(scan->rs_base.rs_rd, page);
 				page++;
 			}
 
-			finished = (page == scan->rs_scan.rs_startblock) ||
-				(scan->rs_scan.rs_numblocks != InvalidBlockNumber ? --scan->rs_scan.rs_numblocks == 0 : false);
+			finished = (page == scan->rs_startblock) ||
+				(scan->rs_numblocks != InvalidBlockNumber ? --scan->rs_numblocks == 0 : false);
 
 			/*
 			 * Report our new scan position for synchronization purposes. We
@@ -9761,8 +9830,8 @@ get_next_page:
 			 * a little bit backwards on every invocation, which is confusing.
 			 * We don't guarantee any specific ordering in general, though.
 			 */
-			if (scan->rs_scan.rs_syncscan)
-				ss_report_location(scan->rs_scan.rs_rd, page);
+			if (scan->rs_base.rs_syncscan)
+				ss_report_location(scan->rs_base.rs_rd, page);
 		}
 
 		/*
@@ -9778,7 +9847,7 @@ get_next_page:
 			return NULL;
 		}
 
-		valid = zheapgetpage(&scan->rs_scan, page);
+		valid = zheapgetpage(&scan->rs_base, page);
 		if (!valid)
 			continue;
 
@@ -9788,7 +9857,7 @@ get_next_page:
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 
 		dp = BufferGetPage(scan->rs_cbuf);
-		TestForOldSnapshot(snapshot, scan->rs_scan.rs_rd, dp);
+		TestForOldSnapshot(snapshot, scan->rs_base.rs_rd, dp);
 		lines = PageGetMaxOffsetNumber((Page) dp);
 		linesleft = lines;
 		if (backward)
@@ -9827,8 +9896,8 @@ zheap_getnext(TableScanDesc sscan, ScanDirection direction)
 	ZHeapTuple	zhtup = NULL;
 
 	/* Skip metapage */
-	if (scan->rs_scan.rs_startblock == ZHEAP_METAPAGE)
-		scan->rs_scan.rs_startblock = ZHEAP_METAPAGE + 1;
+	if (scan->rs_startblock == ZHEAP_METAPAGE)
+		scan->rs_startblock = ZHEAP_METAPAGE + 1;
 
 	/* Note: no locking manipulations needed */
 
@@ -9838,9 +9907,9 @@ zheap_getnext(TableScanDesc sscan, ScanDirection direction)
 	 * The key will be passed only for catalog table scans and catalog tables
 	 * are always a heap table!. So incase of zheap it should be set to NULL.
 	 */
-	Assert (scan->rs_scan.rs_key == NULL);
+	Assert (scan->rs_base.rs_key == NULL);
 
-	if (scan->rs_scan.rs_pageatatime)
+	if (scan->rs_base.rs_pageatatime)
 		zhtup = zheapgettup_pagemode(scan, direction);
 	else
 		zhtup = zheapgettup(scan, direction);
@@ -9859,20 +9928,20 @@ zheap_getnext(TableScanDesc sscan, ScanDirection direction)
 	 */
 	ZHEAPDEBUG_3;				/* zheap_getnext returning tuple */
 
-	pgstat_count_heap_getnext(scan->rs_scan.rs_rd);
+	pgstat_count_heap_getnext(scan->rs_base.rs_rd);
 
 	return zhtup;
 }
 
-TupleTableSlot *
+bool
 zheap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *slot)
 {
 	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
 	ZHeapTuple	zhtup = NULL;
 
 	/* Skip metapage */
-	if (scan->rs_scan.rs_startblock == ZHEAP_METAPAGE)
-		scan->rs_scan.rs_startblock = ZHEAP_METAPAGE + 1;
+	if (scan->rs_startblock == ZHEAP_METAPAGE)
+		scan->rs_startblock = ZHEAP_METAPAGE + 1;
 
 	ZHEAPDEBUG_1;				/* zheap_getnext( info ) */
 
@@ -9880,9 +9949,9 @@ zheap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *
 	 * The key will be passed only for catalog table scans and catalog tables
 	 * are always a heap table!. So incase of zheap it should be set to NULL.
 	 */
-	Assert (scan->rs_scan.rs_key == NULL);
+	Assert (scan->rs_base.rs_key == NULL);
 
-	if (scan->rs_scan.rs_pageatatime)
+	if (scan->rs_base.rs_pageatatime)
 		zhtup = zheapgettup_pagemode(scan, direction);
 	else
 		zhtup = zheapgettup(scan, direction);
@@ -9891,7 +9960,7 @@ zheap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *
 	{
 		ZHEAPDEBUG_2;			/* zheap_getnext returning EOS */
 		ExecClearTuple(slot);
-		return NULL;
+		return false;
 	}
 
 	scan->rs_cztup = zhtup;
@@ -9902,14 +9971,16 @@ zheap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *
 	 */
 	ZHEAPDEBUG_3;				/* zheap_getnext returning tuple */
 
-	pgstat_count_heap_getnext(scan->rs_scan.rs_rd);
+	pgstat_count_heap_getnext(scan->rs_base.rs_rd);
 
-	return ExecStoreZTuple(zhtup, slot, scan->rs_cbuf, false);
+	ExecStoreZTuple(zhtup, slot, scan->rs_cbuf, false);
+
+	return true;
 }
 
 bool
-zheap_scan_bitmap_pagescan(TableScanDesc sscan,
-						   TBMIterateResult *tbmres)
+zheap_scan_bitmap_next_block(TableScanDesc sscan,
+							 TBMIterateResult *tbmres)
 {
 	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
 	BlockNumber page = tbmres->blockno;
@@ -9927,17 +9998,17 @@ zheap_scan_bitmap_pagescan(TableScanDesc sscan,
 	 * least AccessShareLock on the table before performing any of the
 	 * indexscans, but let's be safe.)
 	 */
-	if (page >= scan->rs_scan.rs_nblocks)
+	if (page >= scan->rs_nblocks)
 		return false;
 
 	if (page == ZHEAP_METAPAGE)
 		return false;
 
 	scan->rs_cbuf = ReleaseAndReadBuffer(scan->rs_cbuf,
-												 scan->rs_scan.rs_rd,
+												 scan->rs_base.rs_rd,
 												 page);
 	buffer = scan->rs_cbuf;
-	snapshot = scan->rs_scan.rs_snapshot;
+	snapshot = scan->rs_base.rs_snapshot;
 
 	ntup = 0;
 
@@ -9981,7 +10052,7 @@ zheap_scan_bitmap_pagescan(TableScanDesc sscan,
 			ZHeapTuple ztuple;
 
 			ItemPointerSet(&tid, page, offnum);
-			ztuple = zheap_search_buffer(&tid, scan->rs_scan.rs_rd, buffer, snapshot, NULL);
+			ztuple = zheap_search_buffer(&tid, scan->rs_base.rs_rd, buffer, snapshot, NULL);
 			if (ztuple != NULL)
 				scan->rs_visztuples[ntup++] = ztuple;
 		}
@@ -10013,7 +10084,7 @@ zheap_scan_bitmap_pagescan(TableScanDesc sscan,
 			loctup = palloc(ZHEAPTUPLESIZE + loctup_len);
 			loctup->t_data = (ZHeapTupleHeader) ((char *) loctup + ZHEAPTUPLESIZE);
 
-			loctup->t_tableOid = RelationGetRelid(scan->rs_scan.rs_rd);
+			loctup->t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
 			loctup->t_len = loctup_len;
 			loctup->t_self = tid;
 
@@ -10028,7 +10099,7 @@ zheap_scan_bitmap_pagescan(TableScanDesc sscan,
 
 			if (valid)
 			{
-				PredicateLockTid(scan->rs_scan.rs_rd, &(resulttup->t_self), snapshot,
+				PredicateLockTid(scan->rs_base.rs_rd, &(resulttup->t_self), snapshot,
 								 IsSerializableXact() ?
 								 zheap_fetchinsertxid(resulttup, buffer) :
 								 InvalidTransactionId);
@@ -10043,7 +10114,7 @@ zheap_scan_bitmap_pagescan(TableScanDesc sscan,
 			 * we're seeing some prior version of that. We handle that case
 			 * in ZHeapTupleHasSerializableConflictOut.
 			 */
-			CheckForSerializableConflictOut(valid, scan->rs_scan.rs_rd, (void *) &tid,
+			CheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tid,
 											buffer, snapshot);
 
 			if (valid)
@@ -10059,7 +10130,7 @@ zheap_scan_bitmap_pagescan(TableScanDesc sscan,
 }
 
 bool
-zheap_scan_bitmap_pagescan_next(TableScanDesc sscan, struct TupleTableSlot *slot)
+zheap_scan_bitmap_next_tuple(TableScanDesc sscan, TBMIterateResult *tbmres, struct TupleTableSlot *slot)
 {
 	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
 
@@ -10248,8 +10319,7 @@ zheap_fetch(Relation relation,
 			ItemPointer tid,
 			ZHeapTuple *tuple,
 			Buffer *userbuf,
-			bool keep_buf,
-			Relation stats_relation)
+			bool keep_buf)
 {
 	ZHeapTuple	resulttup;
 	ItemId		lp;
@@ -10394,10 +10464,6 @@ zheap_fetch(Relation relation,
 		*userbuf = buffer;
 		*tuple = resulttup;
 
-		/* Count the successful fetch against appropriate rel, if any */
-		if (stats_relation != NULL)
-			pgstat_count_heap_fetch(stats_relation);
-
 		return true;
 	}
 
@@ -10482,7 +10548,7 @@ zheap_fetch_undo(Relation relation,
 	ZHeapTuple	undo_tup;
 	Buffer		buffer;
 
-	if (!zheap_fetch(relation, snapshot, tid, tuple, &buffer, true, NULL))
+	if (!zheap_fetch(relation, snapshot, tid, tuple, &buffer, true))
 		return false;
 
 	undo_tup = zheap_fetch_undo_guts(*tuple, buffer, tid);
@@ -11177,8 +11243,9 @@ zheap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	bool		need_tuple_data = RelationIsLogicallyLogged(relation);
 	bool		need_cids = RelationIsAccessibleInLogicalDecoding(relation);
 	Size		saveFreeSpace;
-	TransactionId	xid = GetTopTransactionId();
-	uint32		epoch = GetEpochForXid(xid);
+	FullTransactionId fxid = GetTopFullTransactionId();
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	uint32		epoch = EpochFromFullTransactionId(fxid);
 	xl_undolog_meta	undometa;
 	bool		lock_reacquired;
 	bool		skip_undo;
@@ -11190,7 +11257,7 @@ zheap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	 * We can skip inserting undo records if the tuples are to be marked
 	 * as frozen.
 	 */
-	skip_undo = (options & HEAP_INSERT_FROZEN);
+	skip_undo = (options & ZHEAP_INSERT_FROZEN);
 
 	/* Toast and set header data in all the tuples */
 	zheaptuples = palloc(ntuples * sizeof(ZHeapTuple));
@@ -11339,14 +11406,14 @@ reacquire_buffer:
 			}
 
 			UndoSetPrepareSize(undorecord, zfree_offset_ranges->nranges,
-							   InvalidTransactionId,
+							   InvalidFullTransactionId,
 							   UndoPersistenceForRelation(relation), NULL, &undometa);
 
 			for (i = 0; i < zfree_offset_ranges->nranges; i++)
 			{
 				undorecord[i].uur_blkprev = urecptr;
 				urecptr = PrepareUndoInsert(&undorecord[i],
-											InvalidTransactionId,
+											InvalidFullTransactionId,
 											UndoPersistenceForRelation(relation),
 											NULL,
 											NULL);
@@ -11412,7 +11479,7 @@ reacquire_buffer:
 				if (PageGetZHeapFreeSpace(page) < zheaptup->t_len + saveFreeSpace)
 					break;
 
-				if (!(options & HEAP_INSERT_FROZEN))
+				if (!(options & ZHEAP_INSERT_FROZEN))
 					ZHeapTupleHeaderSetXactSlot(zheaptup->t_data, trans_slot_id);
 
 				RelationPutZHeapTuple(relation, buffer, zheaptup);

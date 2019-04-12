@@ -17,9 +17,10 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 
-#include "access/heapam.h"
+#include "access/genam.h"
 #include "access/htup.h"
 #include "access/htup_details.h"
+#include "access/table.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
 
@@ -269,7 +270,7 @@ dbid_exist(Oid dboid)
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(dboid));
 
-	relation = heap_open(DatabaseRelationId, AccessShareLock);
+	relation = table_open(DatabaseRelationId, AccessShareLock);
 	scan = systable_beginscan(relation, DatabaseOidIndexId,
 							  criticalSharedRelcachesBuilt,
 							  NULL,
@@ -282,7 +283,7 @@ dbid_exist(Oid dboid)
 
 	/* all done */
 	systable_endscan(scan);
-	heap_close(relation, AccessShareLock);
+	table_close(relation, AccessShareLock);
 
 	return result;
 }

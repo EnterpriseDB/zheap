@@ -1299,7 +1299,7 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 		if (!always_extend)
 		{
 			/* Before extending the relation, check the FSM for free page. */
-			targetBlock = GetPageWithFreeSpace(relation, len);
+			targetBlock = GetPageWithFreeSpace(relation, len, false);
 
 			while (targetBlock != InvalidBlockNumber)
 			{
@@ -1384,7 +1384,7 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 		 * available freespace which is zero in this case. This restricts other
 		 * backends from getting the same page from FSM.
 		 */
-		RecordPageWithFreeSpace(relation, targetBlock, 0);
+		RecordPageWithFreeSpace(relation, targetBlock, 0, InvalidBlockNumber);
 
 		/*
 		 * Lock the last tpd page in list, so that we can append new page to

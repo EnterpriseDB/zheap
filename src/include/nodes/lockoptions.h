@@ -43,6 +43,8 @@ typedef enum LockWaitPolicy
 	LockWaitError
 } LockWaitPolicy;
 
+#define MaxLockTupleMode	LockTupleExclusive
+
 /*
  * Possible lock modes for a tuple.
  */

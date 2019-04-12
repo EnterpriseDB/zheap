@@ -28,7 +28,7 @@ typedef bool (*SatisfyUndoRecordCallback) (UnpackedUndoRecord *urec,
 										   OffsetNumber offset,
 										   TransactionId xid);
 
-extern UndoRecPtr PrepareUndoInsert(UnpackedUndoRecord *, TransactionId xid,
+extern UndoRecPtr PrepareUndoInsert(UnpackedUndoRecord *, FullTransactionId xid,
 				  UndoPersistence, XLogReaderState *xlog_record,
 				  xl_undolog_meta *);
 
@@ -44,7 +44,7 @@ extern UnpackedUndoRecord *UndoFetchRecord(UndoRecPtr urp,
 extern void UndoRecordRelease(UnpackedUndoRecord *urec);
 extern void UndoRecordSetPrevUndoLen(uint16 len);
 extern void UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
-				   TransactionId xid, UndoPersistence upersistence,
+				   FullTransactionId fxid, UndoPersistence upersistence,
 				   XLogReaderState *xlog_record, xl_undolog_meta *undometa);
 
 extern UndoRecPtr UndoGetPrevUndoRecptr(UndoRecPtr urp, uint16 prevlen);

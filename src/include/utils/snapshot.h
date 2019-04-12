@@ -16,7 +16,6 @@
 #include "access/htup.h"
 #include "access/xlogdefs.h"
 #include "datatype/timestamp.h"
-#include "access/zhtup.h"
 #include "lib/pairingheap.h"
 #include "storage/buf.h"
 

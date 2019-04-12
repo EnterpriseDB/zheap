@@ -36,7 +36,6 @@
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
-#include "utils/tqual.h"
 #include "utils/ztqual.h"
 #include "storage/proc.h"
 
@@ -1429,7 +1428,7 @@ check_trans_slot:
  *
  *	For multilockers, the visibility can be determined by the information
  *	present on tuple.  See ZHeapTupleSatisfiesMVCC.  Also, this API returns
- *	HeapTupleMayBeUpdated, if the strongest locker is committed which means
+ *	TM_Ok, if the strongest locker is committed which means
  *	the caller need to take care of waiting for other lockers in such a case.
  *
  *	ctid - returns the ctid of visible tuple if the tuple is either deleted or
@@ -1448,7 +1447,7 @@ check_trans_slot:
  *	in_place_updated - returns whether the current visible version of tuple is
  *	updated in place.
  */
-HTSU_Result
+TM_Result
 ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 						  Buffer buffer, ItemPointer ctid, int *trans_slot,
 						  TransactionId *xid, SubTransactionId *subxid,
@@ -1513,12 +1512,12 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 												   free_zhtup,
 												   in_place_updated_or_locked);
 				if (visible)
-					return HeapTupleSelfUpdated;
+					return TM_SelfModified;
 				else
-					return HeapTupleInvisible;
+					return TM_Invisible;
 			}
 			else
-				return HeapTupleInvisible;	/* deleted before scan started */
+				return TM_Invisible;	/* deleted before scan started */
 		}
 		else if (TransactionIdIsInProgress(*xid))
 		{
@@ -1537,10 +1536,10 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 				if (subxid)
 					ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, subxid);
 
-				return HeapTupleBeingUpdated;
+				return TM_BeingModified;
 			}
 			else
-				return HeapTupleInvisible;
+				return TM_Invisible;
 		}
 		else if (TransactionIdDidCommit(*xid))
 		{
@@ -1555,7 +1554,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 				ZHeapTupleGetCtid(zhtup, buffer, urec_ptr, ctid);
 
 			/* tuple is deleted or non-inplace-updated */
-			return HeapTupleUpdated;
+			return TM_Updated;
 		}
 		else	/* transaction is aborted */
 		{
@@ -1571,15 +1570,15 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 
 			/*
 			 * If updating transaction id is aborted and the tuple is visible
-			 * then return HeapTupleBeingUpdated, so that caller can apply the
+			 * then return TM_BeingModified, so that caller can apply the
 			 * undo before modifying the page.  Here, we don't need to fetch
 			 * subtransaction id as it is only possible for top-level xid to
 			 * have pending undo actions.
 			 */
 			if (visible)
-				return HeapTupleBeingUpdated;
+				return TM_BeingModified;
 			else
-				return HeapTupleInvisible;
+				return TM_Invisible;
 		}
 	}
 	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
@@ -1605,7 +1604,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 				found = GetLockerTransInfo(rel, zhtup, buffer, single_locker_trans_slot,
 										   NULL, single_locker_xid, NULL, NULL);
 			if (!found)
-				return HeapTupleMayBeUpdated;
+				return TM_Ok;
 			else
 			{
 				/*
@@ -1616,7 +1615,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 				 * If the single locker is our current transaction, then also
 				 * we return beging updated.
 				 */
-				return HeapTupleBeingUpdated;
+				return TM_BeingModified;
 			}
 		}
 
@@ -1640,9 +1639,9 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 				if (visible)
 				{
 					if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
-						return HeapTupleBeingUpdated;
+						return TM_BeingModified;
 					else
-						return HeapTupleSelfUpdated;
+						return TM_SelfModified;
 				}
 			}
 			else
@@ -1654,10 +1653,10 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 					 * in lock mode higher or equal to the required mode, then
 					 * it can skip locking the tuple.
 					 */
-					return HeapTupleBeingUpdated;
+					return TM_BeingModified;
 				}
 				else
-					return HeapTupleMayBeUpdated;	/* updated before scan started */
+					return TM_Ok;	/* updated before scan started */
 			}
 		}
 		else if (TransactionIdIsInProgress(*xid))
@@ -1677,18 +1676,18 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 				if (subxid)
 					ZHeapTupleGetSubXid(zhtup, buffer, urec_ptr, subxid);
 
-				return HeapTupleBeingUpdated;
+				return TM_BeingModified;
 			}
 			else
-				return HeapTupleInvisible;
+				return TM_Invisible;
 		}
 		else if (TransactionIdDidCommit(*xid))
 		{
 			/* if tuple is updated and not in our snapshot, then allow to update it. */
 			if (lock_allowed || !XidInMVCCSnapshot(*xid, snapshot))
-				return HeapTupleMayBeUpdated;
+				return TM_Ok;
 			else
-				return HeapTupleUpdated;
+				return TM_Updated;
 		}
 		else	/* transaction is aborted */
 		{
@@ -1704,15 +1703,15 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 
 			/*
 			 * If updating transaction id is aborted and the tuple is visible
-			 * then return HeapTupleBeingUpdated, so that caller can apply the
+			 * then return TM_BeingModified, so that caller can apply the
 			 * undo before modifying the page.  Here, we don't need to fetch
 			 * subtransaction id as it is only possible for top-level xid to
 			 * have pending undo actions.
 			 */
 			if (visible)
-				return HeapTupleBeingUpdated;
+				return TM_BeingModified;
 			else
-				return HeapTupleInvisible;
+				return TM_Invisible;
 		}
 	}
 
@@ -1723,23 +1722,23 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 	 */
 	if (*trans_slot == ZHTUP_SLOT_FROZEN ||
 		epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
-		return HeapTupleMayBeUpdated;
+		return TM_Ok;
 
 	if (TransactionIdIsCurrentTransactionId(*xid))
 	{
 		if (cid && *cid >= curcid)
-			return HeapTupleInvisible;	/* inserted after scan started */
+			return TM_Invisible;	/* inserted after scan started */
 		else
-			return HeapTupleMayBeUpdated;	/* inserted before scan started */
+			return TM_Ok;	/* inserted before scan started */
 	}
 	else if (TransactionIdIsInProgress(*xid))
-		return HeapTupleInvisible;
+		return TM_Invisible;
 	else if (TransactionIdDidCommit(*xid))
-		return HeapTupleMayBeUpdated;
+		return TM_Ok;
 	else
-		return HeapTupleInvisible;
+		return TM_Invisible;
 
-	return HeapTupleInvisible;
+	return TM_Invisible;
 }
 
 /*
@@ -2413,28 +2412,28 @@ ZHeapTupleSatisfiesToast(ZHeapTuple zhtup, Snapshot snapshot,
 ZHeapTuple
 ZHeapTupleSatisfies(ZHeapTuple stup, Snapshot snapshot, Buffer buffer, ItemPointer ctid)
 {
-	switch (snapshot->visibility_type)
+	switch (snapshot->snapshot_type)
 	{
-		case MVCC_VISIBILITY:
+		case SNAPSHOT_MVCC:
 			return ZHeapTupleSatisfiesMVCC(stup, snapshot, buffer, ctid);
 			break;
-		case SELF_VISIBILITY:
+		case SNAPSHOT_SELF:
 			return ZHeapTupleSatisfiesSelf(stup, snapshot, buffer, ctid);
 			break;
-		case ANY_VISIBILITY:
+		case SNAPSHOT_ANY:
 			return ZHeapTupleSatisfiesAny(stup, snapshot, buffer, ctid);
 			break;
-		case TOAST_VISIBILITY:
+		case SNAPSHOT_TOAST:
 			return ZHeapTupleSatisfiesToast(stup, snapshot, buffer, ctid);
 			break;
-		case DIRTY_VISIBILITY:
+		case SNAPSHOT_DIRTY:
 			return ZHeapTupleSatisfiesDirty(stup, snapshot, buffer, ctid);
 			break;
-		case HISTORIC_MVCC_VISIBILITY:
+		case SNAPSHOT_HISTORIC_MVCC:
 			// ZBORKED: need a better error message
 			elog(PANIC, "unimplemented");
 			break;
-		case NON_VACUUMABLE_VISIBILTY:
+		case SNAPSHOT_NON_VACUUMABLE:
 			return ZHeapTupleSatisfiesNonVacuumable(stup, snapshot, buffer, ctid);
 			break;
 	}

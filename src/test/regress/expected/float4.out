@@ -267,10 +267,10 @@ SELECT '' AS five, * FROM FLOAT4_TBL ORDER BY f1 DESC;
  five |       f1       
 ------+----------------
       |              0
+      | -1.2345679e-20
       |         -34.84
       |        -1004.3
       | -1.2345679e+20
-      | -1.2345679e-20
 (5 rows)
 
 -- test edge-case coercions to integer

@@ -1061,13 +1061,9 @@ UndoLogDiscard(UndoRecPtr discard_point, TransactionId xid)
 		{
 			char	discard_path[MAXPGPATH];
 
-			/*
-			 * Before removing the file, make sure that undofile_sync knows
-			 * that it might be missing.
-			 */
-			undofile_forgetsync(log->logno,
-								log->meta.tablespace,
-								pointer / UndoLogSegmentSize);
+			/* Tell the checkpointer that the file is going away. */
+			undofile_forget_sync(log->logno, pointer / UndoLogSegmentSize,
+								 log->meta.tablespace);
 
 			UndoLogSegmentPath(logno, pointer / UndoLogSegmentSize,
 							   log->meta.tablespace, discard_path);
@@ -2591,13 +2587,9 @@ undolog_xlog_discard(XLogReaderState *record)
 	{
 		char	discard_path[MAXPGPATH];
 
-		/*
-		 * Before removing the file, make sure that undofile_sync knows that
-		 * it might be missing.
-		 */
-		undofile_forgetsync(log->logno,
-							log->meta.tablespace,
-							old_segment_begin / UndoLogSegmentSize);
+		/* Tell the checkpointer that the file is going away. */
+		undofile_forget_sync(log->logno, old_segment_begin / UndoLogSegmentSize,
+							 log->meta.tablespace);
 
 		UndoLogSegmentPath(xlrec->logno, old_segment_begin / UndoLogSegmentSize,
 						   log->meta.tablespace, discard_path);

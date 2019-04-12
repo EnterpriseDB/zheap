@@ -86,7 +86,7 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 static void
 lazy_space_zalloc(LVRelStats *vacrelstats, BlockNumber relblocks);
 static void
-lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
+lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 				Relation *Irel, int nindexes,
 				BufferAccessStrategy vac_strategy, bool aggressive);
 static bool
@@ -210,8 +210,9 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 							TransactionId *global_visibility_cutoff_xid)
 {
 	TransactionId visibility_cutoff_xid;
-	TransactionId xid = GetTopTransactionId();
-	uint32	epoch = GetEpochForXid(xid);
+	FullTransactionId fxid = GetTopFullTransactionId();
+	TransactionId xid = XidFromFullTransactionId(fxid);
+	uint32	epoch = EpochFromFullTransactionId(fxid);
 	Page		page = BufferGetPage(buffer);
 	Page		tmppage;
 	UnpackedUndoRecord	undorecord;
@@ -297,7 +298,7 @@ reacquire_slot:
 	 */
 
 	urecptr = PrepareUndoInsert(&undorecord,
-								InvalidTransactionId,
+								InvalidFullTransactionId,
 								UndoPersistenceForRelation(onerel),
 								NULL,
 								&undometa);
@@ -399,7 +400,7 @@ prepare_xlog:
 		 * checkpoint.
 		 */
 		LogUndoMetaData(&undometa);
-		
+
 		GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
 
 		XLogBeginInsert();
@@ -548,7 +549,7 @@ MarkPagesAsAllVisible(Relation rel, LVRelStats *vacrelstats,
  *		writting any undo;
  */
 static void
-lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
+lazy_scan_zheap(Relation onerel, VacuumParams *params,  LVRelStats *vacrelstats,
 				Relation *Irel, int nindexes,
 				BufferAccessStrategy vac_strategy, bool aggressive)
 {
@@ -623,8 +624,8 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 	next_unskippable_block = ZHEAP_METAPAGE + 1;
 	if (!aggressive)
 	{
-	
-		Assert((options & VACOPT_DISABLE_PAGE_SKIPPING) == 0);
+
+		Assert((params->options & VACOPT_DISABLE_PAGE_SKIPPING) == 0);
 		while (next_unskippable_block < nblocks)
 		{
 			uint8       vmstatus;
@@ -820,7 +821,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 			MarkBufferDirty(buf);
 			UnlockReleaseBuffer(buf);
 
-			RecordPageWithFreeSpace(onerel, blkno, freespace);
+			RecordPageWithFreeSpace(onerel, blkno, freespace, nblocks);
 			continue;
 		}
 
@@ -881,7 +882,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 			}
 
 			UnlockReleaseBuffer(buf);
-			RecordPageWithFreeSpace(onerel, blkno, freespace);
+			RecordPageWithFreeSpace(onerel, blkno, freespace, nblocks);
 			continue;
 		}
 
@@ -1088,7 +1089,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 
 		/* We're done with this page, so remember its free space as-is. */
 		if (freespace)
-			RecordPageWithFreeSpace(onerel, blkno, freespace);
+			RecordPageWithFreeSpace(onerel, blkno, freespace, nblocks);
 	}
 
 	/* Report that everything is scanned and vacuumed. */
@@ -1158,7 +1159,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
 		FreeSpaceMapVacuumRange(onerel, next_fsm_block_to_vacuum, blkno);
 		next_fsm_block_to_vacuum = blkno;
 	}
-	
+
 	/*
 	 * Vacuum the remainder of the Free Space Map.  We must do this whether or
 	 * not there were indexes.
@@ -1203,7 +1204,7 @@ lazy_scan_zheap(Relation onerel, int options, LVRelStats *vacrelstats,
  *	lazy_vacuum_zheap_rel() -- perform LAZY VACUUM for one zheap relation
  */
 void
-lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
+lazy_vacuum_zheap_rel(Relation onerel, VacuumParams *params,
 					  BufferAccessStrategy bstrategy)
 {
 	LVRelStats *vacrelstats;
@@ -1238,7 +1239,7 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 		starttime = GetCurrentTimestamp();
 	}
 
-	if (options & VACOPT_VERBOSE)
+	if (params->options & VACOPT_VERBOSE)
 		elevel = INFO;
 	else
 		elevel = DEBUG2;
@@ -1260,7 +1261,7 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 	/*
 	 * We request an aggressive scan if DISABLE_PAGE_SKIPPING was specified.
 	 */
-	if (options & VACOPT_DISABLE_PAGE_SKIPPING)
+	if (params->options & VACOPT_DISABLE_PAGE_SKIPPING)
 		aggressive = true;
 
 	vacrelstats = (LVRelStats *) palloc0(sizeof(LVRelStats));
@@ -1273,10 +1274,11 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 
 	/* Open all indexes of the relation */
 	vac_open_indexes(onerel, RowExclusiveLock, &nindexes, &Irel);
-	vacrelstats->hasindex = (nindexes > 0);
+	vacrelstats->useindex = (nindexes > 0 &&
+							 params->index_cleanup == VACOPT_TERNARY_ENABLED);
 
 	/* Do the vacuuming */
-	lazy_scan_zheap(onerel, options, vacrelstats, Irel, nindexes,
+	lazy_scan_zheap(onerel, params, vacrelstats, Irel, nindexes,
 					vac_strategy, aggressive);
 
 	/* Done with indexes */
@@ -1285,7 +1287,7 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 	/*
 	 * Optionally truncate the relation.
 	 */
-	if (should_attempt_truncation(vacrelstats))
+	if (should_attempt_truncation(onerel, vacrelstats))
 		lazy_truncate_heap(onerel, vacrelstats, vac_strategy);
 
 	/* Report that we are now doing final cleanup. */
@@ -1324,7 +1326,7 @@ lazy_vacuum_zheap_rel(Relation onerel, int options, VacuumParams *params,
 						new_rel_pages,
 						new_rel_tuples,
 						new_rel_pages,
-						vacrelstats->hasindex,
+						nindexes > 0,
 						InvalidTransactionId,
 						InvalidMultiXactId,
 						false);
@@ -1417,7 +1419,7 @@ lazy_space_zalloc(LVRelStats *vacrelstats, BlockNumber relblocks)
 	autovacuum_work_mem != -1 ?
 	autovacuum_work_mem : maintenance_work_mem;
 
-	if (vacrelstats->hasindex)
+	if (vacrelstats->useindex)
 	{
 		maxtuples = (vac_work_mem * 1024L) / sizeof(ItemPointerData);
 		maxtuples = Min(maxtuples, INT_MAX);

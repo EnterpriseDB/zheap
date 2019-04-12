@@ -39,7 +39,7 @@
 #include <fcntl.h>
 
 #include "access/genam.h"
-#include "access/heapam.h"
+#include "access/table.h"
 #include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
@@ -50,7 +50,6 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
-#include "utils/tqual.h"
 #include "access/zheap.h"
 #include "access/zheaputils.h"
 
@@ -96,7 +95,7 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 	 * easiest to deal with that here, instead on, potentially, multiple
 	 * callers.
 	 */
-	options &= ~HEAP_INSERT_SPECULATIVE;
+	options &= ~ZHEAP_INSERT_SPECULATIVE;
 
 	/*
 	 * We should only ever be called for tuples of plain relations or
@@ -918,10 +917,7 @@ ztoast_delete_datum(Relation rel, Datum value, bool is_speculative)
 		if (!is_speculative)
 			simple_zheap_delete(toastrel, &toasttup->t_self, &SnapshotToast);
 		else
-		{
-			TupleDesc	tupdesc = toastrel->rd_att;
-			zheap_abort_speculative(toastrel, heap_to_zheap(toasttup, tupdesc));
-		}
+			zheap_abort_speculative(toastrel, &toasttup->t_self);
 	}
 
 	/*

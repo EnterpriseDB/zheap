@@ -83,7 +83,7 @@ step "upsert1"	{
 # when the first updated tuple was in a non-first child table.
 # writep2/returningp1 tests a memory allocation issue
 
-step "readp1"	{ SELECT tableoid::regclass, ctid, * FROM p WHERE b IN (0, 1) AND c = 0 FOR UPDATE; }
+step "readp1"	{ SELECT tableoid::regclass, * FROM p WHERE b IN (0, 1) AND c = 0 FOR UPDATE; }
 step "writep1"	{ UPDATE p SET b = -1 WHERE a = 1 AND b = 1 AND c = 0; }
 step "writep2"	{ UPDATE p SET b = -b WHERE a = 1 AND c = 0; }
 step "c1"	{ COMMIT; }
@@ -181,7 +181,7 @@ step "upsert2"	{
 	  WHERE NOT EXISTS (SELECT 1 FROM upsert);
 }
 step "wx2_ext"	{ UPDATE accounts_ext SET balance = balance + 450; }
-step "readp2"	{ SELECT tableoid::regclass, ctid, * FROM p WHERE b IN (0, 1) AND c = 0 FOR UPDATE; }
+step "readp2"	{ SELECT tableoid::regclass, * FROM p WHERE b IN (0, 1) AND c = 0 FOR UPDATE; }
 step "returningp1" {
 	WITH u AS ( UPDATE p SET b = b WHERE a > 0 RETURNING * )
 	  SELECT * FROM u;

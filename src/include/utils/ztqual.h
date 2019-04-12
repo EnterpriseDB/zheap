@@ -37,7 +37,7 @@ extern ZHeapTuple ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup,
 					   Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern ZHeapTuple ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot,
 									   Buffer buffer, bool *all_dead);
-extern HTSU_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,
+extern TM_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,
 						CommandId curcid, Buffer buffer, ItemPointer ctid,
 						int *trans_slot, TransactionId *xid,
 						SubTransactionId *subxid, CommandId *cid,
@@ -63,5 +63,9 @@ extern ZHeapTuple ZHeapTupleSatisfiesToast(ZHeapTuple ztup, Snapshot snapshot,
 						Buffer buffer, ItemPointer ctid);
 
 extern ZHeapTuple ZHeapTupleSatisfies(ZHeapTuple stup, Snapshot snapshot, Buffer buffer, ItemPointer ctid);
+
+extern bool ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
+									 ItemPointer tid, Buffer buffer,
+												 TransactionId *xid);
 
 #endif   /* ZTQUAL_H */
