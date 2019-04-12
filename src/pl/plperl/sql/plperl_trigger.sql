@@ -134,13 +134,13 @@ INSERT INTO trigger_test (i, v, foo) VALUES (4,'immortal', '("(4)")');
 
 INSERT INTO trigger_test (i, v) VALUES (101,'bad id');
 
-SELECT * FROM trigger_test;
+SELECT * FROM trigger_test ORDER BY i;
 
 UPDATE trigger_test SET i = 5 where i=3;
 
 UPDATE trigger_test SET i = 100 where i=1;
 
-SELECT * FROM trigger_test;
+SELECT * FROM trigger_test ORDER BY i;
 
 DROP TRIGGER "test_valid_id_trig" ON trigger_test;
 
@@ -164,7 +164,7 @@ FOR EACH ROW EXECUTE PROCEDURE "trigger_recurse"();
 
 INSERT INTO trigger_test (i, v) values (10000, 'top');
 
-SELECT * FROM trigger_test;
+SELECT * FROM trigger_test ORDER BY i;
 
 CREATE OR REPLACE FUNCTION immortal() RETURNS trigger AS $$
     if ($_TD->{old}{v} eq $_TD->{args}[0])
@@ -182,7 +182,7 @@ FOR EACH ROW EXECUTE PROCEDURE immortal('immortal');
 
 DELETE FROM trigger_test;
 
-SELECT * FROM trigger_test;
+SELECT * FROM trigger_test ORDER BY i;
 
 CREATE FUNCTION direct_trigger() RETURNS trigger AS $$
     return;

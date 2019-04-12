@@ -140,23 +140,22 @@ SELECT live_items, dead_items, page_size, hasho_prevblkno, hasho_nextblkno,
 hasho_bucket, hasho_flag, hasho_page_id FROM
 hash_page_stats(get_raw_page('test_hash_a_idx', 5));
 ERROR:  page is not a hash bucket or overflow page
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 0));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 0));
 ERROR:  page is not a hash bucket or overflow page
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 1));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 1));
 (0 rows)
 
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 2));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 2));
 (0 rows)
 
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 3));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 3));
 -[ RECORD 1 ]----------
 itemoffset | 1
-ctid       | (0,1)
 data       | 2389907270
 
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 4));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 4));
 (0 rows)
 
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 5));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 5));
 ERROR:  page is not a hash bucket or overflow page
 DROP TABLE test_hash;

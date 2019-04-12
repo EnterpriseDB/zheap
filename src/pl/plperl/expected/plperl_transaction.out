@@ -12,7 +12,7 @@ foreach my $i (0..9) {
 }
 $$;
 CALL transaction_test1();
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
  0 | 
@@ -35,7 +35,7 @@ foreach my $i (0..9) {
     }
 }
 $$;
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
  0 | 
@@ -63,7 +63,7 @@ $$;
 SELECT transaction_test2();
 ERROR:  invalid transaction termination at line 5.
 CONTEXT:  PL/Perl function "transaction_test2"
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
 (0 rows)
@@ -78,7 +78,7 @@ $$;
 SELECT transaction_test3();
 ERROR:  invalid transaction termination at line 5. at line 2.
 CONTEXT:  PL/Perl function "transaction_test3"
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
 (0 rows)
@@ -105,7 +105,7 @@ while (defined($row = spi_fetchrow($sth))) {
     spi_commit();
 }
 $$;
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
  0 | 
@@ -133,11 +133,11 @@ while (defined($row = spi_fetchrow($sth))) {
 $$;
 ERROR:  division by zero at line 5.
 CONTEXT:  PL/Perl anonymous code block
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
   a  | b 
 -----+---
-  -6 | 
  -12 | 
+  -6 | 
 (2 rows)
 
 SELECT * FROM pg_cursors;
@@ -155,7 +155,7 @@ while (defined($row = spi_fetchrow($sth))) {
     spi_rollback();
 }
 $$;
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
 (0 rows)
@@ -179,7 +179,7 @@ while (defined($row = spi_fetchrow($sth))) {
     }
 }
 $$;
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
  0 | 

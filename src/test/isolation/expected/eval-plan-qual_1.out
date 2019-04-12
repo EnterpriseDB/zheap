@@ -116,7 +116,7 @@ step c2: COMMIT;
 step partiallock: <... completed>
 accountid      balance        accountid      balance        
 
-checking       1050           checking       1050           
+checking       1050           checking       600            
 savings        600            savings        600            
 step c1: COMMIT;
 step read: SELECT * FROM accounts ORDER BY accountid;
@@ -156,7 +156,7 @@ step c2: COMMIT;
 step partiallock_ext: <... completed>
 accountid      balance        other          newcol         newcol2        accountid      balance        other          newcol         newcol2        
 
-checking       1050           other          42                            checking       1050           other          42                            
+checking       1050           other          42                            checking       600            other          42                            
 savings        1150                          42                            savings        700                           42                            
 step c1: COMMIT;
 step read_ext: SELECT * FROM accounts_ext ORDER BY accountid;
