@@ -96,7 +96,7 @@ zheapam_fetch_row_version(Relation relation,
  */
 static void
 zheapam_insert(Relation relation, TupleTableSlot *slot, CommandId cid,
-					int options, BulkInsertState bistate)
+			   int options, BulkInsertState bistate)
 {
 	ZHeapTuple	tuple = ExecGetZHeapTupleFromSlot(slot);
 
@@ -106,13 +106,13 @@ zheapam_insert(Relation relation, TupleTableSlot *slot, CommandId cid,
 		tuple->t_tableOid = slot->tts_tableOid;
 
 	/* Perform the insertion, and copy the resulting ItemPointer */
-	zheap_insert(relation, tuple, cid, options, bistate);
+	zheap_insert(relation, tuple, cid, options, bistate, 0);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 }
 
 static void
 zheapam_insert_speculative(Relation relation, TupleTableSlot *slot, CommandId cid,
-								int options, BulkInsertState bistate, uint32 specToken)
+						   int options, BulkInsertState bistate, uint32 specToken)
 {
 	ZHeapTuple	tuple = ExecGetZHeapTupleFromSlot(slot);
 
@@ -121,14 +121,10 @@ zheapam_insert_speculative(Relation relation, TupleTableSlot *slot, CommandId ci
 	if (slot->tts_tableOid != InvalidOid)
 		tuple->t_tableOid = slot->tts_tableOid;
 
-#ifdef ZBORKED
-	HeapTupleHeaderSetSpeculativeToken(tuple->t_data, specToken);
-#endif
-
 	options |= ZHEAP_INSERT_SPECULATIVE;
 
 	/* Perform the insertion, and copy the resulting ItemPointer */
-	zheap_insert(relation, tuple, cid, options, bistate);
+	zheap_insert(relation, tuple, cid, options, bistate, specToken);
 	ItemPointerCopy(&tuple->t_self, &slot->tts_tid);
 }
 
