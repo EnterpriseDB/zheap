@@ -60,8 +60,6 @@ static bool GetTupleFromUndo(UndoRecPtr urec_ptr,
 				 ZHeapTuple current_tuple, ZHeapTuple *visible_tuple,
 				 Snapshot snapshot, CommandId curcid, Buffer buffer,
 				 OffsetNumber offnum, ItemPointer ctid, int trans_slot);
-static ZHeapTuple GetTupleFromUndoForAbortedXact(UndoRecPtr urec_ptr, Buffer buffer, int trans_slot,
-												 ZHeapTuple ztuple, TransactionId *xid);
 static ZTupleTidOp ZHeapTidOpFromInfomask(uint16 infomask);
 static ZVersionSelector ZHeapSelectVersionMVCC(ZTupleTidOp op,
 				   TransactionId xid, Snapshot snapshot);
@@ -474,117 +472,6 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid, Buffer buffer,
 		return false;
 
 	return true;
-}
-
-/*
- * GetTupleFromUndoForAbortedXact
- *
- *	This is used to fetch the prior committed version of the tuple which is
- *	modified by an aborted xact.
- *
- *	It returns the prior committed version of the tuple, if available. Else,
- *	returns NULL.
- *
- *	The caller must send a palloc'd tuple. This function can get a tuple
- *	from undo to return in which case it will free the memory passed by
- *	the caller.
- *
- *	xid is an output parameter. It is set to the latest committed xid that
- *	inserted/in-place-updated the tuple. If the aborted transaction inserted
- *	the tuple itself, we return the same transaction id. The caller *should*
- *	handle the same scenario.
- */
-static ZHeapTuple
-GetTupleFromUndoForAbortedXact(UndoRecPtr urec_ptr, Buffer buffer, int trans_slot,
-							   ZHeapTuple ztuple, TransactionId *xid)
-{
-	TransactionId prev_undo_xid PG_USED_FOR_ASSERTS_ONLY;
-	int			prev_trans_slot_id = trans_slot;
-	ZHeapTupleTransInfo	zinfo;
-	OffsetNumber	offnum = ItemPointerGetOffsetNumber(&ztuple->t_self);
-	ZHeapTupleHeaderData	hdr;
-	bool		free_ztuple = true;
-
-	prev_undo_xid = InvalidTransactionId;
-	memcpy(&hdr, ztuple->t_data, SizeofZHeapTupleHeader);
-
-fetch_prior_undo_record:
-	if (!GetTupleFromUndoRecord(urec_ptr, InvalidTransactionId,
-								buffer, offnum, &hdr, &ztuple,
-								&free_ztuple, &zinfo, NULL))
-		return ztuple;
-
-	/* we can't further operate on deleted or non-inplace-updated tuple */
-	Assert(ZHeapTidOpFromInfomask(ztuple->t_data->t_infomask)
-				!= ZTUPLETID_GONE);
-
-	/*
-	 * We know that we have the latest version of the tuple if the latest XID
-	 * committed or if the transaction slot has been reused (which is what
-	 * ZHeapTupleHasInvalidXact tests).
-	 */
-	if (TransactionIdDidCommit(zinfo.xid) ||
-		ZHeapTupleHasInvalidXact(ztuple->t_data->t_infomask))
-	{
-		*xid = zinfo.xid;
-		return ztuple;
-	}
-
-	/*
-	 * If the undo tuple is stamped with a different transaction, then either
-	 * the previous transaction is committed or tuple must be locked only. In
-	 * both cases, we can return the tuple fetched from undo.
-	 */
-	if (zinfo.trans_slot != prev_trans_slot_id)
-	{
-		GetTransactionSlotInfo(buffer,
-							   offnum,
-							   zinfo.trans_slot,
-							   true,
-							   true,
-							   &zinfo);
-		FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), offnum,
-							   zinfo.xid, &zinfo);
-
-		Assert(TransactionIdDidCommit(zinfo.xid) ||
-			   ZHEAP_XID_IS_LOCKED_ONLY(ztuple->t_data->t_infomask));
-
-		*xid = zinfo.xid;
-		return ztuple;
-	}
-
-	/* transaction must be aborted. */
-	Assert(!TransactionIdIsCurrentTransactionId(zinfo.xid));
-	Assert(!TransactionIdIsInProgress(zinfo.xid));
-	Assert(TransactionIdDidAbort(zinfo.xid));
-
-	/*
-	 * We can't have two aborted transaction with pending rollback state for
-	 * the same tuple.
-	 */
-	Assert(!TransactionIdIsValid(prev_undo_xid) ||
-		   TransactionIdEquals(prev_undo_xid, zinfo.xid));
-
-	/*
-	 * If undo tuple is the root tuple inserted by the aborted transaction, we
-	 * don't have to process any further. The tuple is not visible to us.
-	 */
-	if (!IsZHeapTupleModified(ztuple->t_data->t_infomask))
-	{
-		/* before leaving, free the allocated memory */
-		pfree(ztuple);
-		return NULL;
-	}
-
-	urec_ptr = zinfo.urec_ptr;
-	prev_undo_xid = zinfo.xid;
-	prev_trans_slot_id = zinfo.trans_slot;
-
-	goto fetch_prior_undo_record;
-
-	/* not reachable */
-	Assert(0);
-	return NULL;
 }
 
 /*
@@ -1789,11 +1676,22 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 		{
 			/*
 			 * For aborted transactions, we need to fetch the tuple from undo
-			 * chain.
+			 * chain.  It should be OK to use SnapshotSelf semantics because
+			 * we know that the latest transaction is aborted; the previous
+			 * transaction therefore can't be current or in-progress or for
+			 * that matter aborted.  It seems like even SnapshotAny semantics
+			 * would be OK here, but GetTupleFromUndo doesn't know about
+			 * those.
+			 *
+			 * ZBORKED: This code path needs tests.  I was not able to hit it
+			 * in either automated or manual testing.
 			 */
-			*ztuple = GetTupleFromUndoForAbortedXact(zinfo.urec_ptr, buffer,
-													 zinfo.trans_slot, zhtup,
-													 xid);
+			GetTupleFromUndo(zinfo.urec_ptr, zhtup, ztuple, SnapshotSelf,
+							 InvalidCommandId, buffer, offnum, NULL,
+							 zinfo.trans_slot);
+			if (zhtup != *ztuple)
+				pfree(zhtup);
+
 			if (*ztuple != NULL)
 				return HEAPTUPLE_LIVE;
 			else
@@ -1848,13 +1746,22 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 		{
 			/*
 			 * For aborted transactions, we need to fetch the tuple from undo
-			 * chain.
+			 * chain.  It should be OK to use SnapshotSelf semantics because
+			 * we know that the latest transaction is aborted; the previous
+			 * transaction therefore can't be current or in-progress or for
+			 * that matter aborted.  It seems like even SnapshotAny semantics
+			 * would be OK here, but GetTupleFromUndo doesn't know about
+			 * those.
+			 *
+			 * ZBORKED: This code path needs tests.  I was not able to hit it
+			 * in either automated or manual testing.
 			 */
-			*ztuple = GetTupleFromUndoForAbortedXact(zinfo.urec_ptr,
-													 buffer,
-													 zinfo.trans_slot,
-													 zhtup,
-													 xid);
+			GetTupleFromUndo(zinfo.urec_ptr, zhtup, ztuple, SnapshotSelf,
+							 InvalidCommandId, buffer, offnum, NULL,
+							 zinfo.trans_slot);
+			if (zhtup != *ztuple)
+				pfree(zhtup);
+
 			if (*ztuple != NULL)
 				return HEAPTUPLE_LIVE;
 		}
