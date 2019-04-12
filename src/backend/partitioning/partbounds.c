@@ -1347,14 +1347,14 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 		tupslot = table_slot_create(part_rel, &estate->es_tupleTable);
 		scan = table_beginscan(part_rel, snapshot, 0, NULL);
 
-		/*
-		 * Switch to per-tuple memory context and reset it for each tuple
-		 * produced, so we don't leak memory.
-		 */
-		oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-
 		while (table_scan_getnextslot(scan, ForwardScanDirection, tupslot))
 		{
+			/*
+			 * Switch to per-tuple memory context and reset it for each tuple
+			 * produced, so we don't leak memory.
+			 */
+			oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+
 			econtext->ecxt_scantuple = tupslot;
 
 			if (!ExecCheck(partqualstate, econtext))
@@ -1365,9 +1365,9 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 
 			ResetExprContext(econtext);
 			CHECK_FOR_INTERRUPTS();
+			MemoryContextSwitchTo(oldCxt);
 		}
 
-		MemoryContextSwitchTo(oldCxt);
 		table_endscan(scan);
 		UnregisterSnapshot(snapshot);
 		ExecDropSingleTupleTableSlot(tupslot);

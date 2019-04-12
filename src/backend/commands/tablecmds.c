@@ -4915,15 +4915,15 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
 		scan = table_beginscan(oldrel, snapshot, 0, NULL);
 
-		/*
-		 * Switch to per-tuple memory context and reset it for each tuple
-		 * produced, so we don't leak memory.
-		 */
-		oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-
 		while (table_scan_getnextslot(scan, ForwardScanDirection, oldslot))
 		{
 			TupleTableSlot *insertslot;
+
+			/*
+			 * Switch to per-tuple memory context and reset it for each tuple
+			 * produced, so we don't leak memory.
+			 */
+			oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
 			if (tab->rewrite > 0)
 			{
@@ -5036,11 +5036,11 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 								   ti_options, bistate);
 
 			ResetExprContext(econtext);
+			MemoryContextSwitchTo(oldCxt);
 
 			CHECK_FOR_INTERRUPTS();
 		}
 
-		MemoryContextSwitchTo(oldCxt);
 		table_endscan(scan);
 		UnregisterSnapshot(snapshot);
 
@@ -9648,14 +9648,15 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
 	scan = table_beginscan(rel, snapshot, 0, NULL);
 
-	/*
-	 * Switch to per-tuple memory context and reset it for each tuple
-	 * produced, so we don't leak memory.
-	 */
-	oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
+
+		/*
+		 * Switch to per-tuple memory context and reset it for each tuple
+		 * produced, so we don't leak memory.
+		 */
+		oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+
 		if (!ExecCheck(exprstate, econtext))
 			ereport(ERROR,
 					(errcode(ERRCODE_CHECK_VIOLATION),
@@ -9664,9 +9665,9 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
 					 errtableconstraint(rel, NameStr(constrForm->conname))));
 
 		ResetExprContext(econtext);
+		MemoryContextSwitchTo(oldcxt);
 	}
 
-	MemoryContextSwitchTo(oldcxt);
 	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
 	ExecDropSingleTupleTableSlot(slot);
@@ -9730,12 +9731,13 @@ validateForeignKeyConstraint(char *conname,
 	perTupCxt = AllocSetContextCreate(CurrentMemoryContext,
 									  "validateForeignKeyConstraint",
 									  ALLOCSET_SMALL_SIZES);
-	oldcxt = MemoryContextSwitchTo(perTupCxt);
 
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		LOCAL_FCINFO(fcinfo, 0);
 		TriggerData trigdata;
+
+		oldcxt = MemoryContextSwitchTo(perTupCxt);
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -9763,9 +9765,9 @@ validateForeignKeyConstraint(char *conname,
 		RI_FKey_check_ins(fcinfo);
 
 		MemoryContextReset(perTupCxt);
+		MemoryContextSwitchTo(oldcxt);
 	}
 
-	MemoryContextSwitchTo(oldcxt);
 	MemoryContextDelete(perTupCxt);
 	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
