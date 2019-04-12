@@ -1120,15 +1120,6 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 	{
 		Relation	rel;
 
-		/*
-		 * ZBORKED:
-		 *
-		 * We don't have multixact or frozenXid concept for zheap. This is a
-		 * hack to keep Asserts, probably we need some pluggable API here to
-		 * set frozen and multixact cutoff xid's.
-		 *
-		 * ISTM we should just get rid of these asserts.
-		 */
 		rel = heap_open(r1, NoLock);
 		if (!RelationStorageIsZHeap(rel))
 		{
@@ -1137,6 +1128,15 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 		}
 		heap_close(rel, NoLock);
 
+		/*
+		 * We can probably have an Assert to ensure that frozenXid and
+		 * cutoffMulti are valid.  However, for some of the storage engines
+		 * like zheap, we don't have frozenXid or cutoffMulti and this is a
+		 * common function, so we can't unconditionally add an Assert here.
+		 *
+		 * XXX - We might want to have a pluggable API to handle Asserts, but
+		 * there doesn't seem to be much value in that.
+		 */
 		relform1->relfrozenxid = frozenXid;
 		relform1->relminmxid = cutoffMulti;
 	}

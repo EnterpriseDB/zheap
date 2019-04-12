@@ -2609,8 +2609,7 @@ ZHeapTupleSatisfies(ZHeapTuple stup, Snapshot snapshot, Buffer buffer, ItemPoint
 			return ZHeapTupleSatisfiesDirty(stup, snapshot, buffer, ctid);
 			break;
 		case SNAPSHOT_HISTORIC_MVCC:
-			// ZBORKED: need a better error message
-			elog(PANIC, "unimplemented");
+			elog(ERROR, "unsupported snapshot type");
 			break;
 		case SNAPSHOT_NON_VACUUMABLE:
 			return ZHeapTupleSatisfiesNonVacuumable(stup, snapshot, buffer, ctid);
