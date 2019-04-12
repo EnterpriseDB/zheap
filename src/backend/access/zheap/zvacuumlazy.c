@@ -802,28 +802,31 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params,  LVRelStats *vacrelstats,
 		{
 			/*
 			 * An all-zeroes page could be left over if a backend extends the
-			 * relation but crashes before initializing the page. Reclaim such
-			 * pages for use.  See the similar code in lazy_scan_heap to know
-			 * why we have used relation extension lock.
+			 * relation but crashes before initializing the page, or when
+			 * bulk-extending the relation (which creates a number of empty
+			 * pages at the tail end of the relation, but enters them into the
+			 * FSM)Reclaim such pages for use.  See the similar code in
+			 * lazy_scan_heap to know why we have used relation extension lock.
 			 */
-			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-			LockRelationForExtension(onerel, ExclusiveLock);
-			UnlockRelationForExtension(onerel, ExclusiveLock);
-			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-			if (PageIsNew(page))
-			{
-				ereport(WARNING,
-						(errmsg("relation \"%s\" page %u is uninitialized --- fixing",
-								relname, blkno)));
-				Assert(BufferGetBlockNumber(buf) != ZHEAP_METAPAGE);
-				ZheapInitPage(page, BufferGetPageSize(buf));
-				empty_pages++;
-			}
-			freespace = PageGetZHeapFreeSpace(page);
-			MarkBufferDirty(buf);
+			Size		freespace = 0;
+
+			empty_pages++;
+
+			/*
+			 * Perform checking of FSM after releasing lock, the fsm is
+			 * approximate, after all.
+			 */
 			UnlockReleaseBuffer(buf);
 
-			RecordPageWithFreeSpace(onerel, blkno, freespace, nblocks);
+			if (GetRecordedFreeSpace(onerel, blkno) == 0)
+				freespace = BufferGetPageSize(buf) - SizeOfPageHeaderData;
+
+			if (freespace > 0)
+			{
+				RecordPageWithFreeSpace(onerel, blkno, freespace, nblocks);
+				elog(DEBUG1, "relation \"%s\" page %u is uninitialized and not in fsm, fixing",
+					 relname, blkno);
+			}
 			continue;
 		}
 
