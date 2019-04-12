@@ -1193,9 +1193,12 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	CommandId	cur_comm_cid = GetCurrentCommandId(false);
-	bool		visible;
 	bool		fetch_cid = true;
 	OffsetNumber offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
+	ZTupleTidOp	op;
+	HTSU_Result	result = HeapTupleInvisible;
+	bool		needs_recheck = false;
+	bool		needs_subxid = false;
 
 	*single_locker_xid = InvalidTransactionId;
 	*single_locker_trans_slot = InvalidXactSlotId;
@@ -1213,11 +1216,13 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 	if (!GetCurrentCommandIdUsed() && cur_comm_cid == curcid)
 		fetch_cid = false;
 
+	/* Get last operation type */
+	op = ZHeapTidOpFromInfomask(tuple->t_infomask);
+
 	/* Get transaction info */
 	ZHeapTupleGetTransInfo(zhtup, buffer, fetch_cid, zinfo);
 
-	if (tuple->t_infomask & ZHEAP_DELETED ||
-		tuple->t_infomask & ZHEAP_UPDATED)
+	if (op == ZTUPLETID_GONE)
 	{
 		/*
 		 * The tuple is deleted or non-inplace-updated and must be all visible
@@ -1234,33 +1239,15 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			if (fetch_cid && zinfo->cid >= curcid)
 			{
 				/* deleted after scan started, check previous tuple from undo */
-				visible = GetTupleFromUndo(zinfo->urec_ptr, zhtup, NULL, NULL,
-										   curcid, buffer, offnum, ctid,
-										   zinfo->trans_slot);
-				if (visible)
-					return HeapTupleSelfUpdated;
-				else
-					return HeapTupleInvisible;
+				result = HeapTupleSelfUpdated;
+				needs_recheck = true;
 			}
-			else
-				return HeapTupleInvisible;	/* deleted before scan started */
 		}
 		else if (TransactionIdIsInProgress(zinfo->xid))
 		{
-			visible = GetTupleFromUndo(zinfo->urec_ptr, zhtup, NULL, NULL,
-									   curcid, buffer, offnum, ctid,
-									   zinfo->trans_slot);
-
-			if (visible)
-			{
-				if (subxid)
-					ZHeapTupleGetSubXid(buffer, offnum, zinfo->urec_ptr,
-										subxid);
-
-				return HeapTupleBeingUpdated;
-			}
-			else
-				return HeapTupleInvisible;
+			result = HeapTupleBeingUpdated;
+			needs_recheck = true;
+			needs_subxid = true;
 		}
 		else if (TransactionIdDidCommit(zinfo->xid))
 		{
@@ -1275,14 +1262,10 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 				ZHeapTupleGetCtid(zhtup, buffer, zinfo->urec_ptr, ctid);
 
 			/* tuple is deleted or non-inplace-updated */
-			return HeapTupleUpdated;
+			result = HeapTupleUpdated;
 		}
 		else					/* transaction is aborted */
 		{
-			visible = GetTupleFromUndo(zinfo->urec_ptr, zhtup, NULL, NULL,
-									   curcid, buffer, offnum, ctid,
-									   zinfo->trans_slot);
-
 			/*
 			 * If updating transaction id is aborted and the tuple is visible
 			 * then return HeapTupleBeingUpdated, so that caller can apply the
@@ -1290,14 +1273,11 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			 * subtransaction id as it is only possible for top-level xid to
 			 * have pending undo actions.
 			 */
-			if (visible)
-				return HeapTupleBeingUpdated;
-			else
-				return HeapTupleInvisible;
+			result = HeapTupleBeingUpdated;
+			needs_recheck = true;
 		}
 	}
-	else if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED ||
-			 tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
+	else if (op == ZTUPLETID_MODIFIED)
 	{
 		*in_place_updated_or_locked = true;
 
@@ -1319,7 +1299,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 				found = GetLockerTransInfo(rel, zhtup, buffer, single_locker_trans_slot,
 										   NULL, single_locker_xid, NULL, NULL);
 			if (!found)
-				return HeapTupleMayBeUpdated;
+				result = HeapTupleMayBeUpdated;
 			else
 			{
 				/*
@@ -1330,11 +1310,10 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 				 * If the single locker is our current transaction, then also
 				 * we return being updated.
 				 */
-				return HeapTupleBeingUpdated;
+				result = HeapTupleBeingUpdated;
 			}
 		}
-
-		if (TransactionIdIsCurrentTransactionId(zinfo->xid))
+		else if (TransactionIdIsCurrentTransactionId(zinfo->xid))
 		{
 			if (fetch_cid && zinfo->cid >= curcid)
 			{
@@ -1342,16 +1321,11 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 				 * updated/locked after scan started, check previous tuple
 				 * from undo
 				 */
-				visible = GetTupleFromUndo(zinfo->urec_ptr, zhtup, NULL, NULL,
-										   curcid, buffer, offnum, ctid,
-										   zinfo->trans_slot);
-				if (visible)
-				{
-					if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
-						return HeapTupleBeingUpdated;
-					else
-						return HeapTupleSelfUpdated;
-				}
+				if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
+					result = HeapTupleBeingUpdated;
+				else
+					result = HeapTupleSelfUpdated;
+				needs_recheck = true;
 			}
 			else
 			{
@@ -1362,29 +1336,18 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 					 * in lock mode higher or equal to the required mode, then
 					 * it can skip locking the tuple.
 					 */
-					return HeapTupleBeingUpdated;
+					result = HeapTupleBeingUpdated;
 				}
 				else
 					/* updated before scan is started */
-					return HeapTupleMayBeUpdated;
+					result = HeapTupleMayBeUpdated;
 			}
 		}
 		else if (TransactionIdIsInProgress(zinfo->xid))
 		{
-			visible = GetTupleFromUndo(zinfo->urec_ptr, zhtup, NULL, NULL,
-									   curcid, buffer, offnum, ctid,
-									   zinfo->trans_slot);
-
-			if (visible)
-			{
-				if (subxid)
-					ZHeapTupleGetSubXid(buffer, offnum, zinfo->urec_ptr,
-										subxid);
-
-				return HeapTupleBeingUpdated;
-			}
-			else
-				return HeapTupleInvisible;
+			result = HeapTupleBeingUpdated;
+			needs_recheck = true;
+			needs_subxid = true;
 		}
 		else if (TransactionIdDidCommit(zinfo->xid))
 		{
@@ -1393,16 +1356,12 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			 * update it.
 			 */
 			if (lock_allowed || !XidInMVCCSnapshot(zinfo->xid, snapshot))
-				return HeapTupleMayBeUpdated;
+				result = HeapTupleMayBeUpdated;
 			else
-				return HeapTupleUpdated;
+				result = HeapTupleUpdated;
 		}
 		else					/* transaction is aborted */
 		{
-			visible = GetTupleFromUndo(zinfo->urec_ptr, zhtup, NULL, NULL,
-									   curcid, buffer, offnum, ctid,
-									   zinfo->trans_slot);
-
 			/*
 			 * If updating transaction id is aborted and the tuple is visible
 			 * then return HeapTupleBeingUpdated, so that caller can apply the
@@ -1410,37 +1369,49 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			 * subtransaction id as it is only possible for top-level xid to
 			 * have pending undo actions.
 			 */
-			if (visible)
-				return HeapTupleBeingUpdated;
-			else
-				return HeapTupleInvisible;
+			result = HeapTupleBeingUpdated;
+			needs_recheck = true;
 		}
+	}
+	else
+	{
+		/*
+		 * The tuple must be all visible if the transaction slot is cleared or
+		 * latest xid that has changed the tuple precedes smallest xid that has
+		 * undo.
+		 */
+		if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN ||
+			zinfo->epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+			result = HeapTupleMayBeUpdated;
+		else if (TransactionIdIsCurrentTransactionId(zinfo->xid))
+		{
+			if (fetch_cid && zinfo->cid >= curcid)
+				result = HeapTupleInvisible;	/* inserted after scan started */
+			else
+				result = HeapTupleMayBeUpdated;	/* inserted before scan started */
+		}
+		else if (TransactionIdIsInProgress(zinfo->xid))
+			result = HeapTupleInvisible;
+		else if (TransactionIdDidCommit(zinfo->xid))
+			result = HeapTupleMayBeUpdated;
 	}
 
 	/*
-	 * The tuple must be all visible if the transaction slot is cleared or
-	 * latest xid that has changed the tuple precedes smallest xid that has
-	 * undo.
+	 * If a recheck was requested, we must consult the undo log to determine
+	 * the final answer.
 	 */
-	if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN ||
-		zinfo->epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
-		return HeapTupleMayBeUpdated;
-
-	if (TransactionIdIsCurrentTransactionId(zinfo->xid))
+	if (needs_recheck &&
+		!GetTupleFromUndo(zinfo->urec_ptr, zhtup, NULL, NULL, curcid, buffer,
+						  offnum, ctid, zinfo->trans_slot))
 	{
-		if (fetch_cid && zinfo->cid >= curcid)
-			return HeapTupleInvisible;	/* inserted after scan started */
-		else
-			return HeapTupleMayBeUpdated;	/* inserted before scan started */
+		result = HeapTupleInvisible;
+		needs_subxid = false;
 	}
-	else if (TransactionIdIsInProgress(zinfo->xid))
-		return HeapTupleInvisible;
-	else if (TransactionIdDidCommit(zinfo->xid))
-		return HeapTupleMayBeUpdated;
-	else
-		return HeapTupleInvisible;
 
-	return HeapTupleInvisible;
+	if (needs_subxid)
+		ZHeapTupleGetSubXid(buffer, offnum, zinfo->urec_ptr, subxid);
+
+	return result;
 }
 
 /*
