@@ -63,7 +63,7 @@ select pgstatindex('test_hashidx');
 select pgstatginindex('test_hashidx');
 
 -- check that using any of these functions with unsupported relations will fail
-create table test_partitioned (a int) partition by range (a) using heap;
+create table test_partitioned (a int) partition by range (a);
 create index test_partitioned_index on test_partitioned(a);
 -- these should all fail
 select pgstattuple('test_partitioned');

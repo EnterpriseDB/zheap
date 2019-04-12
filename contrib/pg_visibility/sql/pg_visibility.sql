@@ -5,7 +5,7 @@ CREATE EXTENSION pg_visibility;
 --
 
 -- partitioned tables (the parent ones) don't have visibility maps
-create table test_partitioned (a int) partition by list (a) using heap;
+create table test_partitioned (a int) partition by list (a);
 -- these should all fail
 select pg_visibility('test_partitioned', 0);
 select pg_visibility_map('test_partitioned');

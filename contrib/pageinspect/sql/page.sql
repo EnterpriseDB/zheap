@@ -29,7 +29,7 @@ SELECT get_raw_page('test_rel_forks', 0) = get_raw_page('test_rel_forks', 'main'
 
 DROP TABLE test_rel_forks;
 
-CREATE TABLE test1 (a int, b int);
+CREATE TABLE test1 (a int, b int) USING heap;
 INSERT INTO test1 VALUES (16777217, 131584);
 
 SELECT pagesize, version FROM page_header(get_raw_page('test1', 0));
@@ -43,7 +43,7 @@ DROP TABLE test1;
 
 -- check that using any of these functions with a partitioned table or index
 -- would fail
-create table test_partitioned (a int) partition by range (a) USING heap;
+create table test_partitioned (a int) partition by range (a);
 create index test_partitioned_index on test_partitioned (a);
 select get_raw_page('test_partitioned', 0); -- error about partitioned table
 select get_raw_page('test_partitioned_index', 0); -- error about partitioned index

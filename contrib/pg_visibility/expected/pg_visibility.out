@@ -3,7 +3,7 @@ CREATE EXTENSION pg_visibility;
 -- check that using the module's functions with unsupported relations will fail
 --
 -- partitioned tables (the parent ones) don't have visibility maps
-create table test_partitioned (a int) partition by list (a) using heap;
+create table test_partitioned (a int) partition by list (a);
 -- these should all fail
 select pg_visibility('test_partitioned', 0);
 ERROR:  "test_partitioned" is not a table, materialized view, or TOAST table

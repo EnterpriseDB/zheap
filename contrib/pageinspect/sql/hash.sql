@@ -1,4 +1,4 @@
-CREATE TABLE test_hash (a int, b text);
+CREATE TABLE test_hash (a int, b text) USING heap;
 INSERT INTO test_hash VALUES (1, 'one');
 CREATE INDEX test_hash_a_idx ON test_hash USING hash (a);
 
