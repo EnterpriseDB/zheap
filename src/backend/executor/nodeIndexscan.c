@@ -934,6 +934,13 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 						  table_slot_callbacks(currentRelation));
 
 	/*
+	 * May return slots from underlying table, or from the reorder queue where
+	 * we only store heap tuples..
+	 */
+	if (node->indexorderby != NIL)
+		indexstate->ss.ps.scanopsfixed = false;
+
+	/*
 	 * Initialize result type and projection.
 	 */
 	ExecInitResultTypeTL(&indexstate->ss.ps);
