@@ -5,7 +5,7 @@ CREATE EXTENSION pg_visibility;
 --
 
 -- partitioned tables (the parent ones) don't have visibility maps
-create table test_partitioned (a int) partition by list (a);
+create table test_partitioned (a int) partition by list (a) using heap;
 -- these should all fail
 select pg_visibility('test_partitioned', 0);
 select pg_visibility_map('test_partitioned');
@@ -13,7 +13,7 @@ select pg_visibility_map_summary('test_partitioned');
 select pg_check_frozen('test_partitioned');
 select pg_truncate_visibility_map('test_partitioned');
 
-create table test_partition partition of test_partitioned for values in (1);
+create table test_partition partition of test_partitioned for values in (1) using heap;
 create index test_index on test_partition (a);
 -- indexes do not, so these all fail
 select pg_visibility('test_index', 0);
@@ -49,14 +49,14 @@ select pg_check_frozen('test_foreign_table');
 select pg_truncate_visibility_map('test_foreign_table');
 
 -- check some of the allowed relkinds
-create table regular_table (a int);
+create table regular_table (a int) using heap;
 insert into regular_table values (1), (2);
 vacuum regular_table;
 select count(*) > 0 from pg_visibility('regular_table');
 truncate regular_table;
 select count(*) > 0 from pg_visibility('regular_table');
 
-create materialized view matview_visibility_test as select * from regular_table;
+create materialized view matview_visibility_test using heap as select * from regular_table;
 vacuum matview_visibility_test;
 select count(*) > 0 from pg_visibility('matview_visibility_test');
 insert into regular_table values (1), (2);

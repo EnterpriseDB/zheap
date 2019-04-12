@@ -244,7 +244,7 @@ INSERT INTO trigger_test (i, v, foo) VALUES (2,'second line', '("(2)")');
 INSERT INTO trigger_test (i, v, foo) VALUES (3,'third line', '("(3)")');
 INSERT INTO trigger_test (i, v, foo) VALUES (4,'immortal', '("(4)")');
 INSERT INTO trigger_test (i, v) VALUES (101,'bad id');
-SELECT * FROM trigger_test;
+SELECT * FROM trigger_test ORDER BY i;
  i |                v                 |   foo   
 ---+----------------------------------+---------
  1 | first line(modified by trigger)  | ("(2)")
@@ -255,7 +255,7 @@ SELECT * FROM trigger_test;
 
 UPDATE trigger_test SET i = 5 where i=3;
 UPDATE trigger_test SET i = 100 where i=1;
-SELECT * FROM trigger_test;
+SELECT * FROM trigger_test ORDER BY i;
  i |                          v                           |   foo   
 ---+------------------------------------------------------+---------
  1 | first line(modified by trigger)                      | ("(2)")
@@ -282,15 +282,15 @@ $$ LANGUAGE plperl;
 CREATE TRIGGER "test_trigger_recurse" BEFORE INSERT ON trigger_test
 FOR EACH ROW EXECUTE PROCEDURE "trigger_recurse"();
 INSERT INTO trigger_test (i, v) values (10000, 'top');
-SELECT * FROM trigger_test;
+SELECT * FROM trigger_test ORDER BY i;
    i   |                          v                           |   foo   
 -------+------------------------------------------------------+---------
      1 | first line(modified by trigger)                      | ("(2)")
      2 | second line(modified by trigger)                     | ("(3)")
      4 | immortal                                             | ("(4)")
      5 | third line(modified by trigger)(modified by trigger) | ("(5)")
- 20000 | child                                                | 
  10000 | top                                                  | 
+ 20000 | child                                                | 
 (6 rows)
 
 CREATE OR REPLACE FUNCTION immortal() RETURNS trigger AS $$
@@ -306,7 +306,7 @@ $$ LANGUAGE plperl;
 CREATE TRIGGER "immortal_trig" BEFORE DELETE ON trigger_test
 FOR EACH ROW EXECUTE PROCEDURE immortal('immortal');
 DELETE FROM trigger_test;
-SELECT * FROM trigger_test;
+SELECT * FROM trigger_test ORDER BY i;
  i |    v     |   foo   
 ---+----------+---------
  4 | immortal | ("(4)")

@@ -12,6 +12,9 @@ ISOLATION = mxact delayed_startup ondisk_startup concurrent_ddl_dml \
 REGRESS_OPTS = --temp-config $(top_srcdir)/contrib/test_decoding/logical.conf
 ISOLATION_OPTS = --temp-config $(top_srcdir)/contrib/test_decoding/logical.conf
 
+# Temp fix while zheap is not supported
+PGOPTIONS += -c default_table_access_method=heap
+
 # Disabled because these tests require "wal_level=logical", which
 # typical installcheck users do not have (e.g. buildfarm clients).
 NO_INSTALLCHECK = 1

@@ -14,7 +14,7 @@ $$;
 
 CALL transaction_test1();
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 TRUNCATE test1;
@@ -30,7 +30,7 @@ for i in range(0, 10):
         plpy.rollback()
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 TRUNCATE test1;
@@ -50,7 +50,7 @@ $$;
 
 SELECT transaction_test2();
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 -- also not allowed if procedure is called from a function
@@ -63,7 +63,7 @@ $$;
 
 SELECT transaction_test3();
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 -- DO block inside function
@@ -97,7 +97,7 @@ for row in plpy.cursor("SELECT * FROM test2 ORDER BY x"):
     plpy.commit()
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 -- check that this doesn't leak a holdable portal
 SELECT * FROM pg_cursors;
@@ -112,7 +112,7 @@ for row in plpy.cursor("SELECT * FROM test2 ORDER BY x"):
     plpy.commit()
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 SELECT * FROM pg_cursors;
 
@@ -126,7 +126,7 @@ for row in plpy.cursor("SELECT * FROM test2 ORDER BY x"):
     plpy.rollback()
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 SELECT * FROM pg_cursors;
 
@@ -143,7 +143,7 @@ for row in plpy.cursor("SELECT * FROM test2 ORDER BY x"):
         plpy.rollback()
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 SELECT * FROM pg_cursors;
 

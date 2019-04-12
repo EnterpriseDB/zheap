@@ -6,7 +6,7 @@ CREATE EXTENSION pgstattuple;
 -- indexes should be that.
 --
 
-create table test (a int primary key, b int[]);
+create table test (a int primary key, b int[]) using heap;
 
 select * from pgstattuple('test');
 select * from pgstattuple('test'::text);
@@ -63,7 +63,7 @@ select pgstatindex('test_hashidx');
 select pgstatginindex('test_hashidx');
 
 -- check that using any of these functions with unsupported relations will fail
-create table test_partitioned (a int) partition by range (a);
+create table test_partitioned (a int) partition by range (a) using heap;
 create index test_partitioned_index on test_partitioned(a);
 -- these should all fail
 select pgstattuple('test_partitioned');
@@ -95,7 +95,7 @@ select pgstatginindex('test_foreign_table');
 select pgstathashindex('test_foreign_table');
 
 -- a partition of a partitioned table should work though
-create table test_partition partition of test_partitioned for values from (1) to (100);
+create table test_partition partition of test_partitioned for values from (1) to (100) using heap;
 select pgstattuple('test_partition');
 select pgstattuple_approx('test_partition');
 select pg_relpages('test_partition');
