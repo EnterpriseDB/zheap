@@ -2018,8 +2018,7 @@ zheap_xlog_unused(XLogReaderState *record)
 	{
 		Page		page = (Page) BufferGetPage(buffer);
 
-		// ZBORKED: unsigned type, can't be smaller, compiler laments
-		// Assert(uncnt >= 0);
+		Assert(uncnt > 0);
 
 		for (i = 0; i < uncnt; i++)
 		{
