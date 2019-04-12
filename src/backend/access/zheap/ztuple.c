@@ -645,7 +645,7 @@ zheap_tuple_attr_equals(TupleDesc tupdesc, Bitmapset *att_list,
 
 		/* If one value is NULL and other is not, they are not equal. */
 		if (old_isnull[attno - 1] != new_isnull[attno - 1])
-			bms_add_member(modified, attno - FirstLowInvalidHeapAttributeNumber);
+			modified = bms_add_member(modified, attno - FirstLowInvalidHeapAttributeNumber);
 
 		/* If both are NULL, they can be considered equal. */
 		else if (old_isnull[attno - 1])
