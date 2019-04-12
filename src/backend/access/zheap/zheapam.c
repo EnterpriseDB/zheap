@@ -12349,6 +12349,272 @@ CheckAndLockTPDPage(Relation relation, int new_trans_slot_id, int old_trans_slot
 }
 
 /*
+ * copy_zrelation_data - copy zheap data
+ *
+ * In this method, we copy the main fork of a zheap relation block by block.
+ * Here is the algorithm for the same:
+ * For each zheap page,
+ * a. If it's a meta page, copy it as it is.
+ * b. If it's a TPD page, copy it as it is.
+ * c. If it's a zheap data page, apply pending aborts, copy the page and
+ *    the corresponding TPD page (if any).
+ *
+ * Please note that we may copy a tpd page multiple times. The reason is one
+ * tpd page can be referred by multiple zheap pages. While applying pending
+ * aborts on a zheap page, we also need to modify the transaction and undo
+ * information in the corresponding TPD page, hence, we need to copy it again
+ * to reflect the changes.
+ */
+void
+copy_zrelation_data(Relation srcRel, SMgrRelation dst)
+{
+	Page		page;
+	bool		use_wal;
+	BlockNumber nblocks;
+	BlockNumber blkno;
+	SMgrRelation src = srcRel->rd_smgr;
+	char relpersistence = srcRel->rd_rel->relpersistence;
+
+	/*
+	 * We need to log the copied data in WAL iff WAL archiving/streaming is
+	 * enabled AND it's a permanent relation.
+	 */
+	use_wal = XLogIsNeeded() && (relpersistence == RELPERSISTENCE_PERMANENT);
+
+	nblocks = smgrnblocks(src, MAIN_FORKNUM);
+
+	for (blkno = 0; blkno < nblocks; blkno++)
+	{
+		BlockNumber	target_blkno = InvalidBlockNumber;
+		BlockNumber	tpd_blkno = InvalidBlockNumber;
+		Buffer		buffer = InvalidBuffer;
+
+		/* If we got a cancel signal during the copy of the data, quit */
+		CHECK_FOR_INTERRUPTS();
+
+		if (blkno != ZHEAP_METAPAGE)
+		{
+			buffer = ReadBuffer(srcRel, blkno);
+
+			/* If it's a zheap page, apply the pending undo actions */
+			if (PageGetSpecialSize(BufferGetPage(buffer)) !=
+				MAXALIGN(sizeof(TPDPageOpaqueData)))
+				zbuffer_exec_pending_rollback(srcRel, buffer, &tpd_blkno);
+		}
+
+		target_blkno = blkno;
+
+copy_buffer:
+		/* Read the buffer if not already done. */
+		if (!BufferIsValid(buffer))
+			buffer = ReadBuffer(srcRel, target_blkno);
+		page = (Page) BufferGetPage(buffer);
+
+		/*
+		 * WAL-log the copied page. Unfortunately we don't know what kind of a
+		 * page this is, so we have to log the full page including any unused
+		 * space.
+		 */
+		if (use_wal)
+			log_newpage(&dst->smgr_rnode.node, MAIN_FORKNUM, target_blkno, page, false);
+
+		PageSetChecksumInplace(page, target_blkno);
+
+		/*
+		 * Now write the page.  We say isTemp = true even if it's not a temp
+		 * rel, because there's no need for smgr to schedule an fsync for this
+		 * write; we'll do it ourselves below.
+		 */
+		smgrextend(dst, MAIN_FORKNUM, target_blkno, page, true);
+
+		ReleaseBuffer(buffer);
+
+		/*
+		 * If we have rolled back some transaction from TPD of the target page
+		 * and the TPD block number is lesser than the target block number, we
+		 * have to write the TPD page again.
+		 */
+		if (BlockNumberIsValid(tpd_blkno) && tpd_blkno < target_blkno)
+		{
+			target_blkno = tpd_blkno;
+			tpd_blkno = InvalidBlockNumber;
+			buffer = InvalidBuffer;
+			goto copy_buffer;
+		}
+	}
+
+	/*
+	 * If the rel is WAL-logged, must fsync before commit.  We use heap_sync
+	 * to ensure that the toast table gets fsync'd too.  (For a temp or
+	 * unlogged rel we don't care since the data will be gone after a crash
+	 * anyway.)
+	 *
+	 * It's obvious that we must do this when not WAL-logging the copy. It's
+	 * less obvious that we have to do it even if we did WAL-log the copied
+	 * pages. The reason is that since we're copying outside shared buffers, a
+	 * CHECKPOINT occurring during the copy has no way to flush the previously
+	 * written data to disk (indeed it won't know the new rel even exists).  A
+	 * crash later on would replay WAL from the checkpoint, therefore it
+	 * wouldn't replay our earlier WAL entries. If we do not fsync those pages
+	 * here, they might still not be on disk when the crash occurs.
+	 */
+	if (relpersistence == RELPERSISTENCE_PERMANENT)
+		smgrimmedsync(dst, MAIN_FORKNUM);
+}
+
+/*
+ * Get the latestRemovedXid from the zheap pages pointed at by the index
+ * tuples being deleted.
+ *
+ * This puts the work for calculating latestRemovedXid into the recovery path
+ * rather than the primary path.
+ *
+ * It's possible that this generates a fair amount of I/O, since an index
+ * block may have hundreds of tuples being deleted. To amortize that cost to
+ * some degree, this uses prefetching and combines repeat accesses to the same
+ * block.
+ *
+ * XXX: might be worth being smarter about looking up transaction information
+ * in bulk too.
+ */
+TransactionId
+zheap_compute_xid_horizon_for_tuples(Relation rel,
+									 ItemPointerData *tids,
+									 int nitems)
+{
+	TransactionId latestRemovedXid = InvalidTransactionId;
+	BlockNumber hblkno;
+	Buffer		buf = InvalidBuffer;
+	Page		hpage;
+
+	/*
+	 * Sort to avoid repeated lookups for the same page, and to make it more
+	 * likely to access items in an efficient order. In particular this
+	 * ensures thaf if there are multiple pointers to the same page, they all
+	 * get processed looking up and locking the page just once.
+	 */
+	qsort((void *) tids, nitems, sizeof(ItemPointerData),
+		  (int(*) (const void *, const void *)) ItemPointerCompare);
+
+	/* prefetch all pages */
+#ifdef USE_PREFETCH
+	hblkno = InvalidBlockNumber;
+	for (int i = 0; i < nitems; i++)
+	{
+		ItemPointer htid = &tids[i];
+
+		if (hblkno == InvalidBlockNumber ||
+			ItemPointerGetBlockNumber(htid) != hblkno)
+		{
+			hblkno = ItemPointerGetBlockNumber(htid);
+
+			PrefetchBuffer(rel, MAIN_FORKNUM, hblkno);
+		}
+	}
+#endif
+
+	/* Iterate over all tids, and check their horizon */
+	hblkno = InvalidBlockNumber;
+	for (int i = 0; i < nitems; i++)
+	{
+		ItemPointer htid = &tids[i];
+		ItemId hitemid;
+		OffsetNumber hoffnum;
+
+		/*
+		 * Read zheap buffer, but avoid refetching if it's the same block as
+		 * required for the last tid.
+		 */
+		if (hblkno == InvalidBlockNumber ||
+			ItemPointerGetBlockNumber(htid) != hblkno)
+		{
+			/* release old buffer */
+			if (BufferIsValid(buf))
+			{
+				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+				ReleaseBuffer(buf);
+			}
+
+			hblkno = ItemPointerGetBlockNumber(htid);
+
+			buf = ReadBuffer(rel, hblkno);
+			hpage = BufferGetPage(buf);
+
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+		}
+
+		hoffnum = ItemPointerGetOffsetNumber(htid);
+		hitemid = PageGetItemId(hpage, hoffnum);
+
+		/*
+		 * If the zheap item has storage, then read the header and use that to
+		 * set latestRemovedXid.
+		 *
+		 * We have special handling for zheap tuples that are deleted and
+		 * don't have storage.
+		 *
+		 * Some LP_DEAD items may not be accessible, so we ignore them.
+		 */
+		if (ItemIdIsDeleted(hitemid))
+		{
+			TransactionId   xid;
+			ZHeapTupleData	ztup;
+
+			ztup.t_self = *htid;
+			ztup.t_len = ItemIdGetLength(hitemid);
+			ztup.t_tableOid = InvalidOid;
+			ztup.t_data = NULL;
+			ZHeapTupleGetTransInfo(&ztup, buf, NULL, NULL, &xid, NULL, NULL,
+				false, InvalidSnapshot);
+			if (TransactionIdDidCommit(xid) &&
+				TransactionIdFollows(xid, latestRemovedXid))
+				latestRemovedXid = xid;
+		}
+		else if (ItemIdHasStorage(hitemid))
+		{
+			ZHeapTupleHeader ztuphdr;
+			ZHeapTupleData	ztup;
+
+			ztuphdr = (ZHeapTupleHeader)PageGetItem(hpage, hitemid);
+			ztup.t_self = *htid;
+			ztup.t_len = ItemIdGetLength(hitemid);
+			ztup.t_tableOid = InvalidOid;
+			ztup.t_data = ztuphdr;
+
+			if (ztuphdr->t_infomask & ZHEAP_DELETED
+				|| ztuphdr->t_infomask & ZHEAP_UPDATED)
+			{
+				TransactionId	xid;
+
+				ZHeapTupleGetTransInfo(&ztup, buf, NULL, NULL, &xid,
+					NULL, NULL, false, InvalidSnapshot);
+				ZHeapTupleHeaderAdvanceLatestRemovedXid(ztuphdr, xid, &latestRemovedXid);
+			}
+		}
+		else if (ItemIdIsDead(hitemid))
+		{
+			/*
+			 * Conjecture: if hitemid is dead then it had xids before the xids
+			 * marked on LP_NORMAL items. So we just ignore this item and move
+			 * onto the next, for the purposes of calculating
+			 * latestRemovedxids.
+			 */
+		}
+		else
+			Assert(!ItemIdIsUsed(hitemid));
+
+	}
+
+	if (BufferIsValid(buf))
+	{
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		ReleaseBuffer(buf);
+	}
+
+	return latestRemovedXid;
+}
+
+/*
  * TupleTableSlotOps implementation for ZheapHeapTupleTableSlot.
  */
 

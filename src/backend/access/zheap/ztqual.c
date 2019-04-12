@@ -1600,7 +1600,7 @@ check_trans_slot:
 /*
  * ZHeapTupleSatisfiesUpdate
  *
- *	The retrun values for this API are same as HeapTupleSatisfiesUpdate.
+ *	The return value for this API are same as HeapTupleSatisfiesUpdate.
  *	However, there is a notable difference in the way to determine visibility
  *	of tuples.  We need to traverse undo record chains to determine the
  *	visibility of tuple.

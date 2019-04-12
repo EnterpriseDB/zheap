@@ -21,6 +21,7 @@
 #include "access/tableam.h"
 #include "access/undoinsert.h"
 #include "access/zhtup.h"
+#include "storage/smgr.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
 
@@ -259,6 +260,10 @@ typedef struct ZHeapFreeOffsetRanges
 	OffsetNumber endOffset[MaxOffsetNumber];
 	int nranges;
 } ZHeapFreeOffsetRanges;
+
+extern void copy_zrelation_data(Relation srcRel, SMgrRelation dst);
+extern TransactionId zheap_compute_xid_horizon_for_tuples(Relation rel,
+							ItemPointerData *tids, int nitems);
 
 /* in zheap/zvacuumlazy.c */
 struct VacuumParams;
