@@ -3116,6 +3116,7 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 			newtuple = NULL;
 		}
 	}
+	ExecMaterializeSlot(newslot);
 	if (should_free_trig)
 		heap_freetuple(trigtuple);
 
