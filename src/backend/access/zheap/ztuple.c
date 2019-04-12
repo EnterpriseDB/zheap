@@ -855,7 +855,7 @@ slot_deform_ztuple(TupleTableSlot *slot, ZHeapTuple tuple,
 	bits8	   *bp = tup->t_bits;	/* ptr to null bitmap in tuple */
 
 	/* We can only fetch as many attributes as the tuple has. */
-	natts = Min(HeapTupleHeaderGetNatts(tuple->t_data), natts);
+	natts = Min(ZHeapTupleHeaderGetNatts(tuple->t_data), natts);
 
 	/*
 	 * Check whether the first call for this tuple, and initialize or restore
