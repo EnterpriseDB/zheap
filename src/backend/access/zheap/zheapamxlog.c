@@ -53,6 +53,7 @@ zheap_xlog_insert(XLogReaderState *record)
 	TransactionId xid = XidFromFullTransactionId(fxid);
 	uint32		xid_epoch = EpochFromFullTransactionId(fxid);
 	bool		skip_undo;
+	ZHeapPrepareUndoInfo zh_undo_info;
 
 	/*
 	 * We can skip inserting undo records if the tuples are to be marked as
@@ -106,13 +107,17 @@ zheap_xlog_insert(XLogReaderState *record)
 		 */
 		uint32		dummy_specToken = 1;
 
+		zh_undo_info.reloid = xlundohdr->reloid;
+		zh_undo_info.blkno = ItemPointerGetBlockNumber(&target_tid);
+		zh_undo_info.offnum = ItemPointerGetOffsetNumber(&target_tid);
+		zh_undo_info.prev_urecptr = xlundohdr->blkprev;
+		zh_undo_info.fxid = fxid;
+		zh_undo_info.cid = FirstCommandId;
+		zh_undo_info.undo_persistence = UNDO_PERMANENT;
+
 		/* prepare an undo record */
-		urecptr = zheap_prepare_undoinsert(xlundohdr->reloid,
-										   ItemPointerGetBlockNumber(&target_tid),
-										   ItemPointerGetOffsetNumber(&target_tid),
-										   xlundohdr->blkprev, fxid,
-										   FirstCommandId, dummy_specToken,
-										   UNDO_PERMANENT,
+		urecptr = zheap_prepare_undoinsert(&zh_undo_info,
+										   dummy_specToken,
 										   xlrec->flags & XLZ_INSERT_IS_SPECULATIVE ? true : false,
 										   &undorecord, record, NULL);
 		InsertPreparedUndo();
