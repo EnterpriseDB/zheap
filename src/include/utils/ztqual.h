@@ -50,8 +50,6 @@ extern void ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid,
 					TransactionId *xid, CommandId *cid);
 
 /* These are the "satisfies" test routines for the zheap. */
-extern ZHeapTuple ZHeapTupleSatisfiesMVCC(ZHeapTuple zhtup,
-										  Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern ZHeapTuple ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot,
 									   Buffer buffer, bool *all_dead);
 extern TM_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,
@@ -63,21 +61,13 @@ extern TM_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,
 						  bool *in_place_updated_or_locked);
 extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin,
 					   Buffer buffer);
-extern ZHeapTuple ZHeapTupleSatisfiesSelf(ZHeapTuple zhtup, Snapshot snapshot,
-										  Buffer buffer, ItemPointer ctid);
-extern ZHeapTuple ZHeapTupleSatisfiesDirty(ZHeapTuple zhtup,
-										   Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern ZHeapTuple ZHeapTupleSatisfiesAny(ZHeapTuple zhtup,
 										 Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern HTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * zhtup,
 							  TransactionId OldestXmin, Buffer buffer,
 							  TransactionId *xid, SubTransactionId *subxid);
-extern ZHeapTuple ZHeapTupleSatisfiesNonVacuumable(ZHeapTuple ztup, Snapshot snapshot,
-												   Buffer buffer, ItemPointer ctid);
 extern ZHTSV_Result ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
 											  Buffer buffer, TransactionId *xid);
-extern ZHeapTuple ZHeapTupleSatisfiesToast(ZHeapTuple ztup, Snapshot snapshot,
-										   Buffer buffer, ItemPointer ctid);
 
 extern ZHeapTuple ZHeapTupleSatisfies(ZHeapTuple stup, Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 
