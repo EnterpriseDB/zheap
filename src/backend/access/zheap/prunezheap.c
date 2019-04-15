@@ -167,7 +167,7 @@ zheap_page_prune_opt(Relation relation, Buffer buffer,
  * Caller must have pin and buffer cleanup lock on the page.
  *
  * OldestXmin is the cutoff XID used to distinguish whether tuples are DEAD
- * or RECENTLY_DEAD (see ZHeapTupleSatisfiesVacuum).
+ * or RECENTLY_DEAD (see ZHeapTupleSatisfiesOldestXmin).
  *
  * To perform pruning, we make the copy of the page.  We don't scribble on
  * that copy, rather it is only used during repair fragmentation to copy
@@ -526,7 +526,8 @@ zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 	 */
 	tupdead = recent_dead = false;
 
-	switch (ZHeapTupleSatisfiesVacuum(&tup, OldestXmin, buffer, &xid))
+	switch (ZHeapTupleSatisfiesOldestXmin(&tup, OldestXmin, buffer, false,
+										  NULL, &xid, NULL))
 	{
 		case ZHEAPTUPLE_DEAD:
 			tupdead = true;
@@ -565,7 +566,7 @@ zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 			 */
 			break;
 		default:
-			elog(ERROR, "unexpected ZHeapTupleSatisfiesVacuum result");
+			elog(ERROR, "unexpected ZHeapTupleSatisfiesOldestXmin result");
 			break;
 	}
 

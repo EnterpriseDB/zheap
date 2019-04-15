@@ -904,8 +904,8 @@ ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
 		ZHTSV_Result	result;
 
 		result =
-			ZHeapTupleSatisfiesOldestXmin(&zhtup, snapshot->xmin, buffer,
-										  &xid, NULL);
+			ZHeapTupleSatisfiesOldestXmin(zhtup, snapshot->xmin, buffer, true,
+										  NULL, &xid, NULL);
 
 		return result == ZHEAPTUPLE_DEAD ? zhtup : NULL;
 	}
@@ -1594,11 +1594,11 @@ ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer,
  *	be performed, we need the item pointer.
  */
 ZHTSV_Result
-ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
-							  Buffer buffer, TransactionId *xid,
-							  SubTransactionId *subxid)
+ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
+							  Buffer buffer, bool resolve_abort_in_progress,
+							  ZHeapTuple *preabort_tuple,
+							  TransactionId *xid, SubTransactionId *subxid)
 {
-	ZHeapTuple	zhtup = *ztuple;
 	ZHeapTupleHeader tuple = zhtup->t_data;
 	ZHeapTupleTransInfo	zinfo;
 	OffsetNumber offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
@@ -1646,6 +1646,11 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 		}
 		else					/* transaction is aborted */
 		{
+			ZHeapTuple	undo_tuple;
+
+			if (!resolve_abort_in_progress)
+				return ZHEAPTUPLE_ABORT_IN_PROGRESS;
+
 			/*
 			 * For aborted transactions, we need to fetch the tuple from undo
 			 * chain.  It should be OK to use SnapshotSelf semantics because
@@ -1658,13 +1663,17 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 			 * ZBORKED: This code path needs tests.  I was not able to hit it
 			 * in either automated or manual testing.
 			 */
-			GetTupleFromUndo(zinfo.urec_ptr, zhtup, ztuple, SnapshotSelf,
+			GetTupleFromUndo(zinfo.urec_ptr, zhtup, &undo_tuple,
+							 SnapshotSelf,
 							 InvalidCommandId, buffer, offnum, NULL,
 							 zinfo.trans_slot);
-			if (zhtup != *ztuple)
-				pfree(zhtup);
 
-			if (*ztuple != NULL)
+			if (preabort_tuple)
+				*preabort_tuple = undo_tuple;
+			else if (undo_tuple != zhtup)
+				pfree(undo_tuple);
+
+			if (undo_tuple != NULL)
 				return ZHEAPTUPLE_LIVE;
 			else
 			{
@@ -1714,8 +1723,13 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 		return ZHEAPTUPLE_LIVE;
 	else						/* transaction is aborted */
 	{
+		if (!resolve_abort_in_progress)
+			return ZHEAPTUPLE_ABORT_IN_PROGRESS;
+
 		if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED)
 		{
+			ZHeapTuple	undo_tuple;
+
 			/*
 			 * For aborted transactions, we need to fetch the tuple from undo
 			 * chain.  It should be OK to use SnapshotSelf semantics because
@@ -1728,13 +1742,16 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 			 * ZBORKED: This code path needs tests.  I was not able to hit it
 			 * in either automated or manual testing.
 			 */
-			GetTupleFromUndo(zinfo.urec_ptr, zhtup, ztuple, SnapshotSelf,
+			GetTupleFromUndo(zinfo.urec_ptr, zhtup, &undo_tuple, SnapshotSelf,
 							 InvalidCommandId, buffer, offnum, NULL,
 							 zinfo.trans_slot);
-			if (zhtup != *ztuple)
-				pfree(zhtup);
 
-			if (*ztuple != NULL)
+			if (preabort_tuple)
+				*preabort_tuple = undo_tuple;
+			else if (undo_tuple != zhtup)
+				pfree(undo_tuple);
+
+			if (undo_tuple != NULL)
 				return ZHEAPTUPLE_LIVE;
 		}
 
@@ -1743,103 +1760,6 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 		 * return the aborted transaction id.
 		 */
 		return ZHEAPTUPLE_DEAD;
-	}
-
-	return ZHEAPTUPLE_LIVE;
-}
-
-/*
- * ZHeapTupleSatisfiesVacuum
- * Similar to ZHeapTupleSatisfiesOldestXmin, but it behaves differently for
- * handling aborted transaction.
- *
- * For aborted transactions, we don't fetch any prior committed version of the
- * tuple. Instead, we return ZHEAPTUPLE_ABORT_IN_PROGRESS and return the aborted
- * xid. The caller should avoid such tuple for any kind of pruning/vacuuming.
- */
-ZHTSV_Result
-ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
-						  Buffer buffer, TransactionId *xid)
-{
-	ZHeapTupleHeader tuple = zhtup->t_data;
-	ZHeapTupleTransInfo	zinfo;
-
-	Assert(ItemPointerIsValid(&zhtup->t_self));
-	Assert(zhtup->t_tableOid != InvalidOid);
-
-	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, false, &zinfo);
-	*xid = zinfo.xid;
-
-	if (tuple->t_infomask & ZHEAP_DELETED ||
-		tuple->t_infomask & ZHEAP_UPDATED)
-	{
-		/*
-		 * The tuple is deleted and must be all visible if the transaction
-		 * slot is cleared or latest xid that has changed the tuple precedes
-		 * smallest xid that has undo.
-		 */
-		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
-			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
-			return ZHEAPTUPLE_DEAD;
-
-		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-			return ZHEAPTUPLE_DELETE_IN_PROGRESS;
-		else if (TransactionIdIsInProgress(zinfo.xid))
-		{
-			return ZHEAPTUPLE_DELETE_IN_PROGRESS;
-		}
-		else if (TransactionIdDidCommit(zinfo.xid))
-		{
-			/*
-			 * Deleter committed, but perhaps it was recent enough that some
-			 * open transactions could still see the tuple.
-			 */
-			if (!TransactionIdPrecedes(zinfo.xid, OldestXmin))
-				return ZHEAPTUPLE_RECENTLY_DEAD;
-
-			/* Otherwise, it's dead and removable */
-			return ZHEAPTUPLE_DEAD;
-		}
-		else					/* transaction is aborted */
-		{
-			return ZHEAPTUPLE_ABORT_IN_PROGRESS;
-		}
-	}
-	else if (tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
-	{
-		/*
-		 * We can't take any decision if the tuple is marked as locked-only.
-		 * It's possible that inserted transaction took a lock on the tuple
-		 * Later, if it rolled back, we should return HEAPTUPLE_DEAD, or if
-		 * it's still in progress, we should return
-		 * HEAPTUPLE_INSERT_IN_PROGRESS. Similarly, if the inserted
-		 * transaction got committed, we should return HEAPTUPLE_LIVE. The
-		 * subsequent checks already takes care of all these possible
-		 * scenarios, so we don't need any extra checks here.
-		 */
-	}
-
-	/* The tuple is either a newly inserted tuple or is in-place updated. */
-
-	/*
-	 * The tuple must be all visible if the transaction slot is cleared or
-	 * latest xid that has changed the tuple precedes smallest xid that has
-	 * undo.
-	 */
-	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
-		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
-		return ZHEAPTUPLE_LIVE;
-
-	if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-		return ZHEAPTUPLE_INSERT_IN_PROGRESS;
-	else if (TransactionIdIsInProgress(zinfo.xid))
-		return ZHEAPTUPLE_INSERT_IN_PROGRESS;	/* in insertion by other */
-	else if (TransactionIdDidCommit(zinfo.xid))
-		return ZHEAPTUPLE_LIVE;
-	else						/* transaction is aborted */
-	{
-		return ZHEAPTUPLE_ABORT_IN_PROGRESS;
 	}
 
 	return ZHEAPTUPLE_LIVE;
@@ -1908,7 +1828,9 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 	if (tuple->t_data->t_infomask & ZHEAP_INPLACE_UPDATED)
 		tuple_inplace_updated = true;
 
-	htsvResult = ZHeapTupleSatisfiesOldestXmin(&tuple, TransactionXmin, buffer, xid, NULL);
+	htsvResult =
+		ZHeapTupleSatisfiesOldestXmin(tuple, TransactionXmin, buffer, true,
+									  NULL, xid, NULL);
 	pfree(tuple);
 	switch (htsvResult)
 	{

@@ -797,8 +797,10 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 			LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 
 			targztuple = zheap_copytuple(zheapTuple);
-			switch (ZHeapTupleSatisfiesOldestXmin(&targztuple, OldestXmin,
-												  scan->rs_cbuf, &xwait, &subxid_xwait))
+			switch (ZHeapTupleSatisfiesOldestXmin(targztuple, OldestXmin,
+												  scan->rs_cbuf, true,
+												  &targztuple, &xwait,
+												  &subxid_xwait))
 			{
 				case ZHEAPTUPLE_DEAD:
 					/* Definitely dead, we can ignore it */
@@ -1326,7 +1328,9 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 		targtuple = zheap_gettuple(scan->rs_base.rs_rd, scan->rs_cbuf,
 								   scan->rs_cindex);
 
-		switch (ZHeapTupleSatisfiesOldestXmin(&targtuple, OldestXmin, scan->rs_cbuf, &xid, NULL))
+		switch (ZHeapTupleSatisfiesOldestXmin(targtuple, OldestXmin,
+											  scan->rs_cbuf, true,
+											  &targtuple, &xid, NULL))
 		{
 			case ZHEAPTUPLE_LIVE:
 				sample_it = true;

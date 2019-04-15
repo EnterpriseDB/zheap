@@ -1014,7 +1014,8 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 
 			tupgone = false;
 
-			switch (ZHeapTupleSatisfiesVacuum(&tuple, OldestXmin, buf, &xid))
+			switch (ZHeapTupleSatisfiesOldestXmin(&tuple, OldestXmin, buf,
+												  false, NULL, &xid, NULL))
 			{
 				case ZHEAPTUPLE_DEAD:
 
@@ -1068,7 +1069,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 					all_visible = false;
 					break;
 				default:
-					elog(ERROR, "unexpected ZHeapTupleSatisfiesVacuum result");
+					elog(ERROR, "unexpected ZHeapTupleSatisfiesOldestXmin result");
 					break;
 			}
 
@@ -1568,7 +1569,8 @@ zheap_page_is_all_visible(Relation rel, Buffer buf,
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationGetRelid(rel);
 
-		switch (ZHeapTupleSatisfiesVacuum(&tuple, OldestXmin, buf, &xid))
+		switch (ZHeapTupleSatisfiesOldestXmin(&tuple, OldestXmin, buf,
+											  false, NULL, &xid, NULL))
 		{
 			case ZHEAPTUPLE_LIVE:
 				{
@@ -1598,7 +1600,7 @@ zheap_page_is_all_visible(Relation rel, Buffer buf,
 					break;
 				}
 			default:
-				elog(ERROR, "unexpected ZHeapTupleSatisfiesVacuum result");
+				elog(ERROR, "unexpected ZHeapTupleSatisfiesOldestXmin result");
 				break;
 		}
 	}							/* scan along page */

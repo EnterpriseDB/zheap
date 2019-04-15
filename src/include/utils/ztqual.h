@@ -26,7 +26,7 @@ typedef struct ZHeapTupleTransInfo
 	UndoRecPtr urec_ptr;
 } ZHeapTupleTransInfo;
 
-/* Result codes for ZHeapTupleSatisfiesVacuum */
+/* Result codes for ZHeapTupleSatisfiesOldestXmin */
 typedef enum
 {
 	ZHEAPTUPLE_DEAD,			/* tuple is dead and deletable */
@@ -65,11 +65,11 @@ extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin,
 					   Buffer buffer);
 extern ZHeapTuple ZHeapTupleSatisfiesAny(ZHeapTuple zhtup,
 										 Snapshot snapshot, Buffer buffer, ItemPointer ctid);
-extern ZHTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * zhtup,
-							  TransactionId OldestXmin, Buffer buffer,
+extern ZHTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup,
+							  TransactionId OldestXmin,
+							  Buffer buffer, bool resolve_abort_in_progress,
+							  ZHeapTuple *preabort_tuple,
 							  TransactionId *xid, SubTransactionId *subxid);
-extern ZHTSV_Result ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
-											  Buffer buffer, TransactionId *xid);
 
 extern ZHeapTuple ZHeapTupleSatisfies(ZHeapTuple stup, Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 
