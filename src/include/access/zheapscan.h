@@ -16,6 +16,7 @@
 #define ZHEAPSCAN_H
 
 #include "access/relscan.h"
+#include "access/skey.h"
 #include "access/zheap.h"
 
 typedef struct ZHeapScanDescData

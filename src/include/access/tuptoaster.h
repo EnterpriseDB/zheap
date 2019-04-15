@@ -16,7 +16,7 @@
 #include "access/htup_details.h"
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
-#include "access/zhtup.h"
+#include "utils/snapshot.h"
 
 /*
  * This enables de-toasting of index entries.  Needed until VACUUM is
@@ -136,25 +136,6 @@ do { \
 extern HeapTuple toast_insert_or_update(Relation rel,
 					   HeapTuple newtup, HeapTuple oldtup,
 					   int options);
-
-/* ----------
- * ztoast_insert_or_update -
- *
- *	Called by zheap_insert() and zheap_update().
- * ----------
- */
-
-extern ZHeapTuple ztoast_insert_or_update(Relation rel,
-										  ZHeapTuple newtup, ZHeapTuple oldtup,
-										  int options);
-
-/* ----------
- * ztoast_delete -
- *
- *	Called by zheap_delete().
- * ----------
- */
-extern void ztoast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative);
 
 /* ----------
  * toast_delete -

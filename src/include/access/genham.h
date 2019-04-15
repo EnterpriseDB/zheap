@@ -15,14 +15,9 @@
 #define GENHAM_H
 
 #include "access/multixact.h"
-#include "access/sdir.h"
-#include "access/skey.h"
 #include "nodes/lockoptions.h"
-#include "storage/buf.h"
 #include "storage/bufmgr.h"
-#include "storage/itemptr.h"
 #include "storage/lockdefs.h"
-#include "utils/relcache.h"
 
 typedef struct BulkInsertStateData *BulkInsertState;
 

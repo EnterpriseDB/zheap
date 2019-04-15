@@ -265,4 +265,10 @@ extern bool zheap_undo_actions(UndoRecInfo * urp_array, int first_idx, int last_
 				   Oid reloid, TransactionId xid, BlockNumber blkno,
 				   bool blk_chain_complete, bool rellock);
 
+/* in zheap/ztuptoaster.c */
+extern ZHeapTuple ztoast_insert_or_update(Relation rel,
+										  ZHeapTuple newtup, ZHeapTuple oldtup,
+										  int options);
+extern void ztoast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative);
+
 #endif							/* ZHEAP_H */
