@@ -1809,10 +1809,15 @@ ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,
 	else if (tuple->t_infomask & ZHEAP_XID_LOCK_ONLY)
 	{
 		/*
-		 * "Deleting" xact really only locked it, so the tuple is live in any
-		 * case.
+		 * We can't take any decision if the tuple is marked as locked-only.
+		 * It's possible that inserted transaction took a lock on the tuple
+		 * Later, if it rolled back, we should return HEAPTUPLE_DEAD, or if
+		 * it's still in progress, we should return
+		 * HEAPTUPLE_INSERT_IN_PROGRESS. Similarly, if the inserted
+		 * transaction got committed, we should return HEAPTUPLE_LIVE. The
+		 * subsequent checks already takes care of all these possible
+		 * scenarios, so we don't need any extra checks here.
 		 */
-		return ZHEAPTUPLE_LIVE;
 	}
 
 	/* The tuple is either a newly inserted tuple or is in-place updated. */
