@@ -901,13 +901,13 @@ ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
 	else if (snapshot->snapshot_type == SNAPSHOT_NON_VACUUMABLE)
 	{
 		TransactionId	xid;
-		HTSV_Result	result;
+		ZHTSV_Result	result;
 
 		result =
 			ZHeapTupleSatisfiesOldestXmin(&zhtup, snapshot->xmin, buffer,
 										  &xid, NULL);
 
-		return result == HEAPTUPLE_DEAD ? zhtup : NULL;
+		return result == ZHEAPTUPLE_DEAD ? zhtup : NULL;
 	}
 
 	/* Get last operation type */
@@ -1593,7 +1593,7 @@ ZHeapTupleSatisfiesAny(ZHeapTuple zhtup, Snapshot snapshot, Buffer buffer,
  *	corresponding item id as dead. Because, when undo action for the same will
  *	be performed, we need the item pointer.
  */
-HTSV_Result
+ZHTSV_Result
 ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 							  Buffer buffer, TransactionId *xid,
 							  SubTransactionId *subxid)
@@ -1620,17 +1620,17 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 		 */
 		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
 			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
-			return HEAPTUPLE_DEAD;
+			return ZHEAPTUPLE_DEAD;
 
 		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-			return HEAPTUPLE_DELETE_IN_PROGRESS;
+			return ZHEAPTUPLE_DELETE_IN_PROGRESS;
 		else if (TransactionIdIsInProgress(zinfo.xid))
 		{
 			/* Get Sub transaction id */
 			if (subxid)
 				ZHeapTupleGetSubXid(buffer, offnum, zinfo.urec_ptr, subxid);
 
-			return HEAPTUPLE_DELETE_IN_PROGRESS;
+			return ZHEAPTUPLE_DELETE_IN_PROGRESS;
 		}
 		else if (TransactionIdDidCommit(zinfo.xid))
 		{
@@ -1639,10 +1639,10 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 			 * open transactions could still see the tuple.
 			 */
 			if (!TransactionIdPrecedes(zinfo.xid, OldestXmin))
-				return HEAPTUPLE_RECENTLY_DEAD;
+				return ZHEAPTUPLE_RECENTLY_DEAD;
 
 			/* Otherwise, it's dead and removable */
-			return HEAPTUPLE_DEAD;
+			return ZHEAPTUPLE_DEAD;
 		}
 		else					/* transaction is aborted */
 		{
@@ -1665,14 +1665,14 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 				pfree(zhtup);
 
 			if (*ztuple != NULL)
-				return HEAPTUPLE_LIVE;
+				return ZHEAPTUPLE_LIVE;
 			else
 			{
 				/*
 				 * If the transaction that inserted the tuple got aborted, we
 				 * should return the aborted transaction id.
 				 */
-				return HEAPTUPLE_DEAD;
+				return ZHEAPTUPLE_DEAD;
 			}
 		}
 	}
@@ -1699,19 +1699,19 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 	 */
 	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
 		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
-		return HEAPTUPLE_LIVE;
+		return ZHEAPTUPLE_LIVE;
 
 	if (TransactionIdIsCurrentTransactionId(zinfo.xid))
-		return HEAPTUPLE_INSERT_IN_PROGRESS;
+		return ZHEAPTUPLE_INSERT_IN_PROGRESS;
 	else if (TransactionIdIsInProgress(zinfo.xid))
 	{
 		/* Get Sub transaction id */
 		if (subxid)
 			ZHeapTupleGetSubXid(buffer, offnum, zinfo.urec_ptr, subxid);
-		return HEAPTUPLE_INSERT_IN_PROGRESS;	/* in insertion by other */
+		return ZHEAPTUPLE_INSERT_IN_PROGRESS;	/* in insertion by other */
 	}
 	else if (TransactionIdDidCommit(zinfo.xid))
-		return HEAPTUPLE_LIVE;
+		return ZHEAPTUPLE_LIVE;
 	else						/* transaction is aborted */
 	{
 		if (tuple->t_infomask & ZHEAP_INPLACE_UPDATED)
@@ -1735,17 +1735,17 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * ztuple, TransactionId OldestXmin,
 				pfree(zhtup);
 
 			if (*ztuple != NULL)
-				return HEAPTUPLE_LIVE;
+				return ZHEAPTUPLE_LIVE;
 		}
 
 		/*
 		 * If the transaction that inserted the tuple got aborted, we should
 		 * return the aborted transaction id.
 		 */
-		return HEAPTUPLE_DEAD;
+		return ZHEAPTUPLE_DEAD;
 	}
 
-	return HEAPTUPLE_LIVE;
+	return ZHEAPTUPLE_LIVE;
 }
 
 /*
@@ -1859,7 +1859,7 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 									 ItemPointer tid, Buffer buffer,
 									 TransactionId *xid)
 {
-	HTSV_Result htsvResult;
+	ZHTSV_Result htsvResult;
 	ItemId		lp;
 	OffsetNumber offnum;
 	Page		dp;
@@ -1912,7 +1912,7 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 	pfree(tuple);
 	switch (htsvResult)
 	{
-		case HEAPTUPLE_LIVE:
+		case ZHEAPTUPLE_LIVE:
 			if (tuple_inplace_updated)
 			{
 				/*
@@ -1941,15 +1941,15 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 			if (visible)
 				return false;
 			break;
-		case HEAPTUPLE_RECENTLY_DEAD:
+		case ZHEAPTUPLE_RECENTLY_DEAD:
 			if (!visible)
 				return false;
 			break;
-		case HEAPTUPLE_DELETE_IN_PROGRESS:
+		case ZHEAPTUPLE_DELETE_IN_PROGRESS:
 			break;
-		case HEAPTUPLE_INSERT_IN_PROGRESS:
+		case ZHEAPTUPLE_INSERT_IN_PROGRESS:
 			break;
-		case HEAPTUPLE_DEAD:
+		case ZHEAPTUPLE_DEAD:
 			return false;
 		default:
 

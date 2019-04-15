@@ -800,17 +800,17 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 			switch (ZHeapTupleSatisfiesOldestXmin(&targztuple, OldestXmin,
 												  scan->rs_cbuf, &xwait, &subxid_xwait))
 			{
-				case HEAPTUPLE_DEAD:
+				case ZHEAPTUPLE_DEAD:
 					/* Definitely dead, we can ignore it */
 					indexIt = false;
 					tupleIsAlive = false;
 					break;
-				case HEAPTUPLE_LIVE:
+				case ZHEAPTUPLE_LIVE:
 					/* Normal case, index and unique-check it */
 					indexIt = true;
 					tupleIsAlive = true;
 					break;
-				case HEAPTUPLE_RECENTLY_DEAD:
+				case ZHEAPTUPLE_RECENTLY_DEAD:
 
 					/*
 					 * If tuple is recently deleted then we must index it
@@ -821,7 +821,7 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 					indexIt = true;
 					tupleIsAlive = false;
 					break;
-				case HEAPTUPLE_INSERT_IN_PROGRESS:
+				case ZHEAPTUPLE_INSERT_IN_PROGRESS:
 
 					/*
 					 * In "anyvisible" mode, this tuple is visible and we
@@ -884,7 +884,7 @@ IndexBuildZHeapRangeScan(Relation heapRelation,
 					indexIt = true;
 					tupleIsAlive = true;
 					break;
-				case HEAPTUPLE_DELETE_IN_PROGRESS:
+				case ZHEAPTUPLE_DELETE_IN_PROGRESS:
 
 					/*
 					 * As with INSERT_IN_PROGRESS case, this is unexpected
@@ -1328,18 +1328,18 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 
 		switch (ZHeapTupleSatisfiesOldestXmin(&targtuple, OldestXmin, scan->rs_cbuf, &xid, NULL))
 		{
-			case HEAPTUPLE_LIVE:
+			case ZHEAPTUPLE_LIVE:
 				sample_it = true;
 				*liverows += 1;
 				break;
 
-			case HEAPTUPLE_DEAD:
-			case HEAPTUPLE_RECENTLY_DEAD:
+			case ZHEAPTUPLE_DEAD:
+			case ZHEAPTUPLE_RECENTLY_DEAD:
 				/* Count dead and recently-dead rows */
 				*deadrows += 1;
 				break;
 
-			case HEAPTUPLE_INSERT_IN_PROGRESS:
+			case ZHEAPTUPLE_INSERT_IN_PROGRESS:
 
 				/*
 				 * Insert-in-progress rows are not counted.  We assume that
@@ -1366,7 +1366,7 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 				}
 				break;
 
-			case HEAPTUPLE_DELETE_IN_PROGRESS:
+			case ZHEAPTUPLE_DELETE_IN_PROGRESS:
 
 				/*
 				 * We count delete-in-progress rows as still live, using the

@@ -14,7 +14,6 @@
 #ifndef ZHIO_H
 #define ZHIO_H
 
-#include "access/genham.h"
 #include "utils/relcache.h"
 #include "storage/buf.h"
 

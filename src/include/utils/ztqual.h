@@ -14,7 +14,6 @@
 #ifndef ZTQUAL_H
 #define ZTQUAL_H
 
-#include "access/genham.h"
 #include "access/xlogdefs.h"
 #include "access/zheap.h"
 
@@ -26,6 +25,17 @@ typedef struct ZHeapTupleTransInfo
 	CommandId cid;
 	UndoRecPtr urec_ptr;
 } ZHeapTupleTransInfo;
+
+/* Result codes for ZHeapTupleSatisfiesVacuum */
+typedef enum
+{
+	ZHEAPTUPLE_DEAD,			/* tuple is dead and deletable */
+	ZHEAPTUPLE_LIVE,			/* tuple is live (committed, no deleter) */
+	ZHEAPTUPLE_RECENTLY_DEAD,	/* tuple is dead, but not deletable yet */
+	ZHEAPTUPLE_INSERT_IN_PROGRESS,	/* inserting xact is still in progress */
+	ZHEAPTUPLE_DELETE_IN_PROGRESS,	/* deleting xact is still in progress */
+	ZHEAPTUPLE_ABORT_IN_PROGRESS	/* rollback is still pending */
+} ZHTSV_Result;
 
 /*
  * ZHeapTupleSatisfiesVisibility
@@ -62,7 +72,7 @@ extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin,
 					   Buffer buffer);
 extern ZHeapTuple ZHeapTupleSatisfiesAny(ZHeapTuple zhtup,
 										 Snapshot snapshot, Buffer buffer, ItemPointer ctid);
-extern HTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * zhtup,
+extern ZHTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple * zhtup,
 							  TransactionId OldestXmin, Buffer buffer,
 							  TransactionId *xid, SubTransactionId *subxid);
 extern ZHTSV_Result ZHeapTupleSatisfiesVacuum(ZHeapTuple zhtup, TransactionId OldestXmin,

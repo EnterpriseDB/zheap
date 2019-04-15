@@ -16,7 +16,6 @@
 
 #include "postgres.h"
 
-#include "access/genham.h"
 #include "access/hio.h"
 #include "access/xlogreader.h"
 #include "access/undoinsert.h"
