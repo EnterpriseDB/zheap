@@ -37,13 +37,6 @@ typedef enum
 	ZHEAPTUPLE_ABORT_IN_PROGRESS	/* rollback is still pending */
 } ZHTSV_Result;
 
-/*
- * ZHeapTupleSatisfiesVisibility
- *		True iff zheap tuple satisfies a time qual.
- */
-#define ZHeapTupleSatisfiesVisibility(tuple, snapshot, buffer, ctid) \
-	((*(snapshot)->zsatisfies) (tuple, snapshot, buffer, ctid))
-
 extern void FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
 					   TransactionId xid, ZHeapTupleTransInfo *zinfo);
 extern void ZHeapUpdateTransactionSlotInfo(int trans_slot, Buffer buffer,

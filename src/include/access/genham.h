@@ -21,10 +21,6 @@
 
 typedef struct BulkInsertStateData *BulkInsertState;
 
-/* struct definitions appear in relscan.h */
-typedef struct HeapScanDescData *HeapScanDesc;
-typedef struct ParallelTableScanDescData *ParallelTableScanDesc;
-
 static const struct
 {
 	LOCKMODE	hwlock;
