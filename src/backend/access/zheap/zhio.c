@@ -329,7 +329,7 @@ loop:
 			 */
 			targetBlock = GetPageWithFreeSpace(relation,
 											   len + saveFreeSpace,
-											   false);
+											   true);
 
 			/*
 			 * If some other waiter has already extended the relation, we

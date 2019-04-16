@@ -1649,6 +1649,9 @@ recheck_meta:
 		Assert(last_used_tpd_buf != tpd_buf);
 		UnlockReleaseBuffer(last_used_tpd_buf);
 	}
+
+	/* Clear the local FSM map. */
+	FSMClearLocalMap();
 }
 
 /*
