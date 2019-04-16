@@ -486,38 +486,25 @@ zheapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot sn
 {
 	ZHeapTupleTableSlot *zslot = (ZHeapTupleTableSlot *) slot;
 	Buffer		buffer;
-	Page		page;
-	ItemId		lp;
 	ItemPointer tid;
-	ZHeapTupleData zhtup;
 	ZHeapTuple	tup;
-	Oid			tableoid;
 	bool		res;
 
 	Assert(TTS_IS_ZHEAP(slot));
 	Assert(zslot->tuple);
 
-	tableoid = zslot->tuple->t_tableOid;
 	tid = &(zslot->tuple->t_self);
 
 	buffer = ReadBuffer(rel, ItemPointerGetBlockNumber(tid));
 	LockBuffer(buffer, BUFFER_LOCK_SHARE);
 
-	page = BufferGetPage(buffer);
-	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
-
 	/*
-	 * Since the current transaction has inserted/updated the tuple, it can't
-	 * be deleted.
+	 * NB: current transaction has inserted/updated the tuple, so it can't
+	 * be deleted
 	 */
-	Assert(ItemIdIsNormal(lp));
 
-	zhtup.t_tableOid = tableoid;
-	zhtup.t_data = (ZHeapTupleHeader) PageGetItem((Page) page, lp);
-	zhtup.t_len = ItemIdGetLength(lp);
-	zhtup.t_self = *tid;
-
-	tup = ZHeapTupleSatisfies(&zhtup, snapshot, buffer, tid);
+	tup = zheap_gettuple(rel, buffer, ItemPointerGetOffsetNumber(tid));
+	tup = ZHeapTupleSatisfies(tup, snapshot, buffer, tid);
 
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 	ReleaseBuffer(buffer);
@@ -532,7 +519,7 @@ zheapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot sn
 		/* length differs, the input tuple can't be visible */
 		res = false;
 	}
-	else if (memcmp(tup->t_data, zslot->tuple->t_data, zhtup.t_len) != 0)
+	else if (memcmp(tup->t_data, zslot->tuple->t_data, tup->t_len) != 0)
 	{
 		/*
 		 * ZBORKED: compare tuple contents, to be sure the tuple returned by
@@ -544,7 +531,7 @@ zheapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot sn
 	else
 		res = true;
 
-	if (tup && tup != &zhtup)
+	if (tup)
 		pfree(tup);
 
 	return res;
