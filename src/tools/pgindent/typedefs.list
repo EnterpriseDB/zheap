@@ -1814,6 +1814,7 @@ PredicateLockTargetType
 PrepareStmt
 PreparedParamsData
 PreparedStatement
+PreparedUndoSpace
 PrewarmType
 PrintExtraTocPtrType
 PrintTocDataPtrType
@@ -2411,6 +2412,7 @@ TransactionStmt
 TransactionStmtKind
 TransformInfo
 TransformJsonStringValuesState
+TransInfo
 TransitionCaptureState
 TrgmArc
 TrgmArcInfo
@@ -2501,6 +2503,15 @@ UpperUniquePath
 UserAuth
 UserMapping
 UserOpts
+UndoBuffers
+UndoRecInfo
+UndoRecPtr
+UndoRecordHeader
+UndoRecordRelationDetails
+UndoRecordBlock
+UndoRecordTransaction
+UndoRecordPayload
+UnpackedUndoRecord
 VacAttrStats
 VacAttrStatsP
 VacuumParams
@@ -2642,6 +2653,7 @@ XactCallback
 XactCallbackItem
 XactEvent
 XactLockTableWaitInfo
+XactUndoRecordInfo
 XidHorizonPrefetchState
 XidStatus
 XmlExpr
@@ -2654,6 +2666,14 @@ YYSTYPE
 YY_BUFFER_STATE
 ZipfCache
 ZipfCell
+ZHeapFreeOffsetRanges
+ZHeapMetaPageData
+ZHeapPageOpaqueData
+ZHeapPrepareUndoInfo
+ZHeapScanDescData
+ZHeapTuple
+ZHeapTupleData
+ZHeapWALInfo
 _SPI_connection
 _SPI_plan
 __AssignProcessToJobObject
@@ -3245,6 +3265,7 @@ uint64_t
 uint8
 uint8_t
 uintptr_t
+undorectype
 unicodeStyleBorderFormat
 unicodeStyleColumnFormat
 unicodeStyleFormat
@@ -3355,6 +3376,7 @@ xl_standby_lock
 xl_standby_locks
 xl_tblspc_create_rec
 xl_tblspc_drop_rec
+xl_undolog_meta
 xl_xact_abort
 xl_xact_assignment
 xl_xact_commit
@@ -3368,6 +3390,9 @@ xl_xact_relfilenodes
 xl_xact_subxacts
 xl_xact_twophase
 xl_xact_xinfo
+xl_zheap_visible
+xl_zundo_page
+xl_zundo_reset_slot
 xmlBuffer
 xmlBufferPtr
 xmlChar
@@ -3396,14 +3421,3 @@ yyscan_t
 z_stream
 z_streamp
 zic_t
-UndoBuffers
-PreparedUndoSpace
-XactUndoRecordInfo
-undorectype
-UndoRecordHeader
-UndoRecordRelationDetails
-UndoRecordBlock
-UndoRecordTransaction
-UndoRecordPayload
-UnpackedUndoRecord
-UndoRecPtr

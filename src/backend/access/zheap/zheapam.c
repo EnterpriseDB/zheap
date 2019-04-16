@@ -76,7 +76,7 @@
 extern bool synchronize_seqscans;
 static int	GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf);
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
-									   int options);
+					 int options);
 static TM_Result zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 						 FullTransactionId fxid, LockTupleMode mode, LockOper lockopr,
 						 CommandId cid, bool *rollback_and_relocked);
@@ -93,10 +93,10 @@ static void compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf,
 						 int trans_slot, TransactionId single_locker_xid,
 						 LockTupleMode mode, LockOper lockoper,
 						 uint16 *result_infomask, int *result_trans_slot);
-static void log_zheap_insert(ZHeapWALInfo * walinfo, Relation relation,
+static void log_zheap_insert(ZHeapWALInfo *walinfo, Relation relation,
 				 int options, bool skip_undo);
-static void log_zheap_update(ZHeapWALInfo * oldinfo, ZHeapWALInfo * newinfo, bool inplace_update);
-static void log_zheap_delete(ZHeapWALInfo * walinfo, bool changingPart,
+static void log_zheap_update(ZHeapWALInfo *oldinfo, ZHeapWALInfo *newinfo, bool inplace_update);
+static void log_zheap_delete(ZHeapWALInfo *walinfo, bool changingPart,
 				 SubTransactionId subxid, TransactionId tup_xid);
 static Bitmapset *ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 							  ZHeapTuple oldtup, ZHeapTuple newtup);
@@ -183,7 +183,7 @@ static inline bool
 xid_infomask_changed(uint16 new_infomask, uint16 old_infomask)
 {
 	const uint16 interesting =
-		ZHEAP_MULTI_LOCKERS | ZHEAP_XID_LOCK_ONLY | ZHEAP_LOCK_MASK;
+	ZHEAP_MULTI_LOCKERS | ZHEAP_XID_LOCK_ONLY | ZHEAP_LOCK_MASK;
 
 	if ((new_infomask & interesting) != (old_infomask & interesting))
 		return true;
@@ -338,6 +338,7 @@ reacquire_buffer:
 										   (options & ZHEAP_INSERT_SPECULATIVE) ? true : false,
 										   &undorecord, NULL, &undometa);
 	}
+
 	/*
 	 * Get the page visibility status from visibility map.  If the page is
 	 * all-visible, we need to clear it after inserting the tuple.  Note that,
@@ -2518,12 +2519,12 @@ reacquire_buffer:
 	initStringInfo(&undorecord.uur_tuple);
 
 	/*
-	 * Copy the entire old tuple into the undo record. We
-	 * need this to reconstruct the old tuple if current tuple is not visible
-	 * to some other transaction.  We choose to write the complete tuple in
-	 * undo record for update operation so that we can reuse the space of old
-	 * tuples for non-inplace-updates after the transaction performing the
-	 * operation commits.
+	 * Copy the entire old tuple into the undo record. We need this to
+	 * reconstruct the old tuple if current tuple is not visible to some other
+	 * transaction.  We choose to write the complete tuple in undo record for
+	 * update operation so that we can reuse the space of old tuples for
+	 * non-inplace-updates after the transaction performing the operation
+	 * commits.
 	 */
 	appendBinaryStringInfo(&undorecord.uur_tuple,
 						   (char *) oldtup.t_data,
@@ -5021,8 +5022,8 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 	/*
 	 * For LockOnly mode and LockForUpdate mode with multilocker flag on the
 	 * tuple, we keep the old transaction slot as it is.  Since we're not
-	 * changing the xid slot in the tuple, we shouldn't remove the existing (if
-	 * any) invalid xact flag from the tuple.
+	 * changing the xid slot in the tuple, we shouldn't remove the existing
+	 * (if any) invalid xact flag from the tuple.
 	 */
 	if (!is_update ||
 		((lockoper == LockForUpdate) && ZHeapTupleHasMultiLockers(new_infomask)))
@@ -5426,12 +5427,12 @@ zheap_prepare_undoinsert(ZHeapPrepareUndoInfo *zh_undo_info,
  * will be inserted in undo log.
  */
 UndoRecPtr
-zheap_prepare_undodelete(ZHeapPrepareUndoInfo * zhUndoInfo, ZHeapTuple zhtup,
+zheap_prepare_undodelete(ZHeapPrepareUndoInfo *zhUndoInfo, ZHeapTuple zhtup,
 						 TransactionId tup_xid, int tup_trans_slot_id,
 						 SubTransactionId subxid,
 						 UnpackedUndoRecord *undorecord,
 						 XLogReaderState *xlog_record,
-						 xl_undolog_meta * undometa)
+						 xl_undolog_meta *undometa)
 {
 	UndoRecPtr	urecptr = InvalidUndoRecPtr;
 	bool		hasPayload = false;
@@ -5457,11 +5458,11 @@ zheap_prepare_undodelete(ZHeapPrepareUndoInfo * zhUndoInfo, ZHeapTuple zhtup,
 	initStringInfo(&undorecord->uur_tuple);
 
 	/*
-	 * Copy the entire old tuple into the undo record. We
-	 * need this to reconstruct the tuple if current tuple is not visible to
-	 * some other transaction.  We choose to write the complete tuple in undo
-	 * record for delete operation so that we can reuse the space after the
-	 * transaction performing the operation commits.
+	 * Copy the entire old tuple into the undo record. We need this to
+	 * reconstruct the tuple if current tuple is not visible to some other
+	 * transaction.  We choose to write the complete tuple in undo record for
+	 * delete operation so that we can reuse the space after the transaction
+	 * performing the operation commits.
 	 */
 	appendBinaryStringInfo(&undorecord->uur_tuple,
 						   (char *) zhtup->t_data,
@@ -5522,7 +5523,7 @@ zheap_prepare_undodelete(ZHeapPrepareUndoInfo * zhUndoInfo, ZHeapTuple zhtup,
  * Caller must already have modified the buffer(s) and marked them dirty.
  */
 static void
-log_zheap_insert(ZHeapWALInfo * walinfo, Relation relation,
+log_zheap_insert(ZHeapWALInfo *walinfo, Relation relation,
 				 int options, bool skip_undo)
 {
 	xl_undo_header xlundohdr;
@@ -5567,7 +5568,7 @@ log_zheap_insert(ZHeapWALInfo * walinfo, Relation relation,
 
 	if (walinfo->all_visible_cleared)
 		xlrec.flags |= XLZ_INSERT_ALL_VISIBLE_CLEARED;
-	if (options & HEAP_INSERT_SPECULATIVE)
+	if (options & ZHEAP_INSERT_SPECULATIVE)
 		xlrec.flags |= XLZ_INSERT_IS_SPECULATIVE;
 	if (skip_undo)
 		xlrec.flags |= XLZ_INSERT_IS_FROZEN;
@@ -5656,7 +5657,7 @@ prepare_xlog:
  * Caller must already have modified the buffer(s) and marked them dirty.
  */
 static void
-log_zheap_update(ZHeapWALInfo * oldwalinfo, ZHeapWALInfo * newwalinfo,
+log_zheap_update(ZHeapWALInfo *oldwalinfo, ZHeapWALInfo *newwalinfo,
 				 bool inplace_update)
 {
 	xl_undo_header xlundohdr,
@@ -5943,7 +5944,7 @@ prepare_xlog:
  * log_zheap_delete - Perform XLogInsert for a zheap-delete operation.
  */
 static void
-log_zheap_delete(ZHeapWALInfo * walinfo, bool changingPart,
+log_zheap_delete(ZHeapWALInfo *walinfo, bool changingPart,
 				 SubTransactionId subxid, TransactionId tup_xid)
 {
 	ZHeapTupleHeader zhtuphdr = NULL;
@@ -6995,7 +6996,7 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
  */
 bool
 PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
-					 TransInfo * transinfo, int num_slots, Buffer other_buf)
+					 TransInfo *transinfo, int num_slots, Buffer other_buf)
 {
 	uint64		oldestXidWithEpochHavingUndo;
 	int			slot_no;
@@ -7065,7 +7066,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 			 * visible.
 			 */
 			slot_xid_epoch = U64FromFullTransactionId(
-				FullTransactionIdFromEpochAndXid(slot_xid_epoch, slot_xid));
+													  FullTransactionIdFromEpochAndXid(slot_xid_epoch, slot_xid));
 
 			if (slot_xid_epoch < oldestXidWithEpochHavingUndo)
 				frozen_slots[nFrozenSlots++] = slot_no;

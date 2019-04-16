@@ -58,14 +58,14 @@ typedef struct TransInfo
 	uint32		xid_epoch;
 	TransactionId xid;
 	UndoRecPtr	urec_ptr;
-}			TransInfo;
+} TransInfo;
 
 typedef struct ZHeapPageOpaqueData
 {
 	TransInfo	transinfo[1];
-}			ZHeapPageOpaqueData;
+} ZHeapPageOpaqueData;
 
-typedef ZHeapPageOpaqueData * ZHeapPageOpaque;
+typedef ZHeapPageOpaqueData *ZHeapPageOpaque;
 
 #define SizeOfZHeapPageOpaqueData (ZHEAP_PAGE_TRANS_SLOTS \
 										 * sizeof(TransInfo))
@@ -75,9 +75,9 @@ typedef struct ZHeapMetaPageData
 	uint32		zhm_version;	/* version ID */
 	uint32		zhm_first_used_tpd_page;
 	uint32		zhm_last_used_tpd_page;
-}			ZHeapMetaPageData;
+} ZHeapMetaPageData;
 
-typedef ZHeapMetaPageData * ZHeapMetaPage;
+typedef ZHeapMetaPageData *ZHeapMetaPage;
 
 #define ZHEAP_METAPAGE 0		/* metapage is always block 0 */
 #define ZHEAP_MAGIC            0xA056
@@ -104,7 +104,7 @@ typedef struct ZHeapFreeOffsetRanges
 	OffsetNumber startOffset[MaxOffsetNumber];
 	OffsetNumber endOffset[MaxOffsetNumber];
 	int			nranges;
-}			ZHeapFreeOffsetRanges;
+} ZHeapFreeOffsetRanges;
 
 /* This is used to prepare undo records. */
 typedef struct ZHeapPrepareUndoInfo
@@ -116,7 +116,7 @@ typedef struct ZHeapPrepareUndoInfo
 	FullTransactionId fxid;
 	CommandId	cid;
 	UndoPersistence undo_persistence;
-}			ZHeapPrepareUndoInfo;
+} ZHeapPrepareUndoInfo;
 
 /* This is used to write WAL. */
 typedef struct ZHeapWALInfo
@@ -130,7 +130,7 @@ typedef struct ZHeapWALInfo
 	bool		all_visible_cleared;
 	UnpackedUndoRecord *undorecord;
 	xl_undolog_meta *undometa;
-}			ZHeapWALInfo;
+} ZHeapWALInfo;
 
 extern void zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate, uint32 specToken);
@@ -172,9 +172,9 @@ extern void PageGetTransactionSlotInfo(Buffer buf, int slot_no,
 						   uint32 *epoch, TransactionId *xid,
 						   UndoRecPtr *urec_ptr,
 						   bool keepTPDBufLock);
-extern TransInfo * GetTransactionsSlotsForPage(Relation rel, Buffer buf,
-											   int *total_trans_slots,
-											   BlockNumber *tpd_blkno);
+extern TransInfo *GetTransactionsSlotsForPage(Relation rel, Buffer buf,
+							int *total_trans_slots,
+							BlockNumber *tpd_blkno);
 
 struct TupleTableSlot;
 extern void zheap_multi_insert(Relation relation, struct TupleTableSlot **slots,
@@ -196,21 +196,21 @@ extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
 extern void zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 								  bool isFrozen, bool TPDSlot);
 extern bool PageFreezeTransSlots(Relation relation, Buffer buf,
-					 bool *lock_reacquired, TransInfo * transinfo,
+					 bool *lock_reacquired, TransInfo *transinfo,
 					 int num_slots, Buffer other_buf);
 extern TransactionId zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer);
 extern void copy_zrelation_data(Relation srcRel, SMgrRelation dst);
 extern TransactionId zheap_compute_xid_horizon_for_tuples(Relation rel,
 									 ItemPointerData *tids, int nitems);
-extern UndoRecPtr zheap_prepare_undoinsert(ZHeapPrepareUndoInfo * zh_undo_info,
+extern UndoRecPtr zheap_prepare_undoinsert(ZHeapPrepareUndoInfo *zh_undo_info,
 						 uint32 specToken, bool specIns,
 						 UnpackedUndoRecord *undorecord,
 						 XLogReaderState *xlog_record,
-						 xl_undolog_meta * undometa);
-extern UndoRecPtr zheap_prepare_undodelete(ZHeapPrepareUndoInfo * zhUndoInfo, ZHeapTuple zhtup,
+						 xl_undolog_meta *undometa);
+extern UndoRecPtr zheap_prepare_undodelete(ZHeapPrepareUndoInfo *zhUndoInfo, ZHeapTuple zhtup,
 						 TransactionId tup_xid, int tup_trans_slot_id,
 						 SubTransactionId subxid, UnpackedUndoRecord *undorecord,
-						 XLogReaderState *xlog_record, xl_undolog_meta * undometa);
+						 XLogReaderState *xlog_record, xl_undolog_meta *undometa);
 
 
 /* Pruning related API's (prunezheap.c) */
@@ -249,14 +249,14 @@ extern OffsetNumber ZPageAddItemExtended(Buffer buffer, Page input_page,
 extern Size PageGetZHeapFreeSpace(Page page);
 extern void RelationPutZHeapTuple(Relation relation, Buffer buffer,
 					  ZHeapTuple tuple);
-extern ZHeapFreeOffsetRanges * ZHeapGetUsableOffsetRanges(Buffer buffer,
-														  ZHeapTuple * tuples, int ntuples, Size saveFreeSpace);
+extern ZHeapFreeOffsetRanges *ZHeapGetUsableOffsetRanges(Buffer buffer,
+						   ZHeapTuple *tuples, int ntuples, Size saveFreeSpace);
 extern void ZheapInitPage(Page page, Size pageSize);
 extern void zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
 					 BlockNumber last_blkno);
 extern void ZheapInitMetaPage(Relation rel, ForkNumber forkNum, bool already_exists);
 extern ZHeapTuple zheap_gettuple(Relation relation, Buffer buffer,
-			   OffsetNumber offnum);
+								 OffsetNumber offnum);
 
 /* Zheap and undo record interaction related API's (zundo.c) */
 extern bool ZHeapSatisfyUndoRecord(UnpackedUndoRecord *uurec, BlockNumber blkno,
@@ -266,7 +266,7 @@ extern int UpdateTupleHeaderFromUndoRecord(UnpackedUndoRecord *urec,
 extern bool ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 				   TransactionId priorXmax, bool nobuflock);
 extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
-				   int slot_no, TransactionId xwait, BlockNumber *tpd_blkno);
+							int slot_no, TransactionId xwait, BlockNumber *tpd_blkno);
 
 /* in zheap/zvacuumlazy.c */
 struct VacuumParams;
@@ -274,7 +274,7 @@ extern void lazy_vacuum_zheap_rel(Relation onerel, struct VacuumParams *params,
 					  BufferAccessStrategy bstrategy);
 
 /* in zheap/zundo.c */
-extern bool zheap_undo_actions(UndoRecInfo * urp_array, int first_idx, int last_idx,
+extern bool zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 				   Oid reloid, TransactionId xid, BlockNumber blkno,
 				   bool blk_chain_complete, bool rellock);
 
