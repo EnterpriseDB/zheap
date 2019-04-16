@@ -118,6 +118,20 @@ typedef struct ZHeapPrepareUndoInfo
 	UndoPersistence undo_persistence;
 }			ZHeapPrepareUndoInfo;
 
+/* This is used to write WAL. */
+typedef struct ZHeapWALInfo
+{
+	Buffer		buffer;
+	ZHeapTuple	ztuple;
+	UndoRecPtr	urecptr;
+	UndoRecPtr	prev_urecptr;
+	int			trans_slot_id;
+	int			tup_trans_slot_id;
+	bool		all_visible_cleared;
+	UnpackedUndoRecord *undorecord;
+	xl_undolog_meta *undometa;
+}			ZHeapWALInfo;
+
 extern void zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate, uint32 specToken);
 extern void simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot);
