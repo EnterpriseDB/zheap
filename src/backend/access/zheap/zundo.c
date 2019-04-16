@@ -248,7 +248,7 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
 	 * We've to call ZHeapTupleGetTransInfo to fetch the xact info of the
 	 * tuple since the tuple can be marked with invalid xact flag.
 	 */
-	ZHeapTupleGetTransInfo(visible_tuple, buf, false, &zinfo);
+	ZHeapTupleGetTransInfo(buf, offnum, false, &zinfo);
 
 	/*
 	 * Current xid on tuple must not precede oldestXidHavingUndo as it will be

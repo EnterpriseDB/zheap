@@ -42,7 +42,7 @@ extern void FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
 extern void ZHeapUpdateTransactionSlotInfo(int trans_slot, Buffer buffer,
 							   OffsetNumber offnum,
 							   ZHeapTupleTransInfo *zinfo);
-extern void ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf,
+extern void ZHeapTupleGetTransInfo(Buffer buf, OffsetNumber offnum,
 					   bool fetch_cid, ZHeapTupleTransInfo *zinfo);
 extern TransactionId ZHeapTupleGetTransXID(ZHeapTuple zhtup, Buffer buf,
 					  bool nobuflock);

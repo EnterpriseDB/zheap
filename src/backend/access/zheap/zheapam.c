@@ -4223,7 +4223,7 @@ lock_tuple:
 		else
 			mytup = zheap_gettuple(rel, buf, offnum);
 
-		ZHeapTupleGetTransInfo(mytup, buf, false, &zinfo);
+		ZHeapTupleGetTransInfo(buf, offnum, false, &zinfo);
 		tup_trans_slot = zinfo.trans_slot;
 		tup_xid = zinfo.xid;
 		urec_ptr = zinfo.urec_ptr;

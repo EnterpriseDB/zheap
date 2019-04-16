@@ -241,15 +241,12 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
  * other concurrent session holding old snapshot.
  */
 void
-ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, bool fetch_cid,
+ZHeapTupleGetTransInfo(Buffer buf, OffsetNumber offnum, bool fetch_cid,
 					   ZHeapTupleTransInfo *zinfo)
 {
-	ZHeapTupleHeader tuple = zhtup->t_data;
 	ItemId		lp;
 	Page		page;
-	ItemPointer tid = &(zhtup->t_self);
 	BlockNumber	blocknum = BufferGetBlockNumber(buf);
-	OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
 	bool		is_invalid_slot = false;
 
 	page = BufferGetPage(buf);
@@ -257,8 +254,11 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, bool fetch_cid,
 	Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
 	if (!ItemIdIsDeleted(lp))
 	{
-		zinfo->trans_slot = ZHeapTupleHeaderGetXactSlot(tuple);
-		if (ZHeapTupleHasInvalidXact(tuple->t_infomask))
+		ZHeapTupleHeaderData hdr;
+
+		memcpy(&hdr, PageGetItem(page, lp), SizeofZHeapTupleHeader);
+		zinfo->trans_slot = ZHeapTupleHeaderGetXactSlot(&hdr);
+		if (ZHeapTupleHasInvalidXact(hdr.t_infomask))
 			is_invalid_slot = true;
 	}
 	else
@@ -328,11 +328,11 @@ ZHeapTupleGetTransXID(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
 {
 	ZHeapTupleTransInfo	zinfo;
 	ZHeapTupleData	mytup;
+	ItemPointer		tid = &(zhtup->t_self);
+	OffsetNumber	offnum = ItemPointerGetOffsetNumber(tid);
 
 	if (nobuflock)
 	{
-		ItemPointer tid = &(zhtup->t_self);
-		OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
 		Page		page;
 		ItemId		lp;
 
@@ -365,7 +365,7 @@ ZHeapTupleGetTransXID(ZHeapTuple zhtup, Buffer buf, bool nobuflock)
 		}
 	}
 
-	ZHeapTupleGetTransInfo(zhtup, buf, false, &zinfo);
+	ZHeapTupleGetTransInfo(buf, offnum, false, &zinfo);
 
 	/* Release any buffer lock we acquired. */
 	if (nobuflock)
@@ -1257,7 +1257,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 	op = ZHeapTidOpFromInfomask(tuple->t_infomask);
 
 	/* Get transaction info */
-	ZHeapTupleGetTransInfo(zhtup, buffer, fetch_cid, zinfo);
+	ZHeapTupleGetTransInfo(buffer, offnum, fetch_cid, zinfo);
 
 	if (op == ZTUPLETID_GONE)
 	{
@@ -1467,10 +1467,13 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, Buffer buffer)
 	if (tuple->t_infomask & ZHEAP_DELETED ||
 		tuple->t_infomask & ZHEAP_UPDATED)
 	{
+		ItemPointer		tid = &(zhtup->t_self);
+		OffsetNumber	offnum = ItemPointerGetOffsetNumber(tid);
 		ZHeapTupleTransInfo	zinfo;
 
 		/* Get transaction id. */
-		ZHeapTupleGetTransInfo(zhtup, buffer, false, &zinfo);
+		ZHeapTupleGetTransInfo(buffer, offnum, false, &zinfo);
+
 		/*
 		 * The tuple is deleted and must be all visible if the transaction
 		 * slot is cleared or latest xid that has changed the tuple precedes
@@ -1644,7 +1647,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 	Assert(zhtup->t_tableOid != InvalidOid);
 
 	/* Get transaction id */
-	ZHeapTupleGetTransInfo(zhtup, buffer, false, &zinfo);
+	ZHeapTupleGetTransInfo(buffer, offnum, false, &zinfo);
 	*xid = zinfo.xid;
 
 	if (tuple->t_infomask & ZHEAP_DELETED ||

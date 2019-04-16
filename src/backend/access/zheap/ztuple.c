@@ -500,6 +500,7 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 			{
 				ZHeapTupleTransInfo zinfo;
 				bool		release_buf = false;
+				ItemPointer	tid = &zhtup->t_self;
 
 				/*
 				 * For xmin we may need to fetch the information from the undo
@@ -513,7 +514,7 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				{
 					Relation	rel = relation_open(zhtup->t_tableOid, NoLock);
 
-					buf = ReadBuffer(rel, ItemPointerGetBlockNumber(&(zhtup->t_self)));
+					buf = ReadBuffer(rel, ItemPointerGetBlockNumber(tid));
 					relation_close(rel, NoLock);
 					release_buf = true;
 				}
@@ -522,7 +523,8 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 * Fixme - Need to check whether we need any handling of epoch
 				 * here.
 				 */
-				ZHeapTupleGetTransInfo(zhtup, buf, false, &zinfo);
+				ZHeapTupleGetTransInfo(buf, ItemPointerGetOffsetNumber(tid),
+									   false, &zinfo);
 
 				if (!TransactionIdIsValid(zinfo.xid) ||
 					FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid))
