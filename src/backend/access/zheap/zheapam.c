@@ -7564,40 +7564,6 @@ ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 }
 
 /*
- * ZHeapPageGetCid - Retrieve command id from tuple's undo record.
- *
- * This is similar to ZHeapTupleGetCid with a difference that here we use
- * transaction slot to fetch the appropriate undo record.  It is expected that
- * the caller of this function has at least read lock on the buffer.
- */
-CommandId
-ZHeapPageGetCid(Buffer buf, FullTransactionId epoch_xid,
-				UndoRecPtr urec_ptr, OffsetNumber off)
-{
-	UnpackedUndoRecord *urec;
-	CommandId	current_cid;
-
-	if (FullTransactionIdOlderThanAllUndo(epoch_xid))
-		return InvalidCommandId;
-
-	urec = UndoFetchRecord(urec_ptr,
-						   BufferGetBlockNumber(buf),
-						   off,
-						   InvalidTransactionId,
-						   NULL,
-						   ZHeapSatisfyUndoRecord);
-	if (urec == NULL)
-		return InvalidCommandId;
-
-	current_cid = urec->uur_cid;
-
-	UndoRecordRelease(urec);
-
-	return current_cid;
-}
-
-
-/*
  * ZHeapPageGetCtid - Retrieve tuple id from tuple's undo record.
  *
  * It is expected that caller of this function has at least read lock.

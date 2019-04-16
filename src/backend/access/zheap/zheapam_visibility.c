@@ -186,7 +186,6 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
 					CommandId *cid)
 {
 	int			trans_slot;
-	int			vis_info;
 	ItemId		lp;
 	Page		page;
 	OffsetNumber offnum = ItemPointerGetOffsetNumber(ctid);
@@ -198,20 +197,14 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
 	Assert(ItemIdIsDeleted(lp));
 
 	trans_slot = ItemIdGetTransactionSlot(lp);
-	vis_info = ItemIdGetVisibilityInfo(lp);
 
 	/*
 	 * We need undo record pointer to fetch the transaction information
 	 * from undo.
 	 */
 	GetTransactionSlotInfo(buffer, offnum, trans_slot, true, false, &zinfo);
-
-	if (vis_info & ITEMID_XACT_INVALID)
-		FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), offnum,
-							   InvalidTransactionId, &zinfo);
-	else
-		zinfo.cid =
-			ZHeapPageGetCid(buffer, zinfo.epoch_xid, zinfo.urec_ptr, offnum);
+	FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), offnum,
+						   InvalidTransactionId, &zinfo);
 
 	/* Return results to caller. */
 	*xid = zinfo.xid;
@@ -316,8 +309,8 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, bool fetch_cid,
 	else
 	{
 		if (fetch_cid && TransactionIdIsCurrentTransactionId(zinfo->xid))
-			zinfo->cid = ZHeapPageGetCid(buf, zinfo->epoch_xid,
-										 zinfo->urec_ptr, offnum);
+			FetchTransInfoFromUndo(blocknum, offnum, InvalidTransactionId,
+								   zinfo);
 		else
 			zinfo->cid = InvalidCommandId;
 	}
@@ -611,14 +604,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple current_tuple,
 		{
 			if (!have_cid)
 			{
-				/*
-				 * we don't use prev_undo_xid to fetch the undo record for
-				 * cid as it is required only when transaction is current
-				 * transaction in which case there is no risk of transaction
-				 * chain switching, so we are safe.
-				 */
-				zinfo.cid = ZHeapPageGetCid(buffer, zinfo.epoch_xid,
-											zinfo.urec_ptr, offnum);
+				FetchTransInfoFromUndo(blkno, offnum, zinfo.xid, &zinfo);
 				have_cid = true;
 			}
 
@@ -969,8 +955,8 @@ ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
 		{
 			if (!have_cid)
 			{
-				zinfo.cid = ZHeapPageGetCid(buffer, zinfo.epoch_xid,
-											zinfo.urec_ptr, offnum);
+				FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), offnum,
+									   InvalidTransactionId, &zinfo);
 				have_cid = true;
 			}
 			zselect = ZHeapCheckCID(op, zinfo.cid, snapshot->curcid);
@@ -1126,8 +1112,8 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 	if (zselect == ZVERSION_CHECK_CID)
 	{
 		if (!have_cid)
-			zinfo.cid = ZHeapPageGetCid(buffer, zinfo.epoch_xid,
-										zinfo.urec_ptr, off);
+			FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), off,
+								   InvalidTransactionId, &zinfo);
 
 		/* OK, now we can make a final visibility decision. */
 		zselect = ZHeapCheckCID(ZTUPLETID_GONE, zinfo.cid, snapshot->curcid);
