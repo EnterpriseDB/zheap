@@ -209,7 +209,7 @@ ZPageAddItemExtended(Buffer buffer,
 	/* Reject placing items beyond heap boundary, if heap */
 	if ((flags & PAI_IS_HEAP) != 0 && offsetNumber > MaxZHeapTuplesPerPage)
 	{
-		elog(WARNING, "can't put more than MaxHeapTuplesPerPage items in a heap page");
+		elog(WARNING, "can't put more than MaxZHeapTuplesPerPage items in a heap page");
 		return InvalidOffsetNumber;
 	}
 

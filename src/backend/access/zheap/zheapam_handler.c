@@ -1058,7 +1058,7 @@ validate_index_zheapscan(Relation heapRelation,
 	TupleTableSlot *slot;
 	EState	   *estate;
 	ExprContext *econtext;
-	bool		in_index[MaxHeapTuplesPerPage];
+	bool		in_index[MaxZHeapTuplesPerPage];
 
 	/* state variables for the merge */
 	ItemPointer indexcursor = NULL;
