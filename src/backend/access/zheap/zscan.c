@@ -1434,9 +1434,7 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 * request, check whether tuple is dead to all transactions.
 		 */
 		if (!resulttup && all_dead &&
-			ZHeapTupleIsSurelyDead(&loctup_tmp,
-								   pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo),
-								   buffer))
+			ZHeapTupleIsSurelyDead(&loctup_tmp, buffer))
 			*all_dead = true;
 	}
 	else

@@ -4392,7 +4392,7 @@ lock_tuple:
 					 * modifier is all-visible.
 					 */
 					Assert(!(tup_trans_slot == ZHTUP_SLOT_FROZEN ||
-							 zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)));
+							 FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid)));
 
 					if (ZHEAP_XID_IS_KEYSHR_LOCKED(old_infomask))
 						old_lock_mode = LockTupleKeyShare;
@@ -6101,7 +6101,7 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 		}
 	}
 
-	zinfo->epoch_xid = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, zinfo->xid));
+	zinfo->epoch_xid = FullTransactionIdFromEpochAndXid(epoch, zinfo->xid);
 }
 
 /*
@@ -7378,7 +7378,7 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
 		return InvalidCommandId;
 
-	if (zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	if (FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid))
 		return InvalidCommandId;
 
 	Assert(UndoRecPtrIsValid(zinfo.urec_ptr));
@@ -7532,13 +7532,13 @@ ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
  * the caller of this function has at least read lock on the buffer.
  */
 CommandId
-ZHeapPageGetCid(Buffer buf, uint64 epoch_xid,
+ZHeapPageGetCid(Buffer buf, FullTransactionId epoch_xid,
 				UndoRecPtr urec_ptr, OffsetNumber off)
 {
 	UnpackedUndoRecord *urec;
 	CommandId	current_cid;
 
-	if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	if (FullTransactionIdOlderThanAllUndo(epoch_xid))
 		return InvalidCommandId;
 
 	urec = UndoFetchRecord(urec_ptr,

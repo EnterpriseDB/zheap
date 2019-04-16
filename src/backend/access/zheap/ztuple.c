@@ -524,8 +524,8 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 */
 				ZHeapTupleGetTransInfo(zhtup, buf, false, &zinfo);
 
-				if (!TransactionIdIsValid(zinfo.xid) || zinfo.epoch_xid <
-					pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+				if (!TransactionIdIsValid(zinfo.xid) ||
+					FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid))
 					zinfo.xid = FrozenTransactionId;
 
 				result = TransactionIdGetDatum(zinfo.xid);

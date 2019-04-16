@@ -422,7 +422,7 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
 		if (xid != zinfo.xid)
 			return false;
 
-		slotinfo.xid_epoch = zinfo.epoch_xid;
+		slotinfo.xid_epoch = U64FromFullTransactionId(zinfo.epoch_xid);
 		slotinfo.xid = zinfo.xid;
 		slotinfo.urec_ptr = zinfo.urec_ptr;
 		total_trans_slots = 1;

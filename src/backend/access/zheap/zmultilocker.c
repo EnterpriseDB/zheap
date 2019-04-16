@@ -159,7 +159,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	TransInfo  *trans_slots = NULL;
 	TransactionId xid;
 	SubTransactionId subxid = InvalidSubTransactionId;
-	uint64		epoch_xid;
+	FullTransactionId epoch_xid;
 	int			prev_trans_slot_id,
 				trans_slot_id;
 	uint8		uur_type;
@@ -202,15 +202,15 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		bool		first_urp = true;
 
 		xid = trans_slots[slot_no].xid;
-		epoch_xid = U64FromFullTransactionId(
+		epoch_xid = 
 			FullTransactionIdFromEpochAndXid(trans_slots[slot_no].xid_epoch,
-											 xid));
+											 xid);
 
 		/*
 		 * We need to process the undo chain only for in-progress
 		 * transactions.
 		 */
-		if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		if (FullTransactionIdOlderThanAllUndo(epoch_xid))
 			continue;
 
 		urec_ptr = trans_slots[slot_no].urec_ptr;
@@ -278,8 +278,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				 * We need to process the undo chain only for in-progress
 				 * transactions.
 				 */
-				if (epoch_xid < pg_atomic_read_u64(
-												   &ProcGlobal->oldestXidWithEpochHavingUndo))
+				if (FullTransactionIdOlderThanAllUndo(epoch_xid))
 				{
 					LWLockRelease(&log->rewind_lock);
 					break;

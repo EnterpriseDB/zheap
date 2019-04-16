@@ -20,7 +20,7 @@
 typedef struct ZHeapTupleTransInfo
 {
 	int trans_slot;
-	uint64 epoch_xid;
+	FullTransactionId epoch_xid;
 	TransactionId xid;
 	CommandId cid;
 	UndoRecPtr urec_ptr;
@@ -61,8 +61,7 @@ extern TM_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,
 						  TransactionId *single_locker_xid, int *single_locker_trans_slot,
 						  bool lock_allowed, Snapshot snapshot,
 						  bool *in_place_updated_or_locked);
-extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin,
-					   Buffer buffer);
+extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, Buffer buffer);
 extern ZHeapTuple ZHeapTupleSatisfiesAny(ZHeapTuple zhtup,
 										 Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern ZHTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup,

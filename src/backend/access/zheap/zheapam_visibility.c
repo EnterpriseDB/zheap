@@ -110,7 +110,7 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
 		 */
 		if (urec == NULL)
 		{
-			zinfo->epoch_xid = U64FromFullTransactionId(InvalidFullTransactionId);
+			zinfo->epoch_xid = InvalidFullTransactionId;
 			zinfo->xid = InvalidTransactionId;
 			zinfo->cid = InvalidCommandId;
 			zinfo->urec_ptr = InvalidUndoRecPtr;
@@ -141,7 +141,7 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
 	epoch = GetEpochForXid(urec->uur_xid);
 	zinfo->xid = urec->uur_xid;
 	zinfo->epoch_xid =
-		U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, zinfo->xid));
+		FullTransactionIdFromEpochAndXid(epoch, zinfo->xid);
 	zinfo->cid = urec->uur_cid;
 	UndoRecordRelease(urec);
 }
@@ -304,7 +304,7 @@ ZHeapTupleGetTransInfo(ZHeapTuple zhtup, Buffer buf, bool fetch_cid,
 			UndoLogIsDiscarded(zinfo->urec_ptr))
 		{
 			zinfo->trans_slot = ZHTUP_SLOT_FROZEN;
-			zinfo->epoch_xid = U64FromFullTransactionId(InvalidFullTransactionId);
+			zinfo->epoch_xid = InvalidFullTransactionId;
 			zinfo->xid = InvalidTransactionId;
 			zinfo->cid = InvalidCommandId;
 			zinfo->urec_ptr = InvalidUndoRecPtr;
@@ -397,7 +397,6 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid, Buffer buffer,
 {
 	UnpackedUndoRecord *urec;
 	uint32		epoch;
-	uint64		oldestXidHavingUndo;
 
 	urec = UndoFetchRecord(urec_ptr,
 						   BufferGetBlockNumber(buffer),
@@ -446,7 +445,7 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid, Buffer buffer,
 	 */
 	epoch = GetEpochForXid(urec->uur_prevxid);
 	zinfo->epoch_xid =
-		U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, urec->uur_prevxid));
+		FullTransactionIdFromEpochAndXid(epoch, urec->uur_prevxid);
 
 	/* If this is a non-in-place update, update ctid if requested. */
 	if (ctid && urec->uur_type == UNDO_UPDATE)
@@ -466,9 +465,7 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid, Buffer buffer,
 	 * If the XID is older than any XID that has undo, there are no older
 	 * versions.
 	 */
-	oldestXidHavingUndo =
-		pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
-	if (zinfo->epoch_xid < oldestXidHavingUndo)
+	if (FullTransactionIdOlderThanAllUndo(zinfo->epoch_xid))
 		return false;
 
 	return true;
@@ -595,7 +592,7 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple current_tuple,
 		 */
 		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
 			TransactionIdEquals(zinfo.xid, FrozenTransactionId) ||
-			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+			FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid))
 			break;
 
 		/* Preliminary visibility check, without relying on the CID. */
@@ -922,7 +919,7 @@ ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
 
 		oldestXidHavingUndo =
 			pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
-		if (zinfo.epoch_xid < oldestXidHavingUndo)
+		if (U64FromFullTransactionId(zinfo.epoch_xid) < oldestXidHavingUndo)
 		{
 			/* The slot is old enough that we can treat it as frozen. */
 			zinfo.trans_slot = ZHTUP_SLOT_FROZEN;
@@ -943,7 +940,7 @@ ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
 				FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), offnum,
 									   InvalidTransactionId, &zinfo);
 				have_cid = true;
-				if (zinfo.epoch_xid < oldestXidHavingUndo)
+				if (U64FromFullTransactionId(zinfo.epoch_xid) < oldestXidHavingUndo)
 					zinfo.trans_slot = ZHTUP_SLOT_FROZEN;
 			}
 		}
@@ -1109,7 +1106,7 @@ ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *a
 	 * belongs to previous epoch.
 	 */
 	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
-		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid))
 	{
 		if (all_dead)
 			*all_dead = true;
@@ -1232,7 +1229,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 		 * check.
 		 */
 		Assert(!(zinfo->trans_slot == ZHTUP_SLOT_FROZEN &&
-				 zinfo->epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)));
+				 FullTransactionIdOlderThanAllUndo(zinfo->epoch_xid)));
 
 		if (TransactionIdIsCurrentTransactionId(zinfo->xid))
 		{
@@ -1290,7 +1287,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 		 * compute_new_xid_infomask for more details about lockers.
 		 */
 		if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN ||
-			zinfo->epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+			FullTransactionIdOlderThanAllUndo(zinfo->epoch_xid))
 		{
 			bool		found = false;
 
@@ -1381,7 +1378,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 		 * undo.
 		 */
 		if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN ||
-			zinfo->epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+			FullTransactionIdOlderThanAllUndo(zinfo->epoch_xid))
 			result = TM_Ok;
 		else if (TransactionIdIsCurrentTransactionId(zinfo->xid))
 		{
@@ -1420,7 +1417,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
  * Similar to HeapTupleIsSurelyDead, but for zheap tuples.
  */
 bool
-ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin, Buffer buffer)
+ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, Buffer buffer)
 {
 	ZHeapTupleHeader tuple = zhtup->t_data;
 
@@ -1440,7 +1437,7 @@ ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, uint64 OldestXmin, Buffer buffer)
 		 * smallest xid that has undo.
 		 */
 		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
-			zinfo.epoch_xid < OldestXmin)
+			FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid))
 			return true;
 	}
 
@@ -1619,7 +1616,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 		 * smallest xid that has undo.
 		 */
 		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
-			zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+			FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid))
 			return ZHEAPTUPLE_DEAD;
 
 		if (TransactionIdIsCurrentTransactionId(zinfo.xid))
@@ -1707,7 +1704,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 	 * undo.
 	 */
 	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
-		zinfo.epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+		FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid))
 		return ZHEAPTUPLE_LIVE;
 
 	if (TransactionIdIsCurrentTransactionId(zinfo.xid))
