@@ -72,6 +72,10 @@ static ZVersionSelector ZHeapSelectVersionSelf(ZTupleTidOp op,
 static ZVersionSelector ZHeapSelectVersionDirty(ZTupleTidOp op,
 						uint16 infomask, ZHeapTupleTransInfo *zinfo,
 						Snapshot snapshot, int *snapshot_requests);
+static ZHeapTuple ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot,
+									   Buffer buffer, bool *all_dead);
+static ZHeapTuple ZHeapTupleSatisfies(ZHeapTuple stup,
+					Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 
 /*
  * FetchTransInfoFromUndo
@@ -825,6 +829,56 @@ ZHeapSelectVersionSelf(ZTupleTidOp op, TransactionId xid)
 }
 
 /*
+ * ZHeapTupleFetch
+ *
+ * Look for a tuple within a given buffer by offset.  If there is a version
+ * of that tuple that is visible to the given snapshot, return true, else
+ * return false.
+ *
+ * If visible_tuple != NULL, then set *visible_tuple to the visible version
+ * of the tuple, if there is one, or otherwise to NULL.
+ */
+bool
+ZHeapTupleFetch(Relation rel, Buffer buffer, OffsetNumber offnum,
+				Snapshot snapshot, ZHeapTuple *visible_tuple,
+				ItemPointer new_ctid)
+{
+	ZHeapTuple	tuple;
+	Page		dp;
+	ItemId		lp;
+
+	dp = BufferGetPage(buffer);
+	lp = PageGetItemId(dp, offnum);
+
+	if (ItemIdIsDeleted(lp))
+	{
+		TransactionId	tup_xid;
+		CommandId	tup_cid;
+
+		tuple = ZHeapGetVisibleTuple(offnum, snapshot, buffer, NULL);
+		if (new_ctid)
+			ZHeapPageGetNewCtid(buffer, new_ctid, &tup_xid, &tup_cid);
+	}
+	else if (ItemIdIsNormal(lp))
+	{
+		tuple = zheap_gettuple(rel, buffer, offnum);
+		tuple = ZHeapTupleSatisfies(tuple, snapshot, buffer, new_ctid);
+	}
+	else
+	{
+		Assert(!ItemIdIsUsed(lp));
+		tuple = NULL;
+	}
+
+	if (visible_tuple)
+		*visible_tuple = tuple;
+	else if (tuple)
+		pfree(tuple);
+
+	return (tuple != NULL);
+}
+
+/*
  * ZHeapTupleSatisfies
  *
  * Returns the visible version of tuple if any, NULL otherwise. We need to
@@ -845,7 +899,7 @@ ZHeapSelectVersionSelf(ZTupleTidOp op, TransactionId xid)
  * on tuple.  For the lockers only case, we need to determine if the original
  * inserter is visible to snapshot.
  */
-ZHeapTuple
+static ZHeapTuple
 ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
 					Buffer buffer, ItemPointer ctid)
 {
@@ -1041,7 +1095,7 @@ ZHeapTupleSatisfies(ZHeapTuple zhtup, Snapshot snapshot,
  *	The caller must ensure that it passes the line offset for a tuple that is
  *	marked as deleted.
  */
-ZHeapTuple
+static ZHeapTuple
 ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot, Buffer buffer, bool *all_dead)
 {
 	Page		page;

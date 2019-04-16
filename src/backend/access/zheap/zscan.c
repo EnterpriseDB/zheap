@@ -451,42 +451,20 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 	{
 		if (ItemIdIsNormal(lpp) || ItemIdIsDeleted(lpp))
 		{
-			ZHeapTuple	loctup = NULL;
-			ZHeapTuple	resulttup = NULL;
+			ZHeapTuple	resulttup;
 			bool		valid = false;
 			ItemPointerData	tid;
 
 			ItemPointerSet(&tid, page, lineoff);
 
-			if (ItemIdIsDeleted(lpp))
+			if (!all_visible)
+				valid = ZHeapTupleFetch(scan->rs_base.rs_rd, buffer,
+										lineoff, snapshot, &resulttup, NULL);
+			else if (!ItemIdIsDeleted(lpp))
 			{
-				if (all_visible)
-				{
-					valid = false;
-					resulttup = NULL;
-				}
-				else
-				{
-					resulttup = ZHeapGetVisibleTuple(lineoff, snapshot, buffer,
-													 NULL);
-					valid = resulttup ? true : false;
-				}
-			}
-			else
-			{
-				loctup = zheap_gettuple(scan->rs_base.rs_rd, buffer, lineoff);
-
-				if (all_visible)
-				{
-					valid = true;
-					resulttup = loctup;
-				}
-				else
-				{
-					resulttup = ZHeapTupleSatisfies(loctup, snapshot,
-													buffer, NULL);
-					valid = resulttup ? true : false;
-				}
+				valid = true;
+				resulttup =
+					zheap_gettuple(scan->rs_base.rs_rd, buffer, lineoff);
 			}
 
 			/*
@@ -944,14 +922,11 @@ get_next_tuple:
 	{
 		if (ItemIdIsNormal(lpp))
 		{
-			ZHeapTuple	tuple = NULL;
-			ZHeapTuple	loctup;
-			bool		valid = false;
+			ZHeapTuple	tuple;
+			bool		valid;
 
-			loctup = zheap_gettuple(scan->rs_base.rs_rd, scan->rs_cbuf,
-									lineoff);
-			tuple = ZHeapTupleSatisfies(loctup, snapshot, scan->rs_cbuf, NULL);
-			valid = tuple ? true : false;
+			valid = ZHeapTupleFetch(scan->rs_base.rs_rd, scan->rs_cbuf,
+									lineoff, snapshot, &tuple, NULL);
 
 			/*
 			 * If any prior version is visible, we pass latest visible as
@@ -1247,20 +1222,18 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 		for (offnum = FirstOffsetNumber; offnum <= maxoff; offnum = OffsetNumberNext(offnum))
 		{
 			ItemId		lpp;
-			ZHeapTuple	loctup = NULL;
-			ZHeapTuple	resulttup = NULL;
-			bool		valid = false;
+			ZHeapTuple	resulttup;
+			bool		valid;
 			ItemPointerData tid;
 
 			lpp = PageGetItemId(dp, offnum);
 			if (!ItemIdIsNormal(lpp))
 				continue;
 
-			loctup = zheap_gettuple(scan->rs_base.rs_rd, buffer, offnum);
-			tid = loctup->t_self;
+			ItemPointerSet(&tid, page, offnum);
 
-			resulttup = ZHeapTupleSatisfies(loctup, snapshot, buffer, NULL);
-			valid = resulttup ? true : false;
+			valid = ZHeapTupleFetch(scan->rs_base.rs_rd, buffer,
+									offnum, snapshot, &resulttup, NULL);
 
 			if (valid)
 			{
@@ -1335,8 +1308,7 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	Page		dp = (Page) BufferGetPage(buffer);
 	ItemId		lp;
 	OffsetNumber offnum;
-	ZHeapTuple	loctup = NULL;
-	ZHeapTupleData	loctup_tmp;
+	ZHeapTuple	pagetup = NULL;
 	ZHeapTuple	resulttup = NULL;
 
 	if (all_dead)
@@ -1358,45 +1330,40 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		return NULL;
 	}
 
+	if (!ItemIdIsDeleted(lp))
+		pagetup = zheap_gettuple(relation, buffer, offnum);
+
 	/*
 	 * If the record is deleted, its place in the page might have been taken
 	 * by another of its kind. Try to get it from the UNDO if it is still
 	 * visible.
 	 */
-	if (ItemIdIsDeleted(lp))
+	if (ZHeapTupleFetch(relation, buffer, offnum, snapshot, &resulttup, NULL))
 	{
-		resulttup = ZHeapGetVisibleTuple(offnum, snapshot, buffer, all_dead);
-		if (resulttup)
-			PredicateLockTid(relation, &(resulttup->t_self), snapshot,
-							 IsSerializableXact() ?
-							 zheap_fetchinsertxid(resulttup, buffer) :
-							 InvalidTransactionId);
-	}
-	else
-	{
-		loctup = zheap_gettuple(relation, buffer, offnum);
+		TransactionId	insertxid = InvalidTransactionId;
 
-		/* If it's visible per the snapshot, we must return it */
-		resulttup = ZHeapTupleSatisfies(loctup, snapshot, buffer, NULL);
-
-		if (resulttup)
+		if (IsSerializableXact())
 		{
-			/*
-			 * To fetch the xmin (aka transaction that has inserted the
-			 * tuple), we need to use the transaction slot of the tuple in the
-			 * page instead of the tuple from undo, otherwise, it might
-			 * traverse the wrong chain.
-			 */
-			loctup_tmp.t_tableOid = RelationGetRelid(relation);
-			loctup_tmp.t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lp);
-			loctup_tmp.t_len = ItemIdGetLength(lp);
-			loctup_tmp.t_self = *tid;
-
-			PredicateLockTid(relation, &(loctup_tmp.t_self), snapshot,
-							 IsSerializableXact() ?
-							 zheap_fetchinsertxid(&loctup_tmp, buffer) :
-							 InvalidTransactionId);
+			if (!ItemIdIsDeleted(lp))
+			{
+				/*
+				 * To fetch the xmin (aka transaction that has inserted the
+				 * tuple), we need to use the transaction slot of the tuple in
+				 * the page instead of the tuple from undo, otherwise, it might
+				 * traverse the wrong chain.
+				 *
+				 * ZBORKED: This seems like an ugly kludge.  Can't we find
+				 * another way to make sure we DON'T traverse the wrong undo
+				 * chain?  And what does "wrong" mean here anyway?  And why
+				 * don't we have similar problems when the tuple is deleted?
+				 */
+				insertxid = zheap_fetchinsertxid(pagetup, buffer);
+			}
+			else
+				insertxid = zheap_fetchinsertxid(resulttup, buffer);
 		}
+
+		PredicateLockTid(relation, &(resulttup->t_self), snapshot, insertxid);
 	}
 
 	/*
@@ -1419,22 +1386,14 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	else if (!ItemIdIsDeleted(lp))
 	{
 		/*
-		 * Temporarily get the copy of tuple from page to check if tuple is
-		 * surely dead.  We can't rely on the copy of local tuple (loctup)
-		 * that is prepared for the visibility test as that would have been
-		 * freed.
-		 */
-		loctup_tmp.t_tableOid = RelationGetRelid(relation);
-		loctup_tmp.t_data = (ZHeapTupleHeader) PageGetItem((Page) dp, lp);
-		loctup_tmp.t_len = ItemIdGetLength(lp);
-		loctup_tmp.t_self = *tid;
-
-		/*
 		 * If we can't see it, maybe no one else can either.  At caller
 		 * request, check whether tuple is dead to all transactions.
+		 *
+		 * ZBORKED: This is an ugly kludge.  We should find a way to get this
+		 * from ZHeapTupleFetch or something of that sort.
 		 */
 		if (!resulttup && all_dead &&
-			ZHeapTupleIsSurelyDead(&loctup_tmp, buffer))
+			ZHeapTupleIsSurelyDead(pagetup, buffer))
 			*all_dead = true;
 	}
 	else
@@ -1442,6 +1401,9 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		/* For deleted item pointers, we've already set the value for all_dead. */
 		return NULL;
 	}
+
+	if (pagetup)
+		pfree(pagetup);
 
 	return resulttup;
 }
@@ -1523,32 +1485,9 @@ zheap_fetch(Relation relation,
 		return false;
 	}
 
-	*tuple = NULL;
-	if (ItemIdIsDeleted(lp))
-	{
-		CommandId		tup_cid;
-		TransactionId	tup_xid;
-
-		resulttup = ZHeapGetVisibleTuple(offnum, snapshot, buffer, NULL);
-		ctid = *tid;
-		ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
-		valid = resulttup ? true : false;
-	}
-	else
-	{
-		/*
-		 * fill in *tuple fields
-		 */
-		*tuple = zheap_gettuple(relation, buffer, offnum);
-
-		ItemPointerSetInvalid(&ctid);
-
-		/*
-		 * check time qualification of tuple, then release lock
-		 */
-		resulttup = ZHeapTupleSatisfies(*tuple, snapshot, buffer, &ctid);
-		valid = resulttup ? true : false;
-	}
+	ctid = *tid;
+	valid = ZHeapTupleFetch(relation, buffer, offnum, snapshot, &resulttup,
+							&ctid);
 
 	if (valid)
 		PredicateLockTid(relation, &((resulttup)->t_self), snapshot,
@@ -1604,5 +1543,6 @@ zheap_fetch(Relation relation,
 		*userbuf = InvalidBuffer;
 	}
 
+	*tuple = NULL;
 	return false;
 }

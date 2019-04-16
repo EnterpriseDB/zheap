@@ -52,8 +52,6 @@ extern void ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid,
 					TransactionId *xid, CommandId *cid);
 
 /* These are the "satisfies" test routines for the zheap. */
-extern ZHeapTuple ZHeapGetVisibleTuple(OffsetNumber off, Snapshot snapshot,
-									   Buffer buffer, bool *all_dead);
 extern TM_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,
 						  CommandId curcid, Buffer buffer, ItemPointer ctid,
 						  ZHeapTupleTransInfo *zinfo,
@@ -70,7 +68,9 @@ extern ZHTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup,
 							  ZHeapTuple *preabort_tuple,
 							  TransactionId *xid, SubTransactionId *subxid);
 
-extern ZHeapTuple ZHeapTupleSatisfies(ZHeapTuple stup, Snapshot snapshot, Buffer buffer, ItemPointer ctid);
+extern bool ZHeapTupleFetch(Relation rel, Buffer buffer, OffsetNumber offnum,
+				Snapshot snapshot, ZHeapTuple *visible_tuple,
+				ItemPointer new_ctid);
 
 extern bool ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 									 ItemPointer tid, Buffer buffer,

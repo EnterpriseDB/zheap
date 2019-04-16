@@ -263,7 +263,8 @@ extern bool ZHeapSatisfyUndoRecord(UnpackedUndoRecord *uurec, BlockNumber blkno,
 					   OffsetNumber offset, TransactionId xid);
 extern int UpdateTupleHeaderFromUndoRecord(UnpackedUndoRecord *urec,
 								ZHeapTupleHeader hdr, Page page);
-extern bool ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
+extern bool ValidateTuplesXact(Relation relation, ZHeapTuple tuple,
+				   Snapshot snapshot, Buffer buf,
 				   TransactionId priorXmax, bool nobuflock);
 extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
 							int slot_no, TransactionId xwait, BlockNumber *tpd_blkno);

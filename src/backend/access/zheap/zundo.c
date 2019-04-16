@@ -213,15 +213,13 @@ TransSlotFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTupleHeader hdr,
  *  nobuflock indicates whether caller has lock on the buffer 'buf'.
  */
 bool
-ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
-				   TransactionId priorXmax, bool nobuflock)
+ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
+				   Buffer buf, TransactionId priorXmax, bool nobuflock)
 {
-	ZHeapTupleData zhtup;
+	ZHeapTuple	visible_tuple;
 	ZHeapTupleHeaderData hdr;
 	ItemPointer tid = &(tuple->t_self);
-	ItemId		lp;
-	Page		page;
-	OffsetNumber offnum;
+	OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
 	bool		valid = false;
 	ZHeapTupleTransInfo	zinfo;
 
@@ -232,14 +230,10 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 	if (nobuflock)
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 
-	page = BufferGetPage(buf);
-	offnum = ItemPointerGetOffsetNumber(tid);
-	lp = PageGetItemId(page, offnum);
+	/* XXX. This is a waste; we really only need the tuple header. */
+	ZHeapTupleFetch(relation, buf, offnum, snapshot, &visible_tuple, NULL);
 
-	zhtup.t_tableOid = tuple->t_tableOid;
-	zhtup.t_self = *tid;
-
-	if (ItemIdIsDead(lp) || !ItemIdHasStorage(lp))
+	if (visible_tuple == NULL)
 	{
 		/*
 		 * If the tuple is already removed by Rollbacks/pruning, then we don't
@@ -249,36 +243,12 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		return false;
 	}
-	else if (!ItemIdIsDeleted(lp))
-	{
-		/*
-		 * If the tuple is updated such that its transaction slot has been
-		 * changed, then we will never be able to get the correct tuple from
-		 * undo. To avoid, that we get the latest tuple from page rather than
-		 * relying on it's in-memory copy.
-		 */
-		zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-		zhtup.t_len = ItemIdGetLength(lp);
-	}
-	else
-	{
-		ZHeapTuple	vis_tuple;
-
-		/*
-		 * XXX for now we shall get a visible undo tuple for the given dirty
-		 * snapshot. This is a waste; we really only need the tuple header.
-		 */
-		vis_tuple = ZHeapGetVisibleTuple(offnum, snapshot, buf, NULL);
-		Assert(vis_tuple != NULL);
-		zhtup.t_data = vis_tuple->t_data;
-		zhtup.t_len = vis_tuple->t_len;
-	}
 
 	/*
 	 * We've to call ZHeapTupleGetTransInfo to fetch the xact info of the
 	 * tuple since the tuple can be marked with invalid xact flag.
 	 */
-	ZHeapTupleGetTransInfo(&zhtup, buf, false, &zinfo);
+	ZHeapTupleGetTransInfo(visible_tuple, buf, false, &zinfo);
 
 	/*
 	 * Current xid on tuple must not precede oldestXidHavingUndo as it will be
@@ -289,10 +259,12 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 	if (TransactionIdEquals(zinfo.xid, priorXmax))
 	{
 		valid = true;
+		pfree(visible_tuple);
 		goto tuple_is_valid;
 	}
 
-	memcpy(&hdr, zhtup.t_data, SizeofZHeapTupleHeader);
+	memcpy(&hdr, visible_tuple->t_data, SizeofZHeapTupleHeader);
+	pfree(tuple);
 
 	/*
 	 * Current xid on tuple must not precede RecentGlobalXmin as it will be
@@ -331,7 +303,8 @@ ValidateTuplesXact(ZHeapTuple tuple, Snapshot snapshot, Buffer buf,
 			break;
 		}
 
-		zinfo.trans_slot = UpdateTupleHeaderFromUndoRecord(urec, &hdr, page);
+		zinfo.trans_slot = UpdateTupleHeaderFromUndoRecord(urec, &hdr,
+														   BufferGetPage(buf));
 
 		Assert(!TransactionIdPrecedes(urec->uur_prevxid, RecentGlobalXmin));
 

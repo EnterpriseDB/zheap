@@ -262,7 +262,8 @@ retry:
 				 * that the latest version of the row was deleted, so we need
 				 * do nothing.
 				 */
-				if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax, true))
+				if (!ValidateTuplesXact(relation, tuple, &SnapshotDirty,
+										buffer, priorXmax, true))
 				{
 					ReleaseBuffer(buffer);
 					return TM_Deleted;
@@ -388,7 +389,8 @@ retry:
 			 * Ensure that the tuple is same as what we are expecting as
 			 * above.
 			 */
-			if (!ValidateTuplesXact(tuple, &SnapshotDirty, buffer, priorXmax, true))
+			if (!ValidateTuplesXact(relation, tuple, &SnapshotDirty,
+									buffer, priorXmax, true))
 			{
 				if (BufferIsValid(buffer))
 					ReleaseBuffer(buffer);
@@ -503,8 +505,8 @@ zheapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot sn
 	 * be deleted
 	 */
 
-	tup = zheap_gettuple(rel, buffer, ItemPointerGetOffsetNumber(tid));
-	tup = ZHeapTupleSatisfies(tup, snapshot, buffer, tid);
+	ZHeapTupleFetch(rel, buffer, ItemPointerGetOffsetNumber(tid), snapshot,
+					&tup, NULL);
 
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 	ReleaseBuffer(buffer);
@@ -1555,7 +1557,6 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 			{
 				ItemId		itemid;
 				bool		visible;
-				ZHeapTuple	loctup;
 				ItemPointerData tid;
 
 				/* Skip invalid tuple pointers. */
@@ -1563,22 +1564,20 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 				if (!ItemIdIsNormal(itemid))
 					continue;
 
-				loctup = zheap_gettuple(scan->rs_base.rs_rd, scan->rs_cbuf,
-										tupoffset);
-				tid = loctup->t_self;
-
+				ItemPointerSet(&tid, blockno, tupoffset);
 				if (all_visible)
 				{
-					tuple = loctup;
+					tuple = zheap_gettuple(scan->rs_base.rs_rd, scan->rs_cbuf,
+										   tupoffset);
 					visible = true;
 				}
 				else
 				{
-					tuple = ZHeapTupleSatisfies(loctup,
-												scan->rs_base.rs_snapshot,
-												scan->rs_cbuf,
-												NULL);
-					visible = (tuple != NULL);
+					visible = ZHeapTupleFetch(scan->rs_base.rs_rd,
+											  scan->rs_cbuf,
+											  tupoffset,
+											  scan->rs_base.rs_snapshot,
+											  &tuple, NULL);
 				}
 
 				/*

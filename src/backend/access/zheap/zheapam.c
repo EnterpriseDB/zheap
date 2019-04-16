@@ -967,7 +967,7 @@ check_tup_satisfies_update:
 	if (crosscheck != InvalidSnapshot && result == TM_Ok)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
-		if (!ZHeapTupleSatisfies(&zheaptup, crosscheck, buffer, NULL))
+		if (!ZHeapTupleFetch(relation, buffer, offnum, crosscheck, NULL, NULL))
 			result = TM_Updated;
 	}
 
@@ -1900,7 +1900,8 @@ check_tup_satisfies_update:
 	if (crosscheck != InvalidSnapshot && result == TM_Ok)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
-		if (!ZHeapTupleSatisfies(&oldtup, crosscheck, buffer, NULL))
+		if (!ZHeapTupleFetch(relation, buffer, old_offnum, crosscheck, NULL,
+							 NULL))
 			result = TM_Updated;
 	}
 
@@ -4152,7 +4153,8 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 			 * success.  See EvalPlanQualZFetch for detailed reason.
 			 */
 			if (TransactionIdIsValid(priorXmax) &&
-				!ValidateTuplesXact(mytup, SnapshotAny, buf, priorXmax, true))
+				!ValidateTuplesXact(rel, mytup, SnapshotAny, buf,
+									priorXmax, true))
 				return TM_Ok;
 
 			/* deleted or moved to another partition, so forget about it */
@@ -4179,7 +4181,8 @@ lock_tuple:
 		 * See EvalPlanQualZFetch for detailed reason.
 		 */
 		if (TransactionIdIsValid(priorXmax) &&
-			!ValidateTuplesXact(mytup, SnapshotAny, buf, priorXmax, false))
+			!ValidateTuplesXact(rel, mytup, SnapshotAny,
+								buf, priorXmax, false))
 		{
 			UnlockReleaseBuffer(buf);
 			return TM_Ok;
@@ -4212,7 +4215,7 @@ lock_tuple:
 			CommandId	tup_cid;
 
 			/* There is no point of locking a deleted and pruned tuple. */
-			mytup = ZHeapGetVisibleTuple(offnum, SnapshotAny, buf, NULL);
+			ZHeapTupleFetch(rel, buf, offnum, SnapshotAny, &mytup, NULL);
 			ctid = &mytup->t_self;
 			ZHeapPageGetNewCtid(buf, ctid, &tup_xid, &tup_cid);
 			goto next;
@@ -8303,7 +8306,8 @@ zheap_get_latest_tid(Relation relation,
 		 * was deleted, so we need do nothing.
 		 */
 		if (TransactionIdIsValid(priorXmax) &&
-			!ValidateTuplesXact(tp, snapshot, buffer, priorXmax, false))
+			!ValidateTuplesXact(relation, tp, snapshot,
+								buffer, priorXmax, false))
 		{
 			UnlockReleaseBuffer(buffer);
 			break;
@@ -8311,18 +8315,18 @@ zheap_get_latest_tid(Relation relation,
 
 		/*
 		 * Get the transaction which modified this tuple. Ideally we need to
-		 * get this only when there is a ctid chain to follow. But since the
-		 * visibility function frees the tuple, we have to do this here
-		 * regardless of the existence of a ctid chain.
+		 * get this only when there is a ctid chain to follow.
 		 */
 		priorXmax = ZHeapTupleGetTransXID(tp, buffer, false);
+		pfree(tp);
 
 		/*
 		 * Check time qualification of tuple; if visible, set it as the new
 		 * result candidate.
 		 */
 		ItemPointerSetInvalid(&new_ctid);
-		resulttup = ZHeapTupleSatisfies(tp, snapshot, buffer, &new_ctid);
+		ZHeapTupleFetch(relation, buffer, offnum, snapshot,
+						&resulttup, &new_ctid);
 
 		/*
 		 * If any prior version is visible, we pass latest visible as true.
