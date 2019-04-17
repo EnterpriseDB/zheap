@@ -1383,7 +1383,7 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		/* set the tid */
 		*tid = resulttup->t_self;
 	}
-	else if (!ItemIdIsDeleted(lp))
+	else
 	{
 		/*
 		 * If we can't see it, maybe no one else can either.  At caller
@@ -1392,14 +1392,8 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 * ZBORKED: This is an ugly kludge.  We should find a way to get this
 		 * from ZHeapTupleFetch or something of that sort.
 		 */
-		if (!resulttup && all_dead &&
-			ZHeapTupleIsSurelyDead(pagetup, buffer))
+		if (all_dead && ZHeapTupleIsSurelyDead(pagetup, buffer, offnum))
 			*all_dead = true;
-	}
-	else
-	{
-		/* For deleted item pointers, we've already set the value for all_dead. */
-		return NULL;
 	}
 
 	if (pagetup)

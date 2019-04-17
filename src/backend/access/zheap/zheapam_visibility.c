@@ -1457,32 +1457,25 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
  * Similar to HeapTupleIsSurelyDead, but for zheap tuples.
  */
 bool
-ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, Buffer buffer)
+ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, Buffer buffer, OffsetNumber offnum)
 {
-	ZHeapTupleHeader tuple = zhtup->t_data;
+	ZHeapTupleTransInfo	zinfo;
 
-	Assert(ItemPointerIsValid(&zhtup->t_self));
-	Assert(zhtup->t_tableOid != InvalidOid);
+	if (zhtup != NULL &&
+		ZHeapTidOpFromInfomask(zhtup->t_data->t_infomask) != ZTUPLETID_GONE)
+		return false;
 
-	if (tuple->t_infomask & ZHEAP_DELETED ||
-		tuple->t_infomask & ZHEAP_UPDATED)
-	{
-		ItemPointer		tid = &(zhtup->t_self);
-		OffsetNumber	offnum = ItemPointerGetOffsetNumber(tid);
-		ZHeapTupleTransInfo	zinfo;
+	/* Get transaction information. */
+	ZHeapTupleGetTransInfo(buffer, offnum, false, &zinfo);
 
-		/* Get transaction id. */
-		ZHeapTupleGetTransInfo(buffer, offnum, false, &zinfo);
-
-		/*
-		 * The tuple is deleted and must be all visible if the transaction
-		 * slot is cleared or latest xid that has changed the tuple precedes
-		 * smallest xid that has undo.
-		 */
-		if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
-			FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid))
-			return true;
-	}
+	/*
+	 * The tuple is deleted and must be all visible if the transaction
+	 * slot is cleared or latest xid that has changed the tuple precedes
+	 * smallest xid that has undo.
+	 */
+	if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN ||
+		FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid))
+		return true;
 
 	return false;				/* Tuple is still alive */
 }
