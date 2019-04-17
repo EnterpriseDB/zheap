@@ -264,7 +264,7 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
 	}
 
 	memcpy(&hdr, visible_tuple->t_data, SizeofZHeapTupleHeader);
-	pfree(tuple);
+	pfree(visible_tuple);
 
 	/*
 	 * Current xid on tuple must not precede RecentGlobalXmin as it will be
