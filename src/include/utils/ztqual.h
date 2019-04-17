@@ -61,8 +61,6 @@ extern TM_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,
 						  bool *in_place_updated_or_locked);
 extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, Buffer buffer,
 					   OffsetNumber offnum);
-extern ZHeapTuple ZHeapTupleSatisfiesAny(ZHeapTuple zhtup,
-										 Snapshot snapshot, Buffer buffer, ItemPointer ctid);
 extern ZHTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup,
 							  TransactionId OldestXmin,
 							  Buffer buffer, bool resolve_abort_in_progress,
