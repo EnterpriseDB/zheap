@@ -75,11 +75,10 @@ static BufferAccessStrategy vac_strategy;
 #define LAZY_ALLOC_TUPLES		MaxZHeapTuplesPerPage
 
 /* non-export function prototypes */
-static void lazy_vacuum_zpage(Relation onerel, BlockNumber blkno,
-							  Buffer buffer, LVRelStats *vacrelstats,
-							  Buffer *vmbuffer);
-static void lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno,
-							Buffer buffer, LVRelStats *vacrelstats,
+static int lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
+				  int tupindex, LVRelStats *vacrelstats, Buffer *vmbuffer);
+static int lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
+							int tupindex, LVRelStats *vacrelstats,
 							Buffer *vmbuffer,
 							TransactionId *global_visibility_cutoff_xid);
 static void
@@ -95,10 +94,14 @@ static bool zheap_page_is_all_visible(Relation rel, Buffer buf,
  *					 and repair its fragmentation.
  *
  * Caller must hold pin and buffer exclusive lock on the buffer.
+ *
+ * tupindex is the index in vacrelstats->dead_tuples of the first dead
+ * tuple for this page.  We assume the rest follow sequentially.
+ * The return value is the first tupindex after the tuples of this page.
  */
-static void
+static int
 lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
-				  LVRelStats *vacrelstats, Buffer *vmbuffer)
+				  int tupindex, LVRelStats *vacrelstats, Buffer *vmbuffer)
 {
 	Page		page = BufferGetPage(buffer);
 	Page		tmppage;
@@ -126,7 +129,7 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 
 	START_CRIT_SECTION();
 
-	for (int tupindex = 0; tupindex < vacrelstats->num_dead_tuples; tupindex++)
+	for (; tupindex < vacrelstats->num_dead_tuples; tupindex++)
 	{
 		BlockNumber tblk;
 		OffsetNumber toff;
@@ -187,6 +190,7 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
 							  *vmbuffer, visibility_cutoff_xid, flags);
 	}
 
+	return tupindex;
 }
 
 /*
@@ -195,9 +199,9 @@ lazy_vacuum_zpage(Relation onerel, BlockNumber blkno, Buffer buffer,
  *
  * Caller must hold pin and buffer exclusive lock on the buffer.
  */
-static void
+static int
 lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
-							LVRelStats *vacrelstats,
+							int tupindex, LVRelStats *vacrelstats,
 							Buffer *vmbuffer,
 							TransactionId *global_visibility_cutoff_xid)
 {
@@ -220,7 +224,7 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 	bool		lock_reacquired;
 	bool		pruned = false;
 
-	for (int tupindex = 0; tupindex < vacrelstats->num_dead_tuples; tupindex++)
+	for (; tupindex < vacrelstats->num_dead_tuples; tupindex++)
 	{
 		BlockNumber tblk PG_USED_FOR_ASSERTS_ONLY;
 		OffsetNumber toff;
@@ -238,7 +242,7 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 	}
 
 	if (uncnt <= 0)
-		return;
+		return tupindex;
 
 reacquire_slot:
 
@@ -464,6 +468,7 @@ prepare_xlog:
 							  *vmbuffer, InvalidTransactionId, flags);
 	}
 
+	return tupindex;
 }
 
 /*
@@ -570,6 +575,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 	IndexBulkDeleteResult **indstats;
 	StringInfoData infobuf;
 	int			i;
+	int			tupindex = 0;
 	PGRUsage	ru0;
 	BlockNumber next_unskippable_block;
 	bool		skipping_blocks;
@@ -764,6 +770,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 			 * not to reset latestRemovedXid since we want that value to be
 			 * valid.
 			 */
+			tupindex = 0;
 			vacrelstats->num_dead_tuples = 0;
 			vacrelstats->num_index_scans++;
 
@@ -1097,7 +1104,8 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 			if (nindexes == 0)
 			{
 				/* Remove tuples from zheap */
-				lazy_vacuum_zpage(onerel, blkno, buf, vacrelstats, &vmbuffer);
+				tupindex = lazy_vacuum_zpage(onerel, blkno, buf, tupindex,
+											 vacrelstats, &vmbuffer);
 				has_dead_tuples = false;
 
 				/*
@@ -1105,6 +1113,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 				 * careful not to reset latestRemovedXid since we want that
 				 * value to be valid.
 				 */
+				vacrelstats->num_dead_tuples = 0;
 				vacuumed_pages++;
 
 				/*
@@ -1126,12 +1135,11 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 				Assert(nindexes > 0);
 
 				/* Remove tuples from zheap and write the undo for it. */
-				lazy_vacuum_zpage_with_undo(onerel, blkno, buf, vacrelstats,
-											&vmbuffer, &visibility_cutoff_xid);
+				tupindex = lazy_vacuum_zpage_with_undo(onerel, blkno, buf,
+													   tupindex, vacrelstats,
+													   &vmbuffer,
+													   &visibility_cutoff_xid);
 			}
-
-			/* Reset the number of dead tuples as zero. */
-			vacrelstats->num_dead_tuples = 0;
 		}
 
 		/* Now that we are done with the page, get its available space */
