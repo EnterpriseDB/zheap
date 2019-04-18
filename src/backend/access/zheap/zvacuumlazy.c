@@ -1114,6 +1114,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 				 * value to be valid.
 				 */
 				vacrelstats->num_dead_tuples = 0;
+				tupindex = 0;
 				vacuumed_pages++;
 
 				/*
