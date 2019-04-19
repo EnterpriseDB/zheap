@@ -123,10 +123,10 @@ typedef struct ZHeapWALInfo
 {
 	Buffer		buffer;
 	ZHeapTuple	ztuple;
-	UndoRecPtr	urecptr;
-	UndoRecPtr	prev_urecptr;
-	int			trans_slot_id;
-	int			tup_trans_slot_id;
+	UndoRecPtr	urecptr;		/* current undo record pointer */
+	UndoRecPtr	prev_urecptr;	/* previous undo record pointer */
+	int			prior_trans_slot_id;	/* trans slot prior to the operation */
+	int			new_trans_slot_id;	/* trans slot of the current operation */
 	bool		all_visible_cleared;
 	UnpackedUndoRecord *undorecord;
 	xl_undolog_meta *undometa;
