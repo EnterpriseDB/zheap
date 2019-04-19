@@ -5816,8 +5816,8 @@ prepare_xlog:
 	if (oldwalinfo->tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 	{
 		xlrec.flags |= XLZ_UPDATE_OLD_CONTAINS_TPD_SLOT;
-		XLogRegisterData((char *) &(oldwalinfo->trans_slot_id),
-						 sizeof(oldwalinfo->trans_slot_id));
+		XLogRegisterData((char *) &(oldwalinfo->tup_trans_slot_id),
+						 sizeof(oldwalinfo->tup_trans_slot_id));
 	}
 	if (!inplace_update)
 	{
