@@ -18,20 +18,8 @@
 #include "catalog/pg_class.h"
 #include "storage/lwlock.h"
 
-/*
- * Discard the undo for all the transaction whose xid is smaller than xmin
- *
- *	Check the DiscardInfo memory array for each slot (every undo log) , process
- *	the undo log for all the slot which have xid smaller than xmin or invalid
- *	xid. Fetch the record from the undo log transaction by transaction until we
- *	find the xid which is not smaller than xmin.
- */
 extern void UndoDiscard(TransactionId xmin, bool *hibernate);
-
-/* To calculate the size of the hash table size for rollbacks. */
-extern int	RollbackHTSize(void);
-
-/* To initialize the hash table in shared memory for rollbacks. */
-extern void InitRollbackHashTable(void);
+extern void UndoLogDiscardAll(void);
+extern void TempUndoDiscard(UndoLogNumber);
 
 #endif							/* UNDODISCARD_H */

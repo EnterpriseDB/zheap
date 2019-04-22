@@ -15,14 +15,14 @@
 #include <unistd.h>
 
 #include "libpq/pqsignal.h"
+#include "access/discardworker.h"
 #include "access/parallel.h"
+#include "access/undoworker.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "postmaster/bgworker_internals.h"
-#include "postmaster/discardworker.h"
 #include "postmaster/postmaster.h"
-#include "postmaster/undoworker.h"
 #include "replication/logicallauncher.h"
 #include "replication/logicalworker.h"
 #include "storage/dsm.h"

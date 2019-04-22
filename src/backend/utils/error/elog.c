@@ -1784,6 +1784,18 @@ pg_re_throw(void)
 						 __FILE__, __LINE__);
 }
 
+/*
+ * pg_rethrow_as_fatal - Promote the error level to fatal.
+ */
+void
+pg_rethrow_as_fatal(void)
+{
+	ErrorData  *edata = &errordata[errordata_stack_depth];
+
+	Assert(errordata_stack_depth >= 0);
+	edata->elevel = FATAL;
+	PG_RE_THROW();
+}
 
 /*
  * GetErrorContextStack - Return the context stack, for display/diags

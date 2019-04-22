@@ -26,11 +26,13 @@
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undodiscard.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
 #include "access/tpd.h"
+#include "access/undorequest.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_enum.h"
 #include "catalog/storage.h"
@@ -42,7 +44,6 @@
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
-#include "postmaster/undoloop.h"
 #include "replication/logical.h"
 #include "replication/logicallauncher.h"
 #include "replication/origin.h"
@@ -3502,7 +3503,9 @@ ApplyUndoActions(void)
 {
 	TransactionState s = CurrentTransactionState;
 	uint32		save_holdoff;
-	int			i;
+	volatile	UndoRequestInfo urinfo;
+	volatile int per_level;
+	bool		error = false;
 
 	if (!s->performUndoActions)
 		return;
@@ -3546,16 +3549,25 @@ ApplyUndoActions(void)
 	}
 
 	s->state = TRANS_UNDO;
-	save_holdoff = InterruptHoldoffCount;
 
-	PG_TRY();
+	for (per_level = 0; per_level < UndoPersistenceLevels; per_level++)
 	{
-		for (i = 0; i < UndoPersistenceLevels; i++)
+		if (s->latest_urec_ptr[per_level])
 		{
-			if (s->latest_urec_ptr[i])
+			save_holdoff = InterruptHoldoffCount;
+
+			PG_TRY();
 			{
-				uint64		size = s->latest_urec_ptr[i] - s->start_urec_ptr[i];
+				TransactionId xid = GetTopTransactionId();
 				bool		result = false;
+
+				/*
+				 * Prepare required undo request info so that it can be used in
+				 * exception.
+				 */
+				ResetUndoRequestInfo(&urinfo);
+				urinfo.dbid = MyDatabaseId;
+				urinfo.full_xid = FullTransactionIdFromEpochAndXid(0, xid);
 
 				/*
 				 * If this request is not for a temp table and not aborting
@@ -3576,53 +3588,73 @@ ApplyUndoActions(void)
 				 * actions of a very large transaction as that can lead to a
 				 * delay in retruning the control back to user after abort.
 				 */
-				if (i != UNDO_TEMP &&
-					!IsSubTransaction() &&
-					size >= rollback_overflow_size * 1024 * 1024)
-					result = PushRollbackReq(s->latest_urec_ptr[i],
-											 s->start_urec_ptr[i],
-											 InvalidOid);
+				if (per_level != UNDO_TEMP &&
+					!IsSubTransaction())
+					result = RegisterRollbackReq(s->latest_urec_ptr[per_level],
+												 s->start_urec_ptr[per_level],
+												 MyDatabaseId,
+												 xid);
 				if (!result)
 				{
 					/* for subtransactions, we do partial rollback. */
-					execute_undo_actions(s->latest_urec_ptr[i],
-										 s->start_urec_ptr[i],
+					execute_undo_actions(xid,
+										 s->latest_urec_ptr[per_level],
+										 s->start_urec_ptr[per_level],
 										 !IsSubTransaction(),
 										 true,
 										 false);
 				}
 			}
+			PG_CATCH();
+			{
+				if (per_level == UNDO_TEMP)
+					pg_rethrow_as_fatal();
+
+				/*
+				 * Add the request into an error queue so that it can be
+				 * processed in a timely fashion.
+				 *
+				 * If we fail to add the request in an error queuem, then
+				 * remove the entry from the hash table and continue to
+				 * process the remaining undo requests if any.  This request
+				 * will be later processed by discard worker.
+				 */
+				if (!InsertRequestIntoErrorUndoQueue(&urinfo))
+					RollbackHTRemoveEntry(XidFromFullTransactionId(urinfo.full_xid),
+										  urinfo.start_urec_ptr);
+
+				/*
+				 * Errors can reset holdoff count, so restore back.  This is
+				 * required because this function can be called after holding
+				 * interrupts.
+				 */
+				InterruptHoldoffCount = save_holdoff;
+
+				/* Send the error only to server log. */
+				err_out_to_client(false);
+				EmitErrorReport();
+
+				error = true;
+
+				/*
+				 * We promote the error level to FATAL if we get an error
+				 * while applying undo for the subtransaction.  See errstart.
+				 * So, we should never reach here for such a case.
+				 */
+				Assert(!applying_subxact_undo);
+			}
+			PG_END_TRY();
 		}
 	}
-	PG_CATCH();
+
+	if (error)
 	{
-		/* Reset undo information */
-		ResetUndoActionsInfo();
-
-		/*
-		 * Errors can reset holdoff count, so restore back.  This is required
-		 * because this function can be called after holding interrupts.
-		 */
-		InterruptHoldoffCount = save_holdoff;
-
-		/* Send the error only to server log. */
-		err_out_to_client(false);
-		EmitErrorReport();
-
 		/*
 		 * This should take care of releasing the locks held under
 		 * TopTransactionResourceOwner.
 		 */
 		AbortTransaction();
-
-		/*
-		 * We promote the error level to FATAL if we get an error while
-		 * applying undo for the subtransaction.  See errstart.  So, we should
-		 * never reach here for such a case.
-		 */
-		Assert(!applying_subxact_undo);
 	}
-	PG_END_TRY();
 
 	/* Reset undo information */
 	ResetUndoActionsInfo();

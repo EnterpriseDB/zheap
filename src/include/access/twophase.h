@@ -14,11 +14,11 @@
 #ifndef TWOPHASE_H
 #define TWOPHASE_H
 
+#include "access/undorequest.h"
 #include "access/xlogdefs.h"
 #include "access/xact.h"
 #include "datatype/timestamp.h"
 #include "storage/lock.h"
-#include "postmaster/undoloop.h"
 #include "access/undolog.h"
 
 /*

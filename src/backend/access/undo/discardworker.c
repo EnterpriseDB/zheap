@@ -8,25 +8,41 @@
  *
  * IDENTIFICATION
  *	  src/backend/postmaster/discardworker.c
+ *
+ * The main responsibility of the discard worker is to discard the undo log
+ * of transactions that are committed and all-visible or are rolledback.  It
+ * also registers the request for aborted transactions in the work queues.
+ * To know more about work queues, see undorequest.c.  It iterates through all
+ * the active logs one-by-one and try to discard the transactions that are old
+ * enough to matter.
+ *
+ * For tranasctions that spans across multiple logs, the log for committed and
+ * all-visible transactions are discarded seprately for each log.  This is
+ * possible as the transactions that span across logs have separate transaction
+ * header for each log.  For aborted transactions, we try to process the actions
+ * of entire transaction at one-shot as we need to perform the actions starting
+ * from end location to start location.  However, it is possbile that the later
+ * portion of transaction that is overflowed into a separate log can be processed
+ * separately if we encounter the corresponding log first.  If we want we can
+ * combine the log for processing in that case as well, but there is no clear
+ * advantage of the same.
  *-------------------------------------------------------------------------
  */
 
 #include "postgres.h"
 #include <unistd.h>
 
-/* These are always necessary for a bgworker. */
+#include "access/undodiscard.h"
+#include "access/discardworker.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lwlock.h"
 #include "storage/proc.h"
-#include "storage/shmem.h"
-
-#include "access/undodiscard.h"
-#include "pgstat.h"
-#include "postmaster/discardworker.h"
 #include "storage/procarray.h"
+#include "storage/shmem.h"
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
 #include "utils/resowner.h"
@@ -41,6 +57,7 @@ static void undoworker_sigterm_handler(SIGNAL_ARGS);
 static bool got_SIGTERM = false;
 static bool hibernate = false;
 static long wait_time = MIN_NAPTIME_PER_CYCLE;
+static bool am_discard_worker = false;
 
 /* SIGTERM: set flag to exit at next convenient time */
 static void
@@ -89,16 +106,14 @@ DiscardWorkerMain(Datum main_arg)
 	pqsignal(SIGTERM, undoworker_sigterm_handler);
 	BackgroundWorkerUnblockSignals();
 
+	am_discard_worker = true;
+
 	/* Make it easy to identify our processes. */
 	SetConfigOption("application_name", MyBgworkerEntry->bgw_name,
 					PGC_USERSET, PGC_S_SESSION);
 
-	/*
-	 * Create resource owner for discard worker as it need to read the undo
-	 * records  outside the transaction blocks which intern access buffer read
-	 * routine.
-	 */
-	CreateAuxProcessResourceOwner();
+	/* Establish connection to nailed catalogs. */
+	BackgroundWorkerInitializeConnection(NULL, NULL, 0);
 
 	/* Enter main loop */
 	while (!got_SIGTERM)
@@ -167,11 +182,15 @@ DiscardWorkerMain(Datum main_arg)
 			proc_exit(1);
 	}
 
-	ReleaseAuxProcessResources(true);
-
 	/* we're done */
 	ereport(LOG,
 			(errmsg("discard worker shutting down")));
 
 	proc_exit(0);
+}
+
+bool
+IsDiscardProcess(void)
+{
+	return am_discard_worker;
 }

@@ -93,7 +93,9 @@
 #include <pthread.h>
 #endif
 
+#include "access/discardworker.h"
 #include "access/transam.h"
+#include "access/undoworker.h"
 #include "access/xlog.h"
 #include "bootstrap/bootstrap.h"
 #include "catalog/pg_control.h"
@@ -111,12 +113,10 @@
 #include "port/pg_bswap.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
-#include "postmaster/discardworker.h"
 #include "postmaster/fork_process.h"
 #include "postmaster/pgarch.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
-#include "postmaster/undoworker.h"
 #include "replication/logicallauncher.h"
 #include "replication/walsender.h"
 #include "storage/fd.h"

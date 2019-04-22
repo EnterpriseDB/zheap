@@ -452,6 +452,20 @@ InitCommunication(void)
 	}
 }
 
+/*
+ * Check whether the dbid exist or not.
+ */
+bool
+dbid_exists(Oid dboid)
+{
+	bool		result = false;
+
+	Assert(IsTransactionState());
+	result = (GetDatabaseTupleByOid(dboid) != NULL);
+
+	return result;
+}
+
 
 /*
  * pg_split_opts -- split a string of options and append it to an argv array

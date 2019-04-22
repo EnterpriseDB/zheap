@@ -19,8 +19,8 @@
 #include "access/hio.h"
 #include "access/tableam.h"
 #include "access/undoinsert.h"
+#include "access/undorequest.h"
 #include "access/zhtup.h"
-#include "postmaster/undoloop.h"
 #include "storage/smgr.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
@@ -268,6 +268,9 @@ extern bool ValidateTuplesXact(Relation relation, ZHeapTuple tuple,
 				   TransactionId priorXmax, bool nobuflock);
 extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
 							int slot_no, TransactionId xwait, BlockNumber *tpd_blkno);
+extern void process_and_execute_undo_actions_page(UndoRecPtr from_urecptr,
+				Relation rel, Buffer buffer, uint32 epoch,
+				TransactionId xid, int slot_no);
 
 /* in zheap/zvacuumlazy.c */
 struct VacuumParams;

@@ -17,12 +17,12 @@
 #include "access/tpd.h"
 #include "access/undoaction_xlog.h"
 #include "access/undolog.h"
+#include "access/undorequest.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "access/zheap.h"
 #include "nodes/pg_list.h"
 #include "pgstat.h"
-#include "postmaster/undoloop.h"
 #include "storage/block.h"
 #include "storage/buf.h"
 #include "storage/bufmgr.h"
@@ -31,14 +31,6 @@
 #include "miscadmin.h"
 #include "storage/shmem.h"
 #include "access/undodiscard.h"
-
-#define ROLLBACK_HT_SIZE	1024
-
-static void RollbackHTRemoveEntry(UndoRecPtr start_urec_ptr);
-static bool RollbackHTRequestExist(UndoRecPtr start_urec_ptr);
-
-/* This is the hash table to store all the rollabck requests. */
-static HTAB *RollbackHT;
 
 /*
  * PrefetchUndoPages - Prefetch undo pages
@@ -330,6 +322,7 @@ undo_record_comparator(const void *left, const void *right)
 /*
  * execute_undo_actions - Execute the undo actions
  *
+ * xid - Transaction id that is getting rolled back.
  * from_urecptr - undo record pointer from where to start applying undo action.
  * to_urecptr	- undo record pointer upto which point apply undo action.
  * nopartial	- true if rollback is for complete transaction.
@@ -350,62 +343,67 @@ undo_record_comparator(const void *left, const void *right)
  *				  locks.
  */
 void
-execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
-					 bool nopartial, bool rewind, bool rellock)
+execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
+					 UndoRecPtr to_urecptr, bool nopartial, bool rewind,
+					 bool rellock)
 {
 	UnpackedUndoRecord *uur = NULL;
 	UndoRecInfo *urp_array;
 	UndoRecPtr	urec_ptr;
 	ForkNumber	prev_fork = InvalidForkNumber;
 	BlockNumber prev_block = InvalidBlockNumber;
-	TransactionId xid = InvalidTransactionId;
 	int			undo_apply_size = maintenance_work_mem * 1024L;
 
+	/* 'from' and 'to' pointers must be valid. */
 	Assert(from_urecptr != InvalidUndoRecPtr);
-
-	/*
-	 * If the location upto which rollback need to be done is not provided,
-	 * then rollback the complete transaction. FIXME: this won't work if
-	 * undolog crossed the limit of 1TB, because then from_urecptr and
-	 * to_urecptr will be from different lognos.
-	 */
-	if (to_urecptr == InvalidUndoRecPtr)
-	{
-		UndoLogNumber logno = UndoRecPtrGetLogNo(from_urecptr);
-
-		to_urecptr = UndoLogGetLastXactStartPoint(logno);
-	}
+	Assert(to_urecptr != InvalidUndoRecPtr);
 
 	urec_ptr = from_urecptr;
 	if (nopartial)
 	{
-		uur = UndoFetchRecord(urec_ptr, InvalidBlockNumber, InvalidOffsetNumber,
+		UndoRecPtr	next_insert;
+		UndoLogNumber logno;
+
+		/*
+		 * It is important here to fetch the latest undo record and validate if
+		 * the actions are already executed.  The reason is that it is possible
+		 * that discard worker or backend might try to execute the rollback
+		 * request which is already executed or can belong to a different
+		 * transaction.  For ex., after discard worker fetches the record and
+		 * found that this transaction need to be rolledback, backend might
+		 * concurrently execute the actions, rewind the undo location and
+		 * remove the request from rollback hash table.  Now, discard worker
+		 * will needlessly register the request and it also possible that
+		 * it might try to execute the undo actions of some other transaction
+		 * if after backend rewounded the undo location, some other transaction
+		 * has added undo at that location.  The similar problem can happen if
+		 * the discard worker first pushes the request, the undo worker processed
+		 * it and backend tries to process it some later point.
+		 */
+		uur = UndoFetchRecord(to_urecptr, InvalidBlockNumber, InvalidOffsetNumber,
 							  InvalidTransactionId, NULL, NULL);
+
+		/* already processed. */
 		if (uur == NULL)
 			return;
 
-		xid = uur->uur_xid;
-		UndoRecordRelease(uur);
-		uur = NULL;
+		logno = UndoRecPtrGetLogNo(to_urecptr);
+		next_insert = UndoLogGetNextInsertPtr(logno, InvalidTransactionId);
 
 		/*
-		 * Grab the undo action apply lock before start applying the undo
-		 * action this will prevent applying undo actions concurrently.  If we
-		 * do not get the lock that mean its already being applied
-		 * concurrently or the discard worker might be pushing its request to
-		 * the rollback hash table
+		 * We don't need to execute the undo actions (a) if they are already
+		 * executed, (b) the undo belongs to a different transaction, this
+		 * is possible, if someone rewinds the undo and same space is used by
+		 * another transaction and (c) the rollback is request is already
+		 * executed and the undo pointer is already rewinded.
 		 */
-		if (!ConditionTransactionUndoActionLock(xid))
+		if (uur->uur_progress != 0 ||
+			xid != uur->uur_xid ||
+			next_insert == to_urecptr)
 			return;
-		/*
-		 * If we have come to execute undo actions from the worker then just
-		 * confirm whether the undo request is still pending in the hash table
-		 * or it's already completed because there is a possibility that the
-		 * backend has applied the undo action and rewound the insert pointer
-		 * and that might get used by another transaction.
-		 */
-		if (!rewind && !RollbackHTRequestExist(from_urecptr))
-			return;
+
+		UndoRecordRelease(uur);
+		uur = NULL;
 	}
 
 	/*
@@ -541,9 +539,6 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 
 	if (nopartial)
 	{
-		/* Undo action is applied so delete the hash table entry. */
-		RollbackHTRemoveEntry(from_urecptr);
-
 		/*
 		 * Set undo action apply completed in the transaction header if this
 		 * is a main transaction and we have not rewound its undo.
@@ -583,7 +578,11 @@ execute_undo_actions(UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 			UnlockReleaseUndoBuffers();
 		}
 
-		TransactionUndoActionLockRelease(xid);
+		/*
+		 * Undo action is applied so delete the hash table entry.
+		 */
+		Assert(TransactionIdIsValid(xid));
+		RollbackHTRemoveEntry(xid, to_urecptr);
 	}
 }
 
@@ -625,284 +624,4 @@ execute_undo_actions_page(UndoRecInfo * urp_array, int first_idx, int last_idx,
 														 blkno,
 														 blk_chain_complete,
 														 rellock);
-}
-
-/*
- * To return the size of the hash-table for rollbacks.
- */
-int
-RollbackHTSize(void)
-{
-	return hash_estimate_size(ROLLBACK_HT_SIZE, sizeof(RollbackHashEntry));
-}
-
-/*
- * To initialize the hash-table for rollbacks in shared memory
- * for the given size.
- */
-void
-InitRollbackHashTable(void)
-{
-	HASHCTL		info;
-
-	MemSet(&info, 0, sizeof(info));
-
-	info.keysize = sizeof(UndoRecPtr);
-	info.entrysize = sizeof(RollbackHashEntry);
-	info.hash = tag_hash;
-
-	RollbackHT = ShmemInitHash("Undo actions Lookup Table",
-							   ROLLBACK_HT_SIZE, ROLLBACK_HT_SIZE, &info,
-							   HASH_ELEM | HASH_FUNCTION | HASH_FIXED_SIZE);
-}
-
-/*
- * To push the rollback requests from backend to the hash-table.
- * Return true if the request is successfully added, else false
- * and the caller may execute undo actions itself.
- */
-bool
-PushRollbackReq(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr, Oid dbid)
-{
-	bool		found = false;
-	RollbackHashEntry *rh;
-
-	/* Do not push any rollback request if working in single user-mode */
-	if (!IsUnderPostmaster)
-		return false;
-
-	/*
-	 * If the location upto which rollback need to be done is not provided,
-	 * then rollback the complete transaction.
-	 */
-	if (start_urec_ptr == InvalidUndoRecPtr)
-	{
-		UndoLogNumber logno = UndoRecPtrGetLogNo(end_urec_ptr);
-
-		start_urec_ptr = UndoLogGetLastXactStartPoint(logno);
-	}
-
-	Assert(UndoRecPtrIsValid(start_urec_ptr));
-
-	/* If there is no space to accomodate new request, then we can't proceed. */
-	if (RollbackHTIsFull())
-		return false;
-
-	if (!UndoRecPtrIsValid(end_urec_ptr))
-	{
-		UndoLogNumber logno = UndoRecPtrGetLogNo(start_urec_ptr);
-
-		end_urec_ptr = UndoLogGetLastXactStartPoint(logno);
-	}
-
-	LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
-
-	rh = (RollbackHashEntry *) hash_search(RollbackHT, &start_urec_ptr,
-										   HASH_ENTER_NULL, &found);
-	if (!rh)
-	{
-		LWLockRelease(RollbackHTLock);
-		return false;
-	}
-	/* We shouldn't try to push the same rollback request again. */
-	if (!found)
-	{
-		rh->start_urec_ptr = start_urec_ptr;
-		rh->end_urec_ptr = end_urec_ptr;
-		rh->dbid = (dbid == InvalidOid) ? MyDatabaseId : dbid;
-	}
-	LWLockRelease(RollbackHTLock);
-
-	return true;
-}
-
-/*
- * To perform the undo actions for the transactions whose rollback
- * requests are in hash table. Sequentially, scan the hash-table
- * and perform the undo-actions for the respective transactions.
- * Once, the undo-actions are applied, remove the entry from the
- * hash table.
- */
-void
-RollbackFromHT(Oid dbid)
-{
-	UndoRecPtr	start[ROLLBACK_HT_SIZE];
-	UndoRecPtr	end[ROLLBACK_HT_SIZE];
-	RollbackHashEntry *rh;
-	HASH_SEQ_STATUS status;
-	int			i = 0;
-
-	/* Fetch the rollback requests */
-	LWLockAcquire(RollbackHTLock, LW_SHARED);
-
-	Assert(hash_get_num_entries(RollbackHT) <= ROLLBACK_HT_SIZE);
-	hash_seq_init(&status, RollbackHT);
-	while (RollbackHT != NULL &&
-		   (rh = (RollbackHashEntry *) hash_seq_search(&status)) != NULL)
-	{
-		if (rh->dbid == dbid)
-		{
-			start[i] = rh->start_urec_ptr;
-			end[i] = rh->end_urec_ptr;
-			i++;
-		}
-	}
-
-	LWLockRelease(RollbackHTLock);
-
-	/* Execute the rollback requests */
-	while (--i >= 0)
-	{
-		Assert(UndoRecPtrIsValid(start[i]));
-		Assert(UndoRecPtrIsValid(end[i]));
-
-		StartTransactionCommand();
-		execute_undo_actions(start[i], end[i], true, false, true);
-		CommitTransactionCommand();
-	}
-}
-
-/*
- * Remove the rollback request entry from the rollback hash table.
- */
-static void
-RollbackHTRemoveEntry(UndoRecPtr start_urec_ptr)
-{
-	LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
-
-	hash_search(RollbackHT, &start_urec_ptr, HASH_REMOVE, NULL);
-
-	LWLockRelease(RollbackHTLock);
-}
-
-/*
- * To check if the rollback requests in the hash table are all
- * completed or not. This is required because we don't not want to
- * expose RollbackHT in xact.c, where it is required to ensure
- * that we push the resuests only when there is some space in
- * the hash-table.
- */
-bool
-RollbackHTIsFull(void)
-{
-	bool		result = false;
-
-	LWLockAcquire(RollbackHTLock, LW_SHARED);
-
-	if (hash_get_num_entries(RollbackHT) >= ROLLBACK_HT_SIZE)
-		result = true;
-
-	LWLockRelease(RollbackHTLock);
-
-	return result;
-}
-
-/*
- * Get database list from the rollback hash table.
- */
-List *
-RollbackHTGetDBList()
-{
-	HASH_SEQ_STATUS status;
-	RollbackHashEntry *rh;
-	List	   *dblist = NIL;
-
-	/* Fetch the rollback requests */
-	LWLockAcquire(RollbackHTLock, LW_SHARED);
-
-	hash_seq_init(&status, RollbackHT);
-	while (RollbackHT != NULL &&
-		   (rh = (RollbackHashEntry *) hash_seq_search(&status)) != NULL)
-		dblist = list_append_unique_oid(dblist, rh->dbid);
-
-	LWLockRelease(RollbackHTLock);
-
-	return dblist;
-}
-
-/*
- * Remove all the entries for the given dbid. This is required in cases when
- * the database is dropped and there were rollback requests pushed to the
- * hash-table.
- */
-void
-RollbackHTCleanup(Oid dbid)
-{
-	RollbackHashEntry *rh;
-	HASH_SEQ_STATUS status;
-	UndoRecPtr	start_urec_ptr;
-
-	/* Fetch the rollback requests */
-	LWLockAcquire(RollbackHTLock, LW_SHARED);
-
-	Assert(hash_get_num_entries(RollbackHT) <= ROLLBACK_HT_SIZE);
-	hash_seq_init(&status, RollbackHT);
-	while (RollbackHT != NULL &&
-		   (rh = (RollbackHashEntry *) hash_seq_search(&status)) != NULL)
-	{
-		if (rh->dbid == dbid)
-		{
-			start_urec_ptr = rh->start_urec_ptr;
-			hash_search(RollbackHT, &start_urec_ptr, HASH_REMOVE, NULL);
-		}
-	}
-
-	LWLockRelease(RollbackHTLock);
-}
-
-/*
- * RollbackHTRequestExist - Check whether the rollback request exist in the
- * rollback hash table or not.
- */
-static bool
-RollbackHTRequestExist(UndoRecPtr start_urec_ptr)
-{
-	RollbackHashEntry	*rh;
-
-	LWLockAcquire(RollbackHTLock, LW_EXCLUSIVE);
-
-	rh = (RollbackHashEntry *) hash_search(RollbackHT, &start_urec_ptr,
-										   HASH_FIND, NULL);
-	LWLockRelease(RollbackHTLock);
-
-	if (rh == NULL)
-		return false;
-
-	return true;
-}
-
-/*
- *		ConditionTransactionUndoActionLock
- *
- * Insert a lock showing that the undo action for given transaction is in
- * progress. This is only done for the main transaction not for the
- * sub-transaction.
- */
-bool
-ConditionTransactionUndoActionLock(TransactionId xid)
-{
-	LOCKTAG		tag;
-
-	SET_LOCKTAG_TRANSACTION_UNDOACTION(tag, xid);
-
-	if (LOCKACQUIRE_NOT_AVAIL == LockAcquire(&tag, ExclusiveLock, false, true))
-		return false;
-	else
-		return true;
-}
-
-/*
- *		TransactionUndoActionLockRelease
- *
- * Delete the lock showing that the undo action given transaction ID is in
- * progress.
- */
-void
-TransactionUndoActionLockRelease(TransactionId xid)
-{
-	LOCKTAG		tag;
-
-	SET_LOCKTAG_TRANSACTION_UNDOACTION(tag, xid);
-
-	LockRelease(&tag, ExclusiveLock, false);
 }

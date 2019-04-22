@@ -1,25 +1,20 @@
 /*-------------------------------------------------------------------------
  *
  * discardworker.h
- *	  Exports from postmaster/discardworker.c.
+ *	  Exports from access/undo/discardworker.c.
  *
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
- * src/include/postmaster/discardworker.h
+ * src/include/access/discardworker.h
  *
  *-------------------------------------------------------------------------
  */
 #ifndef _DISCARDWORKER_H
 #define _DISCARDWORKER_H
 
-/*
- * This function will perform multiple actions based on need. (a) retrieve
- * transactions which have become all-visible and truncate the associated undo
- * logs or will increment the tail pointer. (b) drop the buffers corresponding
- * to truncated pages.
- */
-extern void DiscardWorkerMain(Datum main_arg) pg_attribute_noreturn();
 extern void DiscardWorkerRegister(void);
+extern void DiscardWorkerMain(Datum main_arg) pg_attribute_noreturn();
+extern bool IsDiscardProcess(void);
 
 #endif							/* _DISCARDWORKER_H */

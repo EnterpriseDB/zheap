@@ -1127,7 +1127,7 @@ UndoLogGetFirstValidRecord(UndoLogNumber logno)
 }
 
 /*
- * Return the Next insert location.  This will also validate the input xid
+ * Return the ext insert location.  This will also validate the input xid
  * if latest insert point is not for the same transaction id then this will
  * return Invalid Undo pointer.
  */

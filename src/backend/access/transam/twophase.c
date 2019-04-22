@@ -1528,37 +1528,6 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	memcpy(start_urec_ptr, hdr->start_urec_ptr, sizeof(start_urec_ptr));
 	memcpy(end_urec_ptr, hdr->end_urec_ptr, sizeof(end_urec_ptr));
 
-	/*
-	 * Perform undo actions, if there are undologs for this transaction. We
-	 * need to perform undo actions while we are still in transaction. Never
-	 * push rollbacks of temp tables to undo worker.
-	 */
-	for (i = 0; i < UndoPersistenceLevels; i++)
-	{
-		if (end_urec_ptr[i] != InvalidUndoRecPtr && !isCommit)
-		{
-			bool		result = false;
-
-			if (i != UNDO_TEMP)
-			{
-				uint64		rollback_size = 0;
-
-				rollback_size = end_urec_ptr[i] - start_urec_ptr[i];
-
-				if (rollback_size >= rollback_overflow_size * 1024 * 1024)
-					result = PushRollbackReq(end_urec_ptr[i], start_urec_ptr[i], InvalidOid);
-			}
-
-			/*
-			 * ZBORKED: set rellock = true, as we do *not* actually have all
-			 * the locks, but that'll probably deadlock?
-			 */
-			if (!result)
-				execute_undo_actions(end_urec_ptr[i], start_urec_ptr[i], true,
-									 true, true);
-		}
-	}
-
 	/* compute latestXid among all children */
 	latestXid = TransactionIdLatest(xid, hdr->nsubxacts, children);
 
@@ -1665,6 +1634,68 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 		RemoveTwoPhaseFile(xid, true);
 
 	MyLockedGxact = NULL;
+
+	/*
+	 * Perform undo actions, if there are undologs for this transaction. We
+	 * need to perform undo actions while we are still in transaction. Never
+	 * push rollbacks of temp tables to undo worker.
+	 */
+	for (i = 0; i < UndoPersistenceLevels; i++)
+	{
+		if (end_urec_ptr[i] != InvalidUndoRecPtr && !isCommit)
+		{
+			uint32		save_holdoff;
+
+			save_holdoff = InterruptHoldoffCount;
+			PG_TRY();
+			{
+				bool		result = false;
+
+				if (i != UNDO_TEMP)
+					result = RegisterRollbackReq(end_urec_ptr[i],
+												 start_urec_ptr[i],
+												 hdr->database,
+												 hdr->xid);
+
+				/*
+				 * ZBORKED: set rellock = true, as we do *not* actually have
+				 * all the locks, but that'll probably deadlock?
+				 */
+				if (!result)
+					execute_undo_actions(hdr->xid, end_urec_ptr[i],
+										 start_urec_ptr[i], true,
+										 true, true);
+			}
+			PG_CATCH();
+			{
+				if (i == UNDO_TEMP)
+					pg_rethrow_as_fatal();
+
+				/*
+				 * Remove the entry from the hash table and continue to
+				 * process the remaining undo requests if any.  This request
+				 * will be later processed by discard worker.  We can't simply
+				 * add this to error queue and proceed as that can fill the
+				 * hash table and then we won't be able to guarantee that
+				 * rollback requests are processed either by backend or by
+				 * discard worker.
+				 */
+				RollbackHTRemoveEntry(hdr->xid, start_urec_ptr[i]);
+
+				/*
+				 * Errors can reset holdoff count, so restore back.  This is
+				 * required because this function can be called after holding
+				 * interrupts.
+				 */
+				InterruptHoldoffCount = save_holdoff;
+
+				/* Send the error only to server log. */
+				err_out_to_client(false);
+				EmitErrorReport();
+			}
+			PG_END_TRY();
+		}
+	}
 
 	RESUME_INTERRUPTS();
 

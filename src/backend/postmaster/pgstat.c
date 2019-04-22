@@ -3651,6 +3651,8 @@ pgstat_get_wait_activity(WaitEventActivity w)
 		case WAIT_EVENT_UNDO_LAUNCHER_MAIN:
 			event_name = "UndoLauncherMain";
 			break;
+		case WAIT_EVENT_UNDO_WORKER_MAIN:
+			event_name = "UndoWorkerMain";
 			/* no default case, so that compiler will warn */
 	}
 

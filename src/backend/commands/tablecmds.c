@@ -25,6 +25,7 @@
 #include "access/tableam.h"
 #include "access/tupconvert.h"
 #include "access/tpd.h"
+#include "access/undodiscard.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"

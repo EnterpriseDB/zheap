@@ -22,11 +22,11 @@
 #include "access/xlogdefs.h"
 #include "access/xlogreader.h"
 #include "access/undorecord.h"
+#include "access/undorequest.h"
 #include "datatype/timestamp.h"
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
 #include "pgtime.h"
-#include "postmaster/undoloop.h"
 #include "storage/block.h"
 #include "storage/relfilenode.h"
 

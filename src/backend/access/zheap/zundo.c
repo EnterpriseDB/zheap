@@ -22,12 +22,12 @@
 #include "access/table.h"
 #include "access/tpd.h"
 #include "access/undorecord.h"
+#include "access/undorequest.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "access/zheapam_xlog.h"
 #include "access/zheapscan.h"
 #include "miscadmin.h"
-#include "postmaster/undoloop.h"
 #include "utils/syscache.h"
 #include "utils/ztqual.h"
 
