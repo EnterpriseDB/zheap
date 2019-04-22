@@ -13,7 +13,7 @@
  *	  toast storage. The tuple space can be immediately reclaimed once the
  *	  deleting transaction is committed.
  *
- * Copyright (c) 2000-2018, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2019, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION

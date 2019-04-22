@@ -3,7 +3,7 @@
  * test_undorecord.c
  *		Throw-away test code for undo records.
  *
- * Copyright (c) 2013-2017, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/test/modules/test_undorecord.c
