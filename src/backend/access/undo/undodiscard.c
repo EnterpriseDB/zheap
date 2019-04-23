@@ -100,8 +100,21 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 				 *
 				 * We can ignore the abort for transactions whose
 				 * corresponding database doesn't exist.
+				 *
+				 * XXX: We've added the transaction-in-progress check
+				 * to avoid xids of in-progress autovacuum.  Note that,
+				 * while calculating xmin, we ignore the vacuum and
+				 * autovacuum xids in DiscardWorkerMain.  But, when a
+				 * backend performs VACUUM, we forcefully clear the
+				 * vacuum flag from MyPgXact in lazy_vacuum_zheap_rel.
+				 * Hence, the problem arises only for autovacuum xids.
+				 * We should fix this behaviour.  Perhaps, discard worker
+				 * should consider vacuum and autovacuum xid to calculate
+				 * the xmin.  But, in that case, a long-running autovacuum
+				 * might block the discard worker for moving ahead.
 				 */
 				if (!TransactionIdDidCommit(uur->uur_xid) &&
+					!TransactionIdIsInProgress(uur->uur_xid) &&
 					TransactionIdPrecedes(uur->uur_xid, xmin) &&
 					uur->uur_progress == 0 &&
 					dbid_exists(uur->uur_dbid))
