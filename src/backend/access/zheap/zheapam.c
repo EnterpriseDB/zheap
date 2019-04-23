@@ -3100,14 +3100,11 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 	ItemPointerData ctid;
 	FullTransactionId fxid = GetTopFullTransactionId();
 	TransactionId xid,
-				tup_xid,
 				single_locker_xid;
 	SubTransactionId tup_subxid = InvalidSubTransactionId;
-	CommandId	tup_cid;
 	UndoRecPtr	urec_ptr = InvalidUndoRecPtr;
 	uint32		epoch;
-	int			tup_trans_slot_id,
-				trans_slot_id,
+	int			trans_slot_id,
 				single_locker_trans_slot;
 	OffsetNumber offnum;
 	LockOper	lockopr;
@@ -3137,10 +3134,11 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 	 * that we can lock the new tuple.  We will get new ctid if the tuple was
 	 * non-inplace-updated otherwise we will get same TID.
 	 */
+check_tup_satisfies_update:
 	if (ItemIdIsDeleted(lp))
 	{
 		ctid = *tid;
-		ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
+		ZHeapPageGetNewCtid(*buffer, &ctid, &zinfo.xid, &zinfo.cid);
 		result = TM_Updated;
 		goto failed;
 	}
@@ -3162,16 +3160,12 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 	 */
 	ctid = *tid;
 
-check_tup_satisfies_update:
 	any_multi_locker_member_alive = true;
 	result = ZHeapTupleSatisfiesUpdate(relation, &zhtup, cid, *buffer, &ctid,
 									   &zinfo, &tup_subxid,
 									   &single_locker_xid,
 									   &single_locker_trans_slot, eval,
 									   snapshot, &in_place_updated_or_locked);
-	tup_trans_slot_id = zinfo.trans_slot;
-	tup_xid = zinfo.xid;
-	tup_cid = zinfo.cid;
 	if (result == TM_Invisible)
 	{
 		tuple->t_tableOid = RelationGetRelid(relation);
@@ -3203,8 +3197,8 @@ check_tup_satisfies_update:
 		}
 		else
 		{
-			xwait = tup_xid;
-			xwait_trans_slot = tup_trans_slot_id;
+			xwait = zinfo.xid;
+			xwait_trans_slot = zinfo.trans_slot;
 		}
 
 		infomask = zhtup.t_data->t_infomask;
@@ -3338,25 +3332,6 @@ check_tup_satisfies_update:
 						if (rollback_and_relocked)
 						{
 							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-
-							/*
-							 * Also take care of cases when page is pruned
-							 * after we release the buffer lock. For this we
-							 * check if ItemId is not deleted and refresh the
-							 * tuple offset position in page.  If TID is
-							 * already delete marked due to pruning, then get
-							 * new ctid, so that we can lock the new tuple.
-							 */
-							if (ItemIdIsDeleted(lp))
-							{
-								ctid = *tid;
-								ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-								result = TM_Updated;
-								goto failed;
-							}
-
-							zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-							zhtup.t_len = ItemIdGetLength(lp);
 							goto check_tup_satisfies_update;
 						}
 						else if (res != TM_Ok)
@@ -3379,15 +3354,11 @@ check_tup_satisfies_update:
 				 * ctid, so that we can lock the new tuple.
 				 */
 				if (ItemIdIsDeleted(lp))
-				{
-					ctid = *tid;
-					ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-					result = TM_Updated;
-					goto failed;
-				}
+					goto check_tup_satisfies_update;
 
-				if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask, tup_xid,
-												&single_locker_xid, &mode, &zhtup))
+				if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
+												zinfo.xid, &single_locker_xid,
+												&mode, &zhtup))
 					goto check_tup_satisfies_update;
 
 				/* Skip sleeping */
@@ -3414,15 +3385,11 @@ check_tup_satisfies_update:
 				 * ctid, so that we can lock the new tuple.
 				 */
 				if (ItemIdIsDeleted(lp))
-				{
-					ctid = *tid;
-					ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-					result = TM_Updated;
-					goto failed;
-				}
+					goto check_tup_satisfies_update;
 
-				if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask, tup_xid,
-												&single_locker_xid, &mode, &zhtup))
+				if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
+												zinfo.xid, &single_locker_xid,
+												&mode, &zhtup))
 					goto check_tup_satisfies_update;
 
 				/* Skip sleeping */
@@ -3466,15 +3433,11 @@ check_tup_satisfies_update:
 				 * ctid, so that we can lock the new tuple.
 				 */
 				if (ItemIdIsDeleted(lp))
-				{
-					ctid = *tid;
-					ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-					result = TM_Ok;
-					goto failed;
-				}
+					goto check_tup_satisfies_update;
 
-				if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask, tup_xid,
-												&single_locker_xid, &mode, &zhtup))
+				if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
+												zinfo.xid, &single_locker_xid,
+												&mode, &zhtup))
 					goto check_tup_satisfies_update;
 
 				/* Skip sleeping */
@@ -3506,15 +3469,11 @@ check_tup_satisfies_update:
 			 */
 			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 			if (ItemIdIsDeleted(lp))
-			{
-				ctid = *tid;
-				ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-				result = TM_Updated;
-				goto failed;
-			}
+				goto check_tup_satisfies_update;
 
-			if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask, tup_xid,
-											&single_locker_xid, NULL, &zhtup))
+			if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
+											zinfo.xid, &single_locker_xid,
+											NULL, &zhtup))
 				goto check_tup_satisfies_update;
 			require_sleep = false;
 		}
@@ -3722,12 +3681,7 @@ check_tup_satisfies_update:
 			 * lock the new tuple.
 			 */
 			if (ItemIdIsDeleted(lp))
-			{
-				ctid = *tid;
-				ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-				result = TM_Updated;
-				goto failed;
-			}
+				goto check_tup_satisfies_update;
 
 			if (ZHeapTupleHasMultiLockers(infomask))
 			{
@@ -3771,8 +3725,9 @@ check_tup_satisfies_update:
 			 * the tuple, we won't be able to identify that by infomask/xid on
 			 * the tuple, rather we need to fetch the locker xid.
 			 */
-			if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask, tup_xid,
-											&single_locker_xid, NULL, &zhtup))
+			if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
+											zinfo.xid, &single_locker_xid,
+											NULL, &zhtup))
 				goto check_tup_satisfies_update;
 		}
 
@@ -3786,8 +3741,9 @@ check_tup_satisfies_update:
 				zheap_exec_pending_rollback(relation, *buffer, xwait_trans_slot,
 											xwait, NULL);
 
-			if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask, tup_xid,
-											&single_locker_xid, NULL, &zhtup))
+			if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
+											zinfo.xid, &single_locker_xid,
+											NULL, &zhtup))
 				goto check_tup_satisfies_update;
 		}
 
@@ -3811,7 +3767,7 @@ check_tup_satisfies_update:
 		if (TransactionIdIsValid(single_locker_xid))
 			xwait = single_locker_xid;
 		else
-			xwait = tup_xid;
+			xwait = zinfo.xid;
 
 		infomask = zhtup.t_data->t_infomask;
 
@@ -3930,9 +3886,9 @@ failed:
 			tuple->t_tableOid = RelationGetRelid(relation);
 		}
 
-		tmfd->xmax = tup_xid;
+		tmfd->xmax = zinfo.xid;
 		if (result == TM_SelfModified)
-			tmfd->cmax = tup_cid;
+			tmfd->cmax = zinfo.cid;
 		else
 			tmfd->cmax = InvalidCommandId;
 		tmfd->in_place_updated_or_locked = in_place_updated_or_locked;
@@ -3963,24 +3919,6 @@ failed:
 
 		LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
 
-		/*
-		 * Also take care of cases when page is pruned after we release the
-		 * buffer lock. For this we check if ItemId is not deleted and refresh
-		 * the tuple offset position in page.  If TID is already delete marked
-		 * due to pruning, then get new ctid, so that we can lock the new
-		 * tuple.
-		 */
-		if (ItemIdIsDeleted(lp))
-		{
-			ctid = *tid;
-			ZHeapPageGetNewCtid(*buffer, &ctid, &tup_xid, &tup_cid);
-			result = TM_Updated;
-			goto failed;
-		}
-
-		zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-		zhtup.t_len = ItemIdGetLength(lp);
-
 		goto check_tup_satisfies_update;
 	}
 
@@ -4001,16 +3939,16 @@ failed:
 	 */
 	if (ZHeapTupleHeaderGetXactSlot((ZHeapTupleHeader) (zhtup.t_data)) == ZHTUP_SLOT_FROZEN)
 	{
-		tup_trans_slot_id = ZHTUP_SLOT_FROZEN;
-		tup_xid = InvalidTransactionId;
+		zinfo.trans_slot = ZHTUP_SLOT_FROZEN;
+		zinfo.xid = InvalidTransactionId;
 	}
 
 	/*
 	 * If all the members were lockers and are all gone, we can do away with
 	 * the MULTI_LOCKERS bit.
 	 */
-	zheap_lock_tuple_guts(relation, *buffer, &zhtup, tup_xid, xid, mode,
-						  lockopr, epoch, tup_trans_slot_id, trans_slot_id,
+	zheap_lock_tuple_guts(relation, *buffer, &zhtup, zinfo.xid, xid, mode,
+						  lockopr, epoch, zinfo.trans_slot, trans_slot_id,
 						  single_locker_xid, single_locker_trans_slot,
 						  prev_urecptr, cid, !any_multi_locker_member_alive);
 
