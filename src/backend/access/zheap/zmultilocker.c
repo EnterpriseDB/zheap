@@ -157,9 +157,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	ZMultiLockMember *mlmember;
 	List	   *multilockmembers = NIL;
 	TransInfo  *trans_slots = NULL;
-	TransactionId xid;
 	SubTransactionId subxid = InvalidSubTransactionId;
-	FullTransactionId epoch_xid;
 	int			prev_trans_slot_id,
 				trans_slot_id;
 	uint8		uur_type;
@@ -199,12 +197,10 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 	for (slot_no = 0; slot_no < total_trans_slots; slot_no++)
 	{
+		FullTransactionId epoch_xid;
 		bool		first_urp = true;
 
-		xid = trans_slots[slot_no].xid;
-		epoch_xid = 
-			FullTransactionIdFromEpochAndXid(trans_slots[slot_no].xid_epoch,
-											 xid);
+		epoch_xid = trans_slots[slot_no].fxid;
 
 		/*
 		 * We need to process the undo chain only for in-progress
@@ -701,10 +697,9 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	UndoRecPtr	urec_ptr;
 	UndoRecPtr	save_urec_ptr = InvalidUndoRecPtr;
 	TransInfo  *trans_slots = NULL;
-	TransactionId xid;
+	FullTransactionId fxid;
+	FullTransactionId oldestXidWithEpochHavingUndo;
 	CommandId	cid = InvalidCommandId;
-	uint32		epoch;
-	uint64		epoch_xid;
 	int			trans_slot_id;
 	uint8		uur_type;
 	int			slot_no;
@@ -712,21 +707,23 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	bool		found = false;
 	BlockNumber tpd_blkno;
 
+	oldestXidWithEpochHavingUndo = FullTransactionIdFromU64(
+		pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 	trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots,
 											  &tpd_blkno);
 
 	for (slot_no = 0; slot_no < total_trans_slots; slot_no++)
 	{
-		epoch = trans_slots[slot_no].xid_epoch;
-		xid = trans_slots[slot_no].xid;
+		TransactionId xid;
 
-		epoch_xid = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, xid));
+		fxid = trans_slots[slot_no].fxid;
+		xid = XidFromFullTransactionId(fxid);
 
 		/*
 		 * We need to process the undo chain only for in-progress
 		 * transactions.
 		 */
-		if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo) ||
+		if (FullTransactionIdPrecedes(fxid, oldestXidWithEpochHavingUndo) ||
 			(!TransactionIdIsInProgress(xid) && TransactionIdDidCommit(xid)))
 			continue;
 
@@ -839,9 +836,9 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		if (trans_slot)
 			*trans_slot = trans_slot_id;
 		if (epoch_xid_out)
-			*epoch_xid_out = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, xid));
+			*epoch_xid_out = U64FromFullTransactionId(fxid);
 		if (xid_out)
-			*xid_out = xid;
+			*xid_out = XidFromFullTransactionId(fxid);
 		if (cid_out)
 			*cid_out = cid;
 		if (urec_ptr_out)

@@ -485,8 +485,7 @@ ZheapInitPage(Page page, Size pageSize)
 
 	for (i = 0; i < ZHEAP_PAGE_TRANS_SLOTS; i++)
 	{
-		opaque->transinfo[i].xid_epoch = 0;
-		opaque->transinfo[i].xid = InvalidTransactionId;
+		opaque->transinfo[i].fxid = InvalidFullTransactionId;
 		opaque->transinfo[i].urec_ptr = InvalidUndoRecPtr;
 	}
 }

@@ -395,8 +395,7 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
 		if (xid != zinfo.xid)
 			return false;
 
-		slotinfo.xid_epoch = U64FromFullTransactionId(zinfo.epoch_xid);
-		slotinfo.xid = zinfo.xid;
+		slotinfo.fxid = zinfo.epoch_xid;
 		slotinfo.urec_ptr = zinfo.urec_ptr;
 		total_trans_slots = 1;
 		trans_slots = &slotinfo;
@@ -420,8 +419,8 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
 
 	for (slot_no = 0; slot_no < total_trans_slots; slot_no++)
 	{
-		epoch = trans_slots[slot_no].xid_epoch;
-		xid = trans_slots[slot_no].xid;
+		epoch = EpochFromFullTransactionId(trans_slots[slot_no].fxid);
+		xid = XidFromFullTransactionId(trans_slots[slot_no].fxid);
 		urec_ptr = trans_slots[slot_no].urec_ptr;
 
 		/*

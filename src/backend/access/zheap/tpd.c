@@ -282,8 +282,7 @@ AllocateAndFormTPDEntry(Buffer buf, OffsetNumber offset,
 
 	for (i = 0; i < INITIAL_TRANS_SLOTS_IN_TPD_ENTRY; i++)
 	{
-		tpd_e_trans_slots[i].xid_epoch = 0;
-		tpd_e_trans_slots[i].xid = InvalidTransactionId;
+		tpd_e_trans_slots[i].fxid = InvalidFullTransactionId;
 		tpd_e_trans_slots[i].urec_ptr = InvalidUndoRecPtr;
 	}
 
@@ -294,8 +293,7 @@ AllocateAndFormTPDEntry(Buffer buf, OffsetNumber offset,
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
-	tpd_e_trans_slots[0].xid_epoch = last_trans_slot_info.xid_epoch;
-	tpd_e_trans_slots[0].xid = last_trans_slot_info.xid;
+	tpd_e_trans_slots[0].fxid = last_trans_slot_info.fxid;
 	tpd_e_trans_slots[0].urec_ptr = last_trans_slot_info.urec_ptr;
 
 	/* form tpd entry */
@@ -457,7 +455,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 			 * Check for the number of unreserved transaction slots in the TPD
 			 * entry.
 			 */
-			if (trans_slots[slot_no].xid == InvalidTransactionId)
+			if (!FullTransactionIdIsValid(trans_slots[slot_no].fxid))
 				num_free_slots++;
 		}
 
@@ -503,7 +501,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 		zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
 		last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
-		tpdblk = last_trans_slot_info.xid_epoch;
+		tpdblk = EpochFromFullTransactionId(last_trans_slot_info.fxid);
 		buf_idx = GetTPDBuffer(relation, tpdblk, InvalidBuffer,
 							   TPD_BUF_FIND_OR_ENTER, &already_exists);
 		old_tpd_buf = tpd_buffers[buf_idx].buf;
@@ -520,7 +518,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	old_tpd_page = BufferGetPage(old_tpd_buf);
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(BufferGetPage(heapbuf));
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
-	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
+	tpdItemOff = XidFromFullTransactionId(last_trans_slot_info.fxid) & OFFSET_MASK;
 	itemId = PageGetItemId(old_tpd_page, tpdItemOff);
 	old_size_tpd_entry = ItemIdGetLength(itemId);
 
@@ -721,7 +719,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 		for (slot_no = 0; slot_no < tpd_e_header.tpe_num_slots; slot_no++)
 		{
 			/* Check for an unreserved transaction slot in the TPD entry */
-			if (trans_slots[slot_no].xid == InvalidTransactionId)
+			if (!FullTransactionIdIsValid(trans_slots[slot_no].fxid))
 			{
 				*reserved_slot_no = slot_no;
 				break;
@@ -880,23 +878,20 @@ SetTPDLocation(Buffer heapbuffer, Buffer tpdbuffer, OffsetNumber offset)
 	Page		heappage;
 	PageHeader	phdr;
 	ZHeapPageOpaque opaque;
+	TransInfo  *transinfo;
 
 	heappage = BufferGetPage(heapbuffer);
 	phdr = (PageHeader) heappage;
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
+	transinfo = &opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
 	/* clear the last transaction slot info */
-	opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid_epoch = 0;
-	opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid =
-		InvalidTransactionId;
-	opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].urec_ptr =
-		InvalidUndoRecPtr;
+	transinfo->fxid = InvalidFullTransactionId;
+	transinfo->urec_ptr = InvalidUndoRecPtr;
 	/* set TPD location in last transaction slot */
-	opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid_epoch =
-		BufferGetBlockNumber(tpdbuffer);
-	opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid =
-		(opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid & ~OFFSET_MASK) | offset;
+	transinfo->fxid = FullTransactionIdFromEpochAndXid(
+		BufferGetBlockNumber(tpdbuffer), offset);
 
 	phdr->pd_flags |= PD_PAGE_HAS_TPD_SLOT;
 }
@@ -912,6 +907,7 @@ ClearTPDLocation(Buffer heapbuf)
 	ZHeapPageOpaque opaque;
 	Page		heappage;
 	int			frozen_slots = ZHEAP_PAGE_TRANS_SLOTS - 1;
+	TransInfo  *transinfo;
 
 	heappage = BufferGetPage(heapbuf);
 	phdr = (PageHeader) heappage;
@@ -924,13 +920,11 @@ ClearTPDLocation(Buffer heapbuf)
 									  true, false);
 
 	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
+	transinfo = &opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
 	/* clear the last transaction slot info */
-	opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid_epoch = 0;
-	opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].xid =
-		InvalidTransactionId;
-	opaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1].urec_ptr =
-		InvalidUndoRecPtr;
+	transinfo->fxid = InvalidFullTransactionId;
+	transinfo->urec_ptr = InvalidUndoRecPtr;
 
 	phdr->pd_flags &= ~PD_PAGE_HAS_TPD_SLOT;
 }
@@ -1879,8 +1873,8 @@ TPDPageGetTransactionSlots(Relation relation, Buffer heapbuf,
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
-	tpdblk = last_trans_slot_info.xid_epoch;
-	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
+	tpdblk = EpochFromFullTransactionId(last_trans_slot_info.fxid);
+	tpdItemOff = XidFromFullTransactionId(last_trans_slot_info.fxid) & OFFSET_MASK;
 
 	if (!InRecovery)
 	{
@@ -2134,7 +2128,7 @@ TPDPageReserveTransSlot(Relation relation, Buffer buf, OffsetNumber offnum,
 	for (slot_no = 0; slot_no < num_slots; slot_no++)
 	{
 		/* Check for an unreserved transaction slot in the TPD entry */
-		if (trans_slots[slot_no].xid == InvalidTransactionId)
+		if (!FullTransactionIdIsValid(trans_slots[slot_no].fxid))
 		{
 			result_slot_no = slot_no;
 			*urec_ptr = trans_slots[slot_no].urec_ptr;
@@ -2173,7 +2167,7 @@ TPDPageReserveTransSlot(Relation relation, Buffer buf, OffsetNumber offnum,
 
 		for (slot_no = 0; slot_no < num_slots; slot_no++)
 		{
-			if (trans_slots[slot_no].xid == InvalidTransactionId)
+			if (!FullTransactionIdIsValid(trans_slots[slot_no].fxid))
 			{
 				*urec_ptr = trans_slots[slot_no].urec_ptr;
 				result_slot_no = slot_no;
@@ -2253,6 +2247,7 @@ TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 	int			buf_idx;
 	bool		tpd_e_pruned;
 	bool		alloc_bigger_map;
+	FullTransactionId fxid = FullTransactionIdFromEpochAndXid(epoch, xid);
 
 	/*
 	 * Since the zheap buffer is locked in exclusive mode, we can clear the
@@ -2278,8 +2273,7 @@ TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 	for (slot_no = 0; slot_no < num_slots; slot_no++)
 	{
 		/* Check if already have a slot in the TPD entry */
-		if (trans_slots[slot_no].xid_epoch == epoch &&
-			trans_slots[slot_no].xid == xid)
+		if (FullTransactionIdEquals(trans_slots[slot_no].fxid, fxid))
 		{
 			result_slot_no = slot_no;
 			*urec_ptr = trans_slots[slot_no].urec_ptr;
@@ -2376,8 +2370,8 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
-	tpdblk = last_trans_slot_info.xid_epoch;
-	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
+	tpdblk = EpochFromFullTransactionId(last_trans_slot_info.fxid);
+	tpdItemOff = XidFromFullTransactionId(last_trans_slot_info.fxid) & OFFSET_MASK;
 
 	if (NoTPDBufLock)
 	{
@@ -2531,9 +2525,9 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 
 	/* Update the required output */
 	if (epoch)
-		*epoch = trans_slot_info.xid_epoch;
+		*epoch = EpochFromFullTransactionId(trans_slot_info.fxid);
 	if (xid)
-		*xid = trans_slot_info.xid;
+		*xid = XidFromFullTransactionId(trans_slot_info.fxid);
 	if (urec_ptr)
 		*urec_ptr = trans_slot_info.urec_ptr;
 
@@ -2602,8 +2596,8 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
-	tpdblk = last_trans_slot_info.xid_epoch;
-	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
+	tpdblk = EpochFromFullTransactionId(last_trans_slot_info.fxid);
+	tpdItemOff = XidFromFullTransactionId(last_trans_slot_info.fxid) & OFFSET_MASK;
 
 	buf_idx = GetTPDBuffer(NULL, tpdblk, InvalidBuffer, TPD_BUF_FIND,
 						   &already_exists);
@@ -2648,8 +2642,7 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 	/* Set the required transaction slot information. */
 	trans_slot_loc = (trans_slot_id - ZHEAP_PAGE_TRANS_SLOTS - 1) *
 		sizeof(TransInfo);
-	trans_slot_info.xid_epoch = epoch;
-	trans_slot_info.xid = xid;
+	trans_slot_info.fxid = FullTransactionIdFromEpochAndXid(epoch, xid);
 	trans_slot_info.urec_ptr = urec_ptr;
 
 	memcpy(tpd_entry_data + size_tpd_e_map + trans_slot_loc,
@@ -2708,8 +2701,8 @@ GetTPDEntryData(Buffer heapbuf, int *num_entries, int *entry_size,
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
-	tpdblk = last_trans_slot_info.xid_epoch;
-	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
+	tpdblk = EpochFromFullTransactionId(last_trans_slot_info.fxid);
+	tpdItemOff = XidFromFullTransactionId(last_trans_slot_info.fxid) & OFFSET_MASK;
 
 	/*
 	 * Here we don't need to check if the tpd block is pruned and truncated
@@ -2940,8 +2933,8 @@ TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
-	tpdblk = last_trans_slot_info.xid_epoch;
-	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
+	tpdblk = EpochFromFullTransactionId(last_trans_slot_info.fxid);
+	tpdItemOff = XidFromFullTransactionId(last_trans_slot_info.fxid) & OFFSET_MASK;
 
 	buf_idx = GetTPDBuffer(NULL, tpdblk, InvalidBuffer, TPD_BUF_FIND,
 						   &already_exists);
@@ -3042,8 +3035,7 @@ TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
 	/* Update the required transaction slot information. */
 	trans_slot_loc = (trans_slot_id - ZHEAP_PAGE_TRANS_SLOTS - 1) *
 		sizeof(TransInfo);
-	trans_slot_info.xid_epoch = epoch;
-	trans_slot_info.xid = xid;
+	trans_slot_info.fxid = FullTransactionIdFromEpochAndXid(epoch, xid);
 	trans_slot_info.urec_ptr = urec_ptr;
 	memcpy(tpd_entry_data + size_tpd_e_map + trans_slot_loc,
 		   (char *) &trans_slot_info,
@@ -3097,8 +3089,8 @@ TPDPageLock(Relation relation, Buffer heapbuf)
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
-	tpdblk = last_trans_slot_info.xid_epoch;
-	tpdItemOff = last_trans_slot_info.xid & OFFSET_MASK;
+	tpdblk = EpochFromFullTransactionId(last_trans_slot_info.fxid);
+	tpdItemOff = XidFromFullTransactionId(last_trans_slot_info.fxid) & OFFSET_MASK;
 
 	lastblock = RelationGetNumberOfBlocks(relation);
 
@@ -3203,7 +3195,7 @@ RegisterTPDBuffer(Page heappage, uint8 block_id)
 	/* Get the tpd block number from last transaction slot in heap page. */
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
-	tpdblk = last_trans_slot_info.xid_epoch;
+	tpdblk = EpochFromFullTransactionId(last_trans_slot_info.fxid);
 
 	buf_idx = GetTPDBuffer(NULL, tpdblk, InvalidBuffer, TPD_BUF_FIND,
 						   &already_exists);
@@ -3253,7 +3245,7 @@ TPDPageSetLSN(Page heappage, XLogRecPtr recptr)
 	/* Get the tpd block number from last transaction slot in heap page. */
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heappage);
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
-	tpdblk = last_trans_slot_info.xid_epoch;
+	tpdblk = EpochFromFullTransactionId(last_trans_slot_info.fxid);
 
 	buf_idx = GetTPDBuffer(NULL, tpdblk, InvalidBuffer, TPD_BUF_FIND,
 						   &already_exists);

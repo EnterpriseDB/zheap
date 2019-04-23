@@ -226,6 +226,7 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
 	int			loc_trans_slots;
 	uint16		tpd_e_offset;
 	bool		prune_entry = true;
+	FullTransactionId oldestXidWithEpochHavingUndo;
 
 	tpdpage = BufferGetPage(tpdbuf);
 	itemId = PageGetItemId(tpdpage, offnum);
@@ -256,16 +257,15 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
 	trans_slots = (TransInfo *) palloc(size_tpd_e_slots);
 	memcpy((char *) trans_slots, tpdpage + loc_trans_slots, size_tpd_e_slots);
 
+	oldestXidWithEpochHavingUndo = FullTransactionIdFromU64(
+		pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+
 	for (slot_no = 0; slot_no < num_trans_slots; slot_no++)
 	{
-		uint64		epoch_xid;
-		TransactionId xid;
-		uint32		epoch;
+		FullTransactionId slot_fxid;
 		UndoRecPtr	urec_ptr = trans_slots[slot_no].urec_ptr;
 
-		epoch = trans_slots[slot_no].xid_epoch;
-		xid = trans_slots[slot_no].xid;
-		epoch_xid = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch, xid));
+		slot_fxid = trans_slots[slot_no].fxid;
 
 		/*
 		 * Check whether transaction slot can be considered frozen? If both
@@ -273,10 +273,10 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
 		 * invalid and its undo has been discarded or xid is older than the
 		 * oldest xid with undo.
 		 */
-		if ((!TransactionIdIsValid(xid) &&
+		if ((!FullTransactionIdIsValid(slot_fxid) &&
 			 (!UndoRecPtrIsValid(urec_ptr) || UndoLogIsDiscarded(urec_ptr))) ||
-			(TransactionIdIsValid(xid) &&
-			 epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)))
+			(FullTransactionIdIsValid(slot_fxid) &&
+			 FullTransactionIdPrecedes(slot_fxid, oldestXidWithEpochHavingUndo)))
 			continue;
 		else
 		{

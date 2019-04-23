@@ -6108,9 +6108,11 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 			 (trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS &&
 			  !ZHeapPageHasTPDSlot(phdr)))
 	{
-		epoch = opaque->transinfo[trans_slot_id - 1].xid_epoch;
-		zinfo->xid = opaque->transinfo[trans_slot_id - 1].xid;
-		zinfo->urec_ptr = opaque->transinfo[trans_slot_id - 1].urec_ptr;
+		TransInfo *transinfo = &opaque->transinfo[trans_slot_id - 1];
+
+		epoch = EpochFromFullTransactionId(transinfo->fxid);
+		zinfo->xid = XidFromFullTransactionId(transinfo->fxid);
+		zinfo->urec_ptr = transinfo->urec_ptr;
 	}
 	else
 	{
@@ -6181,8 +6183,8 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
 		(trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS &&
 		 !ZHeapPageHasTPDSlot(phdr)))
 	{
-		opaque->transinfo[trans_slot_id - 1].xid_epoch = epoch;
-		opaque->transinfo[trans_slot_id - 1].xid = xid;
+		opaque->transinfo[trans_slot_id - 1].fxid =
+			FullTransactionIdFromEpochAndXid(epoch, xid);
 		opaque->transinfo[trans_slot_id - 1].urec_ptr = urecptr;
 	}
 	/* TPD information is set separately during recovery. */
@@ -6228,8 +6230,8 @@ PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id, uint32 epoch,
 		(trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS &&
 		 !ZHeapPageHasTPDSlot(phdr)))
 	{
-		opaque->transinfo[trans_slot_id - 1].xid_epoch = epoch;
-		opaque->transinfo[trans_slot_id - 1].xid = xid;
+		opaque->transinfo[trans_slot_id - 1].fxid =
+			FullTransactionIdFromEpochAndXid(epoch, xid);
 		opaque->transinfo[trans_slot_id - 1].urec_ptr = urec_ptr;
 	}
 	else
@@ -6259,6 +6261,8 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
 	int			slot_no;
 	int			total_slots_in_page;
 	bool		check_tpd;
+	FullTransactionId check_fxid =
+					FullTransactionIdFromEpochAndXid(epoch, xid);
 
 	page = BufferGetPage(buf);
 	phdr = (PageHeader) page;
@@ -6278,8 +6282,8 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
 	/* Check if the required slot exists on the page. */
 	for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
 	{
-		if (opaque->transinfo[slot_no].xid_epoch == epoch &&
-			opaque->transinfo[slot_no].xid == xid)
+		if (FullTransactionIdEquals(opaque->transinfo[slot_no].fxid,
+									check_fxid))
 		{
 			*urec_ptr = opaque->transinfo[slot_no].urec_ptr;
 
@@ -6354,12 +6358,14 @@ PageGetTransactionSlotInfo(Buffer buf, int slot_no, uint32 *epoch,
 		(slot_no == ZHEAP_PAGE_TRANS_SLOTS &&
 		 !ZHeapPageHasTPDSlot(phdr)))
 	{
+		TransInfo *transinfo = &opaque->transinfo[slot_no - 1];
+
 		if (epoch)
-			*epoch = opaque->transinfo[slot_no - 1].xid_epoch;
+			*epoch = EpochFromFullTransactionId(transinfo->fxid);
 		if (xid)
-			*xid = opaque->transinfo[slot_no - 1].xid;
+			*xid = XidFromFullTransactionId(transinfo->fxid);
 		if (urec_ptr)
-			*urec_ptr = opaque->transinfo[slot_no - 1].urec_ptr;
+			*urec_ptr = transinfo->urec_ptr;
 	}
 	else
 	{
@@ -6587,7 +6593,11 @@ GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf)
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
 	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
-	return last_trans_slot_info.xid_epoch;
+	/*
+	 * ZBORKED: This should be done through a union, not an undocumented hack
+	 * like this
+	 */
+	return EpochFromFullTransactionId(last_trans_slot_info.fxid);
 }
 
 /*
@@ -6619,6 +6629,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 	int			slot_no;
 	int			total_slots_in_page;
 	bool		check_tpd;
+	FullTransactionId fxid = FullTransactionIdFromEpochAndXid(epoch, xid);
 
 	*lock_reacquired = false;
 
@@ -6651,17 +6662,20 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 	 */
 	if (RELATION_IS_LOCAL(relation))
 	{
+		TransInfo *transinfo;
+
 		/* We can't access temp tables of other backends. */
 		Assert(!RELATION_IS_OTHER_TEMP(relation));
 
 		slot_no = 0;
-		if (opaque->transinfo[slot_no].xid_epoch == epoch &&
-			opaque->transinfo[slot_no].xid == xid)
+		transinfo = &opaque->transinfo[slot_no];
+
+		if (FullTransactionIdEquals(transinfo->fxid, fxid))
 		{
-			*urec_ptr = opaque->transinfo[slot_no].urec_ptr;
+			*urec_ptr = transinfo->urec_ptr;
 			return (slot_no + 1);
 		}
-		else if (opaque->transinfo[slot_no].xid == InvalidTransactionId &&
+		else if (!FullTransactionIdIsValid(transinfo->fxid) &&
 				 latestFreeTransSlot == InvalidXactSlotId)
 			latestFreeTransSlot = slot_no;
 	}
@@ -6669,13 +6683,14 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 	{
 		for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
 		{
-			if (opaque->transinfo[slot_no].xid_epoch == epoch &&
-				opaque->transinfo[slot_no].xid == xid)
+			TransInfo *transinfo = &opaque->transinfo[slot_no];
+
+			if (FullTransactionIdEquals(transinfo->fxid, fxid))
 			{
-				*urec_ptr = opaque->transinfo[slot_no].urec_ptr;
+				*urec_ptr = transinfo->urec_ptr;
 				return (slot_no + 1);
 			}
-			else if (opaque->transinfo[slot_no].xid == InvalidTransactionId &&
+			else if (!FullTransactionIdIsValid(transinfo->fxid) &&
 					 latestFreeTransSlot == InvalidXactSlotId)
 				latestFreeTransSlot = slot_no;
 		}
@@ -6722,7 +6737,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 
 		for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
 		{
-			if (opaque->transinfo[slot_no].xid == InvalidTransactionId)
+			if (!FullTransactionIdIsValid(opaque->transinfo[slot_no].fxid))
 			{
 				*urec_ptr = opaque->transinfo[slot_no].urec_ptr;
 				if (slot_reused_or_TPD_slot && *urec_ptr != InvalidUndoRecPtr)
@@ -7007,7 +7022,7 @@ bool
 PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 					 TransInfo *transinfo, int num_slots, Buffer other_buf)
 {
-	uint64		oldestXidWithEpochHavingUndo;
+	FullTransactionId oldestXidWithEpochHavingUndo;
 	int			slot_no;
 	int		   *frozen_slots = NULL;
 	int			nFrozenSlots = 0;
@@ -7047,7 +7062,8 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		TPDSlot = true;
 	}
 
-	oldestXidWithEpochHavingUndo = pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
+	oldestXidWithEpochHavingUndo = FullTransactionIdFromU64(
+		pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 
 	frozen_slots = palloc0(num_slots * sizeof(int));
 
@@ -7066,25 +7082,21 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 	{
 		for (slot_no = 0; slot_no < num_slots; slot_no++)
 		{
-			uint64		slot_xid_epoch = transinfo[slot_no].xid_epoch;
-			TransactionId slot_xid = transinfo[slot_no].xid;
+			FullTransactionId slot_fxid = transinfo[slot_no].fxid;
 
 			/*
 			 * Transaction slot can be considered frozen if it belongs to
 			 * previous epoch or transaction id is old enough that it is all
 			 * visible.
 			 */
-			slot_xid_epoch = U64FromFullTransactionId(
-													  FullTransactionIdFromEpochAndXid(slot_xid_epoch, slot_xid));
-
-			if (slot_xid_epoch < oldestXidWithEpochHavingUndo)
+			if (FullTransactionIdPrecedes(slot_fxid, oldestXidWithEpochHavingUndo))
 				frozen_slots[nFrozenSlots++] = slot_no;
 		}
 	}
 
 	if (nFrozenSlots > 0)
 	{
-		TransactionId latestxid = InvalidTransactionId;
+		FullTransactionId latestfxid = InvalidFullTransactionId;
 		int			i;
 		int			slot_no;
 
@@ -7105,8 +7117,8 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 				slot_no = frozen_slots[i];
 
 				/* Remember the latest xid. */
-				if (TransactionIdFollows(transinfo[slot_no].xid, latestxid))
-					latestxid = transinfo[slot_no].xid;
+				if (FullTransactionIdFollows(transinfo[slot_no].fxid, latestfxid))
+					latestfxid = transinfo[slot_no].fxid;
 
 				/* Calculate the actual slot no. */
 				tpd_slot_id = slot_no + ZHEAP_PAGE_TRANS_SLOTS + 1;
@@ -7124,11 +7136,10 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 				slot_no = frozen_slots[i];
 
 				/* Remember the latest xid. */
-				if (TransactionIdFollows(transinfo[slot_no].xid, latestxid))
-					latestxid = transinfo[slot_no].xid;
+				if (FullTransactionIdFollows(transinfo[slot_no].fxid, latestfxid))
+					latestfxid = transinfo[slot_no].fxid;
 
-				transinfo[slot_no].xid_epoch = 0;
-				transinfo[slot_no].xid = InvalidTransactionId;
+				transinfo[slot_no].fxid = InvalidFullTransactionId;
 				transinfo[slot_no].urec_ptr = InvalidUndoRecPtr;
 			}
 		}
@@ -7151,7 +7162,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 			XLogBeginInsert();
 
 			xlrec.nFrozen = nFrozenSlots;
-			xlrec.lastestFrozenXid = latestxid;
+			xlrec.lastestFrozenXid = XidFromFullTransactionId(latestfxid);
 
 			XLogRegisterData((char *) &xlrec, SizeOfZHeapFreezeXactSlot);
 
@@ -7195,9 +7206,12 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 	 */
 	for (slot_no = 0; slot_no < num_slots; slot_no++)
 	{
-		if (!TransactionIdIsInProgress(transinfo[slot_no].xid))
+		TransactionId slot_xid =
+			XidFromFullTransactionId(transinfo[slot_no].fxid);
+
+		if (!TransactionIdIsInProgress(slot_xid))
 		{
-			if (TransactionIdDidCommit(transinfo[slot_no].xid))
+			if (TransactionIdDidCommit(slot_xid))
 				completed_xact_slots[nCompletedXactSlots++] = slot_no;
 			else
 				aborted_xact_slots[nAbortedXactSlots++] = slot_no;
@@ -7243,8 +7257,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 			for (i = 0; i < nCompletedXactSlots; i++)
 			{
 				slot_no = completed_xact_slots[i];
-				transinfo[slot_no].xid_epoch = 0;
-				transinfo[slot_no].xid = InvalidTransactionId;
+				transinfo[slot_no].fxid = InvalidFullTransactionId;
 			}
 		}
 		MarkBufferDirty(buf);
@@ -7291,9 +7304,11 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		/* Collect slot information before releasing the lock. */
 		for (i = 0; i < nAbortedXactSlots; i++)
 		{
-			urecptr[i] = transinfo[aborted_xact_slots[i]].urec_ptr;
-			xid[i] = transinfo[aborted_xact_slots[i]].xid;
-			epoch[i] = transinfo[aborted_xact_slots[i]].xid_epoch;
+			TransInfo *ti = &transinfo[aborted_xact_slots[i]];
+
+			urecptr[i] = ti->urec_ptr;
+			xid[i] = XidFromFullTransactionId(ti->fxid);
+			epoch[i] = EpochFromFullTransactionId(ti->fxid);
 		}
 
 		/*
@@ -8459,7 +8474,7 @@ GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
 			last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
 			if (tpd_blkno)
-				*tpd_blkno = last_trans_slot_info.xid_epoch;
+				*tpd_blkno = EpochFromFullTransactionId(last_trans_slot_info.fxid);
 
 			/*
 			 * The last slot in page contains TPD information, so we don't

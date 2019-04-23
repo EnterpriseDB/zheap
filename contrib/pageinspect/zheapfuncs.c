@@ -412,8 +412,9 @@ zheap_page_slots(PG_FUNCTION_ARGS)
 
 		/* Fetch transaction and undo information from slot */
 		values[0] = UInt16GetDatum(inter_call_data->slot_id + 1);
-		values[1] = UInt32GetDatum(transinfo.xid_epoch);
-		values[2] = UInt32GetDatum(transinfo.xid);
+		/* FIXME: should probably be represented as a single value? */
+		values[1] = UInt32GetDatum(EpochFromFullTransactionId(transinfo.fxid));
+		values[2] = UInt32GetDatum(XidFromFullTransactionId(transinfo.fxid));
 		values[3] = UInt64GetDatum(transinfo.urec_ptr);
 
 		/* Build and return the result tuple. */

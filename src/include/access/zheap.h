@@ -50,13 +50,11 @@
 
 /*
  * We need TransactionId and undo pointer to retrieve the undo information
- * for a particular transaction.  Xid's epoch is primarily required to check
- * if the xid is from current epoch.
+ * for a particular transaction.
  */
 typedef struct TransInfo
 {
-	uint32		xid_epoch;
-	TransactionId xid;
+	FullTransactionId fxid;
 	UndoRecPtr	urec_ptr;
 } TransInfo;
 
