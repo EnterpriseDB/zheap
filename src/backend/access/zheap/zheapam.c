@@ -83,6 +83,16 @@ static bool zheap_delete_wait_helper(Relation relation,
 						 TransactionId tup_xid, bool *have_tuple_lock,
 						 bool *any_multi_locker_member_alive,
 						 TM_Result *result);
+static bool zheap_update_wait_helper(Relation relation,
+						 Buffer buffer, ZHeapTuple zheaptup,
+						 FullTransactionId fxid, TransactionId xwait,
+						 int xwait_trans_slot, TransactionId xwait_subxid,
+						 LockTupleMode lockmode, bool key_intact,
+						 ItemId lp,
+						 TransactionId tup_xid, bool *have_tuple_lock,
+						 bool *any_multi_locker_member_alive,
+						 bool *checked_lockers, bool *locker_remains,
+						 TM_Result *result, bool *item_is_deleted);
 static int	GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf);
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
 					 int options);
@@ -945,6 +955,8 @@ zheap_tuple_updated:
  * should probably take fewer parameters.
  *
  * XXX. RefetchAndCheckTupleStatus frobs zheaptup. Yuck!
+ *
+ * XXX. zheap_update_wait_helper is very similar to this.
  */
 static bool
 zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
@@ -1490,14 +1502,9 @@ check_tup_satisfies_update:
 			   ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask))) &&
 			 wait)
 	{
-		List	   *mlmembers;
 		TransactionId xwait;
-		SubTransactionId xwait_subxid;
 		int			xwait_trans_slot;
-		uint16		infomask;
-		bool		can_continue = false;
-
-		xwait_subxid = tup_subxid;
+		bool		item_is_deleted = false;
 
 		if (TransactionIdIsValid(single_locker_xid))
 		{
@@ -1510,331 +1517,23 @@ check_tup_satisfies_update:
 			xwait_trans_slot = oldtup_prior_trans_slot;
 		}
 
-		/* must copy state data before unlocking buffer */
-		infomask = oldtup.t_data->t_infomask;
-
-		if (ZHeapTupleHasMultiLockers(infomask))
+		if (!zheap_update_wait_helper(relation, buffer, &oldtup, fxid,
+									  xwait, xwait_trans_slot, tup_subxid,
+									  *lockmode, key_intact, lp, tup_xid,
+									  &have_tuple_lock,
+									  &any_multi_locker_member_alive,
+									  &checked_lockers, &locker_remains,
+									  &result, &item_is_deleted))
 		{
-			TransactionId update_xact;
-			LockTupleMode old_lock_mode;
-			int			remain = 0;
-			bool		isAborted;
-			bool		upd_xact_aborted = false;
-
-			/*
-			 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if
-			 * current transaction has already locked the tuple for update
-			 * because of multilocker flag. In that case, we've to check
-			 * whether the current transaction has already locked the tuple
-			 * for update.
-			 */
-
-			/*
-			 * Get the transaction slot and undo record pointer if we are
-			 * already in a transaction.
-			 */
-			oldtup_new_trans_slot = PageGetTransactionSlotId(relation, buffer, epoch, xid,
-															 &prev_urecptr, false, false,
-															 NULL);
-
-			if (oldtup_new_trans_slot != InvalidXactSlotId)
-			{
-				List	   *mlmembers;
-				ListCell   *lc;
-
-				/*
-				 * If any subtransaction of the current top transaction
-				 * already holds a lock as strong as or stronger than what
-				 * we're requesting, we effectively hold the desired lock
-				 * already.  We *must* succeed without trying to take the
-				 * tuple lock, else we will deadlock against anyone wanting to
-				 * acquire a stronger lock.
-				 */
-				mlmembers = ZGetMultiLockMembersForCurrentXact(&oldtup,
-															   oldtup_new_trans_slot, prev_urecptr);
-
-				foreach(lc, mlmembers)
-				{
-					ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
-
-					/*
-					 * Only members of our own transaction must be present in
-					 * the list.
-					 */
-					Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
-
-					if (mlmember->mode >= *lockmode)
-					{
-						result = TM_Ok;
-
-						/*
-						 * There is no other active locker on the tuple except
-						 * current transaction id, so we can update the tuple.
-						 * However, we need to propagate lockers information.
-						 */
-						checked_lockers = true;
-						locker_remains = true;
-						goto zheap_tuple_updated;
-					}
-				}
-
-				list_free_deep(mlmembers);
-			}
-
-			old_lock_mode = get_old_lock_mode(infomask);
-
-			/*
-			 * For the conflicting lockers, we need to be careful about
-			 * applying pending undo actions for aborted transactions; if we
-			 * leave any transaction whether locker or updater, it can lead to
-			 * inconsistency.  Basically, in such a case after waiting for all
-			 * the conflicting transactions we might clear the multilocker
-			 * flag and proceed with update and it is quite possible that
-			 * after the update, undo worker rollbacks some of the previous
-			 * locker which can overwrite the tuple (Note, till multilocker
-			 * bit is set, the rollback actions won't overwrite the tuple).
-			 *
-			 * OTOH for non-conflicting lockers, as we don't clear the
-			 * multi-locker flag, there is no urgency to perform undo actions
-			 * for aborts of lockers.  The work involved in finding and
-			 * aborting lockers is non-trivial (w.r.t performance), so it is
-			 * better to avoid it.
-			 *
-			 * After abort, if it is only a locker, then it will be completely
-			 * gone; but if it is an update, then after applying pending
-			 * actions, the tuple might get changed and we must allow to
-			 * reverify the tuple in case it's values got changed.
-			 */
-			if (!ZHEAP_XID_IS_LOCKED_ONLY(oldtup.t_data->t_infomask))
-				update_xact = ZHeapTupleGetTransXID(&oldtup, buffer, false);
-			else
-				update_xact = InvalidTransactionId;
-
-			if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
-									HWLOCKMODE_from_locktupmode(*lockmode)))
-			{
-				/*
-				 * There is a potential conflict.  It is quite possible that
-				 * by this time the locker has already been committed. So we
-				 * need to check for conflict with all the possible lockers
-				 * and wait for each of them after releasing a buffer lock and
-				 * acquiring a lock on a tuple.
-				 */
-				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-				mlmembers = ZGetMultiLockMembers(relation, &oldtup, buffer,
-												 true);
-
-				/*
-				 * If there is no multi-lock members apart from the current
-				 * transaction then no need for tuplock, just go ahead.
-				 */
-				if (mlmembers != NIL)
-				{
-					heap_acquire_tuplock(relation, &(oldtup.t_self), *lockmode,
-										 LockWaitBlock, &have_tuple_lock);
-					ZMultiLockMembersWait(relation, mlmembers, &oldtup, buffer,
-										  update_xact, *lockmode, false,
-										  XLTW_Update, &remain,
-										  &upd_xact_aborted);
-				}
-				checked_lockers = true;
-				locker_remains = remain != 0;
-				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-
-				/*
-				 * If the aborted xact is for update, then we need to reverify
-				 * the tuple.
-				 */
-				if (upd_xact_aborted)
-					goto check_tup_satisfies_update;
-
-				/*
-				 * Also take care of cases when page is pruned after we
-				 * release the buffer lock. For this we check if ItemId is not
-				 * deleted and refresh the tuple offset position in page.  If
-				 * TID is already delete marked due to pruning, then get new
-				 * ctid, so that we can update the new tuple.
-				 *
-				 * We also need to ensure that no new lockers have been added
-				 * in the meantime, if there is any new locker, then start
-				 * again.
-				 */
-				if (ItemIdIsDeleted(lp))
-				{
-					ctid = *otid;
-					ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
-					result = TM_Updated;
-					goto zheap_tuple_updated;
-				}
-
-				if (ZHeapTupleHasMultiLockers(infomask))
-				{
-					List	   *new_mlmembers;
-
-					new_mlmembers = ZGetMultiLockMembers(relation, &oldtup,
-														 buffer, false);
-
-					/*
-					 * Ensure, no new lockers have been added, if so, then
-					 * start again.
-					 */
-					if (!ZMultiLockMembersSame(mlmembers, new_mlmembers))
-					{
-						list_free_deep(mlmembers);
-						list_free_deep(new_mlmembers);
-						goto check_tup_satisfies_update;
-					}
-
-					any_multi_locker_member_alive =
-						ZIsAnyMultiLockMemberRunning(new_mlmembers, &oldtup,
-													 buffer);
-					list_free_deep(mlmembers);
-					list_free_deep(new_mlmembers);
-				}
-
-				if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
-												&single_locker_xid, NULL, &oldtup))
-					goto check_tup_satisfies_update;
-			}
-			else if (TransactionIdIsValid(update_xact))
-			{
-				isAborted = TransactionIdDidAbort(update_xact);
-
-				/*
-				 * For aborted transaction, if the undo actions are not
-				 * applied yet, then apply them before modifying the page.
-				 */
-				if (isAborted &&
-					zheap_exec_pending_rollback(relation, buffer,
-												xwait_trans_slot, xwait, NULL))
-					goto check_tup_satisfies_update;
-			}
-
-			/*
-			 * There was no UPDATE in the Multilockers. No
-			 * TransactionIdIsInProgress() call needed here, since we called
-			 * ZMultiLockMembersWait() above.
-			 */
-			if (!TransactionIdIsValid(update_xact))
-				can_continue = true;
-		}
-		else if (TransactionIdIsCurrentTransactionId(xwait))
-		{
-			/*
-			 * The only locker is ourselves; we can avoid grabbing the tuple
-			 * lock here, but must preserve our locking information.
-			 */
-			checked_lockers = true;
-			locker_remains = true;
-			can_continue = true;
-		}
-		else if (ZHEAP_XID_IS_KEYSHR_LOCKED(infomask) && key_intact)
-		{
-			/*
-			 * If it's just a key-share locker, and we're not changing the key
-			 * columns, we don't need to wait for it to end; but we need to
-			 * preserve it as locker.
-			 */
-			checked_lockers = true;
-			locker_remains = true;
-			can_continue = true;
-		}
-		else
-		{
-			bool		isCommitted;
-			bool		has_update = false;
-
-			/*
-			 * Wait for regular transaction to end; but first, acquire tuple
-			 * lock.
-			 */
-			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-			heap_acquire_tuplock(relation, &(oldtup.t_self), *lockmode,
-								 LockWaitBlock, &have_tuple_lock);
-			if (xwait_subxid != InvalidSubTransactionId)
-				SubXactLockTableWait(xwait, xwait_subxid, relation,
-									 &oldtup.t_self, XLTW_Update);
-			else
-				XactLockTableWait(xwait, relation, &oldtup.t_self,
-								  XLTW_Update);
-			checked_lockers = true;
-			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-
-			/*
-			 * Also take care of cases when page is pruned after we release
-			 * the buffer lock. For this we check if ItemId is not deleted and
-			 * refresh the tuple offset position in page.  If TID is already
-			 * delete marked due to pruning, then get new ctid, so that we can
-			 * update the new tuple.
-			 */
-			if (ItemIdIsDeleted(lp))
+			if (item_is_deleted)
 			{
 				ctid = *otid;
 				ZHeapPageGetNewCtid(buffer, &ctid, &tup_xid, &tup_cid);
 				result = TM_Updated;
 				goto zheap_tuple_updated;
 			}
-
-			/*
-			 * xwait is done, but if xwait had just locked the tuple then some
-			 * other xact could update/lock this tuple before we get to this
-			 * point.  Check for xid change, and start over if so.  We need to
-			 * do some special handling for lockers because their xid is never
-			 * stored on the tuples.  If there was a single locker on the
-			 * tuple and that locker is gone and some new locker has locked
-			 * the tuple, we won't be able to identify that by infomask/xid on
-			 * the tuple, rather we need to fetch the locker xid.
-			 */
-			if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
-											&single_locker_xid, NULL, &oldtup))
-				goto check_tup_satisfies_update;
-
-			if (!ZHEAP_XID_IS_LOCKED_ONLY(oldtup.t_data->t_infomask))
-				has_update = true;
-
-			/*
-			 * We may overwrite if previous xid is aborted, or if it is
-			 * committed but only locked the tuple without updating it.
-			 */
-			isCommitted = TransactionIdDidCommit(xwait);
-
-			/*
-			 * For aborted transaction, if the undo actions are not applied
-			 * yet, then apply them before modifying the page.
-			 */
-			if (!isCommitted)
-				zheap_exec_pending_rollback(relation, buffer, xwait_trans_slot,
-											xwait, NULL);
-
-			if (!isCommitted)
-			{
-				/*
-				 * For aborted updates, we must allow to reverify the tuple in
-				 * case it's values got changed.
-				 */
-				if (has_update)
-					goto check_tup_satisfies_update;
-
-				/*
-				 * While executing the undo action we have released the buffer
-				 * lock.  So if the tuple infomask got changed while applying
-				 * the undo action then we must reverify the tuple.
-				 */
-				if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
-												&single_locker_xid, NULL, &oldtup))
-					goto check_tup_satisfies_update;
-			}
-
-			if (!has_update)
-				can_continue = true;
+			goto check_tup_satisfies_update;
 		}
-
-		/*
-		 * We may overwrite if previous xid is aborted or committed, but only
-		 * locked the tuple without updating it.
-		 */
-		if (result != TM_Ok)
-			result = can_continue ? TM_Ok : TM_Updated;
 	}
 	else if (result == TM_Ok)
 	{
@@ -3018,6 +2717,359 @@ reacquire_buffer:
 
 	bms_free(key_attrs);
 	return TM_Ok;
+}
+
+/*
+ * zheap_update_wait_helper
+ *
+ * This is a helper function that encapsulates some of the logic that
+ * zheap_update needs to wait for concurrent transactions.
+ *
+ * XXX. This is very similar to zheap_delete_wait_helper, q.v.
+ */
+static bool
+zheap_update_wait_helper(Relation relation,
+						 Buffer buffer, ZHeapTuple zheaptup,
+						 FullTransactionId fxid, TransactionId xwait,
+						 int xwait_trans_slot, TransactionId xwait_subxid,
+						 LockTupleMode lockmode, bool key_intact,
+						 ItemId lp,
+						 TransactionId tup_xid, bool *have_tuple_lock,
+						 bool *any_multi_locker_member_alive,
+						 bool *checked_lockers, bool *locker_remains,
+						 TM_Result *result, bool *item_is_deleted)
+{
+	TransactionId	single_locker_xid;
+	List	   *mlmembers;
+	uint16		infomask;
+	bool		can_continue = false;
+	int			trans_slot_id;
+	UndoRecPtr	prev_urecptr;
+
+	/* must copy state data before unlocking buffer */
+	infomask = zheaptup->t_data->t_infomask;
+
+	if (ZHeapTupleHasMultiLockers(infomask))
+	{
+		TransactionId update_xact;
+		LockTupleMode old_lock_mode;
+		int			remain = 0;
+		bool		isAborted;
+		bool		upd_xact_aborted = false;
+
+		/*
+		 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if
+		 * current transaction has already locked the tuple for update
+		 * because of multilocker flag. In that case, we've to check
+		 * whether the current transaction has already locked the tuple
+		 * for update.
+		 */
+
+		/*
+		 * Get the transaction slot and undo record pointer if we are
+		 * already in a transaction.
+		 */
+		trans_slot_id =
+			PageGetTransactionSlotId(relation, buffer,
+									 EpochFromFullTransactionId(fxid),
+									 XidFromFullTransactionId(fxid),
+									 &prev_urecptr, false, false, NULL);
+
+		if (trans_slot_id != InvalidXactSlotId)
+		{
+			List	   *mlmembers;
+			ListCell   *lc;
+
+			/*
+			 * If any subtransaction of the current top transaction
+			 * already holds a lock as strong as or stronger than what
+			 * we're requesting, we effectively hold the desired lock
+			 * already.  We *must* succeed without trying to take the
+			 * tuple lock, else we will deadlock against anyone wanting to
+			 * acquire a stronger lock.
+			 */
+			mlmembers = ZGetMultiLockMembersForCurrentXact(zheaptup,
+														   trans_slot_id, prev_urecptr);
+
+			foreach(lc, mlmembers)
+			{
+				ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
+
+				/*
+				 * Only members of our own transaction must be present in
+				 * the list.
+				 */
+				Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
+
+				if (mlmember->mode >= lockmode)
+				{
+					*result = TM_Ok;
+
+					/*
+					 * There is no other active locker on the tuple except
+					 * current transaction id, so we can update the tuple.
+					 * However, we need to propagate lockers information.
+					 */
+					*checked_lockers = true;
+					*locker_remains = true;
+					return true;
+				}
+			}
+
+			list_free_deep(mlmembers);
+		}
+
+		old_lock_mode = get_old_lock_mode(infomask);
+
+		/*
+		 * For the conflicting lockers, we need to be careful about
+		 * applying pending undo actions for aborted transactions; if we
+		 * leave any transaction whether locker or updater, it can lead to
+		 * inconsistency.  Basically, in such a case after waiting for all
+		 * the conflicting transactions we might clear the multilocker
+		 * flag and proceed with update and it is quite possible that
+		 * after the update, undo worker rollbacks some of the previous
+		 * locker which can overwrite the tuple (Note, till multilocker
+		 * bit is set, the rollback actions won't overwrite the tuple).
+		 *
+		 * OTOH for non-conflicting lockers, as we don't clear the
+		 * multi-locker flag, there is no urgency to perform undo actions
+		 * for aborts of lockers.  The work involved in finding and
+		 * aborting lockers is non-trivial (w.r.t performance), so it is
+		 * better to avoid it.
+		 *
+		 * After abort, if it is only a locker, then it will be completely
+		 * gone; but if it is an update, then after applying pending
+		 * actions, the tuple might get changed and we must allow to
+		 * reverify the tuple in case it's values got changed.
+		 */
+		if (!ZHEAP_XID_IS_LOCKED_ONLY(zheaptup->t_data->t_infomask))
+			update_xact = ZHeapTupleGetTransXID(zheaptup, buffer, false);
+		else
+			update_xact = InvalidTransactionId;
+
+		if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
+								HWLOCKMODE_from_locktupmode(lockmode)))
+		{
+			/*
+			 * There is a potential conflict.  It is quite possible that
+			 * by this time the locker has already been committed. So we
+			 * need to check for conflict with all the possible lockers
+			 * and wait for each of them after releasing a buffer lock and
+			 * acquiring a lock on a tuple.
+			 */
+			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+			mlmembers = ZGetMultiLockMembers(relation, zheaptup, buffer,
+											 true);
+
+			/*
+			 * If there is no multi-lock members apart from the current
+			 * transaction then no need for tuplock, just go ahead.
+			 */
+			if (mlmembers != NIL)
+			{
+				heap_acquire_tuplock(relation, &(zheaptup->t_self), lockmode,
+									 LockWaitBlock, have_tuple_lock);
+				ZMultiLockMembersWait(relation, mlmembers, zheaptup, buffer,
+									  update_xact, lockmode, false,
+									  XLTW_Update, &remain,
+									  &upd_xact_aborted);
+			}
+			*checked_lockers = true;
+			*locker_remains = (remain != 0);
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+			/*
+			 * If the aborted xact is for update, then we need to reverify
+			 * the tuple.
+			 */
+			if (upd_xact_aborted)
+				return false;
+
+			/*
+			 * Also take care of cases when page is pruned after we
+			 * release the buffer lock. For this we check if ItemId is not
+			 * deleted and refresh the tuple offset position in page.  If
+			 * TID is already delete marked due to pruning, then get new
+			 * ctid, so that we can update the new tuple.
+			 *
+			 * We also need to ensure that no new lockers have been added
+			 * in the meantime, if there is any new locker, then start
+			 * again.
+			 */
+			if (ItemIdIsDeleted(lp))
+			{
+				*item_is_deleted = true;
+				return false;
+			}
+
+			if (ZHeapTupleHasMultiLockers(infomask))
+			{
+				List	   *new_mlmembers;
+
+				new_mlmembers = ZGetMultiLockMembers(relation, zheaptup,
+													 buffer, false);
+
+				/*
+				 * Ensure, no new lockers have been added, if so, then
+				 * start again.
+				 */
+				if (!ZMultiLockMembersSame(mlmembers, new_mlmembers))
+				{
+					list_free_deep(mlmembers);
+					list_free_deep(new_mlmembers);
+					return false;
+				}
+
+				*any_multi_locker_member_alive =
+					ZIsAnyMultiLockMemberRunning(new_mlmembers, zheaptup,
+												 buffer);
+				list_free_deep(mlmembers);
+				list_free_deep(new_mlmembers);
+			}
+
+			if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
+											&single_locker_xid, NULL, zheaptup))
+				return false;
+		}
+		else if (TransactionIdIsValid(update_xact))
+		{
+			isAborted = TransactionIdDidAbort(update_xact);
+
+			/*
+			 * For aborted transaction, if the undo actions are not
+			 * applied yet, then apply them before modifying the page.
+			 */
+			if (isAborted &&
+				zheap_exec_pending_rollback(relation, buffer,
+											xwait_trans_slot, xwait, NULL))
+				return false;
+		}
+
+		/*
+		 * There was no UPDATE in the Multilockers. No
+		 * TransactionIdIsInProgress() call needed here, since we called
+		 * ZMultiLockMembersWait() above.
+		 */
+		if (!TransactionIdIsValid(update_xact))
+			can_continue = true;
+	}
+	else if (TransactionIdIsCurrentTransactionId(xwait))
+	{
+		/*
+		 * The only locker is ourselves; we can avoid grabbing the tuple
+		 * lock here, but must preserve our locking information.
+		 */
+		*checked_lockers = true;
+		*locker_remains = true;
+		can_continue = true;
+	}
+	else if (ZHEAP_XID_IS_KEYSHR_LOCKED(infomask) && key_intact)
+	{
+		/*
+		 * If it's just a key-share locker, and we're not changing the key
+		 * columns, we don't need to wait for it to end; but we need to
+		 * preserve it as locker.
+		 */
+		*checked_lockers = true;
+		*locker_remains = true;
+		can_continue = true;
+	}
+	else
+	{
+		bool		isCommitted;
+		bool		has_update = false;
+
+		/*
+		 * Wait for regular transaction to end; but first, acquire tuple
+		 * lock.
+		 */
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		heap_acquire_tuplock(relation, &(zheaptup->t_self), lockmode,
+							 LockWaitBlock, have_tuple_lock);
+		if (xwait_subxid != InvalidSubTransactionId)
+			SubXactLockTableWait(xwait, xwait_subxid, relation,
+								 &zheaptup->t_self, XLTW_Update);
+		else
+			XactLockTableWait(xwait, relation, &zheaptup->t_self,
+							  XLTW_Update);
+		*checked_lockers = true;
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+		/*
+		 * Also take care of cases when page is pruned after we release
+		 * the buffer lock. For this we check if ItemId is not deleted and
+		 * refresh the tuple offset position in page.  If TID is already
+		 * delete marked due to pruning, then get new ctid, so that we can
+		 * update the new tuple.
+		 */
+		if (ItemIdIsDeleted(lp))
+		{
+			*item_is_deleted = true;
+			return false;
+		}
+
+		/*
+		 * xwait is done, but if xwait had just locked the tuple then some
+		 * other xact could update/lock this tuple before we get to this
+		 * point.  Check for xid change, and start over if so.  We need to
+		 * do some special handling for lockers because their xid is never
+		 * stored on the tuples.  If there was a single locker on the
+		 * tuple and that locker is gone and some new locker has locked
+		 * the tuple, we won't be able to identify that by infomask/xid on
+		 * the tuple, rather we need to fetch the locker xid.
+		 */
+		if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
+										&single_locker_xid, NULL, zheaptup))
+			return false;
+
+		if (!ZHEAP_XID_IS_LOCKED_ONLY(zheaptup->t_data->t_infomask))
+			has_update = true;
+
+		/*
+		 * We may overwrite if previous xid is aborted, or if it is
+		 * committed but only locked the tuple without updating it.
+		 */
+		isCommitted = TransactionIdDidCommit(xwait);
+
+		/*
+		 * For aborted transaction, if the undo actions are not applied
+		 * yet, then apply them before modifying the page.
+		 */
+		if (!isCommitted)
+			zheap_exec_pending_rollback(relation, buffer, xwait_trans_slot,
+										xwait, NULL);
+
+		if (!isCommitted)
+		{
+			/*
+			 * For aborted updates, we must allow to reverify the tuple in
+			 * case it's values got changed.
+			 */
+			if (has_update)
+				return false;
+
+			/*
+			 * While executing the undo action we have released the buffer
+			 * lock.  So if the tuple infomask got changed while applying
+			 * the undo action then we must reverify the tuple.
+			 */
+			if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
+											&single_locker_xid, NULL, zheaptup))
+				return false;
+		}
+
+		if (!has_update)
+			can_continue = true;
+	}
+
+	/*
+	 * We may overwrite if previous xid is aborted or committed, but only
+	 * locked the tuple without updating it.
+	 */
+	if (*result != TM_Ok)
+		*result = can_continue ? TM_Ok : TM_Updated;
+	return true;
 }
 
 /*
