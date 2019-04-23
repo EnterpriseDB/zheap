@@ -1079,7 +1079,10 @@ ZHeapTupleFetch(Relation rel, Buffer buffer, OffsetNumber offnum,
 		 snapshot->snapshot_type == SNAPSHOT_ANY) && tuple != NULL &&
 		!ZHeapTupleIsMoved(tuple->t_data->t_infomask) &&
 		ZHeapTupleIsUpdated(tuple->t_data->t_infomask))
-		ZHeapTupleGetCtid(tuple, buffer, zinfo.urec_ptr, new_ctid);
+	{
+		*new_ctid = tuple->t_self;
+		ZHeapPageGetCtid(buffer, zinfo.urec_ptr, new_ctid);
+	}
 
 	/*
 	 * We're all done. Make sure that either caller gets the tuple, or it gets
@@ -1243,7 +1246,10 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 			if (ctid &&
 				!ZHeapTupleIsMoved(tuple->t_infomask) &&
 				tuple->t_infomask & ZHEAP_UPDATED)
-				ZHeapTupleGetCtid(zhtup, buffer, zinfo->urec_ptr, ctid);
+			{
+				*ctid = zhtup->t_self;
+				ZHeapPageGetCtid(buffer, zinfo->urec_ptr, ctid);
+			}
 
 			/* tuple is deleted or non-inplace-updated */
 			result = TM_Updated;

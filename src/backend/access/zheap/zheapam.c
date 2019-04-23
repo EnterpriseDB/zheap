@@ -7454,20 +7454,6 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 }
 
 /*
- * ZHeapTupleGetCtid - Retrieve tuple id from tuple's undo record.
- *
- * It is expected that caller of this function has at least read lock
- * on the buffer and we call it only for non-inplace-updated tuples.
- */
-void
-ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
-				  ItemPointer ctid)
-{
-	*ctid = zhtup->t_self;
-	ZHeapPageGetCtid(buf, urec_ptr, ctid);
-}
-
-/*
  * ZHeapTupleGetSubXid - Retrieve subtransaction id from tuple's undo record.
  *
  * It is expected that caller of this function has at least read lock.

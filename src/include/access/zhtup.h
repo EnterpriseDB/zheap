@@ -299,8 +299,6 @@ extern void GetTransactionSlotInfo(Buffer buf, OffsetNumber offset,
 					   int trans_slot_id,
 					   bool NoTPDBufLock, bool TPDSlot,
 					   struct ZHeapTupleTransInfo *zinfo);
-extern void ZHeapTupleGetCtid(ZHeapTuple zhtup, Buffer buf,
-				  UndoRecPtr urec_ptr, ItemPointer ctid);
 extern void ZHeapTupleGetSubXid(Buffer buf, OffsetNumber offnum,
 					UndoRecPtr urec_ptr, SubTransactionId *subxid);
 extern void ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf,
