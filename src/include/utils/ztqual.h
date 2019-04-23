@@ -49,7 +49,7 @@ extern TransactionId ZHeapTupleGetTransXID(ZHeapTuple zhtup, Buffer buf,
 
 /* Fetch CTID information stored in undo */
 extern void ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid,
-					TransactionId *xid, CommandId *cid);
+					ZHeapTupleTransInfo *zinfo);
 
 /* These are the "satisfies" test routines for the zheap. */
 extern TM_Result ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup,

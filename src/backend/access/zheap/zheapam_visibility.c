@@ -185,14 +185,13 @@ ZHeapUpdateTransactionSlotInfo(int trans_slot, Buffer buffer,
  * 	ctid, xid and cid which modified the given one.
  */
 void
-ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
-					CommandId *cid)
+ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid,
+					ZHeapTupleTransInfo *zinfo)
 {
 	int			trans_slot;
 	ItemId		lp;
 	Page		page;
 	OffsetNumber offnum = ItemPointerGetOffsetNumber(ctid);
-	ZHeapTupleTransInfo	zinfo;
 
 	page = BufferGetPage(buffer);
 	lp = PageGetItemId(page, offnum);
@@ -205,22 +204,18 @@ ZHeapPageGetNewCtid(Buffer buffer, ItemPointer ctid, TransactionId *xid,
 	 * We need undo record pointer to fetch the transaction information
 	 * from undo.
 	 */
-	GetTransactionSlotInfo(buffer, offnum, trans_slot, true, false, &zinfo);
+	GetTransactionSlotInfo(buffer, offnum, trans_slot, true, false, zinfo);
 	FetchTransInfoFromUndo(BufferGetBlockNumber(buffer), offnum,
-						   InvalidTransactionId, &zinfo);
-
-	/* Return results to caller. */
-	*xid = zinfo.xid;
-	*cid = zinfo.cid;
+						   InvalidTransactionId, zinfo);
 
 	/*
 	 * We always expect non-frozen transaction slot here as the caller tries
 	 * to fetch the ctid of tuples that are visible to the snapshot, so
 	 * corresponding undo record can't be discarded.
 	 */
-	Assert(zinfo.trans_slot != ZHTUP_SLOT_FROZEN);
+	Assert(zinfo->trans_slot != ZHTUP_SLOT_FROZEN);
 
-	ZHeapPageGetCtid(buffer, zinfo.urec_ptr, ctid);
+	ZHeapPageGetCtid(buffer, zinfo->urec_ptr, ctid);
 }
 
 /*

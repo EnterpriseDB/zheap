@@ -596,7 +596,7 @@ check_tup_satisfies_update:
 	if (ItemIdIsDeleted(lp))
 	{
 		ctid = *tid;
-		ZHeapPageGetNewCtid(buffer, &ctid, &zinfo.xid, &zinfo.cid);
+		ZHeapPageGetNewCtid(buffer, &ctid, &zinfo);
 		result = TM_Updated;
 		goto zheap_tuple_updated;
 	}
@@ -1388,7 +1388,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	if (ItemIdIsDeleted(lp))
 	{
 		ctid = *otid;
-		ZHeapPageGetNewCtid(buffer, &ctid, &zinfo.xid, &zinfo.cid);
+		ZHeapPageGetNewCtid(buffer, &ctid, &zinfo);
 		result = TM_Updated;
 
 		/*
@@ -1522,7 +1522,7 @@ check_tup_satisfies_update:
 			if (item_is_deleted)
 			{
 				ctid = *otid;
-				ZHeapPageGetNewCtid(buffer, &ctid, &zinfo.xid, &zinfo.cid);
+				ZHeapPageGetNewCtid(buffer, &ctid, &zinfo);
 				result = TM_Updated;
 				goto zheap_tuple_updated;
 			}
@@ -1723,7 +1723,7 @@ zheap_tuple_updated:
 		if (ItemIdIsDeleted(lp))
 		{
 			ctid = *otid;
-			ZHeapPageGetNewCtid(buffer, &ctid, &zinfo.xid, &zinfo.cid);
+			ZHeapPageGetNewCtid(buffer, &ctid, &zinfo);
 			result = TM_Updated;
 			goto zheap_tuple_updated;
 		}
@@ -3130,7 +3130,7 @@ check_tup_satisfies_update:
 	if (ItemIdIsDeleted(lp))
 	{
 		ctid = *tid;
-		ZHeapPageGetNewCtid(*buffer, &ctid, &zinfo.xid, &zinfo.cid);
+		ZHeapPageGetNewCtid(*buffer, &ctid, &zinfo);
 		result = TM_Updated;
 		goto failed;
 	}
@@ -4211,7 +4211,7 @@ lock_tuple:
 			/* There is no point of locking a deleted and pruned tuple. */
 			ZHeapTupleFetch(rel, buf, offnum, SnapshotAny, &mytup, NULL);
 			ctid = &mytup->t_self;
-			ZHeapPageGetNewCtid(buf, ctid, &zinfo.xid, &zinfo.cid);
+			ZHeapPageGetNewCtid(buf, ctid, &zinfo);
 			goto next;
 		}
 		else
