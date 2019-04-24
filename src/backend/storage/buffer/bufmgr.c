@@ -520,13 +520,56 @@ ComputeIoConcurrency(int io_concurrency, double *target)
 	return (new_prefetch_pages >= 0.0 && new_prefetch_pages < (double) INT_MAX);
 }
 
+#ifdef USE_PREFETCH
 /*
- * PrefetchBuffer -- initiate asynchronous read of a block of a relation
+ * PrefetchBufferGuts -- Guts of prefetching a buffer.
  *
  * This is named by analogy to ReadBuffer but doesn't actually allocate a
  * buffer.  Instead it tries to ensure that a future ReadBuffer for the given
  * block will not be delayed by the I/O.  Prefetching is optional.
  * No-op if prefetching isn't compiled in.
+ */
+static void
+PrefetchBufferGuts(RelFileNode rnode, SMgrRelation smgr, ForkNumber forkNum,
+				   BlockNumber blockNum)
+{
+	BufferTag	newTag;		/* identity of requested block */
+	uint32		newHash;	/* hash value for newTag */
+	LWLock	   *newPartitionLock;	/* buffer partition lock for it */
+	int			buf_id;
+
+	/* create a tag so we can lookup the buffer */
+	INIT_BUFFERTAG(newTag, rnode, forkNum, blockNum);
+
+	/* determine its hash code and partition lock ID */
+	newHash = BufTableHashCode(&newTag);
+	newPartitionLock = BufMappingPartitionLock(newHash);
+
+	/* see if the block is in the buffer pool already */
+	LWLockAcquire(newPartitionLock, LW_SHARED);
+	buf_id = BufTableLookup(&newTag, newHash);
+	LWLockRelease(newPartitionLock);
+
+	/* If not in buffers, initiate prefetch */
+	if (buf_id < 0)
+		smgrprefetch(smgr, forkNum, blockNum);
+
+	/*
+	 * If the block *is* in buffers, we do nothing.  This is not really
+	 * ideal: the block might be just about to be evicted, which would be
+	 * stupid since we know we are going to need it soon.  But the only
+	 * easy answer is to bump the usage_count, which does not seem like a
+	 * great solution: when the caller does ultimately touch the block,
+	 * usage_count would get bumped again, resulting in too much
+	 * favoritism for blocks that are involved in a prefetch sequence. A
+	 * real fix would involve some additional per-buffer state, and it's
+	 * not clear that there's enough of a problem to justify that.
+	 */
+}
+#endif							/* USE_PREFETCH */
+
+/*
+ * PrefetchBuffer -- initiate asynchronous read of a block of a relation
  */
 void
 PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
@@ -550,42 +593,32 @@ PrefetchBuffer(Relation reln, ForkNumber forkNum, BlockNumber blockNum)
 		LocalPrefetchBuffer(reln->rd_smgr, forkNum, blockNum);
 	}
 	else
-	{
-		BufferTag	newTag;		/* identity of requested block */
-		uint32		newHash;	/* hash value for newTag */
-		LWLock	   *newPartitionLock;	/* buffer partition lock for it */
-		int			buf_id;
-
-		/* create a tag so we can lookup the buffer */
-		INIT_BUFFERTAG(newTag, reln->rd_smgr->smgr_rnode.node,
-					   forkNum, blockNum);
-
-		/* determine its hash code and partition lock ID */
-		newHash = BufTableHashCode(&newTag);
-		newPartitionLock = BufMappingPartitionLock(newHash);
-
-		/* see if the block is in the buffer pool already */
-		LWLockAcquire(newPartitionLock, LW_SHARED);
-		buf_id = BufTableLookup(&newTag, newHash);
-		LWLockRelease(newPartitionLock);
-
-		/* If not in buffers, initiate prefetch */
-		if (buf_id < 0)
-			smgrprefetch(reln->rd_smgr, forkNum, blockNum);
-
-		/*
-		 * If the block *is* in buffers, we do nothing.  This is not really
-		 * ideal: the block might be just about to be evicted, which would be
-		 * stupid since we know we are going to need it soon.  But the only
-		 * easy answer is to bump the usage_count, which does not seem like a
-		 * great solution: when the caller does ultimately touch the block,
-		 * usage_count would get bumped again, resulting in too much
-		 * favoritism for blocks that are involved in a prefetch sequence. A
-		 * real fix would involve some additional per-buffer state, and it's
-		 * not clear that there's enough of a problem to justify that.
-		 */
-	}
+		PrefetchBufferGuts(reln->rd_smgr->smgr_rnode.node, reln->rd_smgr,
+						   forkNum, blockNum);
 #endif							/* USE_PREFETCH */
+}
+
+/*
+ * PrefetchBufferWithoutRelcache -- like PrefetchBuffer but doesn't need a
+ *									relcache entry for the relation.
+ */
+void
+PrefetchBufferWithoutRelcache(RelFileNode rnode, ForkNumber forkNum,
+							  BlockNumber blockNum, char relpersistence)
+{
+#ifdef USE_PREFETCH
+	SMgrRelation smgr = smgropen(rnode,
+								 relpersistence == RELPERSISTENCE_TEMP
+								 ? MyBackendId : InvalidBackendId);
+
+	if (relpersistence == RELPERSISTENCE_TEMP)
+	{
+		/* pass it off to localbuf.c */
+		LocalPrefetchBuffer(smgr, forkNum, blockNum);
+	}
+	else
+		PrefetchBufferGuts(rnode, smgr, forkNum, blockNum);
+#endif						/* USE_PREFETCH */
 }
 
 

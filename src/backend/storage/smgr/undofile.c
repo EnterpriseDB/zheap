@@ -119,7 +119,18 @@ undofile_extend(SMgrRelation reln, ForkNumber forknum,
 void
 undofile_prefetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum)
 {
-	elog(ERROR, "undofile_prefetch is not supported");
+#ifdef USE_PREFETCH
+	File		file;
+	off_t		seekpos;
+
+	Assert(forknum == MAIN_FORKNUM);
+	file = undofile_get_segment_file(reln, blocknum / UNDOSEG_SIZE);
+	seekpos = (off_t) BLCKSZ * (blocknum % ((BlockNumber) UNDOSEG_SIZE));
+
+	Assert(seekpos < (off_t) BLCKSZ * UNDOSEG_SIZE);
+
+	(void) FilePrefetch(file, seekpos, BLCKSZ, WAIT_EVENT_UNDO_FILE_PREFETCH);
+#endif							/* USE_PREFETCH */
 }
 
 bool
