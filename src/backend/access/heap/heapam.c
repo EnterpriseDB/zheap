@@ -52,6 +52,7 @@
 #include "access/xlogutils.h"
 #include "catalog/catalog.h"
 #include "miscadmin.h"
+#include "nodes/lockoptions.h"
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/bufmgr.h"
@@ -114,6 +115,7 @@ static HeapTuple ExtractReplicaIdentity(Relation rel, HeapTuple tup, bool key_mo
  * instead.
  */
 
+extern const struct LockExtraInfo tupleLockExtraInfo[MaxLockTupleMode + 1];
 
 /* Get the LOCKMODE for a given MultiXactStatus */
 #define LOCKMODE_from_mxstatus(status) \

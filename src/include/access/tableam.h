@@ -19,6 +19,7 @@
 
 #include "access/relscan.h"
 #include "access/sdir.h"
+#include "storage/bufmgr.h"
 #include "utils/guc.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
@@ -1623,5 +1624,21 @@ extern const TableAmRoutine *GetTableAmRoutine(Oid amhandler);
 extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
 extern bool check_default_table_access_method(char **newval, void **extra,
 								  GucSource source);
+
+/* ----------------------------------------------------------------------------
+ * Functions common to heap and zheap
+ * ----------------------------------------------------------------------------
+ */
+typedef struct BulkInsertStateData *BulkInsertState;
+
+extern bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
+				LockTupleMode mode, LockWaitPolicy wait_policy,
+				bool *have_tuple_lock);
+extern void GetVisibilityMapPins(Relation relation, Buffer buffer1,
+				Buffer buffer2, BlockNumber block1, BlockNumber block2,
+				Buffer *vmbuffer1, Buffer *vmbuffer2);
+extern void RelationAddExtraBlocks(Relation relation, BulkInsertState bistate);
+extern Buffer ReadBufferBI(Relation relation, BlockNumber targetBlock,
+				ReadBufferMode mode, BulkInsertState bistate);
 
 #endif							/* TABLEAM_H */

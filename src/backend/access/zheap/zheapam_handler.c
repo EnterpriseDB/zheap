@@ -24,15 +24,16 @@
 
 #include "miscadmin.h"
 
-#include "access/zheap.h"
+#include "access/multixact.h"
 #include "access/relscan.h"
 #include "access/rewritezheap.h"
 #include "access/tableam.h"
 #include "access/tpd.h"
 #include "access/tsmapi.h"
 #include "access/visibilitymap.h"
-#include "access/zheapscan.h"
 #include "access/xact.h"
+#include "access/zheap.h"
+#include "access/zheapscan.h"
 #include "catalog/catalog.h"
 #include "catalog/index.h"
 #include "catalog/pg_am_d.h"

@@ -34,6 +34,7 @@
 #include <math.h>
 
 #include "access/genam.h"
+#include "access/multixact.h"
 #include "access/tpd.h"
 #include "access/vacuumblk.h"
 #include "access/visibilitymap.h"

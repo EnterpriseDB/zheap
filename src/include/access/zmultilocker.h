@@ -22,7 +22,7 @@
 
 /* Get the LOCKMODE for a given LockTupleMode */
 #define HWLOCKMODE_from_locktupmode(lockmode) \
-			(tupleLockExtraInfo[lockmode].hwlock)
+				(GetHWLockModeFromMode(lockmode))
 
 extern List *ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup,
 								   int trans_slot, UndoRecPtr urec_ptr);

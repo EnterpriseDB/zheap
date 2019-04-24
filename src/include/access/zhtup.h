@@ -14,13 +14,13 @@
 #ifndef ZHTUP_H
 #define ZHTUP_H
 
-#include "access/genham.h"
 #include "access/tupdesc.h"
 #include "access/tupmacs.h"
 #include "access/transam.h"
 #include "access/undolog.h"
 #include "access/undorecord.h"
 #include "executor/tuptable.h"
+#include "nodes/lockoptions.h"
 #include "storage/bufpage.h"
 #include "storage/buf.h"
 #include "storage/itemptr.h"
