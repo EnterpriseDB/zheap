@@ -6667,8 +6667,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 			*urec_ptr = transinfo->urec_ptr;
 			return (slot_no + 1);
 		}
-		else if (!FullTransactionIdIsValid(transinfo->fxid) &&
-				 latestFreeTransSlot == InvalidXactSlotId)
+		else if (!FullTransactionIdIsValid(transinfo->fxid))
 			latestFreeTransSlot = slot_no;
 	}
 	else
