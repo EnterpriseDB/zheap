@@ -4079,6 +4079,9 @@ pgstat_get_wait_io(WaitEventIO w)
 		case WAIT_EVENT_UNDO_CHECKPOINT_SYNC:
 			event_name = "UndoCheckpointSync";
 			break;
+		case WAIT_EVENT_UNDO_FILE_PREFETCH:
+			event_name = "UndoFilePrefetch";
+			break;
 		case WAIT_EVENT_UNDO_FILE_READ:
 			event_name = "UndoFileRead";
 			break;
