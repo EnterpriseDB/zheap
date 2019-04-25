@@ -208,7 +208,7 @@ DROP TABLE cursor_zheap;
 -- Test cases for commit/rollback in SPI --
 -------------------------------------------
 
-CREATE TABLE test1 (a int, b text);
+CREATE TABLE test1 (a int, b text) USING zheap;
 CREATE TABLE test2 (x int);
 INSERT INTO test2 VALUES (0), (1), (2), (3), (4);
 
@@ -307,3 +307,13 @@ SELECT * FROM test2;
 
 DROP TABLE test1;
 DROP TABLE test2;
+
+-- rollback of toast table insertion
+CREATE TABLE ctoast (key int primary key, val text) USING zheap;
+CREATE OR REPLACE FUNCTION ctoast_large_val() RETURNS TEXT LANGUAGE SQL AS
+'select array_agg(md5(g::text))::text from generate_series(1, 256) g';
+BEGIN;
+INSERT INTO ctoast (key, val) VALUES (1, ctoast_large_val());
+ROLLBACK;
+DROP TABLE ctoast;
+DROP FUNCTION ctoast_large_val;
