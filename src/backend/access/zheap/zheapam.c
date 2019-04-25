@@ -95,7 +95,7 @@ static bool zheap_update_wait_helper(Relation relation,
 						 TM_Result *result, bool *item_is_deleted);
 static int	GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf);
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
-					 int options);
+					 int options, uint32 specToken);
 static TM_Result zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 						 FullTransactionId fxid, LockTupleMode mode, LockOper lockopr,
 						 CommandId cid, bool *rollback_and_relocked);
@@ -135,7 +135,8 @@ static bool RefetchAndCheckTupleStatus(Relation relation, Buffer buffer,
  * TPD entry or undorecord for this tuple.
  */
 static ZHeapTuple
-zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
+zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options,
+					 uint32 specToken)
 {
 
 	/*
@@ -184,7 +185,7 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options)
 		return tup;
 	}
 	else if (ZHeapTupleHasExternal(tup) || tup->t_len > TOAST_TUPLE_THRESHOLD)
-		return ztoast_insert_or_update(relation, tup, NULL, options);
+		return ztoast_insert_or_update(relation, tup, NULL, options, specToken);
 	else
 		return tup;
 }
@@ -262,7 +263,7 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 	 * Note: below this point, zheaptup is the data we actually intend to
 	 * store into the relation; tup is the caller's original untoasted data.
 	 */
-	zheaptup = zheap_prepare_insert(relation, tup, options);
+	zheaptup = zheap_prepare_insert(relation, tup, options, specToken);
 
 reacquire_buffer:
 
@@ -2010,7 +2011,8 @@ zheap_tuple_updated:
 		 */
 		if (need_toast)
 		{
-			zheaptup = ztoast_insert_or_update(relation, newtup, &oldtup, 0);
+			zheaptup = ztoast_insert_or_update(relation, newtup, &oldtup, 0,
+											   0);
 			newtupsize = SHORTALIGN(zheaptup->t_len);	/* short aligned */
 		}
 		else
@@ -7687,7 +7689,8 @@ zheap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	zheaptuples = palloc(ntuples * sizeof(ZHeapTuple));
 	for (i = 0; i < ntuples; i++)
 	{
-		zheaptuples[i] = zheap_prepare_insert(relation, ExecGetZHeapTupleFromSlot(slots[i]), options);
+		zheaptuples[i] = zheap_prepare_insert(relation,
+							ExecGetZHeapTupleFromSlot(slots[i]), options, 0);
 
 		if (slots[i]->tts_tableOid != InvalidOid)
 			zheaptuples[i]->t_tableOid = slots[i]->tts_tableOid;

@@ -294,7 +294,7 @@ raw_zheap_insert(RewriteZheapState state, ZHeapTuple tup)
 										  ZHEAP_INSERT_FROZEN |
 										  ZHEAP_INSERT_SKIP_FSM |
 										  (state->rs_use_wal ?
-										   0 : ZHEAP_INSERT_SKIP_WAL));
+										   0 : ZHEAP_INSERT_SKIP_WAL), 0);
 	}
 	else
 		heaptup = tup;

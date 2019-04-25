@@ -54,7 +54,7 @@
 
 static void ztoast_delete_datum(Relation rel, Datum value, bool is_speculative);
 static Datum ztoast_save_datum(Relation rel, Datum value,
-				  struct varlena *oldexternal, int options);
+				  struct varlena *oldexternal, int options, uint32 specToken);
 
 /*
  * ztoast_insert_or_update
@@ -63,7 +63,7 @@ static Datum ztoast_save_datum(Relation rel, Datum value,
 
 ZHeapTuple
 ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
-						int options)
+						int options, uint32 specToken)
 {
 	ZHeapTuple	result_tuple;
 	TupleDesc	tupleDesc;
@@ -87,14 +87,6 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 	int32		toast_sizes[MaxHeapAttributeNumber];
 	bool		toast_free[MaxHeapAttributeNumber];
 	bool		toast_delold[MaxHeapAttributeNumber];
-
-	/*
-	 * Ignore the INSERT_SPECULATIVE option. Speculative insertions/super
-	 * deletions just normally insert/delete the toast values. It seems
-	 * easiest to deal with that here, instead on, potentially, multiple
-	 * callers.
-	 */
-	options &= ~ZHEAP_INSERT_SPECULATIVE;
 
 	/*
 	 * We should only ever be called for tuples of plain relations or
@@ -341,7 +333,8 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 			old_value = toast_values[i];
 			toast_action[i] = 'p';
 			toast_values[i] = ztoast_save_datum(rel, toast_values[i],
-												toast_oldexternal[i], options);
+												toast_oldexternal[i], options,
+												specToken);
 			if (toast_free[i])
 				pfree(DatumGetPointer(old_value));
 			toast_free[i] = true;
@@ -394,7 +387,8 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 		old_value = toast_values[i];
 		toast_action[i] = 'p';
 		toast_values[i] = ztoast_save_datum(rel, toast_values[i],
-											toast_oldexternal[i], options);
+											toast_oldexternal[i], options,
+											specToken);
 		if (toast_free[i])
 			pfree(DatumGetPointer(old_value));
 		toast_free[i] = true;
@@ -508,7 +502,8 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 		old_value = toast_values[i];
 		toast_action[i] = 'p';
 		toast_values[i] = ztoast_save_datum(rel, toast_values[i],
-											toast_oldexternal[i], options);
+											toast_oldexternal[i], options,
+											specToken);
 		if (toast_free[i])
 			pfree(DatumGetPointer(old_value));
 		toast_free[i] = true;
@@ -600,7 +595,7 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
  */
 static Datum
 ztoast_save_datum(Relation rel, Datum value,
-				  struct varlena *oldexternal, int options)
+				  struct varlena *oldexternal, int options, uint32 specToken)
 {
 	Relation	toastrel;
 	Relation   *toastidxs;
@@ -801,7 +796,7 @@ ztoast_save_datum(Relation rel, Datum value,
 		memcpy(VARDATA(&chunk_data), data_p, chunk_size);
 		toasttup = zheap_form_tuple(toasttupDesc, t_values, t_isnull);
 
-		zheap_insert(toastrel, toasttup, mycid, options, NULL, 0);
+		zheap_insert(toastrel, toasttup, mycid, options, NULL, specToken);
 
 		/*
 		 * Create the index entry.  We cheat a little here by not using
