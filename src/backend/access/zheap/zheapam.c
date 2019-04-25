@@ -1980,7 +1980,7 @@ zheap_tuple_updated:
 			if (xlrec.flags & XLZ_LOCK_TRANS_SLOT_FOR_UREC)
 				XLogRegisterData((char *) &oldtup_new_trans_slot, sizeof(oldtup_new_trans_slot));
 			else if (xlrec.flags & XLZ_LOCK_CONTAINS_TPD_SLOT)
-				XLogRegisterData((char *) &zinfo.xid, sizeof(zinfo.xid));
+				XLogRegisterData((char *) &zinfo.trans_slot, sizeof(zinfo.trans_slot));
 
 			recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK, RedoRecPtr,
 										doPageWrites);
