@@ -1941,7 +1941,7 @@ zheap_tuple_updated:
 				Assert(result_trans_slot_id == zinfo.trans_slot);
 				xlrec.flags |= XLZ_LOCK_TRANS_SLOT_FOR_UREC;
 			}
-			else if (zinfo.xid > ZHEAP_PAGE_TRANS_SLOTS)
+			else if (zinfo.trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
 				xlrec.flags |= XLZ_LOCK_CONTAINS_TPD_SLOT;
 
 			if (hasSubXactLock)
