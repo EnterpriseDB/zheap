@@ -473,7 +473,7 @@ execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
 			{
 				execute_undo_actions_page(urp_array, last_index, i - 1,
 										  prev_reloid, xid, prev_block,
-										  blk_chain_complete, rellock);
+										  blk_chain_complete);
 				last_index = i;
 
 				/* We have consumed one prefetched page. */
@@ -489,7 +489,7 @@ execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
 		/* Apply the last set of the actions. */
 		execute_undo_actions_page(urp_array, last_index, i - 1,
 								  prev_reloid, xid, prev_block,
-								  blk_chain_complete, rellock);
+								  blk_chain_complete);
 
 		/* Free all undo records. */
 		for (i = 0; i < nrecords; i++)
@@ -597,21 +597,13 @@ execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
  *	blkno	- block number on which undo actions needs to be applied.
  *	blk_chain_complete - indicates whether the undo chain for block is
  *						 complete.
- *	rellock	  -	if the caller already has the lock on the required relation,
- *				then this flag is false, i.e. we do not need to acquire any
- *				lock here. If the flag is true then we need to acquire lock
- *				here itself, because caller will not be having any lock.
- *				When we are performing undo actions for prepared transactions,
- *				or for rollback to savepoint, we need not to lock as we already
- *				have the lock on the table. In cases like error or when
- *				rollbacking from the undo worker we need to have proper locks.
  *
  *	returns true, if successfully applied the undo actions, otherwise, false.
  */
 bool
 execute_undo_actions_page(UndoRecInfo * urp_array, int first_idx, int last_idx,
 						  Oid reloid, TransactionId xid, BlockNumber blkno,
-						  bool blk_chain_complete, bool rellock)
+						  bool blk_chain_complete)
 {
 	/*
 	 * All records passed to us are for the same RMGR, so we just use the
@@ -622,6 +614,5 @@ execute_undo_actions_page(UndoRecInfo * urp_array, int first_idx, int last_idx,
 	return RmgrTable[urp_array[0].uur->uur_rmid].rm_undo(urp_array, first_idx,
 														 last_idx, reloid, xid,
 														 blkno,
-														 blk_chain_complete,
-														 rellock);
+														 blk_chain_complete);
 }

@@ -504,8 +504,7 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 		/* Apply the last set of the actions. */
 		execute_undo_actions_page(urp_array, 0, nrecords - 1, rel->rd_id,
 								  xid, BufferGetBlockNumber(buffer),
-								  UndoRecPtrIsValid(urec_ptr) ? false : true,
-								  false);
+								  UndoRecPtrIsValid(urec_ptr) ? false : true);
 
 		/* Free all undo records. */
 		for (i = 0; i < nrecords; i++)
@@ -624,21 +623,13 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
  *	blkno	- block number on which undo actions needs to be applied.
  *	blk_chain_complete - indicates whether the undo chain for block is
  *						 complete.
- *	rellock	  -	if the caller already has the lock on the required relation,
- *				then this flag is false, i.e. we do not need to acquire any
- *				lock here. If the flag is true then we need to acquire lock
- *				here itself, because caller will not be having any lock.
- *				When we are performing undo actions for prepared transactions,
- *				or for rollback to savepoint, we need not to lock as we already
- *				have the lock on the table. In cases like error or when
- *				rolling back from the undo worker we need to have proper locks.
  *
  *	returns true, if successfully applied the undo actions, otherwise, false.
  */
 bool
 zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 				   Oid reloid, TransactionId xid, BlockNumber blkno,
-				   bool blk_chain_complete, bool rellock)
+				   bool blk_chain_complete)
 {
 	Relation	rel;
 	Buffer		buffer;
@@ -670,14 +661,8 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(reloid)))
 		return false;
 
-	/*
-	 * If the action is executed by backend as a result of rollback, we must
-	 * already have an appropriate lock on relation.
-	 */
-	if (rellock)
-		rel = heap_open(reloid, RowExclusiveLock);
-	else
-		rel = heap_open(reloid, NoLock);
+	/* We will always lock the relation. */
+	rel = heap_open(reloid, RowExclusiveLock);
 
 	if (RelationGetNumberOfBlocks(rel) <= blkno)
 	{
@@ -685,7 +670,7 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 		 * This is possible if the underlying relation is truncated just
 		 * before taking the relation lock above.
 		 */
-		heap_close(rel, NoLock);
+		heap_close(rel, RowExclusiveLock);
 		return false;
 	}
 
@@ -746,9 +731,10 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 		 UndoRecPtrGetLogNo(prev_urec_ptr) && slot_urec_ptr <= prev_urec_ptr))
 	{
 		UnlockReleaseBuffer(buffer);
-		heap_close(rel, NoLock);
-
 		UnlockReleaseTPDBuffers();
+
+		/* Close the relation. */
+		heap_close(rel, RowExclusiveLock);
 
 		return false;
 	}
@@ -1131,7 +1117,8 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	UnlockReleaseBuffer(buffer);
 	UnlockReleaseTPDBuffers();
 
-	heap_close(rel, NoLock);
+	/* Close the relation. */
+	heap_close(rel, RowExclusiveLock);
 
 	return true;
 }

@@ -300,7 +300,7 @@ typedef struct RmgrData
 	void		(*rm_mask) (char *pagedata, BlockNumber blkno);
 	bool		(*rm_undo) (UndoRecInfo *urp_array, int first_idx, int last_idx,
 							Oid reloid, TransactionId xid, BlockNumber blkno,
-							bool blk_chain_complete, bool rellock);
+							bool blk_chain_complete);
 	void		(*rm_undo_desc) (StringInfo buf, UnpackedUndoRecord *record);
 } RmgrData;
 
