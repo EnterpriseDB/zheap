@@ -154,7 +154,7 @@ SELECT a FROM arrtest WHERE a[2] IS NULL ORDER BY a;
 (2 rows)
 
 DELETE FROM arrtest WHERE a[2] IS NULL AND b IS NULL;
-SELECT a,b,c FROM arrtest;
+SELECT a,b,c FROM arrtest ORDER BY a,b,c;
        a       |           b           |         c         
 ---------------+-----------------------+-------------------
  {16,25,3,4,5} | {{{113,142},{1,147}}} | {}
