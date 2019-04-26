@@ -41,7 +41,7 @@
  * since we'll discard everything older).  Return InvalidTransactionId if the
  * undo log is empty.
  */
-static TransactionId
+static FullTransactionId
 UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 {
 	UndoRecPtr	undo_recptr, next_insert;
@@ -226,7 +226,7 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 
 	CommitTransactionCommand();
 
-	return undoxid;
+	return FullTransactionIdFromEpochAndXid(epoch, undoxid);
 }
 
 /*
@@ -236,8 +236,7 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 void
 UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 {
-	TransactionId	oldestXidHavingUndo = oldestXmin;
-	uint32			epoch = GetEpochForXid(oldestXmin);
+	FullTransactionId oldestXidHavingUndo = InvalidFullTransactionId;
 	UndoLogControl *log = NULL;
 
 	/*
@@ -250,7 +249,7 @@ UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 	 */
 	while ((log = UndoLogNext(log)))
 	{
-		TransactionId oldest_xid = InvalidTransactionId;
+		FullTransactionId oldest_xid = InvalidFullTransactionId;
 
 		/*
 		 * If the log is already discarded, then we are done.  It is important
@@ -280,12 +279,12 @@ UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 			oldest_xid = UndoDiscardOneLog(log, oldestXmin, hibernate);
 		}
 
-		if (TransactionIdIsValid(oldest_xid) &&
-			TransactionIdPrecedes(oldest_xid, oldestXidHavingUndo))
-		{
+		/* If oldestXidHavingUndo is not yet initialized, initialize it. */
+		if (!FullTransactionIdIsValid(oldestXidHavingUndo))
 			oldestXidHavingUndo = oldest_xid;
-			epoch = GetEpochForXid(oldest_xid);
-		}
+		else if (FullTransactionIdIsValid(oldest_xid) &&
+				 FullTransactionIdPrecedes(oldest_xid, oldestXidHavingUndo))
+			oldestXidHavingUndo = oldest_xid;
 	}
 
 	/*
@@ -294,9 +293,9 @@ UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 	 * XXX In future if multiple worker can perform discard then we may need
 	 * to use compare and swap for updating the shared memory value.
 	 */
-	pg_atomic_write_u64(&ProcGlobal->oldestXidWithEpochHavingUndo,
-						U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch,
-																				  oldestXidHavingUndo)));
+	if (FullTransactionIdIsValid(oldestXidHavingUndo))
+		pg_atomic_write_u64(&ProcGlobal->oldestXidWithEpochHavingUndo,
+							U64FromFullTransactionId(oldestXidHavingUndo));
 }
 
 /*
