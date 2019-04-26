@@ -209,7 +209,6 @@ lazy_vacuum_zpage_with_undo(Relation onerel, BlockNumber blkno, Buffer buffer,
 	TransactionId visibility_cutoff_xid;
 	FullTransactionId fxid = GetTopFullTransactionId();
 	TransactionId xid = XidFromFullTransactionId(fxid);
-	uint32		epoch = EpochFromFullTransactionId(fxid);
 	Page		page = BufferGetPage(buffer);
 	Page		tmppage;
 	UnpackedUndoRecord undorecord;
@@ -256,8 +255,7 @@ reacquire_slot:
 	trans_slot_id = PageReserveTransactionSlot(onerel,
 											   buffer,
 											   PageGetMaxOffsetNumber(page),
-											   epoch,
-											   xid,
+											   fxid,
 											   &prev_urecptr,
 											   &lock_reacquired,
 											   false,
@@ -341,8 +339,7 @@ reacquire_slot:
 					buffer,
 					trans_slot_id,
 					true,
-					epoch,
-					xid,
+					fxid,
 					urecptr,
 					unused,
 					uncnt);
@@ -353,8 +350,7 @@ reacquire_slot:
 					buffer,
 					trans_slot_id,
 					true,
-					epoch,
-					xid,
+					fxid,
 					urecptr,
 					NULL,
 					0);

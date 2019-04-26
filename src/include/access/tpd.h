@@ -101,7 +101,7 @@ extern int TPDPageReserveTransSlot(Relation relation, Buffer heapbuf,
 						bool *lock_reacquired,
 						bool always_extend, Buffer other_buf);
 extern int TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
-					   uint32 epoch, TransactionId xid, UndoRecPtr *urec_ptr,
+					   FullTransactionId fxid, UndoRecPtr *urec_ptr,
 					   bool keepTPDBufLock, bool checkOffset);
 extern int TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 							  OffsetNumber offset, uint32 *epoch, TransactionId *xid,
@@ -109,7 +109,7 @@ extern int TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 extern void TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 							  uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr);
 extern void TPDPageSetUndo(Buffer heapbuf, int trans_slot_id,
-			   bool set_tpd_map_slot, uint32 epoch, TransactionId xid,
+			   bool set_tpd_map_slot, FullTransactionId xid,
 			   UndoRecPtr urec_ptr, OffsetNumber *usedoff, int ucnt);
 extern void TPDPageSetOffsetMapSlot(Buffer heapbuf, int trans_slot_id,
 						OffsetNumber offset);

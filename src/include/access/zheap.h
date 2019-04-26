@@ -162,8 +162,8 @@ extern TM_Result zheap_lock_tuple(Relation relation, ItemPointer tid,
 extern void zheap_finish_speculative(Relation relation, ItemPointer tid);
 extern void zheap_abort_speculative(Relation relation, ItemPointer tid);
 extern int PageReserveTransactionSlot(Relation relation, Buffer buf,
-						   OffsetNumber offset, uint32 epoch,
-						   TransactionId xid, UndoRecPtr *ureptr,
+						   OffsetNumber offset,
+						   FullTransactionId xid, UndoRecPtr *ureptr,
 						   bool *lock_reacquired,
 						   bool extend_if_required,
 						   Buffer other_buf,
@@ -172,14 +172,14 @@ extern void MultiPageReserveTransSlot(Relation relation,
 						  Buffer oldbuf, Buffer newbuf,
 						  OffsetNumber oldbuf_offnum,
 						  OffsetNumber newbuf_offnum,
-						  uint32 epoch, TransactionId xid,
+						  FullTransactionId fxid,
 						  UndoRecPtr *oldbuf_prev_urecptr,
 						  UndoRecPtr *newbuf_prev_urecptr,
 						  int *oldbuf_trans_slot_id,
 						  int *newbuf_trans_slot_id,
 						  bool *lock_reacquired);
-extern int PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
-						 TransactionId xid, UndoRecPtr *urec_ptr,
+extern int PageGetTransactionSlotId(Relation rel, Buffer buf,
+						 FullTransactionId fxid, UndoRecPtr *urec_ptr,
 						 bool keepTPDBufLock, bool locktpd,
 						 bool *tpd_page_locked);
 extern void PageGetTransactionSlotInfo(Buffer buf, int slot_no,
@@ -202,8 +202,8 @@ extern XLogRecPtr log_zheap_visible(RelFileNode rnode, Buffer heap_buffer,
 extern void PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id,
 						   uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr);
 extern void PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer,
-			int trans_slot_id, bool set_tpd_map_slot, uint32 epoch,
-			TransactionId xid, UndoRecPtr urecptr, OffsetNumber *usedoff,
+			int trans_slot_id, bool set_tpd_map_slot,
+			FullTransactionId fxid, UndoRecPtr urecptr, OffsetNumber *usedoff,
 			int ucnt);
 extern void ZHeapTupleHeaderAdvanceLatestRemovedXid(ZHeapTupleHeader tuple,
 										TransactionId xid, TransactionId *latestRemovedXid);
@@ -284,8 +284,8 @@ extern bool ValidateTuplesXact(Relation relation, ZHeapTuple tuple,
 extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
 							int slot_no, TransactionId xwait, BlockNumber *tpd_blkno);
 extern void process_and_execute_undo_actions_page(UndoRecPtr from_urecptr,
-				Relation rel, Buffer buffer, uint32 epoch,
-				TransactionId xid, int slot_no);
+				Relation rel, Buffer buffer,
+				FullTransactionId fxid, int slot_no);
 
 /* in zheap/zvacuumlazy.c */
 struct VacuumParams;

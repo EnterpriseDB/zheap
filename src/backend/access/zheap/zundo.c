@@ -361,8 +361,6 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
 {
 	int			slot_no;
 	int			total_trans_slots = 0;
-	uint32		epoch;
-	UndoRecPtr	urec_ptr;
 	TransInfo  *trans_slots = NULL;
 	bool		any_tpd_slot_rolled_back = false;
 
@@ -419,9 +417,8 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
 
 	for (slot_no = 0; slot_no < total_trans_slots; slot_no++)
 	{
-		epoch = EpochFromFullTransactionId(trans_slots[slot_no].fxid);
-		xid = XidFromFullTransactionId(trans_slots[slot_no].fxid);
-		urec_ptr = trans_slots[slot_no].urec_ptr;
+		FullTransactionId fxid = trans_slots[slot_no].fxid;
+		UndoRecPtr urec_ptr = trans_slots[slot_no].urec_ptr;
 
 		/*
 		 * There shouldn't be any other in-progress transaction as we hold an
@@ -438,8 +435,8 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
 				BlockNumberIsValid(*tpd_blkno))
 				any_tpd_slot_rolled_back = true;
 
-			process_and_execute_undo_actions_page(urec_ptr, rel, buf, epoch,
-												  xid, slot_no);
+			process_and_execute_undo_actions_page(urec_ptr, rel, buf,
+												  fxid, slot_no);
 		}
 	}
 
@@ -475,8 +472,8 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
  */
 void
 process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
-									  Buffer buffer, uint32 epoch,
-									  TransactionId xid, int slot_no)
+									  Buffer buffer,
+									  FullTransactionId fxid, int slot_no)
 {
 	UndoRecPtr	urec_ptr = from_urecptr;
 	UndoRecInfo *urp_array;
@@ -485,9 +482,6 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 	int			nrecords;
 	int			undo_apply_size = maintenance_work_mem * 1024L;
 	int			i;
-	FullTransactionId	full_xid;
-
-	full_xid = FullTransactionIdFromEpochAndXid(epoch, xid);
 
 	/*
 	 * Fetch the multiple undo records which can fit into uur_segment; sort
@@ -506,7 +500,7 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 
 		/* Apply the last set of the actions. */
 		execute_undo_actions_page(urp_array, 0, nrecords - 1, rel->rd_id,
-								  full_xid, BufferGetBlockNumber(buffer),
+								  fxid, BufferGetBlockNumber(buffer),
 								  UndoRecPtrIsValid(urec_ptr) ? false : true);
 
 		/* Free all undo records. */
@@ -527,7 +521,7 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buffer);
-		slot_no = PageGetTransactionSlotId(rel, buffer, epoch, xid, &urec_ptr,
+		slot_no = PageGetTransactionSlotId(rel, buffer, fxid, &urec_ptr,
 										   true, false, NULL);
 
 		/*
@@ -712,7 +706,7 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	 * for rollback it became a TPD slot which means this information won't be
 	 * even recorded in undo.
 	 */
-	slot_no = PageGetTransactionSlotId(rel, buffer, epoch, xid,
+	slot_no = PageGetTransactionSlotId(rel, buffer, full_xid,
 									   &slot_urec_ptr, true, true,
 									   &tpd_page_locked);
 

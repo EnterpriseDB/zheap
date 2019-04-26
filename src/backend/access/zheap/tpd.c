@@ -2215,7 +2215,7 @@ extend_entry_if_required:
  */
 int
 TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
-					   uint32 epoch, TransactionId xid, UndoRecPtr *urec_ptr,
+					   FullTransactionId fxid, UndoRecPtr *urec_ptr,
 					   bool keepTPDBufLock, bool checkOffset)
 {
 	TransInfo  *trans_slots;
@@ -2226,7 +2226,6 @@ TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
 	int			buf_idx;
 	bool		tpd_e_pruned;
 	bool		alloc_bigger_map;
-	FullTransactionId fxid = FullTransactionIdFromEpochAndXid(epoch, xid);
 
 	/*
 	 * Since the zheap buffer is locked in exclusive mode, we can clear the
@@ -2844,7 +2843,7 @@ TPDPageSetOffsetMap(Buffer heapbuf, char *tpd_offset_map)
  */
 void
 TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
-			   uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr,
+			   FullTransactionId fxid, UndoRecPtr urec_ptr,
 			   OffsetNumber *usedoff, int ucnt)
 {
 	Page		heappage = BufferGetPage(heapbuf);
@@ -2969,7 +2968,7 @@ TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
 	/* Update the required transaction slot information. */
 	trans_slot_loc = (trans_slot_id - ZHEAP_PAGE_TRANS_SLOTS - 1) *
 		sizeof(TransInfo);
-	trans_slot_info.fxid = FullTransactionIdFromEpochAndXid(epoch, xid);
+	trans_slot_info.fxid = fxid;
 	trans_slot_info.urec_ptr = urec_ptr;
 	memcpy(tpd_entry_data + size_tpd_e_map + trans_slot_loc,
 		   (char *) &trans_slot_info,
@@ -2979,12 +2978,11 @@ TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
 	tpd_latest_xid_epoch = U64FromFullTransactionId(
 		FullTransactionIdFromEpochAndXid(tpdopaque->tpd_latest_xid_epoch,
 										 tpdopaque->tpd_latest_xid));
-	current_xid_epoch = U64FromFullTransactionId(
-		FullTransactionIdFromEpochAndXid(epoch, xid));
+	current_xid_epoch = U64FromFullTransactionId(fxid);
 	if (tpd_latest_xid_epoch < current_xid_epoch)
 	{
-		tpdopaque->tpd_latest_xid_epoch = epoch;
-		tpdopaque->tpd_latest_xid = xid;
+		tpdopaque->tpd_latest_xid_epoch = EpochFromFullTransactionId(fxid);
+		tpdopaque->tpd_latest_xid = XidFromFullTransactionId(fxid);
 	}
 
 	MarkBufferDirty(tpd_buf);
