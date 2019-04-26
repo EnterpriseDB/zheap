@@ -7117,8 +7117,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 
 			/*
 			 * Transaction slot can be considered frozen if it belongs to
-			 * previous epoch or transaction id is old enough that it is all
-			 * visible.
+			 * transaction id is old enough that it is all visible.
 			 */
 			if (FullTransactionIdPrecedes(slot_fxid, oldestXidWithEpochHavingUndo))
 				frozen_slots[nFrozenSlots++] = slot_no;
