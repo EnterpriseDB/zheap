@@ -81,6 +81,7 @@ static bool zheap_delete_wait_helper(Relation relation,
 						 int xwait_trans_slot, TransactionId xwait_subxid,
 						 ItemId lp,
 						 TransactionId tup_xid, bool *have_tuple_lock,
+						 TransactionId *single_locker_xid,
 						 bool *any_multi_locker_member_alive,
 						 TM_Result *result);
 static bool zheap_update_wait_helper(Relation relation,
@@ -90,6 +91,7 @@ static bool zheap_update_wait_helper(Relation relation,
 						 LockTupleMode lockmode, bool key_intact,
 						 ItemId lp,
 						 TransactionId tup_xid, bool *have_tuple_lock,
+						 TransactionId *single_locker_xid,
 						 bool *any_multi_locker_member_alive,
 						 bool *checked_lockers, bool *locker_remains,
 						 TM_Result *result, bool *item_is_deleted);
@@ -640,6 +642,7 @@ check_tup_satisfies_update:
 		if (!zheap_delete_wait_helper(relation, buffer, &zheaptup, fxid,
 									  xwait, xwait_trans_slot, tup_subxid,
 									  lp, zinfo.xid, &have_tuple_lock,
+									  &single_locker_xid,
 									  &any_multi_locker_member_alive, &result))
 			goto check_tup_satisfies_update;
 	}
@@ -961,10 +964,10 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 						 int xwait_trans_slot, TransactionId xwait_subxid,
 						 ItemId lp,
 						 TransactionId tup_xid, bool *have_tuple_lock,
+						 TransactionId *single_locker_xid,
 						 bool *any_multi_locker_member_alive,
 						 TM_Result *result)
 {
-	TransactionId single_locker_xid;
 	List	   *mlmembers = NIL;
 	uint16		infomask;
 	bool		isCommitted;
@@ -1176,7 +1179,7 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 		 */
 		if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
 										tup_xid,
-										&single_locker_xid, NULL, zheaptup))
+										single_locker_xid, NULL, zheaptup))
 			return false;
 
 		/* Aborts of multi-lockers are already dealt above. */
@@ -1216,7 +1219,7 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 				 */
 				if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
 												tup_xid,
-												&single_locker_xid,
+												single_locker_xid,
 												NULL, zheaptup))
 					return false;
 			}
@@ -1507,7 +1510,7 @@ check_tup_satisfies_update:
 		if (!zheap_update_wait_helper(relation, buffer, &oldtup, fxid,
 									  xwait, xwait_trans_slot, tup_subxid,
 									  *lockmode, key_intact, lp, zinfo.xid,
-									  &have_tuple_lock,
+									  &have_tuple_lock, &single_locker_xid,
 									  &any_multi_locker_member_alive,
 									  &checked_lockers, &locker_remains,
 									  &result, &item_is_deleted))
@@ -2572,11 +2575,11 @@ zheap_update_wait_helper(Relation relation,
 						 LockTupleMode lockmode, bool key_intact,
 						 ItemId lp,
 						 TransactionId tup_xid, bool *have_tuple_lock,
+						 TransactionId *single_locker_xid,
 						 bool *any_multi_locker_member_alive,
 						 bool *checked_lockers, bool *locker_remains,
 						 TM_Result *result, bool *item_is_deleted)
 {
-	TransactionId single_locker_xid;
 	List	   *mlmembers;
 	uint16		infomask;
 	bool		can_continue = false;
@@ -2762,7 +2765,7 @@ zheap_update_wait_helper(Relation relation,
 			}
 
 			if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
-											&single_locker_xid, NULL, zheaptup))
+											single_locker_xid, NULL, zheaptup))
 				return false;
 		}
 		else if (TransactionIdIsValid(update_xact))
@@ -2852,7 +2855,7 @@ zheap_update_wait_helper(Relation relation,
 		 * need to fetch the locker xid.
 		 */
 		if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
-										&single_locker_xid, NULL, zheaptup))
+										single_locker_xid, NULL, zheaptup))
 			return false;
 
 		if (!ZHEAP_XID_IS_LOCKED_ONLY(zheaptup->t_data->t_infomask))
@@ -2887,7 +2890,7 @@ zheap_update_wait_helper(Relation relation,
 			 * undo action then we must reverify the tuple.
 			 */
 			if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
-											&single_locker_xid, NULL, zheaptup))
+											single_locker_xid, NULL, zheaptup))
 				return false;
 		}
 
@@ -8847,10 +8850,6 @@ zheap_compute_xid_horizon_for_tuples(Relation rel,
  * conflict check again, but we return the single locker xid that'll be used in
  * compute_new_xid_infomask later.
  * mode - If not NULL, mode specific status checks are performed.
- *
- * ZBORKED: The header comment above claims that single_locker_xid is an INOUT
- * parameter, but we never consult it and only set it when we also
- * return true.
  */
 static bool
 RefetchAndCheckTupleStatus(Relation relation,
