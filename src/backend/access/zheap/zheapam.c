@@ -93,7 +93,6 @@ static bool zheap_update_wait_helper(Relation relation,
 						 bool *any_multi_locker_member_alive,
 						 bool *checked_lockers, bool *locker_remains,
 						 TM_Result *result, bool *item_is_deleted);
-static int	GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf);
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
 					 int options, uint32 specToken);
 static TM_Result zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
@@ -6441,18 +6440,25 @@ MultiPageReserveTransSlot(Relation relation,
 	bool		always_extend;
 	bool		is_tpdblk_order_changed;
 	int			slot_id;
+	BlockNumber		tmp_new_tpd_blk,
+					tmp_old_tpd_blk;
 	BlockNumber oldbuf_tpd_blk PG_USED_FOR_ASSERTS_ONLY = InvalidBlockNumber;
+	Page		old_heap_page, new_heap_page;
+
+	old_heap_page = BufferGetPage(oldbuf);
+	new_heap_page = BufferGetPage(newbuf);
 
 	/*
 	 * If previously reserved slot is from TPD then we should have TPD page
 	 * into heap buffer.
 	 */
 	Assert(*oldbuf_trans_slot_id <= ZHEAP_PAGE_TRANS_SLOTS ||
-		   ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)));
+		   ZHeapPageHasTPDSlot((PageHeader) old_heap_page));
 
 	/* If TPD exist, then get corresponding TPD block number for old buffer. */
-	if (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)))
-		oldbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(oldbuf);
+	if (ZHeapPageHasTPDSlot((PageHeader) old_heap_page))
+		GetTPDBlockAndOffset(old_heap_page, &oldbuf_tpd_blk, NULL);
+	tmp_old_tpd_blk = oldbuf_tpd_blk;
 
 retry_tpd_lock:
 
@@ -6466,21 +6472,22 @@ retry_tpd_lock:
 	 * first or we should get slot for new buffer first.
 	 */
 	if (*oldbuf_trans_slot_id >= ZHEAP_PAGE_TRANS_SLOTS &&
-		ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)))
+		ZHeapPageHasTPDSlot((PageHeader) old_heap_page))
 	{
 		/*
 		 * If TPD exists on both the buffers then reserve the slot in the
 		 * increasing order of TPD blocks to avoid deadlock.
 		 */
-		if (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(newbuf)))
+		if (ZHeapPageHasTPDSlot((PageHeader) new_heap_page))
 		{
+			GetTPDBlockAndOffset(new_heap_page, &tmp_new_tpd_blk, NULL);
+
 			/*
 			 * If both the buffers has TPD entry, then reserve the transaction
 			 * slot in increasing order of corresponding TPD blocks to avoid
 			 * deadlock.
 			 */
-			if (GetTPDBlockNumberFromHeapBuffer(oldbuf) >
-				GetTPDBlockNumberFromHeapBuffer(newbuf))
+			if (tmp_old_tpd_blk > tmp_new_tpd_blk)
 				is_tpdblk_order_changed = true;
 		}
 	}
@@ -6505,10 +6512,13 @@ retry_tpd_lock:
 		 * change. We must get a valid slot and wouldn't have reacquired the
 		 * buffer lock as we already have a reserved slot.
 		 */
+		if (oldbuf_tpd_blk != InvalidBlockNumber)
+			GetTPDBlockAndOffset(old_heap_page, &tmp_old_tpd_blk, NULL);
+
 		Assert(!(*lock_reacquired));
 		Assert(slot_id != InvalidXactSlotId);
 		Assert(oldbuf_tpd_blk == InvalidBlockNumber ||
-			   oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf));
+			   oldbuf_tpd_blk == tmp_old_tpd_blk);
 
 		/*
 		 * If reserved transaction slot for old buffer is from TPD page, then
@@ -6561,6 +6571,8 @@ retry_tpd_lock:
 		 */
 		if (*newbuf_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
 		{
+			GetTPDBlockAndOffset(new_heap_page, &tmp_new_tpd_blk, NULL);
+
 			/*
 			 * If TPD block of new buffer gets changed and becomes greater
 			 * than old buffer TPD block, then we should release TPD buffer
@@ -6570,11 +6582,10 @@ retry_tpd_lock:
 			 * block after releasing TPD buffer lock, because vacuum can free
 			 * that page, so always try again to reserve slot.
 			 */
-			if (GetTPDBlockNumberFromHeapBuffer(newbuf) >
-				GetTPDBlockNumberFromHeapBuffer(oldbuf))
+			if (tmp_new_tpd_blk > tmp_old_tpd_blk)
 			{
 				/* Release lock to avoid deadlock. */
-				ReleaseLastTPDBufferByTPDBlock(GetTPDBlockNumberFromHeapBuffer(newbuf));
+				ReleaseLastTPDBufferByTPDBlock(tmp_new_tpd_blk);
 				goto retry_tpd_lock;
 			}
 		}
@@ -6597,9 +6608,10 @@ retry_tpd_lock:
 		 * TPD block can't be pruned.  Due to the same reason, we must get a
 		 * valid slot and wouldn't have reacquired the buffer lock.
 		 */
+		GetTPDBlockAndOffset(old_heap_page, &tmp_old_tpd_blk, NULL);
 		Assert(!(*lock_reacquired));
 		Assert(slot_id != InvalidXactSlotId);
-		Assert(oldbuf_tpd_blk == GetTPDBlockNumberFromHeapBuffer(oldbuf));
+		Assert(oldbuf_tpd_blk == tmp_old_tpd_blk);
 	}
 
 	/*
@@ -6608,33 +6620,10 @@ retry_tpd_lock:
 	 * case it's value will be previous_slot_number + 1.
 	 */
 	Assert((slot_id == *oldbuf_trans_slot_id) ||
-		   (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)) &&
+		   (ZHeapPageHasTPDSlot((PageHeader) old_heap_page) &&
 			slot_id == (*oldbuf_trans_slot_id) + 1));
 
 	*oldbuf_trans_slot_id = slot_id;
-}
-
-/*
- * GetTPDBlockNumberFromHeapBuffer - Return block number of TPD page.
- *
- * buffer - heap buffer.
- */
-static int
-GetTPDBlockNumberFromHeapBuffer(Buffer heapbuf)
-{
-	Page		page = BufferGetPage(heapbuf);
-	ZHeapPageOpaque zopaque;
-	TransInfo	last_trans_slot_info;
-
-	/* The last slot in page has the address of the required TPD entry. */
-	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-	last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
-
-	/*
-	 * ZBORKED: This should be done through a union, not an undocumented hack
-	 * like this
-	 */
-	return EpochFromFullTransactionId(last_trans_slot_info.fxid);
 }
 
 /*
@@ -8563,8 +8552,8 @@ CheckAndLockTPDPage(Relation relation, int new_trans_slot_id, int old_trans_slot
 		 * number.
 		 */
 		if (ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(oldbuf)))
-			oldbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(oldbuf);
-		newbuf_tpd_blk = GetTPDBlockNumberFromHeapBuffer(newbuf);
+			GetTPDBlockAndOffset(BufferGetPage(oldbuf), &oldbuf_tpd_blk, NULL);
+		GetTPDBlockAndOffset(BufferGetPage(newbuf), &newbuf_tpd_blk, NULL);
 
 		/*
 		 * If the old buffer and new buffer refers to the same TPD page and

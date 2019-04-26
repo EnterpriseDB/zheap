@@ -3088,6 +3088,10 @@ GetTPDBlockAndOffset(Page heap_page, BlockNumber *tpd_blk,
 	zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(heap_page);
 	trans_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
 
+	/*
+	 * ZBORKED: This should be done through a union, not an undocumented hack
+	 * like this
+	 */
 	if (tpd_blk)
 		*tpd_blk = EpochFromFullTransactionId(trans_info.fxid);
 	if (tpd_item_off)
