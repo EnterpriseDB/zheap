@@ -3558,7 +3558,6 @@ ApplyUndoActions(void)
 
 			PG_TRY();
 			{
-				TransactionId xid = GetTopTransactionId();
 				bool		result = false;
 
 				/*
@@ -3567,7 +3566,7 @@ ApplyUndoActions(void)
 				 */
 				ResetUndoRequestInfo(&urinfo);
 				urinfo.dbid = MyDatabaseId;
-				urinfo.full_xid = FullTransactionIdFromEpochAndXid(0, xid);
+				urinfo.full_xid = GetTopFullTransactionId();
 
 				/*
 				 * If this request is not for a temp table and not aborting
@@ -3593,11 +3592,11 @@ ApplyUndoActions(void)
 					result = RegisterRollbackReq(s->latest_urec_ptr[per_level],
 												 s->start_urec_ptr[per_level],
 												 MyDatabaseId,
-												 xid);
+												 urinfo.full_xid);
 				if (!result)
 				{
 					/* for subtransactions, we do partial rollback. */
-					execute_undo_actions(xid,
+					execute_undo_actions(urinfo.full_xid,
 										 s->latest_urec_ptr[per_level],
 										 s->start_urec_ptr[per_level],
 										 !IsSubTransaction(),
@@ -3620,8 +3619,7 @@ ApplyUndoActions(void)
 				 * will be later processed by discard worker.
 				 */
 				if (!InsertRequestIntoErrorUndoQueue(&urinfo))
-					RollbackHTRemoveEntry(XidFromFullTransactionId(urinfo.full_xid),
-										  urinfo.start_urec_ptr);
+					RollbackHTRemoveEntry(urinfo.full_xid, urinfo.start_urec_ptr);
 
 				/*
 				 * Errors can reset holdoff count, so restore back.  This is

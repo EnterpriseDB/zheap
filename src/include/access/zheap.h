@@ -294,7 +294,7 @@ extern void lazy_vacuum_zheap_rel(Relation onerel, struct VacuumParams *params,
 
 /* in zheap/zundo.c */
 extern bool zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
-				   Oid reloid, TransactionId xid, BlockNumber blkno,
+				   Oid reloid, FullTransactionId full_xid, BlockNumber blkno,
 				   bool blk_chain_complete);
 
 /* in zheap/ztuptoaster.c */

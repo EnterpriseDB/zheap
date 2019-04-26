@@ -343,7 +343,7 @@ undo_record_comparator(const void *left, const void *right)
  *				  locks.
  */
 void
-execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
+execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 					 UndoRecPtr to_urecptr, bool nopartial, bool rewind,
 					 bool rellock)
 {
@@ -353,6 +353,8 @@ execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
 	ForkNumber	prev_fork = InvalidForkNumber;
 	BlockNumber prev_block = InvalidBlockNumber;
 	int			undo_apply_size = maintenance_work_mem * 1024L;
+	TransactionId	xid = XidFromFullTransactionId(full_xid);
+
 
 	/* 'from' and 'to' pointers must be valid. */
 	Assert(from_urecptr != InvalidUndoRecPtr);
@@ -443,7 +445,7 @@ execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
 		if (nrecords == 0)
 			break;
 
-		xid = urp_array[0].uur->uur_xid;
+		Assert(TransactionIdEquals(xid, urp_array[0].uur->uur_xid));
 
 		/* Sort the undo record array in order of target blocks. */
 		qsort((void *) urp_array, nrecords, sizeof(UndoRecInfo),
@@ -472,7 +474,7 @@ execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
 				 prev_block != uur->uur_block))
 			{
 				execute_undo_actions_page(urp_array, last_index, i - 1,
-										  prev_reloid, xid, prev_block,
+										  prev_reloid, full_xid, prev_block,
 										  blk_chain_complete);
 				last_index = i;
 
@@ -488,7 +490,7 @@ execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
 
 		/* Apply the last set of the actions. */
 		execute_undo_actions_page(urp_array, last_index, i - 1,
-								  prev_reloid, xid, prev_block,
+								  prev_reloid, full_xid, prev_block,
 								  blk_chain_complete);
 
 		/* Free all undo records. */
@@ -582,7 +584,7 @@ execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
 		 * Undo action is applied so delete the hash table entry.
 		 */
 		Assert(TransactionIdIsValid(xid));
-		RollbackHTRemoveEntry(xid, to_urecptr);
+		RollbackHTRemoveEntry(full_xid, to_urecptr);
 	}
 }
 
@@ -602,7 +604,7 @@ execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
  */
 bool
 execute_undo_actions_page(UndoRecInfo * urp_array, int first_idx, int last_idx,
-						  Oid reloid, TransactionId xid, BlockNumber blkno,
+						  Oid reloid, FullTransactionId full_xid, BlockNumber blkno,
 						  bool blk_chain_complete)
 {
 	/*
@@ -612,7 +614,7 @@ execute_undo_actions_page(UndoRecInfo * urp_array, int first_idx, int last_idx,
 	Assert(urp_array != NULL);
 
 	return RmgrTable[urp_array[0].uur->uur_rmid].rm_undo(urp_array, first_idx,
-														 last_idx, reloid, xid,
-														 blkno,
+														 last_idx, reloid,
+														 full_xid, blkno,
 														 blk_chain_complete);
 }

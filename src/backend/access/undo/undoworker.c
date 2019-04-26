@@ -447,9 +447,7 @@ UndoWorkerPerformRequest(UndoRequestInfo * urinfo)
 	StartTransactionCommand();
 	PG_TRY();
 	{
-		TransactionId xid = XidFromFullTransactionId(urinfo->full_xid);
-
-		execute_undo_actions(xid, urinfo->end_urec_ptr,
+		execute_undo_actions(urinfo->full_xid, urinfo->end_urec_ptr,
 							 urinfo->start_urec_ptr, true, false,
 							 true);
 	}
@@ -460,8 +458,7 @@ UndoWorkerPerformRequest(UndoRequestInfo * urinfo)
 		 * be processed in a timely fashion.
 		 */
 		if (InsertRequestIntoErrorUndoQueue(urinfo))
-			RollbackHTRemoveEntry(XidFromFullTransactionId(urinfo->full_xid),
-								  urinfo->start_urec_ptr);
+			RollbackHTRemoveEntry(urinfo->full_xid, urinfo->start_urec_ptr);
 
 		/* Send the error only to server log. */
 		err_out_to_client(false);

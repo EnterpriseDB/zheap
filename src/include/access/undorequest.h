@@ -127,8 +127,8 @@ extern bool UndoGetWork(bool allow_peek, bool is_undo_launcher,
 						UndoRequestInfo *urinfo, bool *in_other_db);
 /* Exposed functions for rollback hash table. */
 extern bool RegisterRollbackReq(UndoRecPtr end_urec_ptr, UndoRecPtr start_urec_ptr,
-				Oid dbid, TransactionId xid);
-extern void RollbackHTRemoveEntry(TransactionId xid, UndoRecPtr start_urec_ptr);
+				Oid dbid, FullTransactionId full_xid);
+extern void RollbackHTRemoveEntry(FullTransactionId full_xid, UndoRecPtr start_urec_ptr);
 extern bool RollbackHTIsFull(void);
 extern void RollbackHTCleanup(Oid dbid);
 
@@ -136,10 +136,10 @@ extern void RollbackHTCleanup(Oid dbid);
 extern UndoRecInfo *UndoRecordBulkFetch(UndoRecPtr *from_urecptr,
 					UndoRecPtr to_urecptr, int undo_apply_size,
 					int *nrecords, bool one_page);
-extern void execute_undo_actions(TransactionId xid, UndoRecPtr from_urecptr,
+extern void execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 					UndoRecPtr to_urecptr, bool nopartial, bool rewind, bool rellock);
 extern bool execute_undo_actions_page(UndoRecInfo *urp_array, int first_idx,
-						  int last_idx, Oid reloid, TransactionId xid,
+						  int last_idx, Oid reloid, FullTransactionId full_xid,
 						  BlockNumber blkno, bool blk_chain_complete);
 
 #endif							/* _UNDOREQUEST_H */

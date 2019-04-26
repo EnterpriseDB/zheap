@@ -485,6 +485,9 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 	int			nrecords;
 	int			undo_apply_size = maintenance_work_mem * 1024L;
 	int			i;
+	FullTransactionId	full_xid;
+
+	full_xid = FullTransactionIdFromEpochAndXid(epoch, xid);
 
 	/*
 	 * Fetch the multiple undo records which can fit into uur_segment; sort
@@ -503,7 +506,7 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 
 		/* Apply the last set of the actions. */
 		execute_undo_actions_page(urp_array, 0, nrecords - 1, rel->rd_id,
-								  xid, BufferGetBlockNumber(buffer),
+								  full_xid, BufferGetBlockNumber(buffer),
 								  UndoRecPtrIsValid(urec_ptr) ? false : true);
 
 		/* Free all undo records. */
@@ -628,7 +631,7 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
  */
 bool
 zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
-				   Oid reloid, TransactionId xid, BlockNumber blkno,
+				   Oid reloid, FullTransactionId full_xid, BlockNumber blkno,
 				   bool blk_chain_complete)
 {
 	Relation	rel;
@@ -645,7 +648,8 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	int			i;
 	int			slot_no = 0;
 	int			tpd_map_size = 0;
-	uint32		epoch;
+	uint32		epoch = EpochFromFullTransactionId(full_xid);
+	TransactionId	xid = XidFromFullTransactionId(full_xid);
 
 	/*
 	 * FIXME: If reloid is not valid then we have nothing to do. In future, we
@@ -698,8 +702,7 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	page = BufferGetPage(buffer);
 
 	/*
-	 * Identify the slot number for this transaction.  As we never allow undo
-	 * more than 2-billion transactions, we can compute epoch from xid.
+	 * Identify the slot number for this transaction.
 	 *
 	 * Here, we will always take a lock on the tpd_page, if there is a tpd
 	 * slot on the page.  This is required because sometimes we only come to
@@ -709,7 +712,6 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	 * for rollback it became a TPD slot which means this information won't be
 	 * even recorded in undo.
 	 */
-	epoch = GetEpochForXid(xid);
 	slot_no = PageGetTransactionSlotId(rel, buffer, epoch, xid,
 									   &slot_urec_ptr, true, true,
 									   &tpd_page_locked);

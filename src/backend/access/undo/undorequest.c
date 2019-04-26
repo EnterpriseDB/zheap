@@ -651,7 +651,7 @@ GetRollbackHashKeyFromQueue(UndoWorkerQueueType cur_queue, int n,
 static uint64
 FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 						   UndoRecPtr *end_urecptr_out,
-						   TransactionId xid)
+						   FullTransactionId full_xid)
 {
 	UnpackedUndoRecord *uur = NULL;
 	UndoLogControl *log = NULL;
@@ -660,7 +660,7 @@ FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 	uint64		sz = 0;
 
 	Assert(urecptr != InvalidUndoRecPtr);
-	Assert(!TransactionIdIsInProgress(xid));
+	Assert(!TransactionIdIsInProgress(XidFromFullTransactionId(full_xid)));
 
 	while (true)
 	{
@@ -714,7 +714,9 @@ FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 		 * if someone rewinds the undo and same space is used by another
 		 * transaction, we return from here.
 		 */
-		if (xid != uur->uur_xid)
+		if (!FullTransactionIdEquals(full_xid,
+									 FullTransactionIdFromEpochAndXid(uur->uur_xidepoch,
+																	  uur->uur_xid)))
 			break;
 
 		/*
@@ -1145,8 +1147,7 @@ UndoGetWork(bool allow_peek, bool remove_from_queue, UndoRequestInfo * urinfo,
 			if (!exists)
 			{
 				RemoveRequestFromQueue(cur_queue, 0);
-				RollbackHTRemoveEntry(XidFromFullTransactionId(rh->full_xid),
-									  rh->start_urec_ptr);
+				RollbackHTRemoveEntry(rh->full_xid, rh->start_urec_ptr);
 				cur_undo_queue++;
 				continue;
 			}
@@ -1295,21 +1296,14 @@ UndoGetWork(bool allow_peek, bool remove_from_queue, UndoRequestInfo * urinfo,
  */
 bool
 RegisterRollbackReq(UndoRecPtr end_urec_ptr, UndoRecPtr start_urec_ptr,
-					Oid dbid, TransactionId xid)
+					Oid dbid, FullTransactionId full_xid)
 {
 	bool		found = false;
 	bool		can_push;
 	bool		pushed = false;
 	bool		request_registered = false;
 	RollbackHashEntry *rh;
-	FullTransactionId full_xid;
 	uint64		req_size = 0;
-
-	/*
-	 * Fixme: 64-bit Full transaction id is not yet implemented.  Once we have
-	 * the full transaction id, we can use it directly.
-	 */
-	full_xid = FullTransactionIdFromEpochAndXid(0, xid);
 
 	/* Do not push any rollback request if working in single user-mode */
 	if (!IsUnderPostmaster)
@@ -1324,7 +1318,7 @@ RegisterRollbackReq(UndoRecPtr end_urec_ptr, UndoRecPtr start_urec_ptr,
 	 */
 	Assert(!RollbackHTIsFull());
 
-	req_size = FindUndoEndLocationAndSize(start_urec_ptr, &end_urec_ptr, xid);
+	req_size = FindUndoEndLocationAndSize(start_urec_ptr, &end_urec_ptr, full_xid);
 
 	/* The transaction got rolled back and rewound. */
 	if (!UndoRecPtrIsValid(end_urec_ptr))
@@ -1434,16 +1428,9 @@ RegisterRollbackReq(UndoRecPtr end_urec_ptr, UndoRecPtr start_urec_ptr,
  * Remove the rollback request entry from the rollback hash table.
  */
 void
-RollbackHTRemoveEntry(TransactionId xid, UndoRecPtr start_urec_ptr)
+RollbackHTRemoveEntry(FullTransactionId full_xid, UndoRecPtr start_urec_ptr)
 {
 	RollbackHashKey hkey;
-	FullTransactionId full_xid;
-
-	/*
-	 * Fixme: 64-bit Full transaction id is not yet implemented.  Once we have
-	 * the full transaction id, we can use it directly.
-	 */
-	full_xid = FullTransactionIdFromEpochAndXid(0, xid);
 
 	hkey.full_xid = full_xid;
 	hkey.start_urec_ptr = start_urec_ptr;

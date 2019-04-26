@@ -1642,6 +1642,17 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	 */
 	for (i = 0; i < UndoPersistenceLevels; i++)
 	{
+		uint32	epoch;
+		FullTransactionId full_xid;
+
+		/*
+		 * We don't allow XIDs with an age of more than 2 billion in undo, so
+		 * we can infer the epoch here. (XXX We can add full transaction id
+		 * in TwoPhaseFileHeader instead. )
+		 */
+		epoch = GetEpochForXid(hdr->xid);
+		full_xid = FullTransactionIdFromEpochAndXid(epoch, hdr->xid);
+
 		if (end_urec_ptr[i] != InvalidUndoRecPtr && !isCommit)
 		{
 			uint32		save_holdoff;
@@ -1655,14 +1666,14 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 					result = RegisterRollbackReq(end_urec_ptr[i],
 												 start_urec_ptr[i],
 												 hdr->database,
-												 hdr->xid);
+												 full_xid);
 
 				/*
 				 * ZBORKED: set rellock = true, as we do *not* actually have
 				 * all the locks, but that'll probably deadlock?
 				 */
 				if (!result)
-					execute_undo_actions(hdr->xid, end_urec_ptr[i],
+					execute_undo_actions(full_xid, end_urec_ptr[i],
 										 start_urec_ptr[i], true,
 										 true, true);
 			}
@@ -1680,7 +1691,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 				 * rollback requests are processed either by backend or by
 				 * discard worker.
 				 */
-				RollbackHTRemoveEntry(hdr->xid, start_urec_ptr[i]);
+				RollbackHTRemoveEntry(full_xid, start_urec_ptr[i]);
 
 				/*
 				 * Errors can reset holdoff count, so restore back.  This is

@@ -119,10 +119,14 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 					uur->uur_progress == 0 &&
 					dbid_exists(uur->uur_dbid))
 				{
+					FullTransactionId full_xid;
+
+					full_xid = FullTransactionIdFromEpochAndXid(uur->uur_xidepoch,
+																uur->uur_xid);
 					(void) RegisterRollbackReq(InvalidUndoRecPtr,
 											   undo_recptr,
 											   uur->uur_dbid,
-											   uur->uur_xid);
+											   full_xid);
 
 					pending_abort = true;
 				}

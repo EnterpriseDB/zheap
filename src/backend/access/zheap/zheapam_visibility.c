@@ -136,12 +136,7 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
 		UndoRecordRelease(urec);
 	}
 
-	/*
-	 * If we reach here, this means the transaction id that has last modified
-	 * this tuple must be in 2-billion xid range of oldestXidHavingUndo, so we
-	 * can get compute its epoch as we do for current transaction.
-	 */
-	epoch = GetEpochForXid(urec->uur_xid);
+	epoch = urec->uur_xidepoch;
 	zinfo->xid = urec->uur_xid;
 	zinfo->epoch_xid =
 		FullTransactionIdFromEpochAndXid(epoch, zinfo->xid);
