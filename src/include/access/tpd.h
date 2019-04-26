@@ -118,6 +118,8 @@ extern void TPDPageGetOffsetMap(Buffer heapbuf, char *tpd_entry_data,
 extern int	TPDPageGetOffsetMapSize(Buffer heapbuf);
 extern void TPDPageSetOffsetMap(Buffer heapbuf, char *tpd_offset_map);
 extern bool TPDPageLock(Relation relation, Buffer heapbuf);
+extern void GetTPDBlockAndOffset(Page heap_page, BlockNumber *tpd_blk,
+					OffsetNumber *tpd_item_off);
 extern XLogRedoAction XLogReadTPDBuffer(XLogReaderState *record,
 				  uint8 block_id);
 extern uint8 RegisterTPDBuffer(Page heappage, uint8 block_id);

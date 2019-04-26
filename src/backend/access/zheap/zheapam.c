@@ -8490,14 +8490,7 @@ GetTransactionsSlotsForPage(Relation rel, Buffer buf, int *total_trans_slots,
 		Assert(!tpd_e_pruned);
 		if (num_tpd_trans_slots > 0)
 		{
-			ZHeapPageOpaque zopaque;
-			TransInfo	last_trans_slot_info;
-
-			zopaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-			last_trans_slot_info = zopaque->transinfo[ZHEAP_PAGE_TRANS_SLOTS - 1];
-
-			if (tpd_blkno)
-				*tpd_blkno = EpochFromFullTransactionId(last_trans_slot_info.fxid);
+			GetTPDBlockAndOffset(page, tpd_blkno, NULL);
 
 			/*
 			 * The last slot in page contains TPD information, so we don't
