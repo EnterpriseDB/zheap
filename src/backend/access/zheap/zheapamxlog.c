@@ -996,10 +996,13 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 			/* Initialize the frozen slots. */
 			for (i = 0; i < xlrec->nFrozen; i++)
 			{
-				slot_no = frozen[i];
+				TransInfo	*thistrans;
 
-				opaque->transinfo[slot_no].fxid = InvalidFullTransactionId;
-				opaque->transinfo[slot_no].urec_ptr = InvalidUndoRecPtr;
+				slot_no = frozen[i];
+				thistrans = &opaque->transinfo[slot_no];
+
+				thistrans->fxid = InvalidFullTransactionId;
+				thistrans->urec_ptr = InvalidUndoRecPtr;
 			}
 		}
 
@@ -2135,13 +2138,15 @@ zheap_undo_xlog_reset_xid(XLogReaderState *record)
 	{
 		Page		page;
 		ZHeapPageOpaque opaque;
+		TransInfo	*thistrans;
 		int			slot_no = xlrec->trans_slot_id;
 
 		page = BufferGetPage(buf);
 		opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+		thistrans = &opaque->transinfo[slot_no - 1];
 
-		opaque->transinfo[slot_no - 1].fxid = InvalidFullTransactionId;
-		opaque->transinfo[slot_no - 1].urec_ptr = xlrec->urec_ptr;
+		thistrans->fxid = InvalidFullTransactionId;
+		thistrans->urec_ptr = xlrec->urec_ptr;
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buf);

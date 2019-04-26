@@ -473,6 +473,7 @@ void
 ZheapInitPage(Page page, Size pageSize)
 {
 	ZHeapPageOpaque opaque;
+	TransInfo	*thistrans;
 	int			i;
 
 	/*
@@ -485,8 +486,9 @@ ZheapInitPage(Page page, Size pageSize)
 
 	for (i = 0; i < ZHEAP_PAGE_TRANS_SLOTS; i++)
 	{
-		opaque->transinfo[i].fxid = InvalidFullTransactionId;
-		opaque->transinfo[i].urec_ptr = InvalidUndoRecPtr;
+		thistrans = &opaque->transinfo[i];
+		thistrans->fxid = InvalidFullTransactionId;
+		thistrans->urec_ptr = InvalidUndoRecPtr;
 	}
 }
 

@@ -6144,11 +6144,11 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 			 (trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS &&
 			  !ZHeapPageHasTPDSlot(phdr)))
 	{
-		TransInfo  *transinfo = &opaque->transinfo[trans_slot_id - 1];
+		TransInfo  *thistrans = &opaque->transinfo[trans_slot_id - 1];
 
-		epoch = EpochFromFullTransactionId(transinfo->fxid);
-		zinfo->xid = XidFromFullTransactionId(transinfo->fxid);
-		zinfo->urec_ptr = transinfo->urec_ptr;
+		epoch = EpochFromFullTransactionId(thistrans->fxid);
+		zinfo->xid = XidFromFullTransactionId(thistrans->fxid);
+		zinfo->urec_ptr = thistrans->urec_ptr;
 	}
 	else
 	{
@@ -6219,9 +6219,10 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
 		(trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS &&
 		 !ZHeapPageHasTPDSlot(phdr)))
 	{
-		opaque->transinfo[trans_slot_id - 1].fxid =
-			FullTransactionIdFromEpochAndXid(epoch, xid);
-		opaque->transinfo[trans_slot_id - 1].urec_ptr = urecptr;
+		TransInfo	*thistrans = &opaque->transinfo[trans_slot_id - 1];
+
+		thistrans->fxid = FullTransactionIdFromEpochAndXid(epoch, xid);
+		thistrans->urec_ptr = urecptr;
 	}
 	/* TPD information is set separately during recovery. */
 	else if (!InRecovery)
@@ -6266,9 +6267,10 @@ PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id, uint32 epoch,
 		(trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS &&
 		 !ZHeapPageHasTPDSlot(phdr)))
 	{
-		opaque->transinfo[trans_slot_id - 1].fxid =
-			FullTransactionIdFromEpochAndXid(epoch, xid);
-		opaque->transinfo[trans_slot_id - 1].urec_ptr = urec_ptr;
+		TransInfo	*thistrans = &opaque->transinfo[trans_slot_id - 1];
+
+		thistrans->fxid = FullTransactionIdFromEpochAndXid(epoch, xid);
+		thistrans->urec_ptr = urec_ptr;
 	}
 	else
 	{
@@ -6318,10 +6320,12 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, uint32 epoch,
 	/* Check if the required slot exists on the page. */
 	for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
 	{
-		if (FullTransactionIdEquals(opaque->transinfo[slot_no].fxid,
+		TransInfo	*thistrans = &opaque->transinfo[slot_no];
+
+		if (FullTransactionIdEquals(thistrans->fxid,
 									check_fxid))
 		{
-			*urec_ptr = opaque->transinfo[slot_no].urec_ptr;
+			*urec_ptr = thistrans->urec_ptr;
 
 			/* Check if TPD has page slot, then lock TPD page */
 			if (locktpd && ZHeapPageHasTPDSlot(phdr))
@@ -6394,14 +6398,14 @@ PageGetTransactionSlotInfo(Buffer buf, int slot_no, uint32 *epoch,
 		(slot_no == ZHEAP_PAGE_TRANS_SLOTS &&
 		 !ZHeapPageHasTPDSlot(phdr)))
 	{
-		TransInfo  *transinfo = &opaque->transinfo[slot_no - 1];
+		TransInfo  *thistrans = &opaque->transinfo[slot_no - 1];
 
 		if (epoch)
-			*epoch = EpochFromFullTransactionId(transinfo->fxid);
+			*epoch = EpochFromFullTransactionId(thistrans->fxid);
 		if (xid)
-			*xid = XidFromFullTransactionId(transinfo->fxid);
+			*xid = XidFromFullTransactionId(thistrans->fxid);
 		if (urec_ptr)
-			*urec_ptr = transinfo->urec_ptr;
+			*urec_ptr = thistrans->urec_ptr;
 	}
 	else
 	{
@@ -6688,34 +6692,34 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 	 */
 	if (RELATION_IS_LOCAL(relation))
 	{
-		TransInfo  *transinfo;
+		TransInfo  *thistrans;
 
 		/* We can't access temp tables of other backends. */
 		Assert(!RELATION_IS_OTHER_TEMP(relation));
 
 		slot_no = 0;
-		transinfo = &opaque->transinfo[slot_no];
+		thistrans = &opaque->transinfo[slot_no];
 
-		if (FullTransactionIdEquals(transinfo->fxid, fxid))
+		if (FullTransactionIdEquals(thistrans->fxid, fxid))
 		{
-			*urec_ptr = transinfo->urec_ptr;
+			*urec_ptr = thistrans->urec_ptr;
 			return (slot_no + 1);
 		}
-		else if (!FullTransactionIdIsValid(transinfo->fxid))
+		else if (!FullTransactionIdIsValid(thistrans->fxid))
 			latestFreeTransSlot = slot_no;
 	}
 	else
 	{
 		for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
 		{
-			TransInfo  *transinfo = &opaque->transinfo[slot_no];
+			TransInfo  *thistrans = &opaque->transinfo[slot_no];
 
-			if (FullTransactionIdEquals(transinfo->fxid, fxid))
+			if (FullTransactionIdEquals(thistrans->fxid, fxid))
 			{
-				*urec_ptr = transinfo->urec_ptr;
+				*urec_ptr = thistrans->urec_ptr;
 				return (slot_no + 1);
 			}
-			else if (!FullTransactionIdIsValid(transinfo->fxid) &&
+			else if (!FullTransactionIdIsValid(thistrans->fxid) &&
 					 latestFreeTransSlot == InvalidXactSlotId)
 				latestFreeTransSlot = slot_no;
 		}
@@ -6762,9 +6766,11 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 
 		for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
 		{
-			if (!FullTransactionIdIsValid(opaque->transinfo[slot_no].fxid))
+			TransInfo	*thistrans = &opaque->transinfo[slot_no];
+
+			if (!FullTransactionIdIsValid(thistrans->fxid))
 			{
-				*urec_ptr = opaque->transinfo[slot_no].urec_ptr;
+				*urec_ptr = thistrans->urec_ptr;
 				if (slot_reused_or_TPD_slot && *urec_ptr != InvalidUndoRecPtr)
 					*slot_reused_or_TPD_slot = true;
 				return (slot_no + 1);
@@ -7137,13 +7143,15 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		{
 			for (i = 0; i < nFrozenSlots; i++)
 			{
+				TransInfo	*thistrans;
 				int			tpd_slot_id;
 
 				slot_no = frozen_slots[i];
+				thistrans = &transinfo[slot_no];
 
 				/* Remember the latest xid. */
-				if (FullTransactionIdFollows(transinfo[slot_no].fxid, latestfxid))
-					latestfxid = transinfo[slot_no].fxid;
+				if (FullTransactionIdFollows(thistrans->fxid, latestfxid))
+					latestfxid = thistrans->fxid;
 
 				/* Calculate the actual slot no. */
 				tpd_slot_id = slot_no + ZHEAP_PAGE_TRANS_SLOTS + 1;
@@ -7158,14 +7166,17 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		{
 			for (i = 0; i < nFrozenSlots; i++)
 			{
+				TransInfo	*thistrans;
+
 				slot_no = frozen_slots[i];
+				thistrans = &transinfo[slot_no];
 
 				/* Remember the latest xid. */
-				if (FullTransactionIdFollows(transinfo[slot_no].fxid, latestfxid))
-					latestfxid = transinfo[slot_no].fxid;
+				if (FullTransactionIdFollows(thistrans->fxid, latestfxid))
+					latestfxid = thistrans->fxid;
 
-				transinfo[slot_no].fxid = InvalidFullTransactionId;
-				transinfo[slot_no].urec_ptr = InvalidUndoRecPtr;
+				thistrans->fxid = InvalidFullTransactionId;
+				thistrans->urec_ptr = InvalidUndoRecPtr;
 			}
 		}
 
@@ -7329,11 +7340,11 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		/* Collect slot information before releasing the lock. */
 		for (i = 0; i < nAbortedXactSlots; i++)
 		{
-			TransInfo  *ti = &transinfo[aborted_xact_slots[i]];
+			TransInfo  *thistrans = &transinfo[aborted_xact_slots[i]];
 
-			urecptr[i] = ti->urec_ptr;
-			xid[i] = XidFromFullTransactionId(ti->fxid);
-			epoch[i] = EpochFromFullTransactionId(ti->fxid);
+			urecptr[i] = thistrans->urec_ptr;
+			xid[i] = XidFromFullTransactionId(thistrans->fxid);
+			epoch[i] = EpochFromFullTransactionId(thistrans->fxid);
 		}
 
 		/*
