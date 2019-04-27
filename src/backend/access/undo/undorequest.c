@@ -341,13 +341,11 @@ static int
 RemoveOldElemsFromXidQueue()
 {
 	int			nCleaned = 0;
-	int			queue_size = GetXidQueueSize();
-	int			i;
+	int			i = 0;
 
-	Assert(queue_size > 0);
 	Assert(LWLockHeldByMeInMode(RollbackRequestLock, LW_EXCLUSIVE));
 
-	for (i = 0; i < queue_size; i++)
+	while (i < GetXidQueueSize())
 	{
 		RollbackHashEntry *rh;
 		RollbackHashKey hkey;
@@ -369,11 +367,14 @@ RemoveOldElemsFromXidQueue()
 			elem->full_xid = InvalidFullTransactionId;
 			nCleaned++;
 			binaryheap_remove_nth_unordered(UndoWorkerQueues[XID_QUEUE].bh, i);
+
+			continue;
 		}
+
+		i++;
 	}
 
 	binaryheap_build(UndoWorkerQueues[XID_QUEUE].bh);
-	Assert(queue_size - GetXidQueueSize() == nCleaned);
 
 	return nCleaned;
 }
@@ -412,13 +413,11 @@ static int
 RemoveOldElemsFromSizeQueue()
 {
 	int			nCleaned = 0;
-	int			queue_size = GetSizeQueueSize();
-	int			i;
+	int			i = 0;
 
-	Assert(queue_size > 0);
 	Assert(LWLockHeldByMeInMode(RollbackRequestLock, LW_EXCLUSIVE));
 
-	for (i = 0; i < queue_size; i++)
+	while (i < GetSizeQueueSize())
 	{
 		RollbackHashEntry *rh;
 		RollbackHashKey hkey;
@@ -441,11 +440,13 @@ RemoveOldElemsFromSizeQueue()
 			elem->request_size = 0;
 			binaryheap_remove_nth_unordered(UndoWorkerQueues[SIZE_QUEUE].bh, i);
 			nCleaned++;
+			continue;
 		}
+
+		i++;
 	}
 
 	binaryheap_build(UndoWorkerQueues[SIZE_QUEUE].bh);
-	Assert(queue_size - GetSizeQueueSize() == nCleaned);
 
 	return nCleaned;
 }
@@ -504,13 +505,11 @@ static int
 RemoveOldElemsFromErrorQueue()
 {
 	int			nCleaned = 0;
-	int			queue_size = GetErrorQueueSize();
-	int			i;
+	int			i = 0;
 
-	Assert(queue_size > 0);
 	Assert(LWLockHeldByMeInMode(RollbackRequestLock, LW_EXCLUSIVE));
 
-	for (i = 0; i < queue_size; i++)
+	while (i < GetErrorQueueSize())
 	{
 		RollbackHashEntry *rh;
 		RollbackHashKey hkey;
@@ -533,11 +532,13 @@ RemoveOldElemsFromErrorQueue()
 			elem->err_occurred_at = 0;
 			binaryheap_remove_nth_unordered(UndoWorkerQueues[ERROR_QUEUE].bh, i);
 			nCleaned++;
+			continue;
 		}
+
+		i++;
 	}
 
 	binaryheap_build(UndoWorkerQueues[ERROR_QUEUE].bh);
-	Assert(queue_size - GetErrorQueueSize() == nCleaned);
 
 	return nCleaned;
 }
