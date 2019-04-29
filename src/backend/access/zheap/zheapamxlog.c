@@ -460,8 +460,6 @@ zheap_xlog_update(XLogReaderState *record)
 	int		   *new_trans_slot_id = NULL;
 	int			trans_slot_id;
 	bool		inplace_update;
-	ZHeapPrepareUndoInfo gen_undo_info;
-	ZHeapPrepareUpdateUndoInfo zh_up_undo_info;
 
 	xlundohdr = (xl_undo_header *) XLogRecGetData(record);
 	xlrec = (xl_zheap_update *) ((char *) xlundohdr + SizeOfUndoHeader);
@@ -602,34 +600,143 @@ zheap_xlog_update(XLogReaderState *record)
 	}
 
 	/* prepare an undo record */
-	gen_undo_info.reloid = xlundohdr->reloid;
-	gen_undo_info.blkno = ItemPointerGetBlockNumber(&oldtid);
-	gen_undo_info.offnum = ItemPointerGetOffsetNumber(&oldtid);
-	gen_undo_info.prev_urecptr = xlundohdr->blkprev;
-	gen_undo_info.fxid = fxid;
-	gen_undo_info.cid = FirstCommandId;
-	gen_undo_info.undo_persistence = UNDO_PERMANENT;
+	undorecord.uur_rmid = RM_ZHEAP_ID;
+	undorecord.uur_info = 0;
+	undorecord.uur_reloid = xlundohdr->reloid;
+	undorecord.uur_prevxid = xlrec->prevxid;
+	undorecord.uur_xid = xid;
+	undorecord.uur_cid = FirstCommandId;
+	undorecord.uur_fork = MAIN_FORKNUM;
+	undorecord.uur_blkprev = xlundohdr->blkprev;
+	undorecord.uur_block = ItemPointerGetBlockNumber(&oldtid);
+	undorecord.uur_offset = ItemPointerGetOffsetNumber(&oldtid);
+	undorecord.uur_payload.len = 0;
 
-	zh_up_undo_info.gen_info = &gen_undo_info;
-	zh_up_undo_info.inplace_update = inplace_update;
-	zh_up_undo_info.same_buf = false;
-	zh_up_undo_info.prevxid = xlrec->prevxid;
-	zh_up_undo_info.old_undorec = &undorecord;
-	zh_up_undo_info.new_undorec = &newundorecord;
-	zh_up_undo_info.new_block = ItemPointerGetBlockNumber(&newtid);
-	zh_up_undo_info.hasSubXactLock = xlrec->flags & XLZ_UPDATE_CONTAINS_SUBXACT;
-	zh_up_undo_info.new_trans_slot_id = (new_trans_slot_id) ?
-		*new_trans_slot_id : InvalidXactSlotId;
-	zh_up_undo_info.tup_trans_slot_id = (old_tup_trans_slot_id) ?
-		*old_tup_trans_slot_id : InvalidXactSlotId;
-	zh_up_undo_info.new_prev_urecptr = (xlnewundohdr) ?
-		(xlnewundohdr->blkprev) : InvalidUndoRecPtr;
+	initStringInfo(&undorecord.uur_tuple);
 
-	urecptr = zheap_prepare_undoupdate(&zh_up_undo_info, &oldtup, record,
-									   NULL, &newurecptr);
+	appendBinaryStringInfo(&undorecord.uur_tuple,
+						   (char *) oldtup.t_data,
+						   oldtup.t_len);
 
-	if (!inplace_update)
+	if (inplace_update)
+	{
+		bool		hasPayload = false;
+
+		undorecord.uur_type = UNDO_INPLACE_UPDATE;
+		if (old_tup_trans_slot_id)
+		{
+			Assert(*old_tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS);
+			initStringInfo(&undorecord.uur_payload);
+			appendBinaryStringInfo(&undorecord.uur_payload,
+								   (char *) old_tup_trans_slot_id,
+								   sizeof(*old_tup_trans_slot_id));
+			hasPayload = true;
+		}
+
+		/*
+		 * For sub-transactions, we store the dummy contains subxact token in
+		 * the undorecord so that, the size of undorecord in DO function
+		 * matches with the size of undorecord in REDO function. This ensures
+		 * that, for sub-transactions, the assert condition used later in this
+		 * function to ensure that the undo pointer in DO and REDO function
+		 * remains the same is true.
+		 */
+		if (xlrec->flags & XLZ_UPDATE_CONTAINS_SUBXACT)
+		{
+			SubTransactionId dummy_subXactToken = 1;
+
+			if (!hasPayload)
+			{
+				initStringInfo(&undorecord.uur_payload);
+				hasPayload = true;
+			}
+
+			appendBinaryStringInfo(&undorecord.uur_payload,
+								   (char *) &dummy_subXactToken,
+								   sizeof(SubTransactionId));
+		}
+
+		if (!hasPayload)
+			undorecord.uur_payload.len = 0;
+
+		urecptr = PrepareUndoInsert(&undorecord, fxid, UNDO_PERMANENT, record,
+									NULL);
+	}
+	else
+	{
+		UnpackedUndoRecord undorec[2];
+
+		undorecord.uur_type = UNDO_UPDATE;
+		initStringInfo(&undorecord.uur_payload);
+		/* update new tuple location in undo record */
+		appendBinaryStringInfo(&undorecord.uur_payload,
+							   (char *) &newtid,
+							   sizeof(ItemPointerData));
+		/* add the TPD slot id */
+		if (old_tup_trans_slot_id)
+		{
+			Assert(*old_tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS);
+			appendBinaryStringInfo(&undorecord.uur_payload,
+								   (char *) old_tup_trans_slot_id,
+								   sizeof(*old_tup_trans_slot_id));
+		}
+
+		/*
+		 * For sub-transactions, we store the dummy contains subxact token in
+		 * the undorecord so that, the size of undorecord in DO function
+		 * matches with the size of undorecord in REDO function. This ensures
+		 * that, for sub-transactions, the assert condition used later in this
+		 * function to ensure that the undo pointer in DO and REDO function
+		 * remains the same is true.
+		 */
+		if (xlrec->flags & XLZ_UPDATE_CONTAINS_SUBXACT)
+		{
+			SubTransactionId dummy_subXactToken = 1;
+
+			appendBinaryStringInfo(&undorecord.uur_payload,
+								   (char *) &dummy_subXactToken,
+								   sizeof(SubTransactionId));
+		}
+
+		/* prepare an undo record for new tuple */
+		newundorecord.uur_rmid = RM_ZHEAP_ID;
+		newundorecord.uur_type = UNDO_INSERT;
+		newundorecord.uur_info = 0;
+		newundorecord.uur_reloid = xlnewundohdr->reloid;
+		newundorecord.uur_prevxid = xid;
+		newundorecord.uur_xid = xid;
+		newundorecord.uur_cid = FirstCommandId;
+		newundorecord.uur_fork = MAIN_FORKNUM;
+		newundorecord.uur_blkprev = xlnewundohdr->blkprev;
+		newundorecord.uur_block = ItemPointerGetBlockNumber(&newtid);
+		newundorecord.uur_offset = ItemPointerGetOffsetNumber(&newtid);
+		newundorecord.uur_tuple.len = 0;
+
+		if (new_trans_slot_id)
+		{
+			Assert(*new_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS);
+			initStringInfo(&newundorecord.uur_payload);
+			appendBinaryStringInfo(&newundorecord.uur_payload,
+								   (char *) new_trans_slot_id,
+								   sizeof(*new_trans_slot_id));
+		}
+		else
+			newundorecord.uur_payload.len = 0;
+
+		undorec[0] = undorecord;
+		undorec[1] = newundorecord;
+
+		UndoSetPrepareSize(undorec, 2, fxid, UNDO_PERMANENT, record, NULL);
+		undorecord = undorec[0];
+		newundorecord = undorec[1];
+
+		urecptr = PrepareUndoInsert(&undorecord, fxid, UNDO_PERMANENT, record,
+									NULL);
+		newurecptr = PrepareUndoInsert(&newundorecord, fxid, UNDO_PERMANENT,
+									   record, NULL);
+
 		Assert(newurecptr == xlnewundohdr->urec_ptr);
+	}
 
 	/*
 	 * undo should be inserted at same location as it was during the actual

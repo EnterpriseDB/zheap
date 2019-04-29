@@ -2670,7 +2670,6 @@ ZHeapFreeOffsetRanges
 ZHeapMetaPageData
 ZHeapPageOpaqueData
 ZHeapPrepareUndoInfo
-ZHeapPrepareUpdateUndoInfo
 ZHeapScanDescData
 ZHeapTuple
 ZHeapTupleData
