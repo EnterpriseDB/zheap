@@ -227,7 +227,6 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate, uint32 specToken)
 {
 	FullTransactionId fxid = InvalidFullTransactionId;
-	TransactionId xid = InvalidTransactionId;
 	ZHeapTuple	zheaptup;
 	UnpackedUndoRecord undorecord;
 	Buffer		buffer;
@@ -251,10 +250,7 @@ zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 
 	/* We don't need a transaction id if we are skipping undo */
 	if (!skip_undo)
-	{
 		fxid = GetTopFullTransactionId();
-		xid = XidFromFullTransactionId(fxid);
-	}
 
 	/*
 	 * Fill in tuple header fields and toast the tuple if necessary.
