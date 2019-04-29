@@ -4044,7 +4044,7 @@ lock_tuple:
 		else
 			mytup = zheap_gettuple(rel, buf, offnum);
 
-		ZHeapTupleGetTransInfo(buf, offnum, false, &zinfo);
+		ZHeapTupleGetTransInfo(buf, offnum, &zinfo);
 		urec_ptr = zinfo.urec_ptr;
 		old_infomask = mytup->t_data->t_infomask;
 

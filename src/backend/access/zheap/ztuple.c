@@ -524,7 +524,7 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 				 * here.
 				 */
 				ZHeapTupleGetTransInfo(buf, ItemPointerGetOffsetNumber(tid),
-									   false, &zinfo);
+									   &zinfo);
 
 				if (!TransactionIdIsValid(zinfo.xid) ||
 					FullTransactionIdOlderThanAllUndo(zinfo.epoch_xid))
