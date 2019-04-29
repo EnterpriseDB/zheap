@@ -285,9 +285,8 @@ ZHeapTupleGetTransInfo(Buffer buf, OffsetNumber offnum, bool fetch_cid,
 		 * the slot's current xid is all-visible, then the xid prior to it
 		 * must be all-visible.
 		 */
-		if ((TransactionIdIsValid(zinfo->xid) &&
-			 (TransactionIdPrecedes(zinfo->xid, pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo)))) ||
-			UndoLogIsDiscarded(zinfo->urec_ptr))
+		if (FullTransactionIdIsValid(zinfo->epoch_xid) &&
+			FullTransactionIdOlderThanAllUndo(zinfo->epoch_xid))
 		{
 			zinfo->trans_slot = ZHTUP_SLOT_FROZEN;
 			zinfo->epoch_xid = InvalidFullTransactionId;
