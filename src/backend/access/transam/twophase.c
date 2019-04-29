@@ -1642,6 +1642,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	 */
 	for (i = 0; i < UndoPersistenceLevels; i++)
 	{
+		volatile	UndoRequestInfo urinfo;
 		uint32	epoch;
 		FullTransactionId full_xid;
 
@@ -1661,6 +1662,14 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 			PG_TRY();
 			{
 				bool		result = false;
+
+				/*
+				 * Prepare required undo request info so that it can be used in
+				 * exception.
+				 */
+				ResetUndoRequestInfo(&urinfo);
+				urinfo.dbid = MyDatabaseId;
+				urinfo.full_xid = full_xid;
 
 				if (i != UNDO_TEMP)
 					result = RegisterRollbackReq(end_urec_ptr[i],
@@ -1683,15 +1692,16 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 					pg_rethrow_as_fatal();
 
 				/*
-				 * Remove the entry from the hash table and continue to
+				 * Add the request into an error queue so that it can be
+				 * processed in a timely fashion.
+				 *
+				 * If we fail to add the request in an error queue, then
+				 * remove the entry from the hash table and continue to
 				 * process the remaining undo requests if any.  This request
-				 * will be later processed by discard worker.  We can't simply
-				 * add this to error queue and proceed as that can fill the
-				 * hash table and then we won't be able to guarantee that
-				 * rollback requests are processed either by backend or by
-				 * discard worker.
+				 * will be later processed by discard worker.
 				 */
-				RollbackHTRemoveEntry(full_xid, start_urec_ptr[i]);
+				if (!InsertRequestIntoErrorUndoQueue(&urinfo))
+					RollbackHTRemoveEntry(urinfo.full_xid, urinfo.start_urec_ptr);
 
 				/*
 				 * Errors can reset holdoff count, so restore back.  This is
