@@ -456,6 +456,7 @@ zheap_xlog_update(XLogReaderState *record)
 	Relation	reln;
 	ItemId		lp = NULL;
 	FullTransactionId fxid = XLogRecGetFullXid(record);
+	TransactionId xid = XidFromFullTransactionId(fxid);
 	int		   *old_tup_trans_slot_id = NULL;
 	int		   *new_trans_slot_id = NULL;
 	int			trans_slot_id;
