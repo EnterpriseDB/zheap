@@ -402,7 +402,10 @@ execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 		if (uur->uur_progress != 0 ||
 			xid != uur->uur_xid ||
 			next_insert == to_urecptr)
+		{
+			UndoRecordRelease(uur);
 			return;
+		}
 
 		UndoRecordRelease(uur);
 		uur = NULL;
