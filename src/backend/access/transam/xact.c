@@ -3600,8 +3600,7 @@ ApplyUndoActions(void)
 										 s->latest_urec_ptr[per_level],
 										 s->start_urec_ptr[per_level],
 										 !IsSubTransaction(),
-										 true,
-										 false);
+										 true);
 				}
 			}
 			PG_CATCH();

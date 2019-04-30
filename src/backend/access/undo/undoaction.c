@@ -332,20 +332,10 @@ undo_record_comparator(const void *left, const void *right)
  *				  Because, if the backend have already inserted new undo records
  *				  for the next transaction and if we rewind then we will loose
  *				  the undo record inserted for the new transaction.
- * 	rellock	  -	  if the caller already has the lock on the required relation,
- *				  then this flag is false, i.e. we do not need to acquire any
- *				  lock here. If the flag is true then we need to acquire lock
- *				  here itself, because caller will not be having any lock.
- *				  When we are performing undo actions for prepared transactions,
- *				  or for rollback to savepoint, we need not to lock as we
- *				  already have the lock on the table. In cases like error or
- *				  when rolling back from the undo worker we need to have proper
- *				  locks.
  */
 void
 execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
-					 UndoRecPtr to_urecptr, bool nopartial, bool rewind,
-					 bool rellock)
+					 UndoRecPtr to_urecptr, bool nopartial, bool rewind)
 {
 	UnpackedUndoRecord *uur = NULL;
 	UndoRecInfo *urp_array;

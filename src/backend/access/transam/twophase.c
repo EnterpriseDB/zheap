@@ -1677,14 +1677,10 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 												 hdr->database,
 												 full_xid);
 
-				/*
-				 * ZBORKED: set rellock = true, as we do *not* actually have
-				 * all the locks, but that'll probably deadlock?
-				 */
 				if (!result)
 					execute_undo_actions(full_xid, end_urec_ptr[i],
 										 start_urec_ptr[i], true,
-										 true, true);
+										 true);
 			}
 			PG_CATCH();
 			{

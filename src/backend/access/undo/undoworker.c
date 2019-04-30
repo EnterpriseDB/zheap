@@ -448,8 +448,7 @@ UndoWorkerPerformRequest(UndoRequestInfo * urinfo)
 	PG_TRY();
 	{
 		execute_undo_actions(urinfo->full_xid, urinfo->end_urec_ptr,
-							 urinfo->start_urec_ptr, true, false,
-							 true);
+							 urinfo->start_urec_ptr, true, false);
 	}
 	PG_CATCH();
 	{
