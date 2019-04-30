@@ -653,46 +653,17 @@ check_tup_satisfies_update:
 												 &prev_urecptr, false, false,
 												 NULL);
 
-		if (trans_slot_id != InvalidXactSlotId)
-		{
-			List	   *mlmembers;
-			ListCell   *lc;
-
-			/*
-			 * If any subtransaction of the current top transaction already
-			 * holds a lock as strong as or stronger than what we're
-			 * requesting, we effectively hold the desired lock already.  We
-			 * *must* succeed without trying to take the tuple lock, else we
-			 * will deadlock against anyone wanting to acquire a stronger
-			 * lock.
-			 */
-			mlmembers = ZGetMultiLockMembersForCurrentXact(&zheaptup,
-														   trans_slot_id, prev_urecptr);
-
-			foreach(lc, mlmembers)
-			{
-				ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
-
-				/*
-				 * Only members of our own transaction must be present in the
-				 * list.
-				 */
-				Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
-
-				if (mlmember->mode >= LockTupleExclusive)
-				{
-					result = TM_Ok;
-
-					/*
-					 * There is no other active locker on the tuple except
-					 * current transaction id, so we can delete the tuple.
-					 */
-					break;
-				}
-			}
-
-			list_free_deep(mlmembers);
-		}
+		/*
+		 * If any subtransaction of the current top transaction already holds
+		 * a lock as strong as or stronger than what we're requesting, we
+		 * effectively hold the desired lock already.  We *must* succeed
+		 * without trying to take the tuple lock, else we will deadlock against
+		 * anyone wanting to acquire a stronger lock.
+		 */
+		if (trans_slot_id != InvalidXactSlotId &&
+			ZCurrentXactHasTupleLockMode(&zheaptup, prev_urecptr,
+										 LockTupleExclusive))
+			result = TM_Ok;
 	}
 
 	if (crosscheck != InvalidSnapshot && result == TM_Ok)
@@ -1008,45 +979,19 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 												 &prev_urecptr, false, false,
 												 NULL);
 
-		if (trans_slot_id != InvalidXactSlotId)
+		/*
+		 * If any subtransaction of the current top transaction already holds
+		 * a lock as strong as or stronger than what we're requesting, we
+		 * effectively hold the desired lock already.  We *must* succeed
+		 * without trying to take the tuple lock, else we will deadlock against
+		 * anyone wanting to acquire a stronger lock.
+		 */
+		if (trans_slot_id != InvalidXactSlotId &&
+			ZCurrentXactHasTupleLockMode(zheaptup, prev_urecptr,
+										 LockTupleExclusive))
 		{
-			List	   *mlmembers;
-			ListCell   *lc;
-
-			/*
-			 * If any subtransaction of the current top transaction already
-			 * holds a lock as strong as or stronger than what we're
-			 * requesting, we effectively hold the desired lock already.  We
-			 * *must* succeed without trying to take the tuple lock, else we
-			 * will deadlock against anyone wanting to acquire a stronger
-			 * lock.
-			 */
-			mlmembers = ZGetMultiLockMembersForCurrentXact(zheaptup,
-														   trans_slot_id, prev_urecptr);
-
-			foreach(lc, mlmembers)
-			{
-				ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
-
-				/*
-				 * Only members of our own transaction must be present in the
-				 * list.
-				 */
-				Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
-
-				if (mlmember->mode >= LockTupleExclusive)
-				{
-					*result = TM_Ok;
-
-					/*
-					 * There is no other active locker on the tuple except
-					 * current transaction id, so we can delete the tuple.
-					 */
-					return true;
-				}
-			}
-
-			list_free_deep(mlmembers);
+			*result = TM_Ok;
+			return true;
 		}
 
 		old_lock_mode = get_old_lock_mode(infomask);
@@ -1551,49 +1496,21 @@ check_tup_satisfies_update:
 														 &prev_urecptr, false, false,
 														 NULL);
 
-		if (oldtup_new_trans_slot != InvalidXactSlotId)
+		/*
+		 * If any subtransaction of the current top transaction already holds
+		 * a lock as strong as or stronger than what we're requesting, we
+		 * effectively hold the desired lock already.  We *must* succeed
+		 * without trying to take the tuple lock, else we will deadlock against
+		 * anyone wanting to acquire a stronger lock.
+		 */
+		if (oldtup_new_trans_slot != InvalidXactSlotId &&
+			ZCurrentXactHasTupleLockMode(&oldtup, prev_urecptr,
+										 *lockmode))
 		{
-			List	   *mlmembers;
-			ListCell   *lc;
-
-			/*
-			 * If any subtransaction of the current top transaction already
-			 * holds a lock as strong as or stronger than what we're
-			 * requesting, we effectively hold the desired lock already.  We
-			 * *must* succeed without trying to take the tuple lock, else we
-			 * will deadlock against anyone wanting to acquire a stronger
-			 * lock.
-			 */
-			mlmembers = ZGetMultiLockMembersForCurrentXact(&oldtup,
-														   oldtup_new_trans_slot, prev_urecptr);
-
-			foreach(lc, mlmembers)
-			{
-				ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
-
-				/*
-				 * Only members of our own transaction must be present in the
-				 * list.
-				 */
-				Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
-
-				if (mlmember->mode >= *lockmode)
-				{
-					result = TM_Ok;
-
-					/*
-					 * There is no other active locker on the tuple except
-					 * current transaction id, so we can update the tuple.
-					 */
-					checked_lockers = true;
-					locker_remains = false;
-					break;
-				}
-			}
-
-			list_free_deep(mlmembers);
+			result = TM_Ok;
+			checked_lockers = true;
+			locker_remains = false;
 		}
-
 	}
 
 	if (crosscheck != InvalidSnapshot && result == TM_Ok)
@@ -2751,48 +2668,20 @@ zheap_update_wait_helper(Relation relation,
 			PageGetTransactionSlotId(relation, buffer, fxid,
 									 &prev_urecptr, false, false, NULL);
 
-		if (trans_slot_id != InvalidXactSlotId)
+		/*
+		 * If any subtransaction of the current top transaction already holds
+		 * a lock as strong as or stronger than what we're requesting, we
+		 * effectively hold the desired lock already.  We *must* succeed
+		 * without trying to take the tuple lock, else we will deadlock against
+		 * anyone wanting to acquire a stronger lock.
+		 */
+		if (trans_slot_id != InvalidXactSlotId &&
+			ZCurrentXactHasTupleLockMode(zheaptup, prev_urecptr, lockmode))
 		{
-			List	   *mlmembers;
-			ListCell   *lc;
-
-			/*
-			 * If any subtransaction of the current top transaction already
-			 * holds a lock as strong as or stronger than what we're
-			 * requesting, we effectively hold the desired lock already.  We
-			 * *must* succeed without trying to take the tuple lock, else we
-			 * will deadlock against anyone wanting to acquire a stronger
-			 * lock.
-			 */
-			mlmembers = ZGetMultiLockMembersForCurrentXact(zheaptup,
-														   trans_slot_id, prev_urecptr);
-
-			foreach(lc, mlmembers)
-			{
-				ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
-
-				/*
-				 * Only members of our own transaction must be present in the
-				 * list.
-				 */
-				Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
-
-				if (mlmember->mode >= lockmode)
-				{
-					*result = TM_Ok;
-
-					/*
-					 * There is no other active locker on the tuple except
-					 * current transaction id, so we can update the tuple.
-					 * However, we need to propagate lockers information.
-					 */
-					*checked_lockers = true;
-					*locker_remains = true;
-					return true;
-				}
-			}
-
-			list_free_deep(mlmembers);
+			*result = TM_Ok;
+			*checked_lockers = true;
+			*locker_remains = true;
+			return true;
 		}
 
 		old_lock_mode = get_old_lock_mode(infomask);
@@ -3199,33 +3088,11 @@ check_tup_satisfies_update:
 		 */
 		if (ZHeapTupleHasMultiLockers(infomask))
 		{
-			List	   *mlmembers;
-			ListCell   *lc;
-
-			if (trans_slot_id != InvalidXactSlotId)
+			if (trans_slot_id != InvalidXactSlotId &&
+				ZCurrentXactHasTupleLockMode(&zhtup, urec_ptr, mode))
 			{
-				mlmembers = ZGetMultiLockMembersForCurrentXact(&zhtup,
-															   trans_slot_id, urec_ptr);
-
-				foreach(lc, mlmembers)
-				{
-					ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
-
-					/*
-					 * Only members of our own transaction must be present in
-					 * the list.
-					 */
-					Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
-
-					if (mlmember->mode >= mode)
-					{
-						list_free_deep(mlmembers);
-						result = TM_Ok;
-						goto out_unlocked;
-					}
-				}
-
-				list_free_deep(mlmembers);
+				result = TM_Ok;
+				goto out_unlocked;
 			}
 		}
 		else if (TransactionIdIsCurrentTransactionId(xwait))
@@ -3757,33 +3624,11 @@ check_tup_satisfies_update:
 		 */
 		if (ZHeapTupleHasMultiLockers(infomask))
 		{
-			List	   *mlmembers;
-			ListCell   *lc;
-
-			if (trans_slot_id != InvalidXactSlotId)
+			if (trans_slot_id != InvalidXactSlotId &&
+				ZCurrentXactHasTupleLockMode(&zhtup, urec_ptr, mode))
 			{
-				mlmembers = ZGetMultiLockMembersForCurrentXact(&zhtup,
-															   trans_slot_id, urec_ptr);
-
-				foreach(lc, mlmembers)
-				{
-					ZMultiLockMember *mlmember = (ZMultiLockMember *) lfirst(lc);
-
-					/*
-					 * Only members of our own transaction must be present in
-					 * the list.
-					 */
-					Assert(TransactionIdIsCurrentTransactionId(mlmember->xid));
-
-					if (mlmember->mode >= mode)
-					{
-						list_free_deep(mlmembers);
-						result = TM_Ok;
-						goto out_locked;
-					}
-				}
-
-				list_free_deep(mlmembers);
+				result = TM_Ok;
+				goto out_locked;
 			}
 		}
 		else if (TransactionIdIsCurrentTransactionId(xwait))

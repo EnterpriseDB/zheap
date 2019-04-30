@@ -28,19 +28,21 @@
 static bool IsZMultiLockListMember(List *members, ZMultiLockMember *mlmember);
 
 /*
- * ZGetMultiLockMembersForCurrentXact - Return the strongest lock mode held by
- *			the current transaction on a given tuple.
+ * ZCurrentXactHasTupleLockMode
+ *
+ * Returns true if the current transaction has a lock in the given mode or
+ * higher on the current tuple.
  */
-List *
-ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
-								   UndoRecPtr urec_ptr)
+bool
+ZCurrentXactHasTupleLockMode(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
+							 LockTupleMode required_mode)
 {
 	ZHeapTupleHeaderData	hdr;
 	UnpackedUndoRecord *urec = NULL;
-	ZMultiLockMember *mlmember;
-	List	   *multilockmembers = NIL;
 	int			trans_slot_id = -1;
 	uint8		uur_type;
+	bool		result = false;
+	LockTupleMode	current_mode;
 
 	memcpy(&hdr, zhtup->t_data, SizeofZHeapTupleHeader);
 	do
@@ -76,39 +78,27 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 		if (uur_type == UNDO_XID_LOCK_ONLY ||
 			uur_type == UNDO_XID_LOCK_FOR_UPDATE ||
 			uur_type == UNDO_XID_MULTI_LOCK_ONLY)
-		{
-			mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
-			mlmember->xid = urec->uur_xid;
-			mlmember->trans_slot_id = trans_slot;
-			mlmember->mode = *((LockTupleMode *) urec->uur_payload.data);
-			multilockmembers = lappend(multilockmembers, mlmember);
-		}
+			current_mode = *((LockTupleMode *) urec->uur_payload.data);
 		else if (uur_type == UNDO_UPDATE ||
 				 uur_type == UNDO_INPLACE_UPDATE)
 		{
-			mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
-			mlmember->xid = urec->uur_xid;
-			mlmember->trans_slot_id = trans_slot;
-
 			if (ZHEAP_XID_IS_EXCL_LOCKED(hdr.t_infomask))
-				mlmember->mode = LockTupleExclusive;
+				current_mode = LockTupleExclusive;
 			else
-				mlmember->mode = LockTupleNoKeyExclusive;
-
-			multilockmembers = lappend(multilockmembers, mlmember);
+				current_mode = LockTupleNoKeyExclusive;
 		}
 		else if (uur_type == UNDO_DELETE)
-		{
-			mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
-			mlmember->xid = urec->uur_xid;
-			mlmember->trans_slot_id = trans_slot;
-			mlmember->mode = LockTupleExclusive;
-			multilockmembers = lappend(multilockmembers, mlmember);
-		}
+			current_mode = LockTupleExclusive;
 		else
 		{
 			/* Should not reach here */
 			Assert(0);
+		}
+
+		if (current_mode >= required_mode)
+		{
+			result = true;
+			break;
 		}
 
 		if (trans_slot_id == ZHTUP_SLOT_FROZEN)
@@ -135,7 +125,7 @@ ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup, int trans_slot,
 		urec = NULL;
 	}
 
-	return multilockmembers;
+	return result;
 }
 
 /*

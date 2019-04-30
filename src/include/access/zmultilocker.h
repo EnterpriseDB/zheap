@@ -24,8 +24,8 @@
 #define HWLOCKMODE_from_locktupmode(lockmode) \
 				(GetHWLockModeFromMode(lockmode))
 
-extern List *ZGetMultiLockMembersForCurrentXact(ZHeapTuple zhtup,
-								   int trans_slot, UndoRecPtr urec_ptr);
+extern bool ZCurrentXactHasTupleLockMode(ZHeapTuple zhtup,
+							 UndoRecPtr urec_ptr, LockTupleMode required_mode);
 extern List *ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 					 bool nobuflock);
 extern bool ZMultiLockMembersWait(Relation rel, List *mlmembers,
