@@ -7382,63 +7382,6 @@ ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 }
 
 /*
- * ZHeapPageGetCtid - Retrieve tuple id from tuple's undo record.
- *
- * It is expected that caller of this function has at least read lock.
- */
-void
-ZHeapPageGetCtid(Buffer buf, UndoRecPtr urec_ptr, ItemPointer ctid)
-{
-	UnpackedUndoRecord *urec;
-
-fetch_next:
-	urec = UndoFetchRecord(urec_ptr,
-						   ItemPointerGetBlockNumber(ctid),
-						   ItemPointerGetOffsetNumber(ctid),
-						   InvalidTransactionId,
-						   NULL,
-						   ZHeapSatisfyUndoRecord);
-
-	/*
-	 * We always expect urec here to be valid as it try to fetch ctid of
-	 * tuples that are visible to the snapshot, so corresponding undo record
-	 * can't be discarded.
-	 */
-	Assert(urec);
-
-	/*
-	 * The tuple should be deleted/updated previously. Else, the caller should
-	 * not be calling this function.  There can also be a concurrent key share
-	 * locker which reserved the same slot as the updater's slot.  In that
-	 * case, we've to fetch the prior undo records in order to get the
-	 * required information.
-	 */
-	Assert(urec->uur_type == UNDO_DELETE || urec->uur_type == UNDO_UPDATE ||
-		   urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY);
-
-	if (urec->uur_type == UNDO_XID_MULTI_LOCK_ONLY)
-	{
-		/*
-		 * If some concurrent transaction has taken a key share lock on the
-		 * tuple, we should fetch the previous undo.
-		 */
-		urec_ptr = urec->uur_blkprev;
-		UndoRecordRelease(urec);
-		goto fetch_next;
-	}
-	else if (urec->uur_type != UNDO_DELETE)
-	{
-		/*
-		 * For a deleted tuple, ctid refers to self.
-		 */
-		Assert(urec->uur_payload.len > 0);
-		*ctid = *(ItemPointer) urec->uur_payload.data;
-	}
-
-	UndoRecordRelease(urec);
-}
-
-/*
  * ZHeapTupleHeaderAdvanceLatestRemovedXid - Advance the latestRemovedXid, if
  * tuple is deleted by a transaction greater than latestRemovedXid.  This is
  * required to generate conflicts on hot standby.

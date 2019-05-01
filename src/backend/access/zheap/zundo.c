@@ -327,7 +327,7 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
 		 */
 		if (ZHeapTupleHasInvalidXact(hdr.t_infomask))
 			FetchTransInfoFromUndo(BufferGetBlockNumber(buf), offnum,
-								   zinfo.xid, &zinfo);
+								   zinfo.xid, &zinfo, NULL);
 	} while (UndoRecPtrIsValid(zinfo.urec_ptr));
 
 tuple_is_valid:

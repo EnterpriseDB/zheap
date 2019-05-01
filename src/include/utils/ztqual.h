@@ -38,7 +38,8 @@ typedef enum
 } ZHTSV_Result;
 
 extern void FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
-					   TransactionId xid, ZHeapTupleTransInfo *zinfo);
+					   TransactionId xid, ZHeapTupleTransInfo *zinfo,
+					   ItemPointer new_ctid);
 extern void ZHeapUpdateTransactionSlotInfo(int trans_slot, Buffer buffer,
 							   OffsetNumber offnum,
 							   ZHeapTupleTransInfo *zinfo);

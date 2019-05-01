@@ -303,8 +303,6 @@ extern void ZHeapTupleGetSubXid(Buffer buf, OffsetNumber offnum,
 					UndoRecPtr urec_ptr, SubTransactionId *subxid);
 extern void ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf,
 					   UndoRecPtr urec_ptr, uint32 *specToken);
-extern void ZHeapPageGetCtid(Buffer buf, UndoRecPtr urec_ptr,
-				 ItemPointer ctid);
 
 /* Page related API's. */
 
