@@ -8661,9 +8661,8 @@ RefetchAndCheckTupleStatus(Relation relation,
 	{
 		TransactionId current_single_locker_xid;
 
-		GetLockerTransInfo(relation, zhtup, buffer, NULL,
-						   NULL, &current_single_locker_xid,
-						   NULL, NULL);
+		GetLockerTransInfo(relation, &zhtup->t_self, buffer,
+						   NULL, &current_single_locker_xid);
 
 		if (mode && (*mode == LockTupleKeyShare || *mode == LockTupleShare))
 		{

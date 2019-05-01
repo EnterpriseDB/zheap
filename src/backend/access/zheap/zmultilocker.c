@@ -678,10 +678,8 @@ ZGetMultiLockInfo(uint16 old_infomask, TransactionId tup_xid,
  * The caller must have a lock on the buffer (buf).
  */
 bool
-GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
-				   int *trans_slot, uint64 *epoch_xid_out,
-				   TransactionId *xid_out, CommandId *cid_out,
-				   UndoRecPtr *urec_ptr_out)
+GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
+				   int *trans_slot, TransactionId *xid_out)
 {
 	UnpackedUndoRecord *urec = NULL;
 	UndoRecPtr	urec_ptr;
@@ -725,8 +723,8 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 			out_urec_ptr = InvalidUndoRecPtr;
 			urec = UndoFetchRecord(urec_ptr,
-								   ItemPointerGetBlockNumber(&zhtup->t_self),
-								   ItemPointerGetOffsetNumber(&zhtup->t_self),
+								   ItemPointerGetBlockNumber(tid),
+								   ItemPointerGetOffsetNumber(tid),
 								   InvalidTransactionId,
 								   &out_urec_ptr,
 								   ZHeapSatisfyUndoRecord);
@@ -825,14 +823,8 @@ GetLockerTransInfo(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		/* Set the value of required parameters. */
 		if (trans_slot)
 			*trans_slot = trans_slot_id;
-		if (epoch_xid_out)
-			*epoch_xid_out = U64FromFullTransactionId(fxid);
 		if (xid_out)
 			*xid_out = XidFromFullTransactionId(fxid);
-		if (cid_out)
-			*cid_out = cid;
-		if (urec_ptr_out)
-			*urec_ptr_out = save_urec_ptr;
 	}
 
 	return found;

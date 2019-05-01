@@ -1313,8 +1313,8 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 
 			if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask) &&
 				!ZHeapTupleHasMultiLockers(tuple->t_infomask))
-				found = GetLockerTransInfo(rel, zhtup, buffer, single_locker_trans_slot,
-										   NULL, single_locker_xid, NULL, NULL);
+				found = GetLockerTransInfo(rel, &zhtup->t_self, buffer, single_locker_trans_slot,
+										   single_locker_xid);
 			if (!found)
 				result = TM_Ok;
 			else
