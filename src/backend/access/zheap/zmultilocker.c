@@ -683,11 +683,9 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 {
 	UnpackedUndoRecord *urec = NULL;
 	UndoRecPtr	urec_ptr;
-	UndoRecPtr	save_urec_ptr = InvalidUndoRecPtr;
 	TransInfo  *trans_slots = NULL;
 	FullTransactionId fxid;
 	FullTransactionId oldestXidWithEpochHavingUndo;
-	CommandId	cid = InvalidCommandId;
 	int			trans_slot_id;
 	uint8		uur_type;
 	int			slot_no;
@@ -715,7 +713,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 			(!TransactionIdIsInProgress(xid) && TransactionIdDidCommit(xid)))
 			continue;
 
-		save_urec_ptr = urec_ptr = trans_slots[slot_no].urec_ptr;
+		urec_ptr = trans_slots[slot_no].urec_ptr;
 
 		do
 		{
@@ -739,8 +737,6 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 				Assert(!out_urec_ptr);
 				break;
 			}
-
-			cid = urec->uur_cid;
 
 			/*
 			 * If the current transaction has locked the tuple, then we don't
