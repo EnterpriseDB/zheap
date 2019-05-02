@@ -1332,6 +1332,13 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 		Assert(!delete_old_entry || BufferIsValid(old_tpd_buf));
 		Assert(delete_old_entry || !BufferIsValid(old_tpd_buf));
 
+		/*
+		 * FIXME: We can allow the free pages to be used from FSM once we fix
+		 * lock ordering w.r.t buffer locks, otherwise it can lead to
+		 * deadlocks.
+		 */
+		always_extend = true;
+
 		/* Always extend when asked to do so. */
 		if (!always_extend)
 		{
