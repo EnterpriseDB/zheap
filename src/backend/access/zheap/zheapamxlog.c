@@ -1090,7 +1090,7 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 			/* Initialize the frozen slots. */
 			for (i = 0; i < xlrec->nFrozen; i++)
 			{
-				TransInfo	*thistrans;
+				TransInfo  *thistrans;
 
 				slot_no = frozen[i];
 				thistrans = &opaque->transinfo[slot_no];
@@ -2164,6 +2164,7 @@ zheap_undo_xlog_page(XLogReaderState *record)
 				if (TransactionIdIsValid(xlrec->xid))
 				{
 					FullTransactionId fxid = XLogRecGetFullXid(record);
+
 					xid_epoch = EpochFromFullTransactionId(fxid);
 				}
 				TPDPageSetTransactionSlotInfo(buf, xlrec->trans_slot_id,
@@ -2226,7 +2227,7 @@ zheap_undo_xlog_reset_xid(XLogReaderState *record)
 	{
 		Page		page;
 		ZHeapPageOpaque opaque;
-		TransInfo	*thistrans;
+		TransInfo  *thistrans;
 		int			slot_no = xlrec->trans_slot_id;
 
 		page = BufferGetPage(buf);

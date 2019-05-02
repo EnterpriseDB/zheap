@@ -657,8 +657,8 @@ check_tup_satisfies_update:
 		 * If any subtransaction of the current top transaction already holds
 		 * a lock as strong as or stronger than what we're requesting, we
 		 * effectively hold the desired lock already.  We *must* succeed
-		 * without trying to take the tuple lock, else we will deadlock against
-		 * anyone wanting to acquire a stronger lock.
+		 * without trying to take the tuple lock, else we will deadlock
+		 * against anyone wanting to acquire a stronger lock.
 		 */
 		if (trans_slot_id != InvalidXactSlotId &&
 			ZCurrentXactHasTupleLockMode(&zheaptup, prev_urecptr,
@@ -982,8 +982,8 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 		 * If any subtransaction of the current top transaction already holds
 		 * a lock as strong as or stronger than what we're requesting, we
 		 * effectively hold the desired lock already.  We *must* succeed
-		 * without trying to take the tuple lock, else we will deadlock against
-		 * anyone wanting to acquire a stronger lock.
+		 * without trying to take the tuple lock, else we will deadlock
+		 * against anyone wanting to acquire a stronger lock.
 		 */
 		if (trans_slot_id != InvalidXactSlotId &&
 			ZCurrentXactHasTupleLockMode(zheaptup, prev_urecptr,
@@ -1500,8 +1500,8 @@ check_tup_satisfies_update:
 		 * If any subtransaction of the current top transaction already holds
 		 * a lock as strong as or stronger than what we're requesting, we
 		 * effectively hold the desired lock already.  We *must* succeed
-		 * without trying to take the tuple lock, else we will deadlock against
-		 * anyone wanting to acquire a stronger lock.
+		 * without trying to take the tuple lock, else we will deadlock
+		 * against anyone wanting to acquire a stronger lock.
 		 */
 		if (oldtup_new_trans_slot != InvalidXactSlotId &&
 			ZCurrentXactHasTupleLockMode(&oldtup, prev_urecptr,
@@ -2672,8 +2672,8 @@ zheap_update_wait_helper(Relation relation,
 		 * If any subtransaction of the current top transaction already holds
 		 * a lock as strong as or stronger than what we're requesting, we
 		 * effectively hold the desired lock already.  We *must* succeed
-		 * without trying to take the tuple lock, else we will deadlock against
-		 * anyone wanting to acquire a stronger lock.
+		 * without trying to take the tuple lock, else we will deadlock
+		 * against anyone wanting to acquire a stronger lock.
 		 */
 		if (trans_slot_id != InvalidXactSlotId &&
 			ZCurrentXactHasTupleLockMode(zheaptup, prev_urecptr, lockmode))
@@ -6003,7 +6003,7 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
 		(trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS &&
 		 !ZHeapPageHasTPDSlot(phdr)))
 	{
-		TransInfo	*thistrans = &opaque->transinfo[trans_slot_id - 1];
+		TransInfo  *thistrans = &opaque->transinfo[trans_slot_id - 1];
 
 		thistrans->fxid = fxid;
 		thistrans->urec_ptr = urecptr;
@@ -6053,7 +6053,7 @@ PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id, uint32 epoch,
 		(trans_slot_id == ZHEAP_PAGE_TRANS_SLOTS &&
 		 !ZHeapPageHasTPDSlot(phdr)))
 	{
-		TransInfo	*thistrans = &opaque->transinfo[trans_slot_id - 1];
+		TransInfo  *thistrans = &opaque->transinfo[trans_slot_id - 1];
 
 		thistrans->fxid = FullTransactionIdFromEpochAndXid(epoch, xid);
 		thistrans->urec_ptr = urec_ptr;
@@ -6103,7 +6103,7 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, FullTransactionId fxid,
 	/* Check if the required slot exists on the page. */
 	for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
 	{
-		TransInfo	*thistrans = &opaque->transinfo[slot_no];
+		TransInfo  *thistrans = &opaque->transinfo[slot_no];
 
 		if (FullTransactionIdEquals(thistrans->fxid, fxid))
 		{
@@ -6226,10 +6226,11 @@ MultiPageReserveTransSlot(Relation relation,
 	bool		always_extend;
 	bool		is_tpdblk_order_changed;
 	int			slot_id;
-	BlockNumber		tmp_new_tpd_blk,
-					tmp_old_tpd_blk;
+	BlockNumber tmp_new_tpd_blk,
+				tmp_old_tpd_blk;
 	BlockNumber oldbuf_tpd_blk PG_USED_FOR_ASSERTS_ONLY = InvalidBlockNumber;
-	Page		old_heap_page, new_heap_page;
+	Page		old_heap_page,
+				new_heap_page;
 
 	old_heap_page = BufferGetPage(oldbuf);
 	new_heap_page = BufferGetPage(newbuf);
@@ -6543,7 +6544,7 @@ PageReserveTransactionSlot(Relation relation, Buffer buf, OffsetNumber offset,
 
 		for (slot_no = 0; slot_no < total_slots_in_page; slot_no++)
 		{
-			TransInfo	*thistrans = &opaque->transinfo[slot_no];
+			TransInfo  *thistrans = &opaque->transinfo[slot_no];
 
 			if (!FullTransactionIdIsValid(thistrans->fxid))
 			{
@@ -6919,7 +6920,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		{
 			for (i = 0; i < nFrozenSlots; i++)
 			{
-				TransInfo	*thistrans;
+				TransInfo  *thistrans;
 				int			tpd_slot_id;
 
 				slot_no = frozen_slots[i];
@@ -6942,7 +6943,7 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		{
 			for (i = 0; i < nFrozenSlots; i++)
 			{
-				TransInfo	*thistrans;
+				TransInfo  *thistrans;
 
 				slot_no = frozen_slots[i];
 				thistrans = &transinfo[slot_no];
@@ -7453,7 +7454,7 @@ zheap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	for (i = 0; i < ntuples; i++)
 	{
 		zheaptuples[i] = zheap_prepare_insert(relation,
-							ExecGetZHeapTupleFromSlot(slots[i]), options, 0);
+											  ExecGetZHeapTupleFromSlot(slots[i]), options, 0);
 
 		if (slots[i]->tts_tableOid != InvalidOid)
 			zheaptuples[i]->t_tableOid = slots[i]->tts_tableOid;

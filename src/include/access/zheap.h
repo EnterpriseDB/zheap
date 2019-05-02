@@ -254,7 +254,7 @@ extern void zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
 					 BlockNumber last_blkno);
 extern void ZheapInitMetaPage(Relation rel, ForkNumber forkNum, bool already_exists);
 extern ZHeapTuple zheap_gettuple(Relation relation, Buffer buffer,
-								 OffsetNumber offnum);
+			   OffsetNumber offnum);
 
 /* Zheap and undo record interaction related API's (zundo.c) */
 extern bool ZHeapSatisfyUndoRecord(UnpackedUndoRecord *uurec, BlockNumber blkno,
@@ -267,8 +267,8 @@ extern bool ValidateTuplesXact(Relation relation, ZHeapTuple tuple,
 extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
 							int slot_no, TransactionId xwait, BlockNumber *tpd_blkno);
 extern void process_and_execute_undo_actions_page(UndoRecPtr from_urecptr,
-				Relation rel, Buffer buffer,
-				FullTransactionId fxid, int slot_no);
+									  Relation rel, Buffer buffer,
+									  FullTransactionId fxid, int slot_no);
 
 /* in zheap/zvacuumlazy.c */
 struct VacuumParams;
@@ -282,8 +282,8 @@ extern bool zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_i
 
 /* in zheap/ztuptoaster.c */
 extern ZHeapTuple ztoast_insert_or_update(Relation rel,
-										  ZHeapTuple newtup, ZHeapTuple oldtup,
-										  int options, uint32 specToken);
+						ZHeapTuple newtup, ZHeapTuple oldtup,
+						int options, uint32 specToken);
 extern void ztoast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative);
 
 #endif							/* ZHEAP_H */
