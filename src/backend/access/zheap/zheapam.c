@@ -937,11 +937,8 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 {
 	List	   *mlmembers = NIL;
 	uint16		infomask;
-	bool		isCommitted;
 	bool		can_continue = false;
 	bool		lock_reacquired = false;
-	int			trans_slot_id;
-	UndoRecPtr	prev_urecptr;
 
 	infomask = zheaptup->t_data->t_infomask;
 
@@ -963,6 +960,8 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 		LockTupleMode old_lock_mode;
 		TransactionId update_xact;
 		bool		upd_xact_aborted = false;
+		int			trans_slot_id;
+		UndoRecPtr	prev_urecptr;
 
 		/*
 		 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if current
@@ -1127,6 +1126,7 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 		if (!ZHeapTupleHasMultiLockers(infomask))
 		{
 			bool		has_update = false;
+			bool		isCommitted;
 
 			if (!ZHEAP_XID_IS_LOCKED_ONLY(zheaptup->t_data->t_infomask))
 				has_update = true;
@@ -2639,8 +2639,6 @@ zheap_update_wait_helper(Relation relation,
 	List	   *mlmembers;
 	uint16		infomask;
 	bool		can_continue = false;
-	int			trans_slot_id;
-	UndoRecPtr	prev_urecptr;
 
 	/* must copy state data before unlocking buffer */
 	infomask = zheaptup->t_data->t_infomask;
@@ -2652,6 +2650,8 @@ zheap_update_wait_helper(Relation relation,
 		int			remain = 0;
 		bool		isAborted;
 		bool		upd_xact_aborted = false;
+		int			trans_slot_id;
+		UndoRecPtr	prev_urecptr;
 
 		/*
 		 * In ZHeapTupleSatisfiesUpdate, it's not possible to know if current
