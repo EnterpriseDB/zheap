@@ -1,0 +1,29 @@
+Undo record interface layer
+---------------------------
+This is the next layer which sits on top of the undo log storage, which will
+provide an interface for prepare, insert, or fetch the undo records.  This
+layer will use undo-log-storage to reserve the space for the undo records
+and buffer management routine to write and read the undo records.
+
+Writing an undo record
+----------------------
+To prepare an undo record, first, it will allocate required space using
+undo log storage module.  Next, it will pin and lock the required buffers and
+return an undo record pointer where it will insert the record.  Finally, it
+calls the Insert routine for final insertion of prepared record.  Additionally,
+there is a mechanism for multi-insert, wherein multiple records are prepared
+and inserted at a time.
+
+Fetching and undo record
+------------------------
+To fetch an undo record, a caller must provide a valid undo record pointer.
+Optionally, the caller can provide a callback function with the information of
+the block and offset, which will help in faster retrieval of undo record,
+otherwise, it has to traverse the undo-chain.
+
+There is also an interface to bulk fetch the undo records.  Where the caller
+can provide a TO and FROM undo record pointer and the memory limit for storing
+the undo records.  This API will return all the undo record between FROM and TO
+undo record pointers if they can fit into provided memory limit otherwise, it
+return whatever can fit into the memory limit.  And, the caller can call it
+repeatedly until it fetches all the records.

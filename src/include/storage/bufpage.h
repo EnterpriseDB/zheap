@@ -216,6 +216,43 @@ typedef PageHeaderData *PageHeader;
 #define SizeOfPageHeaderData (offsetof(PageHeaderData, pd_linp))
 
 /*
+ * Same as PageHeaderData + some additional information to detect partial
+ * undo record on a undo page.
+ *
+ * FIXME : for undo page do we need to keep all the information which is
+ * required for the PageHeaderData e.g. pd_lower, pd_upper, pd_special?
+ */
+typedef struct UndoPageHeaderData
+{
+	/* XXX LSN is member of *any* block, not only page-organized ones */
+	PageXLogRecPtr pd_lsn;		/* LSN: next byte after last byte of xlog
+								 * record for last change to this page */
+	uint16		pd_checksum;	/* checksum */
+	uint16		pd_flags;		/* flag bits, see below */
+	LocationIndex pd_lower;		/* offset to start of free space */
+	LocationIndex pd_upper;		/* offset to end of free space */
+	LocationIndex pd_special;	/* offset to start of special space */
+	uint16		pd_pagesize_version;
+
+	/*
+	 * Below fields required for computing the offset of the first complete
+	 * record on a undo page, which will be used for the undo record compression
+	 * and undo page consistency checking.
+	 */
+	uint16		uur_info;		/* uur_info field of the partial record. */
+	uint16		record_offset;	/* offset of the partial undo record. */
+	uint16		tuple_len;		/* Length of the tuple data in the partial
+								 * record. */
+	uint16		payload_len;	/* Length of the payload data in the partial
+								 * record. */
+} UndoPageHeaderData;
+
+typedef UndoPageHeaderData *UndoPageHeader;
+
+#define SizeOfUndoPageHeaderData (offsetof(UndoPageHeaderData, payload_len) + \
+								  sizeof(uint16))
+
+/*
  * PageIsEmpty
  *		returns true iff no itemid has been allocated on the page
  */
@@ -419,6 +456,9 @@ do { \
 						((is_heap) ? PAI_IS_HEAP : 0))
 
 extern void PageInit(Page page, Size pageSize, Size specialSize);
+extern void UndoPageInit(Page page, Size pageSize, uint16 uur_info,
+						 uint16 record_offset, uint16 tuple_len,
+						 uint16 payload_len);
 extern bool PageIsVerified(Page page, BlockNumber blkno);
 extern OffsetNumber PageAddItemExtended(Page page, Item item, Size size,
 										OffsetNumber offsetNumber, int flags);

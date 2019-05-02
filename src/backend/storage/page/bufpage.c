@@ -59,6 +59,34 @@ PageInit(Page page, Size pageSize, Size specialSize)
 	/* p->pd_prune_xid = InvalidTransactionId;		done by above MemSet */
 }
 
+/*
+ * UndoPageInit
+ *		Initializes the contents of an undo page.
+ *		Note that we don't calculate an initial checksum here; that's not done
+ *		until it's time to write.
+ */
+void
+UndoPageInit(Page page, Size pageSize, uint16 uur_info, uint16 record_offset,
+			 uint16 tuple_len, uint16 payload_len)
+{
+	UndoPageHeader	p = (UndoPageHeader) page;
+
+	Assert(pageSize == BLCKSZ);
+
+	/* Make sure all fields of page are zero, as well as unused space. */
+	MemSet(p, 0, pageSize);
+
+	p->pd_flags = 0;
+	p->pd_lower = SizeOfUndoPageHeaderData;
+	p->pd_upper = pageSize;
+	p->pd_special = pageSize;
+	p->uur_info = uur_info;
+	p->record_offset = record_offset;
+	p->tuple_len = tuple_len;
+	p->payload_len = payload_len;
+	PageSetPageSizeAndVersion(page, pageSize, PG_PAGE_LAYOUT_VERSION);
+}
+
 
 /*
  * PageIsVerified

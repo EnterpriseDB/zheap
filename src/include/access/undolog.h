@@ -139,7 +139,7 @@ typedef int UndoLogNumber;
 	(((uint64) (logno) << UndoLogOffsetBits) | (offset))
 
 /* The number of unusable bytes in the header of each block. */
-#define UndoLogBlockHeaderSize SizeOfPageHeaderData
+#define UndoLogBlockHeaderSize SizeOfUndoPageHeaderData
 
 /* The number of usable bytes we can store per block. */
 #define UndoLogUsableBytesPerPage (BLCKSZ - UndoLogBlockHeaderSize)
@@ -168,6 +168,10 @@ typedef int UndoLogNumber;
 /* Compute the offset of a given UndoRecPtr in the page that holds it. */
 #define UndoRecPtrGetPageOffset(urp)			\
 	(UndoRecPtrGetOffset(urp) % BLCKSZ)
+
+/* Compute the undo record pointer offset given the undo rec page offset and the block number. */
+#define UndoRecPageOffsetGetRecPtr(offset, blkno)             \
+	((blkno * BLCKSZ) + offset)
 
 /* Compare two undo checkpoint files to find the oldest file. */
 #define UndoCheckPointFilenamePrecedes(file1, file2)	\
@@ -207,7 +211,7 @@ typedef int UndoLogNumber;
  */
 typedef struct UndoLogUnloggedMetaData
 {
-	UndoLogOffset insert;			/* next insertion point (head) */
+	UndoLogOffset insert;		/* next insertion point (head) */
 	UndoLogOffset last_xact_start;	/* last transaction's first byte in this log */
 	UndoLogOffset this_xact_start;	/* this transaction's first byte in this log */
 	TransactionId xid;				/* currently attached/writing xid */
@@ -352,7 +356,7 @@ extern PGDLLIMPORT undologtable_hash *undologtable_cache;
 static pg_attribute_always_inline UndoLogTableEntry *
 UndoLogGetTableEntry(UndoLogNumber logno)
 {
-	UndoLogTableEntry  *entry;
+	UndoLogTableEntry *entry;
 
 	/* Fast path. */
 	entry = undologtable_lookup(undologtable_cache, logno);
