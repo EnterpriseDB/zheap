@@ -2305,6 +2305,10 @@ TOKEN_DEFAULT_DACL
 TOKEN_INFORMATION_CLASS
 TOKEN_PRIVILEGES
 TOKEN_USER
+TPDACTION
+TPDEntryHeaderData
+TPDBuffers
+TPDPruneState
 TParser
 TParserCharTest
 TParserPosition
@@ -2673,7 +2677,12 @@ ZHeapPrepareUndoInfo
 ZHeapScanDescData
 ZHeapTuple
 ZHeapTupleData
+ZHeapTupleTransInfo
 ZHeapWALInfo
+ZMultiLockMember
+ZPruneState
+ZTupleTidOp
+ZVersionSelector
 _SPI_connection
 _SPI_plan
 __AssignProcessToJobObject

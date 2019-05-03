@@ -144,7 +144,7 @@ ZPageAddItemExtended(Buffer buffer,
 					 */
 					if (ItemIdHasPendingXact(itemId))
 					{
-						ZHeapTupleTransInfo	zinfo;
+						ZHeapTupleTransInfo zinfo;
 
 						zinfo.trans_slot = ItemIdGetTransactionSlot(itemId);
 
@@ -359,7 +359,7 @@ RelationPutZHeapTuple(Relation relation,
  */
 ZHeapFreeOffsetRanges *
 ZHeapGetUsableOffsetRanges(Buffer buffer,
-						   ZHeapTuple * tuples,
+						   ZHeapTuple *tuples,
 						   int ntuples,
 						   Size saveFreeSpace)
 {
@@ -473,7 +473,7 @@ void
 ZheapInitPage(Page page, Size pageSize)
 {
 	ZHeapPageOpaque opaque;
-	TransInfo	*thistrans;
+	TransInfo  *thistrans;
 	int			i;
 
 	/*
@@ -569,10 +569,10 @@ zheap_init_meta_page(Buffer metabuf, BlockNumber first_blkno,
 ZHeapTuple
 zheap_gettuple(Relation relation, Buffer buffer, OffsetNumber offnum)
 {
-	Page	dp;
-	ItemId	lp;
-	Size	tuple_len;
-	ZHeapTupleHeader	item;
+	Page		dp;
+	ItemId		lp;
+	Size		tuple_len;
+	ZHeapTupleHeader item;
 	ZHeapTuple	tuple;
 
 	dp = BufferGetPage(buffer);

@@ -37,12 +37,12 @@ bool
 ZCurrentXactHasTupleLockMode(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
 							 LockTupleMode required_mode)
 {
-	ZHeapTupleHeaderData	hdr;
+	ZHeapTupleHeaderData hdr;
 	UnpackedUndoRecord *urec = NULL;
 	int			trans_slot_id = -1;
 	uint8		uur_type;
 	bool		result = false;
-	LockTupleMode	current_mode;
+	LockTupleMode current_mode;
 
 	memcpy(&hdr, zhtup->t_data, SizeofZHeapTupleHeader);
 	do
@@ -154,7 +154,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 	int			slot_no;
 	int			total_trans_slots = 0;
 	BlockNumber tpd_blkno = InvalidBlockNumber;
-	BlockNumber	blkno = ItemPointerGetBlockNumber(&zhtup->t_self);
+	BlockNumber blkno = ItemPointerGetBlockNumber(&zhtup->t_self);
 	OffsetNumber offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
 
 	if (nobuflock)
@@ -232,7 +232,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			 */
 			if (nobuflock && first_urp)
 			{
-				ZHeapTupleTransInfo	zinfo;
+				ZHeapTupleTransInfo zinfo;
 
 				log = UndoLogGet(UndoRecPtrGetLogNo(urec_ptr));
 
@@ -316,8 +316,8 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			}
 
 			trans_slot_id =
-				UpdateTupleHeaderFromUndoRecord(urec, &hdr, 
-											   BufferGetPage(buf));
+				UpdateTupleHeaderFromUndoRecord(urec, &hdr,
+												BufferGetPage(buf));
 
 			if (uur_type == UNDO_XID_LOCK_ONLY ||
 				uur_type == UNDO_XID_LOCK_FOR_UPDATE ||
@@ -694,7 +694,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 	BlockNumber tpd_blkno;
 
 	oldestXidWithEpochHavingUndo = FullTransactionIdFromU64(
-		pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+															pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 	trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots,
 											  &tpd_blkno);
 

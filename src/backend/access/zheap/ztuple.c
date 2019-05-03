@@ -63,7 +63,7 @@ static void tts_zheap_copyslot(TupleTableSlot *dstslot,
 static HeapTuple tts_zheap_copy_heap_tuple(TupleTableSlot *slot);
 static MinimalTuple tts_zheap_copy_minimal_tuple(TupleTableSlot *slot);
 
-const		TupleTableSlotOps TTSOpsZHeapTuple = {
+const TupleTableSlotOps TTSOpsZHeapTuple = {
 	.base_slot_size = sizeof(ZHeapTupleTableSlot),
 	.init = tts_zheap_init,
 	.release = tts_zheap_release,
@@ -136,8 +136,8 @@ zheap_compute_data_size(TupleDesc tupleDesc, Datum *values, bool *isnull,
 			/*
 			 * We'll reach this case when storing a varlena that needs a
 			 * 4-byte header, a variable-width type that requires alignment
-			 * such as a record type, and for fixed-width types that are
-			 * not pass-by-value (e.g. aclitem).
+			 * such as a record type, and for fixed-width types that are not
+			 * pass-by-value (e.g. aclitem).
 			 */
 			data_length = att_align_datum(data_length, atti->attalign,
 										  atti->attlen, val);
@@ -215,8 +215,8 @@ zheap_fill_tuple(TupleDesc tupleDesc,
 		}
 
 		/*
-		 * We use the att_align macros on the pointer value itself, not on
-		 * an offset.  This is a bit of a hack.
+		 * We use the att_align macros on the pointer value itself, not on an
+		 * offset.  This is a bit of a hack.
 		 */
 		if (att->attbyval)
 		{
@@ -421,9 +421,9 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 		isnull[attnum] = false;
 
 		/*
-		 * If this is a varlena, there might be alignment padding, if it has
-		 * a 4-byte header.  Otherwise, there will only be padding if it's
-		 * not pass-by-value.
+		 * If this is a varlena, there might be alignment padding, if it has a
+		 * 4-byte header.  Otherwise, there will only be padding if it's not
+		 * pass-by-value.
 		 */
 		if (thisatt->attlen == -1)
 			off = att_align_pointer(off, thisatt->attalign, -1,
@@ -437,8 +437,8 @@ zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 
 			/*
 			 * Since pass-by-value attributes are not aligned in zheap, use
-			 * memcpy to copy the value into adequately-aligned storage.
-			 * Since it's pass-by-value, a Datum must be big enough.
+			 * memcpy to copy the value into adequately-aligned storage. Since
+			 * it's pass-by-value, a Datum must be big enough.
 			 */
 			memcpy(&datum, tp + off, thisatt->attlen);
 
@@ -500,7 +500,7 @@ zheap_getsysattr(ZHeapTuple zhtup, Buffer buf, int attnum,
 			{
 				ZHeapTupleTransInfo zinfo;
 				bool		release_buf = false;
-				ItemPointer	tid = &zhtup->t_self;
+				ItemPointer tid = &zhtup->t_self;
 
 				/*
 				 * For xmin we may need to fetch the information from the undo
@@ -901,8 +901,8 @@ slot_deform_ztuple(TupleTableSlot *slot, ZHeapTuple tuple,
 
 			/*
 			 * Since pass-by-value attributes are not aligned in zheap, use
-			 * memcpy to copy the value into adequately-aligned storage.
-			 * Since it's pass-by-value, a Datum must be big enough.
+			 * memcpy to copy the value into adequately-aligned storage. Since
+			 * it's pass-by-value, a Datum must be big enough.
 			 */
 			memcpy(&datum, tp, thisatt->attlen);
 
@@ -940,8 +940,8 @@ ExecGetZHeapTupleFromSlot(TupleTableSlot *slot)
 		return NULL;
 
 	/*
-	 * ZBORKED: to fix the memory management for this, the API should be
-	 * like ExecFetchSlotHeapTuple()'s.
+	 * ZBORKED: to fix the memory management for this, the API should be like
+	 * ExecFetchSlotHeapTuple()'s.
 	 */
 	if (!TTS_IS_ZHEAP(slot))
 	{

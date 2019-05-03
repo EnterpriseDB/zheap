@@ -267,7 +267,7 @@ zheap_endscan(TableScanDesc sscan)
  */
 void
 zheap_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
-			bool allow_strat, bool allow_sync, bool allow_pagemode)
+			 bool allow_strat, bool allow_sync, bool allow_pagemode)
 {
 	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
 
@@ -302,15 +302,14 @@ zheap_setscanlimits(TableScanDesc sscan, BlockNumber startBlk, BlockNumber numBl
 	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
 
 	Assert(!scan->rs_inited);	/* else too late to change */
-	Assert(!scan->rs_base.rs_syncscan); /* else rs_startblock is
-											 * significant */
+	Assert(!scan->rs_base.rs_syncscan); /* else rs_startblock is significant */
 
 	/*
-	 * Check startBlk is valid (but allow case of zero blocks...).
-	 * Consider meta-page as well.
+	 * Check startBlk is valid (but allow case of zero blocks...). Consider
+	 * meta-page as well.
 	 */
 	Assert(startBlk == 0 || startBlk < scan->rs_nblocks ||
-			startBlk == ZHEAP_METAPAGE + 1);
+		   startBlk == ZHEAP_METAPAGE + 1);
 
 	scan->rs_startblock = startBlk;
 	scan->rs_numblocks = numBlks;
@@ -399,8 +398,8 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 	 * however, if that changes, we might need to explicitly store pagetype
 	 * flag somewhere.
 	 *
-	 * Fixme - As an exception, the size of special space for zheap page
-	 * with one transaction slot will match with TPD page's special size.
+	 * Fixme - As an exception, the size of special space for zheap page with
+	 * one transaction slot will match with TPD page's special size.
 	 */
 	if (PageGetSpecialSize(dp) == MAXALIGN(sizeof(TPDPageOpaqueData)))
 	{
@@ -437,7 +436,7 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 	vmstatus = visibilitymap_get_status(scan->rs_base.rs_rd, page, &vmbuffer);
 
 	all_visible = (vmstatus & VISIBILITYMAP_ALL_VISIBLE) &&
-				  !snapshot->takenDuringRecovery;
+		!snapshot->takenDuringRecovery;
 
 	if (BufferIsValid(vmbuffer))
 	{
@@ -453,7 +452,7 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 		{
 			ZHeapTuple	resulttup;
 			bool		valid = false;
-			ItemPointerData	tid;
+			ItemPointerData tid;
 
 			ItemPointerSet(&tid, page, lineoff);
 
@@ -469,12 +468,12 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 
 			/*
 			 * If any prior version is visible, we pass latest visible as
-			 * true. The state of latest version of tuple is determined by
-			 * the called function.
+			 * true. The state of latest version of tuple is determined by the
+			 * called function.
 			 *
 			 * Note that, it's possible that tuple is updated in-place and
-			 * we're seeing some prior version of that. We handle that case
-			 * in ZHeapTupleHasSerializableConflictOut.
+			 * we're seeing some prior version of that. We handle that case in
+			 * ZHeapTupleHasSerializableConflictOut.
 			 */
 			CheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tid,
 											buffer, snapshot);
@@ -555,7 +554,7 @@ zheapgettup_pagemode(ZHeapScanDesc scan,
 				}
 			}
 			else
-				page = scan->rs_startblock;		/* first page */
+				page = scan->rs_startblock; /* first page */
 			valid = zheapgetpage(&scan->rs_base, page);
 			if (!valid)
 				goto get_next_page;
@@ -566,7 +565,7 @@ zheapgettup_pagemode(ZHeapScanDesc scan,
 		else
 		{
 			/* continue from previously returned page/tuple */
-			page = scan->rs_cblock;		/* current page */
+			page = scan->rs_cblock; /* current page */
 			lineindex = scan->rs_cindex + 1;
 		}
 
@@ -612,7 +611,7 @@ zheapgettup_pagemode(ZHeapScanDesc scan,
 		else
 		{
 			/* continue from previously returned page/tuple */
-			page = scan->rs_cblock;		/* current page */
+			page = scan->rs_cblock; /* current page */
 		}
 
 		lines = scan->rs_ntuples;
@@ -642,6 +641,7 @@ zheapgettup_pagemode(ZHeapScanDesc scan,
 	}
 
 get_next_tuple:
+
 	/*
 	 * advance the scan until we find a qualifying tuple or run out of stuff
 	 * to scan
@@ -655,9 +655,9 @@ get_next_tuple:
 
 	/*
 	 * if we get here, it means we've exhausted the items on this page and
-	 * it's time to move to the next.
-	 * For now we shall free all of the zheap tuples stored in rs_visztuples.
-	 * Later a better memory management is required.
+	 * it's time to move to the next. For now we shall free all of the zheap
+	 * tuples stored in rs_visztuples. Later a better memory management is
+	 * required.
 	 */
 	for (i = 0; i < scan->rs_ntuples; i++)
 		zheap_freetuple(scan->rs_visztuples[i]);
@@ -762,7 +762,7 @@ get_next_page:
  */
 static ZHeapTuple
 zheapgettup(ZHeapScanDesc scan,
-		   ScanDirection dir)
+			ScanDirection dir)
 {
 	ZHeapTuple	tuple = scan->rs_cztup;
 	Snapshot	snapshot = scan->rs_base.rs_snapshot;
@@ -816,17 +816,17 @@ zheapgettup(ZHeapScanDesc scan,
 				}
 			}
 			else
-				page = scan->rs_startblock;		/* first page */
+				page = scan->rs_startblock; /* first page */
 			valid = zheapgetpage(&scan->rs_base, page);
 			if (!valid)
 				goto get_next_page;
-			lineoff = FirstOffsetNumber;		/* first offnum */
+			lineoff = FirstOffsetNumber;	/* first offnum */
 			scan->rs_inited = true;
 		}
 		else
 		{
 			/* continue from previously returned page/tuple */
-			page = scan->rs_cblock;		/* current page */
+			page = scan->rs_cblock; /* current page */
 			lineoff =			/* next offnum */
 				OffsetNumberNext(ItemPointerGetOffsetNumber(&(tuple->t_self)));
 		}
@@ -876,7 +876,7 @@ zheapgettup(ZHeapScanDesc scan,
 		else
 		{
 			/* continue from previously returned page/tuple */
-			page = scan->rs_cblock;		/* current page */
+			page = scan->rs_cblock; /* current page */
 		}
 
 		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
@@ -930,12 +930,12 @@ get_next_tuple:
 
 			/*
 			 * If any prior version is visible, we pass latest visible as
-			 * true. The state of latest version of tuple is determined by
-			 * the called function.
+			 * true. The state of latest version of tuple is determined by the
+			 * called function.
 			 *
 			 * Note that, it's possible that tuple is updated in-place and
-			 * we're seeing some prior version of that. We handle that case
-			 * in ZHeapTupleHasSerializableConflictOut.
+			 * we're seeing some prior version of that. We handle that case in
+			 * ZHeapTupleHasSerializableConflictOut.
 			 */
 			CheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tuple->t_self,
 											scan->rs_cbuf, snapshot);
@@ -953,12 +953,12 @@ get_next_tuple:
 		--linesleft;
 		if (backward)
 		{
-			--lpp;			/* move back in this page's ItemId array */
+			--lpp;				/* move back in this page's ItemId array */
 			--lineoff;
 		}
 		else
 		{
-			++lpp;			/* move forward in this page's ItemId array */
+			++lpp;				/* move forward in this page's ItemId array */
 			++lineoff;
 		}
 	}
@@ -1084,7 +1084,7 @@ get_next_page:
 #define ZHEAPDEBUG_1
 #define ZHEAPDEBUG_2
 #define ZHEAPDEBUG_3
-#endif   /* !defined(ZHEAPDEBUGALL) */
+#endif							/* !defined(ZHEAPDEBUGALL) */
 
 bool
 zheap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *slot)
@@ -1102,7 +1102,7 @@ zheap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *
 	 * The key will be passed only for catalog table scans and catalog tables
 	 * are always a heap table!. So in case of zheap it should be set to NULL.
 	 */
-	Assert (scan->rs_base.rs_key == NULL);
+	Assert(scan->rs_base.rs_key == NULL);
 
 	if (scan->rs_base.rs_pageatatime)
 		zhtup = zheapgettup_pagemode(scan, direction);
@@ -1138,7 +1138,7 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 {
 	ZHeapScanDesc scan = (ZHeapScanDesc) sscan;
 	BlockNumber page = tbmres->blockno;
-	Page        dp;
+	Page		dp;
 	Buffer		buffer;
 	Snapshot	snapshot;
 	int			ntup;
@@ -1148,9 +1148,9 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 
 	/*
 	 * Ignore any claimed entries past what we think is the end of the
-	 * relation.  (This is probably not necessary given that we got at
-	 * least AccessShareLock on the table before performing any of the
-	 * indexscans, but let's be safe.)
+	 * relation.  (This is probably not necessary given that we got at least
+	 * AccessShareLock on the table before performing any of the indexscans,
+	 * but let's be safe.)
 	 */
 	if (page >= scan->rs_nblocks)
 		return false;
@@ -1159,8 +1159,8 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 		return false;
 
 	scan->rs_cbuf = ReleaseAndReadBuffer(scan->rs_cbuf,
-												 scan->rs_base.rs_rd,
-												 page);
+										 scan->rs_base.rs_rd,
+										 page);
 	buffer = scan->rs_cbuf;
 	snapshot = scan->rs_base.rs_snapshot;
 
@@ -1180,14 +1180,15 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 	 * however, if that changes, we might need to explicitly store pagetype
 	 * flag somewhere.
 	 *
-	 * Fixme - As an exception, the size of special space for zheap page
-	 * with one transaction slot will match with TPD page's special size.
+	 * Fixme - As an exception, the size of special space for zheap page with
+	 * one transaction slot will match with TPD page's special size.
 	 */
 	if (PageGetSpecialSize(dp) == MAXALIGN(sizeof(TPDPageOpaqueData)))
 	{
 		UnlockReleaseBuffer(buffer);
 		return false;
 	}
+
 	/*
 	 * We need two separate strategies for lossy and non-lossy cases.
 	 */
@@ -1203,7 +1204,7 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 		{
 			OffsetNumber offnum = tbmres->offsets[curslot];
 			ItemPointerData tid;
-			ZHeapTuple ztuple;
+			ZHeapTuple	ztuple;
 
 			ItemPointerSet(&tid, page, offnum);
 			ztuple = zheap_search_buffer(&tid, scan->rs_base.rs_rd, buffer, snapshot, NULL);
@@ -1245,12 +1246,12 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 
 			/*
 			 * If any prior version is visible, we pass latest visible as
-			 * true. The state of latest version of tuple is determined by
-			 * the called function.
+			 * true. The state of latest version of tuple is determined by the
+			 * called function.
 			 *
 			 * Note that, it's possible that tuple is updated in-place and
-			 * we're seeing some prior version of that. We handle that case
-			 * in ZHeapTupleHasSerializableConflictOut.
+			 * we're seeing some prior version of that. We handle that case in
+			 * ZHeapTupleHasSerializableConflictOut.
 			 */
 			CheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tid,
 											buffer, snapshot);
@@ -1278,9 +1279,8 @@ zheap_scan_bitmap_next_tuple(TableScanDesc sscan, TBMIterateResult *tbmres, stru
 	scan->rs_cztup = scan->rs_visztuples[scan->rs_cindex];
 
 	/*
-	 * Set up the result slot to point to this tuple. We don't need
-	 * to keep the pin on the buffer, since we only scan tuples in page
-	 * mode.
+	 * Set up the result slot to point to this tuple. We don't need to keep
+	 * the pin on the buffer, since we only scan tuples in page mode.
 	 */
 	ExecStoreZHeapTuple(scan->rs_cztup, slot, true);
 
@@ -1340,7 +1340,7 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	 */
 	if (ZHeapTupleFetch(relation, buffer, offnum, snapshot, &resulttup, NULL))
 	{
-		TransactionId	insertxid = InvalidTransactionId;
+		TransactionId insertxid = InvalidTransactionId;
 
 		if (IsSerializableXact())
 		{
@@ -1349,8 +1349,8 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 				/*
 				 * To fetch the xmin (aka transaction that has inserted the
 				 * tuple), we need to use the transaction slot of the tuple in
-				 * the page instead of the tuple from undo, otherwise, it might
-				 * traverse the wrong chain.
+				 * the page instead of the tuple from undo, otherwise, it
+				 * might traverse the wrong chain.
 				 *
 				 * ZBORKED: This seems like an ugly kludge.  Can't we find
 				 * another way to make sure we DON'T traverse the wrong undo
@@ -1367,13 +1367,12 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	}
 
 	/*
-	 * If any prior version is visible, we pass latest visible as
-	 * true. The state of latest version of tuple is determined by
-	 * the called function.
+	 * If any prior version is visible, we pass latest visible as true. The
+	 * state of latest version of tuple is determined by the called function.
 	 *
-	 * Note that, it's possible that tuple is updated in-place and
-	 * we're seeing some prior version of that. We handle that case
-	 * in ZHeapTupleHasSerializableConflictOut.
+	 * Note that, it's possible that tuple is updated in-place and we're
+	 * seeing some prior version of that. We handle that case in
+	 * ZHeapTupleHasSerializableConflictOut.
 	 */
 	CheckForSerializableConflictOut((resulttup != NULL), relation, (void *) tid,
 									buffer, snapshot);
@@ -1424,7 +1423,7 @@ zheap_fetch(Relation relation,
 	Page		page;
 	OffsetNumber offnum;
 	bool		valid;
-	ItemPointerData	ctid;
+	ItemPointerData ctid;
 
 	/*
 	 * Fetch and pin the appropriate page of the relation.
@@ -1490,21 +1489,20 @@ zheap_fetch(Relation relation,
 						 InvalidTransactionId);
 
 	/*
-	 * If any prior version is visible, we pass latest visible as
-	 * true. The state of latest version of tuple is determined by
-	 * the called function.
+	 * If any prior version is visible, we pass latest visible as true. The
+	 * state of latest version of tuple is determined by the called function.
 	 *
-	 * Note that, it's possible that tuple is updated in-place and
-	 * we're seeing some prior version of that. We handle that case
-	 * in ZHeapTupleHasSerializableConflictOut.
+	 * Note that, it's possible that tuple is updated in-place and we're
+	 * seeing some prior version of that. We handle that case in
+	 * ZHeapTupleHasSerializableConflictOut.
 	 */
 	CheckForSerializableConflictOut(valid, relation, (void *) tid,
 									buffer, snapshot);
 
 	/*
 	 * Pass back the ctid if the tuple is invisible because it was updated.
-	 * Apart from SnapshotAny, ctid must be changed only when current
-	 * tuple in not visible.
+	 * Apart from SnapshotAny, ctid must be changed only when current tuple in
+	 * not visible.
 	 */
 	if (ItemPointerIsValid(&ctid))
 	{
