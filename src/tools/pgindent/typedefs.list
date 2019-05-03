@@ -2684,6 +2684,7 @@ ZipfCache
 ZipfCell
 ZHeapFreeOffsetRanges
 ZHeapMetaPageData
+ZHeapMultiInsertWALInfo
 ZHeapPageOpaqueData
 ZHeapPrepareUndoInfo
 ZHeapScanDescData

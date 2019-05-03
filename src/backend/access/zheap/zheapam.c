@@ -118,6 +118,7 @@ static void log_zheap_insert(ZHeapWALInfo *walinfo, Relation relation,
 static void log_zheap_update(ZHeapWALInfo *oldinfo, ZHeapWALInfo *newinfo, bool inplace_update);
 static void log_zheap_delete(ZHeapWALInfo *walinfo, bool changingPart,
 				 SubTransactionId subxid, TransactionId tup_xid);
+static void log_zheap_multi_insert(ZHeapMultiInsertWALInfo *walinfo, bool skip_undo, char *scratch);
 static Bitmapset *ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 							  ZHeapTuple oldtup, ZHeapTuple newtup);
 static inline void CheckAndLockTPDPage(Relation relation, int new_trans_slot_id,
@@ -5865,6 +5866,185 @@ prepare_xlog:
 }
 
 /*
+ * log_zheap_multi_insert
+ * Perform XLogInsert for a zheap multi-insert operation.
+ *
+ * We need to store enough information in the WAL record so that undo records
+ * can be regenerated at the WAL replay time.
+ *
+ * Caller must already have modified the buffer(s) and marked them dirty.
+ *
+ * multi_walinfo - all the information required to insert WAL
+ * skip_undo - is undo insertion skipped?
+ * scratch - pre-allocated scratch space for WAL construction
+ */
+static void
+log_zheap_multi_insert(ZHeapMultiInsertWALInfo *multi_walinfo, bool skip_undo,
+					   char *scratch)
+{
+	xl_undo_header xlundohdr;
+	XLogRecPtr	recptr;
+	xl_zheap_multi_insert *xlrec;
+	uint8		info = XLOG_ZHEAP_MULTI_INSERT;
+	char	   *tupledata;
+	char	   *scratchptr = scratch;
+	int			bufflags = 0,
+				i,
+				totaldatalen;
+	XLogRecPtr	RedoRecPtr;
+	bool		doPageWrites,
+				init,
+				need_tuple_data = RelationIsLogicallyLogged(multi_walinfo->relation);
+	Page		page = BufferGetPage(multi_walinfo->gen_walinfo->buffer);
+
+	/*
+	 * Store the information required to generate undo record during replay.
+	 * All undo records have same information apart from the payload data.
+	 * Hence, we can copy the same from the last record.
+	 */
+	xlundohdr.reloid = multi_walinfo->relation->rd_id;
+	xlundohdr.urec_ptr = multi_walinfo->gen_walinfo->urecptr;
+	xlundohdr.blkprev = multi_walinfo->gen_walinfo->prev_urecptr;
+
+	/* allocate xl_zheap_multi_insert struct from the scratch area */
+	xlrec = (xl_zheap_multi_insert *) scratchptr;
+	xlrec->flags = multi_walinfo->gen_walinfo->all_visible_cleared ?
+		XLZ_INSERT_ALL_VISIBLE_CLEARED : 0;
+	if (skip_undo)
+		xlrec->flags |= XLZ_INSERT_IS_FROZEN;
+	xlrec->ntuples = multi_walinfo->curpage_ntuples;
+	scratchptr += SizeOfZHeapMultiInsert;
+
+	/* copy the offset ranges as well */
+	memcpy((char *) scratchptr,
+		   (char *) &multi_walinfo->zfree_offsets->nranges,
+		   sizeof(int));
+	scratchptr += sizeof(int);
+	for (i = 0; i < multi_walinfo->zfree_offsets->nranges; i++)
+	{
+		memcpy((char *) scratchptr,
+			   (char *) &multi_walinfo->zfree_offsets->startOffset[i],
+			   sizeof(OffsetNumber));
+		scratchptr += sizeof(OffsetNumber);
+		memcpy((char *) scratchptr,
+			   (char *) &multi_walinfo->zfree_offsets->endOffset[i],
+			   sizeof(OffsetNumber));
+		scratchptr += sizeof(OffsetNumber);
+	}
+
+	/* the rest of the scratch space is used for tuple data */
+	tupledata = scratchptr;
+
+	/*
+	 * Write out an xl_multi_insert_tuple and the tuple data itself for each
+	 * tuple.
+	 */
+	for (i = 0; i < multi_walinfo->curpage_ntuples; i++)
+	{
+		ZHeapTuple	zheaptup = multi_walinfo->ztuples[multi_walinfo->ndone + i];
+		xl_multi_insert_ztuple *tuphdr;
+		int			datalen;
+
+		/* xl_multi_insert_tuple needs two-byte alignment. */
+		tuphdr = (xl_multi_insert_ztuple *) SHORTALIGN(scratchptr);
+		scratchptr = ((char *) tuphdr) + SizeOfMultiInsertZTuple;
+
+		tuphdr->t_infomask2 = zheaptup->t_data->t_infomask2;
+		tuphdr->t_infomask = zheaptup->t_data->t_infomask;
+		tuphdr->t_hoff = zheaptup->t_data->t_hoff;
+
+		/* write bitmap [+ padding] [+ oid] + data */
+		datalen = zheaptup->t_len - SizeofZHeapTupleHeader;
+		memcpy(scratchptr,
+			   (char *) zheaptup->t_data + SizeofZHeapTupleHeader,
+			   datalen);
+		tuphdr->datalen = datalen;
+		scratchptr += datalen;
+	}
+	totaldatalen = scratchptr - tupledata;
+	Assert((scratchptr - scratch) < BLCKSZ);
+
+	if (need_tuple_data)
+		xlrec->flags |= XLZ_INSERT_CONTAINS_NEW_TUPLE;
+
+	/*
+	 * Signal that this is the last xl_zheap_multi_insert record emitted by
+	 * this call to zheap_multi_insert(). Needed for logical decoding so it
+	 * knows when to cleanup temporary data.
+	 */
+	if (multi_walinfo->ndone + multi_walinfo->curpage_ntuples ==
+		multi_walinfo->ntuples)
+		xlrec->flags |= XLZ_INSERT_LAST_IN_MULTI;
+
+	/*
+	 * If the page was previously empty, we can reinitialize the page instead
+	 * of restoring the whole thing.
+	 */
+	init = (ItemPointerGetOffsetNumber(&(multi_walinfo->ztuples[multi_walinfo->ndone]->t_self)) ==
+			FirstOffsetNumber &&
+			PageGetMaxOffsetNumber(page) ==
+			FirstOffsetNumber + multi_walinfo->curpage_ntuples - 1);
+
+	if (init)
+	{
+		info |= XLOG_ZHEAP_INIT_PAGE;
+		bufflags |= REGBUF_WILL_INIT;
+	}
+
+	/*
+	 * If we're doing logical decoding, include the new tuple data even if we
+	 * take a full-page image of the page.
+	 */
+	if (need_tuple_data)
+		bufflags |= REGBUF_KEEP_DATA;
+
+prepare_xlog:
+	/* LOG undolog meta if this is the first WAL after the checkpoint. */
+	LogUndoMetaData(multi_walinfo->gen_walinfo->undometa);
+	GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
+
+	XLogBeginInsert();
+	/* copy undo related info in maindata */
+	XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
+	/* copy xl_multi_insert_tuple in maindata */
+	XLogRegisterData((char *) xlrec, tupledata - scratch);
+
+	/* If we've skipped undo insertion, we don't need a slot in page. */
+	if (!skip_undo &&
+		multi_walinfo->gen_walinfo->new_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+	{
+		xlrec->flags |= XLZ_INSERT_CONTAINS_TPD_SLOT;
+		XLogRegisterData((char *) &multi_walinfo->gen_walinfo->new_trans_slot_id,
+						 sizeof(multi_walinfo->gen_walinfo->new_trans_slot_id));
+	}
+	XLogRegisterBuffer(0, multi_walinfo->gen_walinfo->buffer,
+					   REGBUF_STANDARD | bufflags);
+
+	/* copy tuples in block data */
+	XLogRegisterBufData(0, tupledata, totaldatalen);
+	if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
+		(void) RegisterTPDBuffer(page, 1);
+
+	RegisterUndoLogBuffers(2);
+
+	/* filtering by origin on a row level is much more efficient */
+	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
+
+	recptr = XLogInsertExtended(RM_ZHEAP_ID, info, RedoRecPtr,
+								doPageWrites);
+	if (recptr == InvalidXLogRecPtr)
+	{
+		ResetRegisteredTPDBuffers();
+		goto prepare_xlog;
+	}
+
+	PageSetLSN(page, recptr);
+	if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
+		TPDPageSetLSN(page, recptr);
+	UndoLogBuffersSetLSN(recptr);
+}
+
+/*
  * ZHeapDetermineModifiedColumns - Check which columns are being updated.
  *	This is same as HeapDetermineModifiedColumns except that it takes
  *	ZHeapTuple as input.
@@ -7430,7 +7610,6 @@ zheap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	char	   *scratch = NULL;
 	Page		page;
 	bool		needwal;
-	bool		need_tuple_data = RelationIsLogicallyLogged(relation);
 	bool		need_cids = RelationIsAccessibleInLogicalDecoding(relation);
 	Size		saveFreeSpace;
 	FullTransactionId fxid = GetTopFullTransactionId();
@@ -7775,150 +7954,28 @@ reacquire_buffer:
 		/* XLOG stuff */
 		if (needwal)
 		{
-			xl_undo_header xlundohdr;
-			XLogRecPtr	recptr;
-			xl_zheap_multi_insert *xlrec;
-			uint8		info = XLOG_ZHEAP_MULTI_INSERT;
-			char	   *tupledata;
-			int			totaldatalen;
-			char	   *scratchptr = scratch;
-			bool		init;
-			int			bufflags = 0;
-			XLogRecPtr	RedoRecPtr;
-			bool		doPageWrites;
+			ZHeapMultiInsertWALInfo ins_wal_info;
+			ZHeapWALInfo gen_wal_info;
 
-			/*
-			 * Store the information required to generate undo record during
-			 * replay. All undo records have same information apart from the
-			 * payload data. Hence, we can copy the same from the last record.
-			 */
-			xlundohdr.reloid = relation->rd_id;
-			xlundohdr.urec_ptr = urecptr;
-			xlundohdr.blkprev = prev_urecptr;
+			gen_wal_info.buffer = buffer;
+			gen_wal_info.ztuple = NULL;
+			gen_wal_info.urecptr = urecptr;
+			gen_wal_info.prev_urecptr = prev_urecptr;
+			gen_wal_info.undometa = &undometa;
+			gen_wal_info.new_trans_slot_id = trans_slot_id;
+			gen_wal_info.prior_trans_slot_id = InvalidXactSlotId;
+			gen_wal_info.all_visible_cleared = all_visible_cleared;
+			gen_wal_info.undorecord = NULL;
 
-			/* allocate xl_zheap_multi_insert struct from the scratch area */
-			xlrec = (xl_zheap_multi_insert *) scratchptr;
-			xlrec->flags = all_visible_cleared ? XLZ_INSERT_ALL_VISIBLE_CLEARED : 0;
-			if (skip_undo)
-				xlrec->flags |= XLZ_INSERT_IS_FROZEN;
-			xlrec->ntuples = nthispage;
-			scratchptr += SizeOfZHeapMultiInsert;
+			ins_wal_info.gen_walinfo = &gen_wal_info;
+			ins_wal_info.relation = relation;
+			ins_wal_info.ztuples = zheaptuples;
+			ins_wal_info.zfree_offsets = zfree_offset_ranges;
+			ins_wal_info.ntuples = ntuples;
+			ins_wal_info.curpage_ntuples = nthispage;
+			ins_wal_info.ndone = ndone;
 
-			/* copy the offset ranges as well */
-			memcpy((char *) scratchptr, (char *) &zfree_offset_ranges->nranges, sizeof(int));
-			scratchptr += sizeof(int);
-			for (i = 0; i < zfree_offset_ranges->nranges; i++)
-			{
-				memcpy((char *) scratchptr, (char *) &zfree_offset_ranges->startOffset[i], sizeof(OffsetNumber));
-				scratchptr += sizeof(OffsetNumber);
-				memcpy((char *) scratchptr, (char *) &zfree_offset_ranges->endOffset[i], sizeof(OffsetNumber));
-				scratchptr += sizeof(OffsetNumber);
-			}
-
-			/* the rest of the scratch space is used for tuple data */
-			tupledata = scratchptr;
-
-			/*
-			 * Write out an xl_multi_insert_tuple and the tuple data itself
-			 * for each tuple.
-			 */
-			for (i = 0; i < nthispage; i++)
-			{
-				ZHeapTuple	zheaptup = zheaptuples[ndone + i];
-				xl_multi_insert_ztuple *tuphdr;
-				int			datalen;
-
-				/* xl_multi_insert_tuple needs two-byte alignment. */
-				tuphdr = (xl_multi_insert_ztuple *) SHORTALIGN(scratchptr);
-				scratchptr = ((char *) tuphdr) + SizeOfMultiInsertZTuple;
-
-				tuphdr->t_infomask2 = zheaptup->t_data->t_infomask2;
-				tuphdr->t_infomask = zheaptup->t_data->t_infomask;
-				tuphdr->t_hoff = zheaptup->t_data->t_hoff;
-
-				/* write bitmap [+ padding] [+ oid] + data */
-				datalen = zheaptup->t_len - SizeofZHeapTupleHeader;
-				memcpy(scratchptr,
-					   (char *) zheaptup->t_data + SizeofZHeapTupleHeader,
-					   datalen);
-				tuphdr->datalen = datalen;
-				scratchptr += datalen;
-			}
-			totaldatalen = scratchptr - tupledata;
-			Assert((scratchptr - scratch) < BLCKSZ);
-
-			if (need_tuple_data)
-				xlrec->flags |= XLZ_INSERT_CONTAINS_NEW_TUPLE;
-
-			/*
-			 * Signal that this is the last xl_zheap_multi_insert record
-			 * emitted by this call to zheap_multi_insert(). Needed for
-			 * logical decoding so it knows when to cleanup temporary data.
-			 */
-			if (ndone + nthispage == ntuples)
-				xlrec->flags |= XLZ_INSERT_LAST_IN_MULTI;
-
-			/*
-			 * If the page was previously empty, we can reinitialize the page
-			 * instead of restoring the whole thing.
-			 */
-			init = (ItemPointerGetOffsetNumber(&(zheaptuples[ndone]->t_self)) == FirstOffsetNumber &&
-					PageGetMaxOffsetNumber(page) == FirstOffsetNumber + nthispage - 1);
-
-			if (init)
-			{
-				info |= XLOG_ZHEAP_INIT_PAGE;
-				bufflags |= REGBUF_WILL_INIT;
-			}
-
-			/*
-			 * If we're doing logical decoding, include the new tuple data
-			 * even if we take a full-page image of the page.
-			 */
-			if (need_tuple_data)
-				bufflags |= REGBUF_KEEP_DATA;
-
-	prepare_xlog:
-			/* LOG undolog meta if this is the first WAL after the checkpoint. */
-			LogUndoMetaData(&undometa);
-			GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
-
-			XLogBeginInsert();
-			/* copy undo related info in maindata */
-			XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
-			/* copy xl_multi_insert_tuple in maindata */
-			XLogRegisterData((char *) xlrec, tupledata - scratch);
-
-			/* If we've skipped undo insertion, we don't need a slot in page. */
-			if (!skip_undo && trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-			{
-				xlrec->flags |= XLZ_INSERT_CONTAINS_TPD_SLOT;
-				XLogRegisterData((char *) &trans_slot_id, sizeof(trans_slot_id));
-			}
-			XLogRegisterBuffer(0, buffer, REGBUF_STANDARD | bufflags);
-
-			/* copy tuples in block data */
-			XLogRegisterBufData(0, tupledata, totaldatalen);
-			if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
-				(void) RegisterTPDBuffer(page, 1);
-
-			RegisterUndoLogBuffers(2);
-
-			/* filtering by origin on a row level is much more efficient */
-			XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
-
-			recptr = XLogInsertExtended(RM_ZHEAP_ID, info, RedoRecPtr,
-										doPageWrites);
-			if (recptr == InvalidXLogRecPtr)
-			{
-				ResetRegisteredTPDBuffers();
-				goto prepare_xlog;
-			}
-
-			PageSetLSN(page, recptr);
-			if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
-				TPDPageSetLSN(page, recptr);
-			UndoLogBuffersSetLSN(recptr);
+			log_zheap_multi_insert(&ins_wal_info, skip_undo, scratch);
 		}
 
 		END_CRIT_SECTION();

@@ -130,6 +130,19 @@ typedef struct ZHeapWALInfo
 	xl_undolog_meta *undometa;
 } ZHeapWALInfo;
 
+/* This is used to write WAL during multi insert */
+typedef struct ZHeapMultiInsertWALInfo
+{
+	ZHeapWALInfo *gen_walinfo;	/* generic WAL info */
+	Relation	relation;
+	ZHeapTuple *ztuples;		/* array of all zheap tuples inserted */
+	ZHeapFreeOffsetRanges *zfree_offsets;	/* unused offset ranges in
+											 * current page */
+	int			curpage_ntuples;	/* tuples inserted in current page */
+	int			ntuples;		/* total number of tuples inserted */
+	int			ndone;			/* tuples processed */
+} ZHeapMultiInsertWALInfo;
+
 extern void zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 			 int options, BulkInsertState bistate, uint32 specToken);
 extern void simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot);
