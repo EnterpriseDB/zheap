@@ -71,7 +71,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "access/heapam.h"	/* for heap_sync() */
+#include "access/heapam.h"		/* for heap_sync() */
 #include "access/rewritezheap.h"
 #include "access/tuptoaster.h"
 #include "access/zheap.h"

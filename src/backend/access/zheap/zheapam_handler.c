@@ -502,8 +502,8 @@ zheapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot sn
 	LockBuffer(buffer, BUFFER_LOCK_SHARE);
 
 	/*
-	 * NB: current transaction has inserted/updated the tuple, so it can't
-	 * be deleted
+	 * NB: current transaction has inserted/updated the tuple, so it can't be
+	 * deleted
 	 */
 
 	ZHeapTupleFetch(rel, buffer, ItemPointerGetOffsetNumber(tid), snapshot,

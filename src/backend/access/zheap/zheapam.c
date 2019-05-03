@@ -5901,7 +5901,7 @@ ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 void
 GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 					   bool NoTPDBufLock, bool TPDSlot,
-					   ZHeapTupleTransInfo * zinfo)
+					   ZHeapTupleTransInfo *zinfo)
 {
 	ZHeapPageOpaque opaque;
 	Page		page;

@@ -54,7 +54,7 @@ typedef struct
 	OffsetNumber nowunused[MaxZHeapTuplesPerPage];
 	/* marked[i] is TRUE if item i is entered in one of the above arrays */
 	bool		marked[MaxZHeapTuplesPerPage + 1];
-}			ZPruneState;
+} ZPruneState;
 
 static int zheap_prune_item(Relation relation, Buffer buffer,
 				 OffsetNumber rootoffnum, TransactionId OldestXmin,
@@ -598,7 +598,7 @@ zheap_prune_item(Relation relation, Buffer buffer, OffsetNumber offnum,
 
 /* Record lowest soon-prunable XID */
 static void
-zheap_prune_record_prunable(ZPruneState * prstate, TransactionId xid)
+zheap_prune_record_prunable(ZPruneState *prstate, TransactionId xid)
 {
 	/*
 	 * This should exactly match the PageSetPrunable macro.  We can't store
@@ -612,7 +612,7 @@ zheap_prune_record_prunable(ZPruneState * prstate, TransactionId xid)
 
 /* Record item pointer to be marked dead */
 static void
-zheap_prune_record_dead(ZPruneState * prstate, OffsetNumber offnum)
+zheap_prune_record_dead(ZPruneState *prstate, OffsetNumber offnum)
 {
 	Assert(prstate->ndead < MaxZHeapTuplesPerPage);
 	prstate->nowdead[prstate->ndead] = offnum;
@@ -623,7 +623,7 @@ zheap_prune_record_dead(ZPruneState * prstate, OffsetNumber offnum)
 
 /* Record item pointer to be deleted */
 static void
-zheap_prune_record_deleted(ZPruneState * prstate, OffsetNumber offnum)
+zheap_prune_record_deleted(ZPruneState *prstate, OffsetNumber offnum)
 {
 	Assert(prstate->ndead < MaxZHeapTuplesPerPage);
 	prstate->nowdeleted[prstate->ndeleted] = offnum;
@@ -811,7 +811,7 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 
 			if (!ZHeapTupleHasInvalidXact(tup->t_infomask))
 			{
-				ZHeapTupleTransInfo	zinfo;
+				ZHeapTupleTransInfo zinfo;
 
 				zinfo.trans_slot = ZHeapTupleHeaderGetXactSlot(tup);
 				if (zinfo.trans_slot == ZHTUP_SLOT_FROZEN)
@@ -889,7 +889,7 @@ ZPageRepairFragmentation(Buffer buffer, Page tmppage,
 			 */
 			if (ItemIdHasPendingXact(lp))
 			{
-				ZHeapTupleTransInfo	zinfo;
+				ZHeapTupleTransInfo zinfo;
 
 				/*
 				 * If unused_set is true, it means that itemIds are already

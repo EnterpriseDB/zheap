@@ -101,7 +101,7 @@ static void LogAndClearTPDLocation(Relation relation, Buffer heapbuf,
 static bool TPDPageIsValid(Relation relation, Buffer heapbuf,
 			   bool *tpd_e_pruned, Buffer tpd_buf,
 			   OffsetNumber tpdItemOff,
-			   TPDEntryHeaderData * tpd_e_hdr,
+			   TPDEntryHeaderData *tpd_e_hdr,
 			   bool clean_tpd_loc,
 			   bool is_tpd_buf_locked);
 
@@ -883,7 +883,7 @@ SetTPDLocation(Buffer heapbuffer, Buffer tpdbuffer, OffsetNumber offset)
 	transinfo->urec_ptr = InvalidUndoRecPtr;
 	/* set TPD location in last transaction slot */
 	transinfo->fxid = FullTransactionIdFromEpochAndXid(
-		BufferGetBlockNumber(tpdbuffer), offset);
+													   BufferGetBlockNumber(tpdbuffer), offset);
 
 	phdr->pd_flags |= PD_PAGE_HAS_TPD_SLOT;
 }
@@ -2615,10 +2615,10 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 	/* Update latest transaction information on the page. */
 	tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(tpdpage);
 	tpd_latest_xid_epoch = U64FromFullTransactionId(
-		FullTransactionIdFromEpochAndXid(tpdopaque->tpd_latest_xid_epoch,
-										 tpdopaque->tpd_latest_xid));
+													FullTransactionIdFromEpochAndXid(tpdopaque->tpd_latest_xid_epoch,
+																					 tpdopaque->tpd_latest_xid));
 	current_xid_epoch = U64FromFullTransactionId(
-		FullTransactionIdFromEpochAndXid(epoch, xid));
+												 FullTransactionIdFromEpochAndXid(epoch, xid));
 	if (tpd_latest_xid_epoch < current_xid_epoch)
 	{
 		tpdopaque->tpd_latest_xid_epoch = epoch;
@@ -2983,8 +2983,8 @@ TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
 	/* Update latest transaction information on the page. */
 	tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(tpdpage);
 	tpd_latest_xid_epoch = U64FromFullTransactionId(
-		FullTransactionIdFromEpochAndXid(tpdopaque->tpd_latest_xid_epoch,
-										 tpdopaque->tpd_latest_xid));
+													FullTransactionIdFromEpochAndXid(tpdopaque->tpd_latest_xid_epoch,
+																					 tpdopaque->tpd_latest_xid));
 	current_xid_epoch = U64FromFullTransactionId(fxid);
 	if (tpd_latest_xid_epoch < current_xid_epoch)
 	{
@@ -3080,7 +3080,7 @@ void
 GetTPDBlockAndOffset(Page heap_page, BlockNumber *tpd_blk,
 					 OffsetNumber *tpd_item_off)
 {
-	TransInfo trans_info;
+	TransInfo	trans_info;
 	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
 	ZHeapPageOpaque zopaque;
 
