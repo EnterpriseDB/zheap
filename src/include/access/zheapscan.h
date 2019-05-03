@@ -45,7 +45,7 @@ typedef struct ZHeapScanDescData
 	int			rs_ntuples;		/* number of visible tuples on page */
 
 	ZHeapTuple	rs_visztuples[MaxZHeapTuplesPerPage];
-}			ZHeapScanDescData;
+} ZHeapScanDescData;
 
 typedef struct ZHeapScanDescData *ZHeapScanDesc;
 
@@ -68,9 +68,9 @@ extern bool zheap_scan_bitmap_next_block(TableScanDesc sscan, struct TBMIterateR
 extern bool zheap_scan_bitmap_next_tuple(TableScanDesc sscan, struct TBMIterateResult *tbmres, struct TupleTableSlot *slot);
 
 extern ZHeapTuple zheap_search_buffer(ItemPointer tid, Relation relation,
-									  Buffer buffer, Snapshot snapshot, bool *all_dead);
+					Buffer buffer, Snapshot snapshot, bool *all_dead);
 extern bool zheap_fetch(Relation relation, Snapshot snapshot,
-			ItemPointer tid, ZHeapTuple * tuple, Buffer *userbuf,
+			ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
 			bool keep_buf);
 
 #endif							/* ZHEAPSCAN_H */

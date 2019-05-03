@@ -36,7 +36,7 @@ typedef struct ZMultiLockMember
 	SubTransactionId subxid;
 	int			trans_slot_id;
 	LockTupleMode mode;
-}			ZMultiLockMember;
+} ZMultiLockMember;
 
  /*
   * Possible lock modes for a tuple.
@@ -49,7 +49,7 @@ typedef enum LockOper
 	LockForUpdate,
 	/* Update/Delete */
 	ForUpdate
-}			LockOper;
+} LockOper;
 
 /*
  * Heap tuple header.  To avoid wasting space, the fields should be
@@ -77,9 +77,9 @@ typedef struct ZHeapTupleHeaderData
 	bits8		t_bits[FLEXIBLE_ARRAY_MEMBER];	/* bitmap of NULLs */
 
 	/* MORE DATA FOLLOWS AT END OF STRUCT */
-}			ZHeapTupleHeaderData;
+} ZHeapTupleHeaderData;
 
-typedef ZHeapTupleHeaderData * ZHeapTupleHeader;
+typedef ZHeapTupleHeaderData *ZHeapTupleHeader;
 
 #define SizeofZHeapTupleHeader offsetof(ZHeapTupleHeaderData, t_bits)
 
@@ -89,9 +89,9 @@ typedef struct ZHeapTupleData
 	ItemPointerData t_self;		/* SelfItemPointer */
 	Oid			t_tableOid;		/* table the tuple came from */
 	ZHeapTupleHeader t_data;	/* -> tuple header and data */
-}			ZHeapTupleData;
+} ZHeapTupleData;
 
-typedef ZHeapTupleData * ZHeapTuple;
+typedef ZHeapTupleData *ZHeapTuple;
 
 #define ZHEAPTUPLESIZE	MAXALIGN(sizeof(ZHeapTupleData))
 
@@ -260,7 +260,7 @@ extern void zheap_fill_tuple(TupleDesc tupleDesc,
 				 char *data, Size data_size,
 				 uint16 *infomask, bits8 *bit);
 extern ZHeapTuple zheap_form_tuple(TupleDesc tupleDescriptor,
-								   Datum *values, bool *isnull);
+				 Datum *values, bool *isnull);
 extern void zheap_deform_tuple(ZHeapTuple tuple, TupleDesc tupleDesc,
 				   Datum *values, bool *isnull, int atts_count);
 extern void zheap_freetuple(ZHeapTuple zhtup);
@@ -277,14 +277,14 @@ typedef struct ZHeapTupleTableSlot
 	ZHeapTuple	tuple;			/* physical tuple */
 	ZHeapTupleData tupdata;
 	uint32		off;			/* saved state for slot_deform_tuple */
-}			ZHeapTupleTableSlot;
+} ZHeapTupleTableSlot;
 
 struct TupleTableSlot;
 extern void slot_deform_ztuple(struct TupleTableSlot *slot, ZHeapTuple tuple,
 				   uint32 *offp, int natts);
 extern ZHeapTuple ExecGetZHeapTupleFromSlot(struct TupleTableSlot *slot);
 extern struct TupleTableSlot *ExecStoreZHeapTuple(ZHeapTuple tuple,
-				struct TupleTableSlot *slot, bool shouldFree);
+					struct TupleTableSlot *slot, bool shouldFree);
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsZHeapTuple;
 #define TTS_IS_ZHEAP(slot) ((slot)->tts_ops == &TTSOpsZHeapTuple)
 

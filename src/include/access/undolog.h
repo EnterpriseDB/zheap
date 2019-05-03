@@ -290,7 +290,7 @@ extern void assign_undo_tablespaces(const char *newval, void *extra);
 
 /* Checkpoint interfaces. */
 extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
-							   XLogRecPtr priorCheckPointRedo);
+				   XLogRecPtr priorCheckPointRedo);
 
 #ifndef FRONTEND
 

@@ -33,35 +33,36 @@ TransactionId latestRecentGlobalXmin;
 /* This is the data structure for each hash table entry for rollbacks. */
 typedef struct RollbackHashEntry
 {
-	FullTransactionId		full_xid; /* must be first entry */
+	FullTransactionId full_xid; /* must be first entry */
 	UndoRecPtr	start_urec_ptr;
 	UndoRecPtr	end_urec_ptr;
 	Oid			dbid;
-	bool		in_progress;	/* indicates that undo actions are being processed */
+	bool		in_progress;	/* indicates that undo actions are being
+								 * processed */
 } RollbackHashEntry;
 
 /* This is the data structure for each hash table key for rollbacks. */
 typedef struct RollbackHashKey
 {
-	FullTransactionId		full_xid;
+	FullTransactionId full_xid;
 	UndoRecPtr	start_urec_ptr;
 } RollbackHashKey;
 
 /* This is an entry for undo request queue that is sorted by xid. */
 typedef struct UndoXidQueue
 {
-	FullTransactionId			full_xid;
-	UndoRecPtr		start_urec_ptr;
-	Oid				dbid;
+	FullTransactionId full_xid;
+	UndoRecPtr	start_urec_ptr;
+	Oid			dbid;
 } UndoXidQueue;
 
 /* This is an entry for undo request queue that is sorted by size. */
 typedef struct UndoSizeQueue
 {
-	FullTransactionId			full_xid;
-	UndoRecPtr		start_urec_ptr;
-	Oid				dbid;
-	uint64			request_size;
+	FullTransactionId full_xid;
+	UndoRecPtr	start_urec_ptr;
+	Oid			dbid;
+	uint64		request_size;
 } UndoSizeQueue;
 
 /*
@@ -70,10 +71,10 @@ typedef struct UndoSizeQueue
  */
 typedef struct UndoErrorQueue
 {
-	FullTransactionId			full_xid;
-	UndoRecPtr		start_urec_ptr;
-	Oid				dbid;
-	TimestampTz		err_occurred_at;
+	FullTransactionId full_xid;
+	UndoRecPtr	start_urec_ptr;
+	Oid			dbid;
+	TimestampTz err_occurred_at;
 } UndoErrorQueue;
 
 /* undo record information */
@@ -87,11 +88,11 @@ typedef struct UndoRecInfo
 /* undo request information */
 typedef struct UndoRequestInfo
 {
-	FullTransactionId				full_xid;
-	UndoRecPtr			start_urec_ptr;
-	UndoRecPtr			end_urec_ptr;
-	Oid					dbid;
-	uint64			request_size;
+	FullTransactionId full_xid;
+	UndoRecPtr	start_urec_ptr;
+	UndoRecPtr	end_urec_ptr;
+	Oid			dbid;
+	uint64		request_size;
 	UndoWorkerQueueType undo_worker_queue;
 } UndoRequestInfo;
 
@@ -124,10 +125,11 @@ extern void InsertRequestIntoUndoQueues(UndoRequestInfo *urinfo);
 extern bool InsertRequestIntoErrorUndoQueue(volatile UndoRequestInfo *urinfo);
 extern void SetUndoWorkerQueueStart(UndoWorkerQueueType undo_worker_queue);
 extern bool UndoGetWork(bool allow_peek, bool is_undo_launcher,
-						UndoRequestInfo *urinfo, bool *in_other_db);
+			UndoRequestInfo *urinfo, bool *in_other_db);
+
 /* Exposed functions for rollback hash table. */
 extern bool RegisterRollbackReq(UndoRecPtr end_urec_ptr, UndoRecPtr start_urec_ptr,
-				Oid dbid, FullTransactionId full_xid);
+					Oid dbid, FullTransactionId full_xid);
 extern void RollbackHTRemoveEntry(FullTransactionId full_xid, UndoRecPtr start_urec_ptr);
 extern bool RollbackHTIsFull(void);
 extern void RollbackHTCleanup(Oid dbid);
@@ -137,7 +139,7 @@ extern UndoRecInfo *UndoRecordBulkFetch(UndoRecPtr *from_urecptr,
 					UndoRecPtr to_urecptr, int undo_apply_size,
 					int *nrecords, bool one_page);
 extern void execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
-					UndoRecPtr to_urecptr, bool nopartial, bool rewind);
+					 UndoRecPtr to_urecptr, bool nopartial, bool rewind);
 extern bool execute_undo_actions_page(UndoRecInfo *urp_array, int first_idx,
 						  int last_idx, Oid reloid, FullTransactionId full_xid,
 						  BlockNumber blkno, bool blk_chain_complete);
