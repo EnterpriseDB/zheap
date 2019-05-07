@@ -1255,7 +1255,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	bool		new_all_visible_cleared = false;
 	bool		have_tuple_lock = false;
 	bool		is_index_updated = false;
-	bool		use_inplace_update = false;
+	bool		use_inplace_update;
 	bool		in_place_updated_or_locked = false;
 	bool		key_intact = false;
 	bool		checked_lockers = false;
@@ -1546,14 +1546,26 @@ zheap_tuple_updated:
 	newtupsize = SHORTALIGN(newtup->t_len);
 
 	/*
-	 * inplace updates can be done only if the length of new tuple is lesser
-	 * than or equal to old tuple and there are no index column updates and
-	 * the tuple does not require TOAST-ing.
+	 * An in-place update is only possible if there are no index column
+	 * updates and no attribute that have been moved to an external TOAST
+	 * table.  If the new tuple is no larger than the old one, that's enough;
+	 * otherwise, we also need sufficient free space to be available in the
+	 * page.
 	 */
-	if ((newtupsize <= oldtupsize) && !is_index_updated && !need_toast)
+	if (is_index_updated || need_toast)
+		use_inplace_update = false;
+	else if (newtupsize <= oldtupsize)
 		use_inplace_update = true;
 	else
-		use_inplace_update = false;
+	{
+		/* Pass delta space required to accommodate the new tuple. */
+		use_inplace_update =
+			zheap_page_prune_opt(relation, buffer, old_offnum,
+								 newtupsize - oldtupsize);
+
+		/* The page might have been modified, so refresh t_data */
+		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+	}
 
 	/*
 	 * Acquire subtransaction lock, if current transaction is a
@@ -1563,30 +1575,6 @@ zheap_tuple_updated:
 	{
 		SubXactLockTableInsert(GetCurrentSubTransactionId());
 		hasSubXactLock = true;
-	}
-
-	/*
-	 * If it is a non inplace update then check we have sufficient free space
-	 * to insert in same page. If not try defragmentation and recheck the
-	 * freespace again.
-	 */
-	if (!use_inplace_update && !is_index_updated && !need_toast)
-	{
-		bool		pruned;
-
-		/* Here, we pass delta space required to accommodate the new tuple. */
-		pruned = zheap_page_prune_opt(relation, buffer, old_offnum,
-									  (newtupsize - oldtupsize));
-
-		oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-
-		/*
-		 * Check if the non-inplace update is due to non-index update and we
-		 * are able to perform pruning, then we must be able to perform
-		 * inplace update.
-		 */
-		if (pruned)
-			use_inplace_update = true;
 	}
 
 	max_offset = PageGetMaxOffsetNumber(BufferGetPage(buffer));
