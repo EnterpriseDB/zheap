@@ -1359,16 +1359,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	 * Similar to heap, if we're not updating any "key" column, we can grab a
 	 * weaker lock type.  See heap_update.
 	 */
-	if (!bms_overlap(modified_attrs, key_attrs))
-	{
-		*lockmode = LockTupleNoKeyExclusive;
-		key_intact = true;
-	}
-	else
-	{
-		*lockmode = LockTupleExclusive;
-		key_intact = false;
-	}
+	key_intact = !bms_overlap(modified_attrs, key_attrs);
+	*lockmode = key_intact ? LockTupleNoKeyExclusive : LockTupleExclusive;
 
 	/*
 	 * ctid needs to be fetched from undo chain.  You might think that it will
