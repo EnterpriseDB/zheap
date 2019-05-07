@@ -1167,8 +1167,8 @@ ZHeapTupleSatisfies(ZTupleTidOp op, bool locked_only, Snapshot snapshot,
  *	updated in place.
  */
 TM_Result
-ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
-						  Buffer buffer, ItemPointer ctid,
+ZHeapTupleSatisfiesUpdate(Relation rel, ItemPointer tid, ZHeapTuple zhtup,
+						  CommandId curcid, Buffer buffer, ItemPointer ctid,
 						  ZHeapTupleTransInfo *zinfo,
 						  SubTransactionId *subxid,
 						  TransactionId *single_locker_xid,
@@ -1176,12 +1176,14 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 						  bool lock_allowed, Snapshot snapshot,
 						  bool *in_place_updated_or_locked)
 {
-	ZHeapTupleHeader tuple = zhtup->t_data;
+	BlockNumber blocknum = ItemPointerGetBlockNumber(tid);
+	OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
+	Page		page = BufferGetPage(buffer);
+	ItemId		lp = PageGetItemId(page, offnum);
+	ZHeapTupleHeader tuple;
 	CommandId	cur_comm_cid = GetCurrentCommandId(false);
 	bool		fetch_cid = true;
 	bool		have_ctid = false;
-	BlockNumber blocknum = ItemPointerGetBlockNumber(&zhtup->t_self);
-	OffsetNumber offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
 	int			trans_slot;
 	bool		is_invalid_slot;
 	ZTupleTidOp op;
@@ -1193,8 +1195,26 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ZHeapTuple zhtup, CommandId curcid,
 	*single_locker_trans_slot = InvalidXactSlotId;
 	*in_place_updated_or_locked = false;
 
-	Assert(ItemPointerIsValid(&zhtup->t_self));
-	Assert(zhtup->t_tableOid != InvalidOid);
+	Assert(ItemPointerIsValid(tid));
+	*ctid = *tid;
+
+	lp = PageGetItemId(page, offnum);
+	Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
+
+	zhtup->t_tableOid = RelationGetRelid(rel);
+	zhtup->t_self = *tid;
+
+	if (ItemIdIsDeleted(lp))
+	{
+		zhtup->t_data = NULL;
+		zhtup->t_len = 0;
+		ZHeapPageGetNewCtid(buffer, ctid, zinfo);
+		return TM_Updated;
+	}
+
+	zhtup->t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
+	zhtup->t_len = ItemIdGetLength(lp);
+	tuple = zhtup->t_data;
 
 	/*
 	 * If the current command doesn't need to modify any tuple and the

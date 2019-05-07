@@ -585,29 +585,8 @@ zheap_delete(Relation relation, ItemPointer tid,
 	Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
 
 check_tup_satisfies_update:
-
-	/*
-	 * If TID is already delete marked due to pruning, then get new ctid, so
-	 * that we can delete the new tuple.  We will get new ctid if the tuple
-	 * was non-inplace-updated otherwise we will get same TID.
-	 */
-	if (ItemIdIsDeleted(lp))
-	{
-		ctid = *tid;
-		ZHeapPageGetNewCtid(buffer, &ctid, &zinfo);
-		result = TM_Updated;
-		goto zheap_tuple_updated;
-	}
-
-	zheaptup.t_tableOid = RelationGetRelid(relation);
-	zheaptup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-	zheaptup.t_len = ItemIdGetLength(lp);
-	zheaptup.t_self = *tid;
-
-	ctid = *tid;
-
 	any_multi_locker_member_alive = true;
-	result = ZHeapTupleSatisfiesUpdate(relation, &zheaptup, cid, buffer, &ctid,
+	result = ZHeapTupleSatisfiesUpdate(relation, tid, &zheaptup, cid, buffer, &ctid,
 									   &zinfo, &tup_subxid, &single_locker_xid,
 									   &single_locker_trans_slot, false,
 									   snapshot, &in_place_updated_or_locked);
@@ -645,7 +624,7 @@ check_tup_satisfies_update:
 									  &any_multi_locker_member_alive, &result))
 			goto check_tup_satisfies_update;
 	}
-	else if (result == TM_Updated
+	else if (result == TM_Updated && zheaptup.t_data != NULL
 			 && ZHeapTupleHasMultiLockers(zheaptup.t_data->t_infomask))
 	{
 		/*
@@ -676,7 +655,6 @@ check_tup_satisfies_update:
 			result = TM_Updated;
 	}
 
-zheap_tuple_updated:
 	if (result != TM_Ok)
 	{
 		Assert(result == TM_SelfModified ||
@@ -1322,55 +1300,14 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	Assert(ItemIdIsNormal(lp) || ItemIdIsDeleted(lp));
 
 check_tup_satisfies_update:
-	/*
-	 * ctid needs to be fetched from undo chain.  You might think that it will
-	 * be always same as the passed in ctid as the old tuple is already
-	 * visible out snapshot.  However, it is quite possible that after
-	 * checking the visibility of old tuple, some concurrent session would
-	 * have performed non in-place update and in such a case we need can only
-	 * get it via undo.
-	 */
-	ctid = *otid;
-
-	/*
-	 * If TID is already delete marked due to pruning, then get new ctid, so
-	 * that we can update the new tuple.  We will get new ctid if the tuple
-	 * was non-inplace-updated otherwise we will get same TID.
-	 */
-	if (ItemIdIsDeleted(lp))
-	{
-		ZHeapPageGetNewCtid(buffer, &ctid, &zinfo);
-		result = TM_Updated;
-
-		/*
-		 * Since tuple data is gone let's be conservative about lock mode.
-		 *
-		 * XXX We could optimize here by checking whether the key column is
-		 * not updated and if so, then use lower lock level, but this case
-		 * should be rare enough that it won't matter.
-		 */
-		*lockmode = LockTupleExclusive;
-		goto zheap_tuple_updated;
-	}
-
-	/*
-	 * Fill in enough data in oldtup for ZHeapDetermineModifiedColumns to work
-	 * properly.
-	 */
-	oldtup.t_tableOid = RelationGetRelid(relation);
-	oldtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-	oldtup.t_len = ItemIdGetLength(lp);
-	oldtup.t_self = *otid;
-
 	checked_lockers = false;
 	locker_remains = false;
 	any_multi_locker_member_alive = true;
-	result = ZHeapTupleSatisfiesUpdate(relation, &oldtup, cid, buffer, &ctid,
-									   &zinfo, &tup_subxid,
+	result = ZHeapTupleSatisfiesUpdate(relation, otid, &oldtup, cid, buffer,
+									   &ctid, &zinfo, &tup_subxid,
 									   &single_locker_xid,
 									   &single_locker_trans_slot, false,
 									   snapshot, &in_place_updated_or_locked);
-
 	/* Determine columns modified by the update, if not yet done. */
 	if (!computed_modified_attrs)
 	{
@@ -1431,7 +1368,7 @@ check_tup_satisfies_update:
 		checked_lockers = true;
 		locker_remains = false;
 	}
-	else if (result == TM_Updated &&
+	else if (result == TM_Updated && oldtup.t_data != NULL &&
 			 ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask))
 	{
 		/*
@@ -1479,7 +1416,6 @@ check_tup_satisfies_update:
 			result = TM_Updated;
 	}
 
-zheap_tuple_updated:
 	if (result != TM_Ok)
 	{
 		Assert(result == TM_SelfModified ||
@@ -2891,18 +2827,12 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 	 * non-inplace-updated otherwise we will get same TID.
 	 */
 check_tup_satisfies_update:
-	if (ItemIdIsDeleted(lp))
-	{
-		ctid = *tid;
-		ZHeapPageGetNewCtid(*buffer, &ctid, &zinfo);
-		result = TM_Updated;
-		goto failed;
-	}
-
-	zhtup.t_data = (ZHeapTupleHeader) PageGetItem(page, lp);
-	zhtup.t_len = ItemIdGetLength(lp);
-	zhtup.t_tableOid = RelationGetRelid(relation);
-	zhtup.t_self = *tid;
+	any_multi_locker_member_alive = true;
+	result = ZHeapTupleSatisfiesUpdate(relation, tid, &zhtup, cid, *buffer,
+									   &ctid, &zinfo, &tup_subxid,
+									   &single_locker_xid,
+									   &single_locker_trans_slot, eval,
+									   snapshot, &in_place_updated_or_locked);
 
 	/*
 	 * Get the transaction slot and undo record pointer if we are already in a
@@ -2911,17 +2841,6 @@ check_tup_satisfies_update:
 	trans_slot_id = PageGetTransactionSlotId(relation, *buffer, fxid,
 											 &urec_ptr, false, false, NULL);
 
-	/*
-	 * ctid needs to be fetched from undo chain.  See zheap_update.
-	 */
-	ctid = *tid;
-
-	any_multi_locker_member_alive = true;
-	result = ZHeapTupleSatisfiesUpdate(relation, &zhtup, cid, *buffer, &ctid,
-									   &zinfo, &tup_subxid,
-									   &single_locker_xid,
-									   &single_locker_trans_slot, eval,
-									   snapshot, &in_place_updated_or_locked);
 	if (result == TM_Invisible)
 	{
 		tuple->t_tableOid = RelationGetRelid(relation);
