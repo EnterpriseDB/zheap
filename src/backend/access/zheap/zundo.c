@@ -418,6 +418,7 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
 	{
 		FullTransactionId fxid = trans_slots[slot_no].fxid;
 		UndoRecPtr	urec_ptr = trans_slots[slot_no].urec_ptr;
+		xid = XidFromFullTransactionId(fxid);
 
 		/*
 		 * There shouldn't be any other in-progress transaction as we hold an
