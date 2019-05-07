@@ -240,8 +240,17 @@ UndoDiscardOneLog(UndoLogControl *log, TransactionId xmin, bool *hibernate)
 void
 UndoDiscard(TransactionId oldestXmin, bool *hibernate)
 {
-	FullTransactionId oldestXidHavingUndo = InvalidFullTransactionId;
+	FullTransactionId oldestXidHavingUndo;
 	UndoLogControl *log = NULL;
+	uint32	epoch;
+
+	/*
+	 * If all the undo logs are discarded, then oldestXidHavingUndo should be
+	 * oldestXmin.  As of now, we don't allow more than 2 billion xids in the
+	 * system, so we can rely on the epoch retrieved with GetEpochForXid.
+	 */
+	epoch = GetEpochForXid(oldestXmin);
+	oldestXidHavingUndo = FullTransactionIdFromEpochAndXid(epoch, oldestXmin);
 
 	/*
 	 * Iterate through all the active logs and one-by-one try to discard the
