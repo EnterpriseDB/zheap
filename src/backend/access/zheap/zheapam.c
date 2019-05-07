@@ -1305,6 +1305,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	page = BufferGetPage(buffer);
 
 	interesting_attrs = NULL;
+	interesting_attrs = bms_add_members(interesting_attrs, inplace_upd_attrs);
+	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
 
 	/*
 	 * Before locking the buffer, pin the visibility map page mainly to avoid
@@ -1349,43 +1351,9 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	oldtup.t_len = ItemIdGetLength(lp);
 	oldtup.t_self = *otid;
 
-	/* the new tuple is ready, except for this: */
-	newtup->t_tableOid = RelationGetRelid(relation);
-
-	interesting_attrs = bms_add_members(interesting_attrs, inplace_upd_attrs);
-	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
-
 	/* Determine columns modified by the update. */
 	modified_attrs = ZHeapDetermineModifiedColumns(relation, interesting_attrs,
 												   &oldtup, newtup);
-
-	is_index_updated = bms_overlap(modified_attrs, inplace_upd_attrs);
-
-	if (relation->rd_rel->relkind != RELKIND_RELATION &&
-		relation->rd_rel->relkind != RELKIND_MATVIEW)
-	{
-		/* toast table entries should never be recursively toasted */
-		Assert(!ZHeapTupleHasExternal(&oldtup));
-		Assert(!ZHeapTupleHasExternal(newtup));
-		need_toast = false;
-	}
-	else
-		need_toast = (newtup->t_len >= TOAST_TUPLE_THRESHOLD ||
-					  ZHeapTupleHasExternal(&oldtup) ||
-					  ZHeapTupleHasExternal(newtup));
-
-	oldtupsize = SHORTALIGN(oldtup.t_len);
-	newtupsize = SHORTALIGN(newtup->t_len);
-
-	/*
-	 * inplace updates can be done only if the length of new tuple is lesser
-	 * than or equal to old tuple and there are no index column updates and
-	 * the tuple does not require TOAST-ing.
-	 */
-	if ((newtupsize <= oldtupsize) && !is_index_updated && !need_toast)
-		use_inplace_update = true;
-	else
-		use_inplace_update = false;
 
 	/*
 	 * Similar to heap, if we're not updating any "key" column, we can grab a
@@ -1555,6 +1523,37 @@ zheap_tuple_updated:
 		bms_free(key_attrs);
 		return result;
 	}
+
+	/* the new tuple is ready, except for this: */
+	newtup->t_tableOid = RelationGetRelid(relation);
+
+	is_index_updated = bms_overlap(modified_attrs, inplace_upd_attrs);
+
+	if (relation->rd_rel->relkind != RELKIND_RELATION &&
+		relation->rd_rel->relkind != RELKIND_MATVIEW)
+	{
+		/* toast table entries should never be recursively toasted */
+		Assert(!ZHeapTupleHasExternal(&oldtup));
+		Assert(!ZHeapTupleHasExternal(newtup));
+		need_toast = false;
+	}
+	else
+		need_toast = (newtup->t_len >= TOAST_TUPLE_THRESHOLD ||
+					  ZHeapTupleHasExternal(&oldtup) ||
+					  ZHeapTupleHasExternal(newtup));
+
+	oldtupsize = SHORTALIGN(oldtup.t_len);
+	newtupsize = SHORTALIGN(newtup->t_len);
+
+	/*
+	 * inplace updates can be done only if the length of new tuple is lesser
+	 * than or equal to old tuple and there are no index column updates and
+	 * the tuple does not require TOAST-ing.
+	 */
+	if ((newtupsize <= oldtupsize) && !is_index_updated && !need_toast)
+		use_inplace_update = true;
+	else
+		use_inplace_update = false;
 
 	/*
 	 * Acquire subtransaction lock, if current transaction is a
