@@ -119,6 +119,8 @@ static void log_zheap_update(ZHeapWALInfo *oldinfo, ZHeapWALInfo *newinfo, bool 
 static void log_zheap_delete(ZHeapWALInfo *walinfo, bool changingPart,
 				 SubTransactionId subxid, TransactionId tup_xid);
 static void log_zheap_multi_insert(ZHeapMultiInsertWALInfo *walinfo, bool skip_undo, char *scratch);
+static void log_zheap_lock_tuple(ZHeapWALInfo *walinfo, TransactionId tup_xid,
+					 int trans_slot_id, bool hasSubXactLock, LockTupleMode mode);
 static Bitmapset *ZHeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
 							  ZHeapTuple oldtup, ZHeapTuple newtup);
 static inline void CheckAndLockTPDPage(Relation relation, int new_trans_slot_id,
@@ -1827,81 +1829,21 @@ zheap_tuple_updated:
 		/* do xlog stuff */
 		if (RelationNeedsWAL(relation))
 		{
-			xl_zheap_lock xlrec;
-			xl_undo_header xlundohdr;
-			XLogRecPtr	recptr;
-			XLogRecPtr	RedoRecPtr;
-			bool		doPageWrites;
+			ZHeapWALInfo lock_wal_info;
 
-			/*
-			 * Store the information required to generate undo record during
-			 * replay.
-			 */
-			xlundohdr.reloid = undorecord.uur_reloid;
-			xlundohdr.urec_ptr = urecptr;
-			xlundohdr.blkprev = undorecord.uur_blkprev;
+			lock_wal_info.buffer = buffer;
+			lock_wal_info.ztuple = &oldtup;
+			lock_wal_info.urecptr = urecptr;
+			lock_wal_info.prev_urecptr = undorecord.uur_blkprev;
+			lock_wal_info.undometa = &undometa;
+			lock_wal_info.new_trans_slot_id = result_trans_slot_id;
+			lock_wal_info.prior_trans_slot_id = zinfo.trans_slot;
+			lock_wal_info.all_visible_cleared = false;
+			lock_wal_info.undorecord = &undorecord;
 
-			xlrec.prev_xid = zinfo.xid;
-			xlrec.offnum = ItemPointerGetOffsetNumber(&(oldtup.t_self));
-			xlrec.infomask = oldtup.t_data->t_infomask;
-			xlrec.trans_slot_id = result_trans_slot_id;
-			xlrec.flags = 0;
+			log_zheap_lock_tuple(&lock_wal_info, zinfo.xid,
+								 oldtup_new_trans_slot, hasSubXactLock, *lockmode);
 
-			if (result_trans_slot_id != oldtup_new_trans_slot)
-			{
-				Assert(result_trans_slot_id == zinfo.trans_slot);
-				xlrec.flags |= XLZ_LOCK_TRANS_SLOT_FOR_UREC;
-			}
-			else if (zinfo.trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
-				xlrec.flags |= XLZ_LOCK_CONTAINS_TPD_SLOT;
-
-			if (hasSubXactLock)
-				xlrec.flags |= XLZ_LOCK_CONTAINS_SUBXACT;
-			if (undorecord.uur_type == UNDO_XID_LOCK_FOR_UPDATE)
-				xlrec.flags |= XLZ_LOCK_FOR_UPDATE;
-
-	prepare_xlog:
-			/* LOG undolog meta if this is the first WAL after the checkpoint. */
-			LogUndoMetaData(&undometa);
-
-			GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
-
-			XLogBeginInsert();
-			XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
-			if (oldtup_new_trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
-				(void) RegisterTPDBuffer(page, 1);
-			XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
-			XLogRegisterData((char *) &xlrec, SizeOfZHeapLock);
-			RegisterUndoLogBuffers(2);
-
-			/*
-			 * We always include old tuple header for undo in WAL record
-			 * irrespective of full page image is taken or not. This is done
-			 * since savings for not including a zheap tuple header are less
-			 * compared to code complexity. However in future, if required we
-			 * can do it similar to what we have done in zheap_update or
-			 * zheap_delete.
-			 */
-			XLogRegisterData((char *) undorecord.uur_tuple.data,
-							 SizeofZHeapTupleHeader);
-			XLogRegisterData((char *) (lockmode), sizeof(LockTupleMode));
-			if (xlrec.flags & XLZ_LOCK_TRANS_SLOT_FOR_UREC)
-				XLogRegisterData((char *) &oldtup_new_trans_slot, sizeof(oldtup_new_trans_slot));
-			else if (xlrec.flags & XLZ_LOCK_CONTAINS_TPD_SLOT)
-				XLogRegisterData((char *) &zinfo.trans_slot, sizeof(zinfo.trans_slot));
-
-			recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK, RedoRecPtr,
-										doPageWrites);
-			if (recptr == InvalidXLogRecPtr)
-			{
-				ResetRegisteredTPDBuffers();
-				goto prepare_xlog;
-			}
-
-			PageSetLSN(page, recptr);
-			if (oldtup_new_trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
-				TPDPageSetLSN(page, recptr);
-			UndoLogBuffersSetLSN(recptr);
 		}
 		END_CRIT_SECTION();
 
@@ -4365,11 +4307,8 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	int			new_trans_slot_id;
 	uint16		old_infomask;
 	uint16		new_infomask = 0;
-	Page		page;
 	xl_undolog_meta undometa;
 	bool		hasSubXactLock = false;
-
-	page = BufferGetPage(buf);
 
 	/* Compute the new xid and infomask to store into the tuple. */
 	old_infomask = zhtup->t_data->t_infomask;
@@ -4507,78 +4446,20 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	/* do xlog stuff */
 	if (RelationNeedsWAL(rel))
 	{
-		xl_zheap_lock xlrec;
-		xl_undo_header xlundohdr;
-		XLogRecPtr	recptr;
-		XLogRecPtr	RedoRecPtr;
-		bool		doPageWrites;
+		ZHeapWALInfo lock_wal_info;
 
-		/*
-		 * Store the information required to generate undo record during
-		 * replay.
-		 */
-		xlundohdr.reloid = undorecord.uur_reloid;
-		xlundohdr.urec_ptr = urecptr;
-		xlundohdr.blkprev = prev_urecptr;
+		lock_wal_info.buffer = buf;
+		lock_wal_info.ztuple = zhtup;
+		lock_wal_info.urecptr = urecptr;
+		lock_wal_info.prev_urecptr = prev_urecptr;
+		lock_wal_info.undometa = &undometa;
+		lock_wal_info.new_trans_slot_id = new_trans_slot_id;
+		lock_wal_info.prior_trans_slot_id = tup_trans_slot_id;
+		lock_wal_info.all_visible_cleared = false;
+		lock_wal_info.undorecord = &undorecord;
 
-		xlrec.prev_xid = tup_xid;
-		xlrec.offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
-		xlrec.infomask = zhtup->t_data->t_infomask;
-		xlrec.trans_slot_id = new_trans_slot_id;
-		xlrec.flags = 0;
-		if (new_trans_slot_id != trans_slot_id)
-		{
-			Assert(new_trans_slot_id == tup_trans_slot_id);
-			xlrec.flags |= XLZ_LOCK_TRANS_SLOT_FOR_UREC;
-		}
-		else if (tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-			xlrec.flags |= XLZ_LOCK_CONTAINS_TPD_SLOT;
-
-		if (hasSubXactLock)
-			xlrec.flags |= XLZ_LOCK_CONTAINS_SUBXACT;
-		if (undorecord.uur_type == UNDO_XID_LOCK_FOR_UPDATE)
-			xlrec.flags |= XLZ_LOCK_FOR_UPDATE;
-
-prepare_xlog:
-		/* LOG undolog meta if this is the first WAL after the checkpoint. */
-		LogUndoMetaData(&undometa);
-
-		GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
-		XLogBeginInsert();
-		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
-		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-			(void) RegisterTPDBuffer(page, 1);
-		XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
-		XLogRegisterData((char *) &xlrec, SizeOfZHeapLock);
-		RegisterUndoLogBuffers(2);
-
-		/*
-		 * We always include old tuple header for undo in WAL record
-		 * irrespective of full page image is taken or not. This is done since
-		 * savings for not including a zheap tuple header are less compared to
-		 * code complexity. However in future, if required we can do it
-		 * similar to what we have done in zheap_update or zheap_delete.
-		 */
-		XLogRegisterData((char *) undorecord.uur_tuple.data,
-						 SizeofZHeapTupleHeader);
-		XLogRegisterData((char *) &mode, sizeof(LockTupleMode));
-		if (xlrec.flags & XLZ_LOCK_TRANS_SLOT_FOR_UREC)
-			XLogRegisterData((char *) &trans_slot_id, sizeof(trans_slot_id));
-		else if (xlrec.flags & XLZ_LOCK_CONTAINS_TPD_SLOT)
-			XLogRegisterData((char *) &tup_trans_slot_id, sizeof(tup_trans_slot_id));
-
-		recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK, RedoRecPtr,
-									doPageWrites);
-		if (recptr == InvalidXLogRecPtr)
-		{
-			ResetRegisteredTPDBuffers();
-			goto prepare_xlog;
-		}
-
-		PageSetLSN(page, recptr);
-		if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-			TPDPageSetLSN(page, recptr);
-		UndoLogBuffersSetLSN(recptr);
+		log_zheap_lock_tuple(&lock_wal_info, tup_xid, trans_slot_id,
+							 hasSubXactLock, mode);
 	}
 	END_CRIT_SECTION();
 
@@ -6041,6 +5922,95 @@ prepare_xlog:
 	PageSetLSN(page, recptr);
 	if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
 		TPDPageSetLSN(page, recptr);
+	UndoLogBuffersSetLSN(recptr);
+}
+
+/*
+ * log_zheap_lock_tuple
+ * Used in zheap_lock_tuple_guts and zheap_update to perform XLogInsert of lock.
+ *
+ * We need to store enough information in the WAL record so that undo records
+ * can be regenerated at the WAL replay time.
+ */
+static void
+log_zheap_lock_tuple(ZHeapWALInfo *walinfo, TransactionId tup_xid,
+					 int trans_slot_id, bool hasSubXactLock, LockTupleMode mode)
+{
+	Page		page = BufferGetPage(walinfo->buffer);
+	xl_zheap_lock xlrec;
+	xl_undo_header xlundohdr;
+	XLogRecPtr	recptr;
+	XLogRecPtr	RedoRecPtr;
+	bool		doPageWrites;
+
+	/* Store the information required to generate undo record during replay. */
+	xlundohdr.reloid = walinfo->undorecord->uur_reloid;
+	xlundohdr.urec_ptr = walinfo->urecptr;
+	xlundohdr.blkprev = walinfo->prev_urecptr;
+
+	xlrec.prev_xid = tup_xid;
+	xlrec.offnum = ItemPointerGetOffsetNumber(&(walinfo->ztuple->t_self));
+	xlrec.infomask = walinfo->ztuple->t_data->t_infomask;
+	xlrec.trans_slot_id = walinfo->new_trans_slot_id;
+	xlrec.flags = 0;
+	if (walinfo->new_trans_slot_id != trans_slot_id)
+	{
+		Assert(walinfo->new_trans_slot_id == walinfo->prior_trans_slot_id);
+		xlrec.flags |= XLZ_LOCK_TRANS_SLOT_FOR_UREC;
+	}
+	else if (walinfo->prior_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+		xlrec.flags |= XLZ_LOCK_CONTAINS_TPD_SLOT;
+
+	if (hasSubXactLock)
+		xlrec.flags |= XLZ_LOCK_CONTAINS_SUBXACT;
+
+	if (walinfo->undorecord->uur_type == UNDO_XID_LOCK_FOR_UPDATE)
+		xlrec.flags |= XLZ_LOCK_FOR_UPDATE;
+
+prepare_xlog:
+	/* LOG undolog meta if this is the first WAL after the checkpoint. */
+	LogUndoMetaData(walinfo->undometa);
+
+	GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
+	XLogBeginInsert();
+	XLogRegisterBuffer(0, walinfo->buffer, REGBUF_STANDARD);
+	if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+		(void) RegisterTPDBuffer(page, 1);
+	XLogRegisterData((char *) &xlundohdr, SizeOfUndoHeader);
+	XLogRegisterData((char *) &xlrec, SizeOfZHeapLock);
+	RegisterUndoLogBuffers(2);
+
+	/*
+	 * We always include old tuple header for undo in WAL record irrespective
+	 * of full page image is taken or not. This is done since savings for not
+	 * including a zheap tuple header are less compared to code complexity.
+	 * However in future, if required we can do it similar to what we have
+	 * done in zheap_update or zheap_delete.
+	 */
+	XLogRegisterData((char *) walinfo->undorecord->uur_tuple.data,
+					 SizeofZHeapTupleHeader);
+	XLogRegisterData((char *) &mode, sizeof(LockTupleMode));
+
+	if (xlrec.flags & XLZ_LOCK_TRANS_SLOT_FOR_UREC)
+		XLogRegisterData((char *) &trans_slot_id, sizeof(trans_slot_id));
+	else if (xlrec.flags & XLZ_LOCK_CONTAINS_TPD_SLOT)
+		XLogRegisterData((char *) &(walinfo->prior_trans_slot_id),
+						 sizeof(walinfo->prior_trans_slot_id));
+
+	recptr = XLogInsertExtended(RM_ZHEAP_ID, XLOG_ZHEAP_LOCK, RedoRecPtr,
+								doPageWrites);
+
+	if (recptr == InvalidXLogRecPtr)
+	{
+		ResetRegisteredTPDBuffers();
+		goto prepare_xlog;
+	}
+
+	PageSetLSN(page, recptr);
+
+	if (trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+		TPDPageSetLSN(page, recptr);
+
 	UndoLogBuffersSetLSN(recptr);
 }
 
