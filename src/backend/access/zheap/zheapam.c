@@ -981,7 +981,7 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 		 * it's values got changed.  See the similar handling in zheap_update.
 		 */
 		if (!ZHEAP_XID_IS_LOCKED_ONLY(zheaptup->t_data->t_infomask))
-			update_xact = ZHeapTupleGetTransXID(zheaptup, buffer, false);
+			update_xact = tup_xid;
 		else
 			update_xact = InvalidTransactionId;
 
@@ -2544,7 +2544,7 @@ zheap_update_wait_helper(Relation relation,
 		 * in case it's values got changed.
 		 */
 		if (!ZHEAP_XID_IS_LOCKED_ONLY(zheaptup->t_data->t_infomask))
-			update_xact = ZHeapTupleGetTransXID(zheaptup, buffer, false);
+			update_xact = tup_xid;
 		else
 			update_xact = InvalidTransactionId;
 
