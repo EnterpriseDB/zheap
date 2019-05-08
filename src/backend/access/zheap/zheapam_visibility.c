@@ -1327,16 +1327,20 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ItemPointer tid, ZHeapTuple zhtup,
 		if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN ||
 			FullTransactionIdOlderThanAllUndo(zinfo->epoch_xid))
 		{
+			FullTransactionId	single_locker_fxid;
 			bool		found = false;
 
 			if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask) &&
 				!ZHeapTupleHasMultiLockers(tuple->t_infomask))
 				found = GetLockerTransInfo(rel, &zhtup->t_self, buffer, single_locker_trans_slot,
-										   single_locker_xid);
+										   &single_locker_fxid);
+
 			if (!found)
 				result = TM_Ok;
 			else
 			{
+				*single_locker_xid =
+					XidFromFullTransactionId(single_locker_fxid);
 				/*
 				 * If there is a single locker in-progress/aborted locker,
 				 * it's safe to return being updated so that the caller check

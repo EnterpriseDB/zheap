@@ -8556,10 +8556,13 @@ RefetchAndCheckTupleStatus(Relation relation,
 	if (ZHEAP_XID_IS_LOCKED_ONLY(zhtup->t_data->t_infomask) &&
 		!ZHeapTupleHasMultiLockers(zhtup->t_data->t_infomask))
 	{
+		FullTransactionId current_single_locker_fxid;
 		TransactionId current_single_locker_xid;
 
 		GetLockerTransInfo(relation, &zhtup->t_self, buffer,
-						   NULL, &current_single_locker_xid);
+						   NULL, &current_single_locker_fxid);
+		current_single_locker_xid =
+			XidFromFullTransactionId(current_single_locker_fxid);
 
 		if (mode && (*mode == LockTupleKeyShare || *mode == LockTupleShare))
 		{

@@ -45,7 +45,7 @@ extern void ZGetMultiLockInfo(uint16 old_infomask, TransactionId tup_xid,
 				  LockTupleMode *mode, bool *old_tuple_has_update,
 				  LockOper lockoper);
 extern bool GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
-				   int *trans_slot, TransactionId *xid_out);
+				   int *trans_slot, FullTransactionId *fxid_out);
 
 static inline LockTupleMode
 get_old_lock_mode(uint16 infomask)

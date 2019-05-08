@@ -679,7 +679,7 @@ ZGetMultiLockInfo(uint16 old_infomask, TransactionId tup_xid,
  */
 bool
 GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
-				   int *trans_slot, TransactionId *xid_out)
+				   int *trans_slot, FullTransactionId *fxid_out)
 {
 	UnpackedUndoRecord *urec = NULL;
 	UndoRecPtr	urec_ptr;
@@ -819,8 +819,8 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 		/* Set the value of required parameters. */
 		if (trans_slot)
 			*trans_slot = trans_slot_id;
-		if (xid_out)
-			*xid_out = XidFromFullTransactionId(fxid);
+		if (fxid_out)
+			*fxid_out = fxid;
 	}
 
 	return found;
