@@ -2854,7 +2854,7 @@ check_tup_satisfies_update:
 		goto out_locked;
 	}
 	else if (result == TM_BeingModified ||
-			 result == TM_Updated ||
+			 (result == TM_Updated && zhtup.t_data != NULL) ||
 			 (result == TM_Ok &&
 			  ZHeapTupleHasMultiLockers(zhtup.t_data->t_infomask)))
 	{
