@@ -1679,8 +1679,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 
 				if (!result)
 					execute_undo_actions(full_xid, end_urec_ptr[i],
-										 start_urec_ptr[i], true,
-										 true);
+										 start_urec_ptr[i], true);
 			}
 			PG_CATCH();
 			{

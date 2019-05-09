@@ -187,10 +187,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 	for (slot_no = 0; slot_no < total_trans_slots; slot_no++)
 	{
-		FullTransactionId epoch_xid;
-		bool		first_urp = true;
-
-		epoch_xid = trans_slots[slot_no].fxid;
+		FullTransactionId epoch_xid = trans_slots[slot_no].fxid;
 
 		/*
 		 * We need to process the undo chain only for in-progress
@@ -215,62 +212,6 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 
 		do
 		{
-			UndoLogControl *log = NULL;
-
-			/*
-			 * After we release the buffer lock, the transaction can be
-			 * rolled-back and undo record pointer can be re-winded.  Ensure
-			 * that undo record pointer is sane by acquiring rewind lock so
-			 * that undo worker can't rewind it concurrently.
-			 *
-			 * It is sufficient to verify the first undo record of slot as the
-			 * previous one's can't be re-wounded.
-			 *
-			 * If we already have a buf LOCK, then there is no need to verify
-			 * undo record pointer as rollback can't rewind till the undo
-			 * actions are applied.
-			 */
-			if (nobuflock && first_urp)
-			{
-				ZHeapTupleTransInfo zinfo;
-
-				log = UndoLogGet(UndoRecPtrGetLogNo(urec_ptr));
-
-				/*
-				 * Acquire rewind lock to prevent rewinding the undo record
-				 * pointer while we are fetching the undo record.
-				 */
-				LWLockAcquire(&log->rewind_lock, LW_SHARED);
-
-				/* Lock the buffer */
-				LockBuffer(buf, BUFFER_LOCK_SHARE);
-
-				/*
-				 * We can release the buffer lock after reading the slot
-				 * information as we already hold the rewind lock, so the undo
-				 * can't be re-winded.  Although, it can be discarded but we
-				 * have handling for the same.
-				 */
-				GetTransactionSlotInfo(buf, InvalidOffsetNumber, trans_slot_id,
-									   true, true, &zinfo);
-				trans_slot_id = zinfo.trans_slot;
-				epoch_xid = zinfo.epoch_xid;
-				urec_ptr = zinfo.urec_ptr;
-
-				/* Release the buffer lock */
-				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-
-				/*
-				 * We need to process the undo chain only for in-progress
-				 * transactions.
-				 */
-				if (FullTransactionIdOlderThanAllUndo(epoch_xid))
-				{
-					LWLockRelease(&log->rewind_lock);
-					break;
-				}
-			}
-
 			prev_trans_slot_id = trans_slot_id;
 			urec = UndoFetchRecord(urec_ptr,
 								   blkno,
@@ -278,12 +219,6 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 								   InvalidTransactionId,
 								   NULL,
 								   ZHeapSatisfyUndoRecord);
-
-			if (nobuflock && first_urp)
-			{
-				first_urp = false;
-				LWLockRelease(&log->rewind_lock);
-			}
 
 			/* If undo is discarded, we can't proceed further. */
 			if (!urec)

@@ -254,7 +254,6 @@ typedef struct UndoLogControl
 	UndoRecPtr	oldest_data;
 	LWLock		discard_update_lock;	/* block updaters during discard */
 	LWLock		discard_lock;	/* prevents discarding while reading */
-	LWLock		rewind_lock;	/* prevent rewinding while reading */
 
 	UndoLogNumber next_free;	/* protected by UndoLogLock */
 } UndoLogControl;

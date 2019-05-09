@@ -326,16 +326,10 @@ undo_record_comparator(const void *left, const void *right)
  * from_urecptr - undo record pointer from where to start applying undo action.
  * to_urecptr	- undo record pointer upto which point apply undo action.
  * nopartial	- true if rollback is for complete transaction.
- * rewind		- whether to rewind the insert location of the undo log or not.
- *				  Only the backend executed the transaction can rewind, but
- *				  any other process e.g. undo worker should not rewind it.
- *				  Because, if the backend have already inserted new undo records
- *				  for the next transaction and if we rewind then we will loose
- *				  the undo record inserted for the new transaction.
  */
 void
 execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
-					 UndoRecPtr to_urecptr, bool nopartial, bool rewind)
+					 UndoRecPtr to_urecptr, bool nopartial)
 {
 	UnpackedUndoRecord *uur = NULL;
 	UndoRecInfo *urp_array;
@@ -345,32 +339,24 @@ execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 	int			undo_apply_size = maintenance_work_mem * 1024L;
 	TransactionId	xid = XidFromFullTransactionId(full_xid);
 
-
 	/* 'from' and 'to' pointers must be valid. */
 	Assert(from_urecptr != InvalidUndoRecPtr);
 	Assert(to_urecptr != InvalidUndoRecPtr);
 
 	urec_ptr = from_urecptr;
+
 	if (nopartial)
 	{
-		UndoRecPtr	next_insert;
-		UndoLogNumber logno;
-
 		/*
 		 * It is important here to fetch the latest undo record and validate if
 		 * the actions are already executed.  The reason is that it is possible
 		 * that discard worker or backend might try to execute the rollback
-		 * request which is already executed or can belong to a different
-		 * transaction.  For ex., after discard worker fetches the record and
-		 * found that this transaction need to be rolledback, backend might
-		 * concurrently execute the actions, rewind the undo location and
-		 * remove the request from rollback hash table.  Now, discard worker
-		 * will needlessly register the request and it also possible that
-		 * it might try to execute the undo actions of some other transaction
-		 * if after backend rewounded the undo location, some other transaction
-		 * has added undo at that location.  The similar problem can happen if
-		 * the discard worker first pushes the request, the undo worker processed
-		 * it and backend tries to process it some later point.
+		 * request which is already executed.  For ex., after discard worker
+		 * fetches the record and found that this transaction need to be
+		 * rolledback, backend might concurrently execute the actions and
+		 * remove the request from rollback hash table. The similar problem
+		 * can happen if the discard worker first pushes the request, the undo
+		 * worker processed it and backend tries to process it some later point.
 		 */
 		uur = UndoFetchRecord(to_urecptr, InvalidBlockNumber, InvalidOffsetNumber,
 							  InvalidTransactionId, NULL, NULL);
@@ -379,23 +365,17 @@ execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 		if (uur == NULL)
 			return;
 
-		logno = UndoRecPtrGetLogNo(to_urecptr);
-		next_insert = UndoLogGetNextInsertPtr(logno, InvalidTransactionId);
-
 		/*
-		 * We don't need to execute the undo actions (a) if they are already
-		 * executed, (b) the undo belongs to a different transaction, this
-		 * is possible, if someone rewinds the undo and same space is used by
-		 * another transaction and (c) the rollback is request is already
-		 * executed and the undo pointer is already rewinded.
+		 * We don't need to execute the undo actions if they are already
+		 * executed.
 		 */
-		if (uur->uur_progress != 0 ||
-			xid != uur->uur_xid ||
-			next_insert == to_urecptr)
+		if (uur->uur_progress != 0)
 		{
 			UndoRecordRelease(uur);
 			return;
 		}
+
+		Assert(xid == uur->uur_xid);
 
 		UndoRecordRelease(uur);
 		uur = NULL;
@@ -497,81 +477,44 @@ execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 		pfree(urp_array);
 	} while (true);
 
-	if (rewind)
-	{
-		/* Read the current log from undo */
-		UndoLogControl *log = UndoLogGet(UndoRecPtrGetLogNo(to_urecptr));
-
-		/* Read the prevlen from the first record of this transaction. */
-		uur = UndoFetchRecord(to_urecptr, InvalidBlockNumber,
-							  InvalidOffsetNumber, InvalidTransactionId,
-							  NULL, NULL);
-
-		/*
-		 * If undo is already discarded before we rewind, then do nothing.
-		 */
-		if (uur == NULL)
-			return;
-
-
-		/*
-		 * In ZGetMultiLockMembers we fetch the undo record without a buffer
-		 * lock so it's possible that a transaction in the slot can rollback
-		 * and rewind the undo record pointer.  To prevent that we acquire the
-		 * rewind lock before rewinding the undo record pointer and the same
-		 * lock will be acquire by ZGetMultiLockMembers in shared mode.  Other
-		 * places where we fetch the undo record we don't need this lock as we
-		 * are doing that under the buffer lock. So remember to acquire the
-		 * rewind lock in shared mode wherever we are fetching the undo record
-		 * of non commited transaction without buffer lock.
-		 */
-		LWLockAcquire(&log->rewind_lock, LW_EXCLUSIVE);
-		UndoLogRewind(to_urecptr);
-		LWLockRelease(&log->rewind_lock);
-
-		UndoRecordRelease(uur);
-	}
-
+	/*
+	 * Set undo action apply progress as completed in the transaction header
+	 * if this is a main transaction.
+	 */
 	if (nopartial)
 	{
 		/*
-		 * Set undo action apply completed in the transaction header if this
-		 * is a main transaction and we have not rewound its undo.
+		 * Prepare and update the progress of the undo action apply in the
+		 * transaction header.
 		 */
-		if (!rewind)
+		PrepareUpdateUndoActionProgress(NULL, to_urecptr, 1);
+
+		START_CRIT_SECTION();
+
+		/* Update the progress in the transaction header. */
+		UndoRecordUpdateTransInfo(0);
+
+		/* WAL log the undo apply progress. */
 		{
+			xl_undoapply_progress xlrec;
+
+			xlrec.urec_ptr = to_urecptr;
+			xlrec.progress = 1;
+
 			/*
-			 * Prepare and update the progress of the undo action apply in the
-			 * transaction header.
+			 * FIXME : We need to register undo buffers and set LSN for them
+			 * that will be required for FPW of the undo buffers.
 			 */
-			PrepareUpdateUndoActionProgress(NULL, to_urecptr, 1);
+			XLogBeginInsert();
+			XLogRegisterData((char *) &xlrec, sizeof(xlrec));
 
-			START_CRIT_SECTION();
-
-			/* Update the progress in the transaction header. */
-			UndoRecordUpdateTransInfo(0);
-
-			/* WAL log the undo apply progress. */
-			{
-				xl_undoapply_progress xlrec;
-
-				xlrec.urec_ptr = to_urecptr;
-				xlrec.progress = 1;
-
-				/*
-				 * FIXME : We need to register undo buffers and set LSN for
-				 * them that will be required for FPW of the undo buffers.
-				 */
-				XLogBeginInsert();
-				XLogRegisterData((char *) &xlrec, sizeof(xlrec));
-
-				RegisterUndoLogBuffers(2);
-				(void) XLogInsert(RM_UNDOACTION_ID, XLOG_UNDO_APPLY_PROGRESS);
-			}
-
-			END_CRIT_SECTION();
-			UnlockReleaseUndoBuffers();
+			RegisterUndoLogBuffers(2);
+			(void) XLogInsert(RM_UNDOACTION_ID, XLOG_UNDO_APPLY_PROGRESS);
+			/* UndoLogBuffersSetLSN(recptr); */
 		}
+
+		END_CRIT_SECTION();
+		UnlockReleaseUndoBuffers();
 
 		/*
 		 * Undo action is applied so delete the hash table entry.

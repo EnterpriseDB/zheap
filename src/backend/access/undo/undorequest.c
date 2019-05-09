@@ -688,14 +688,8 @@ FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 			log = UndoLogGet(UndoRecPtrGetLogNo(urecptr));
 		Assert(log != NULL);
 
-		/*
-		 * If the corresponding log got rewinded to a location prior to
-		 * urecptr, the undo actions are already applied.  In that case, we
-		 * return from here. XXX: Remove this check once UndofetchRecord
-		 * handles this itself.
-		 */
-		if (MakeUndoRecPtr(log->logno, log->meta.insert) <= urecptr)
-			break;
+		/* The corresponding log must be ahead urecptr. */
+		Assert(MakeUndoRecPtr(log->logno, log->meta.insert) >= urecptr);
 
 		uur = UndoFetchRecord(urecptr,
 							  InvalidBlockNumber,
@@ -710,15 +704,10 @@ FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 		if (uur == NULL)
 			break;
 
-		/*
-		 * If the undo belongs to a different transaction, this is possible,
-		 * if someone rewinds the undo and same space is used by another
-		 * transaction, we return from here.
-		 */
-		if (!FullTransactionIdEquals(full_xid,
-									 FullTransactionIdFromEpochAndXid(uur->uur_xidepoch,
-																	  uur->uur_xid)))
-			break;
+		/* The undo must belongs to a same transaction. */
+		Assert(FullTransactionIdEquals(full_xid,
+			   FullTransactionIdFromEpochAndXid(uur->uur_xidepoch,
+												uur->uur_xid)));
 
 		/*
 		 * Since this is the first undo record of this transaction in this

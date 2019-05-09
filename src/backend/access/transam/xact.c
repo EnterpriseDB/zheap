@@ -3578,14 +3578,12 @@ ApplyUndoActions(void)
 				 * We can't push the undo actions for temp table to background
 				 * workers as the the temp tables are only accessible in the
 				 * backend that has created them.  We can't postpone applying
-				 * undo actions for subtransactions as after we release the
-				 * corresponding locks backends will race to applying the undo
-				 * actions by themselves which can lead to deadlock. Another
-				 * reason for the same is that the modifications made by
-				 * aborted subtransaction must not be visible even if the main
-				 * transaction commits.  It is not advisable to apply the undo
-				 * actions of a very large transaction as that can lead to a
-				 * delay in retruning the control back to user after abort.
+				 * undo actions for subtransactions as the modifications made
+				 * by aborted subtransaction must not be visible even if the
+				 * main transaction commits.  It is not advisable to apply the
+				 * undo actions of a very large transaction as that can lead
+				 * to a delay in retruning the control back to user after
+				 * abort.
 				 */
 				if (per_level != UNDO_TEMP &&
 					!IsSubTransaction())
@@ -3599,8 +3597,7 @@ ApplyUndoActions(void)
 					execute_undo_actions(urinfo.full_xid,
 										 s->latest_urec_ptr[per_level],
 										 s->start_urec_ptr[per_level],
-										 !IsSubTransaction(),
-										 true);
+										 !IsSubTransaction());
 				}
 			}
 			PG_CATCH();

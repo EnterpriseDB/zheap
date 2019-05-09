@@ -633,7 +633,7 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	Buffer		vmbuffer = InvalidBuffer;
 	Page		page;
 	UndoRecPtr	slot_urec_ptr;
-	UndoRecPtr	prev_urec_ptr;
+	UndoRecPtr	prev_urec_ptr, block_prev_urp;
 	UndoRecPtr	first_urp;
 	bool		need_init = false;
 	bool		tpd_page_locked = false;
@@ -757,14 +757,20 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 
 	START_CRIT_SECTION();
 
+	/* Set the already applied undo ptr. */
+	block_prev_urp = slot_urec_ptr;
+
 	for (i = first_idx; i <= last_idx; i++)
 	{
 		UndoRecInfo *urec_info = (UndoRecInfo *) urp_array + i;
 		UnpackedUndoRecord *uur = urec_info->uur;
 
 		/* Skip already applied undo. */
-		if (slot_urec_ptr < urec_info->urp)
+		if (block_prev_urp < urec_info->urp)
 			continue;
+
+		Assert (block_prev_urp == urec_info->urp);
+		block_prev_urp = uur->uur_blkprev;
 
 		elog(DEBUG1, "Rollback undo record: "
 			 "TransSlot: %d, Epoch: %d, TransactionId: %d, urec: " UndoRecPtrFormat ", "

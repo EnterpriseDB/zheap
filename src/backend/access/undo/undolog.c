@@ -1587,7 +1587,6 @@ initialize_undo_log_bank(int bankno, UndoLogControl *bank)
 		LWLockInitialize(&bank[i].mutex, LWTRANCHE_UNDOLOG);
 		LWLockInitialize(&bank[i].discard_lock, LWTRANCHE_UNDODISCARD);
 		LWLockInitialize(&bank[i].discard_update_lock, LWTRANCHE_DISCARD_UPDATE);
-		LWLockInitialize(&bank[i].rewind_lock, LWTRANCHE_REWIND);
 	}
 }
 
