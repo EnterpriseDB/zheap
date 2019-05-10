@@ -155,6 +155,7 @@ LogicalDecodingProcessRecord(LogicalDecodingContext *ctx, XLogReaderState *recor
 		case RM_REPLORIGIN_ID:
 		case RM_GENERIC_ID:
 		case RM_UNDOLOG_ID:
+		case RM_UNDOACTION_ID:
 			/* just deal with xid, and done */
 			ReorderBufferProcessXid(ctx->reorder, XLogRecGetXid(record),
 									buf.origptr);
@@ -171,10 +172,6 @@ LogicalDecodingProcessRecord(LogicalDecodingContext *ctx, XLogReaderState *recor
 			/* Logical decoding is not yet implemented for zheap. */
 			Assert(0);
 			break;	
-		case RM_UNDOACTION_ID:
-			/* Logical decoding is not yet implemented for undoactions. */
-			Assert(0);
-			break;
 		case RM_TPD_ID:
 			/* Logical decoding is not yet implemented for TPD. */
 			Assert(0);
