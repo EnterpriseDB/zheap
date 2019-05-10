@@ -1,0 +1,5 @@
+# undoinspect extension
+comment = 'inspect the contents of undo logs'
+default_version = '1.0'
+module_pathname = '$libdir/undoinspect'
+relocatable = true

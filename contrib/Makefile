@@ -48,6 +48,7 @@ SUBDIRS = \
 		tsm_system_rows \
 		tsm_system_time \
 		unaccent	\
+		undoinspect	\
 		vacuumlo
 
 ifeq ($(with_openssl),yes)
