@@ -104,9 +104,10 @@ static void zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 					  TransactionId tup_xid, TransactionId xid,
 					  LockTupleMode mode, LockOper lockopr, uint32 epoch,
 					  int tup_trans_slot_id, int trans_slot_id,
-					  TransactionId single_locker_xid, int single_locker_trans_slot,
-					  UndoRecPtr prev_urecptr, CommandId cid,
-					  bool any_multi_locker_member_alive);
+					  TransactionId single_locker_xid, UndoRecPtr prev_urecptr,
+					  CommandId cid, bool any_multi_locker_member_alive,
+					  bool hasSubXactLock, UndoRecPtr *latest_urecptr,
+					  int *out_lockers_trans_slot);
 static void compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf,
 						 TransactionId tup_xid, int tup_trans_slot,
 						 uint16 old_infomask, TransactionId add_to_xid,
@@ -1605,146 +1606,26 @@ check_tup_satisfies_update:
 		(!use_inplace_update && newtupsize > pagefree) ||
 		need_toast)
 	{
-		uint16		lock_old_infomask;
+		UndoRecPtr	latest_urecptr;
 		BlockNumber oldblk,
 					newblk;
+		uint32		epoch = EpochFromFullTransactionId(fxid);
 
 		/*
 		 * To prevent concurrent sessions from updating the tuple, we have to
-		 * temporarily mark it locked, while we release the lock.
+		 * temporarily mark it locked, while we release the page lock.
 		 */
-		undorecord.uur_rmid = RM_ZHEAP_ID;
-		undorecord.uur_info = 0;
-		undorecord.uur_reloid = relation->rd_id;
-		undorecord.uur_prevxid = zinfo.xid;
-		undorecord.uur_xid = xid;
-		undorecord.uur_cid = cid;
-		undorecord.uur_fork = MAIN_FORKNUM;
-		undorecord.uur_blkprev = prev_urecptr;
-		undorecord.uur_block = ItemPointerGetBlockNumber(&(oldtup.t_self));
-		undorecord.uur_offset = ItemPointerGetOffsetNumber(&(oldtup.t_self));
-
-		initStringInfo(&undorecord.uur_tuple);
-		initStringInfo(&undorecord.uur_payload);
-
-		/*
-		 * Here, we are storing old tuple header which is required to
-		 * reconstruct the old copy of tuple.
-		 */
-		appendBinaryStringInfo(&undorecord.uur_tuple,
-							   (char *) oldtup.t_data,
-							   SizeofZHeapTupleHeader);
-		appendBinaryStringInfo(&undorecord.uur_payload,
-							   (char *) (lockmode),
-							   sizeof(LockTupleMode));
-
-		/*
-		 * Store the transaction slot number for undo tuple in undo record, if
-		 * the slot belongs to TPD entry.  We can always get the current
-		 * tuple's transaction slot number by referring offset->slot map in
-		 * TPD entry, however that won't be true for tuple in undo.
-		 */
-		if (zinfo.trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
-		{
-			undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SLOT;
-			appendBinaryStringInfo(&undorecord.uur_payload,
-								   (char *) &zinfo.trans_slot,
-								   sizeof(zinfo.trans_slot));
-		}
-
-		/*
-		 * Store subtransaction id in undo record.  See SubXactLockTableWait
-		 * to know why we need to store subtransaction id in undo.
-		 */
-		if (hasSubXactLock)
-		{
-			SubTransactionId subxid = GetCurrentSubTransactionId();
-
-			undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SUBXACT;
-			appendBinaryStringInfo(&undorecord.uur_payload,
-								   (char *) &subxid,
-								   sizeof(subxid));
-		}
-
-		urecptr = PrepareUndoInsert(&undorecord,
-									InvalidFullTransactionId,
-									UndoPersistenceForRelation(relation),
-									NULL,
-									&undometa);
-
-		temp_infomask = oldtup.t_data->t_infomask;
-
-		/*
-		 * If all the members were lockers and are all gone, we can do away
-		 * with the MULTI_LOCKERS bit.
-		 */
-		if (ZHeapTupleHasMultiLockers(temp_infomask) &&
-			!any_multi_locker_member_alive)
-			temp_infomask &= ~ZHEAP_MULTI_LOCKERS;
-
-		/* Compute the new xid and infomask to store into the tuple. */
-		compute_new_xid_infomask(&oldtup, buffer, save_tup_xid,
-								 zinfo.trans_slot, temp_infomask,
-								 xid, oldtup_new_trans_slot, single_locker_xid,
-								 *lockmode, LockForUpdate, &lock_old_infomask,
-								 &result_trans_slot_id);
-
-		if (ZHeapTupleHasMultiLockers(lock_old_infomask))
-			undorecord.uur_type = UNDO_XID_MULTI_LOCK_ONLY;
-		else
-			undorecord.uur_type = UNDO_XID_LOCK_FOR_UPDATE;
-
-		START_CRIT_SECTION();
-
-		InsertPreparedUndo();
-
-		/*
-		 * For lockers, we only set the slot on tuple when the lock mode is
-		 * LockForUpdate and the tuple doesn't have multilocker flag.  In that
-		 * case, pass set_tpd_map_slot as true, false otherwise.  In this case
-		 * the lockmode is always LockForUpdate.
-		 */
-		PageSetUNDO(undorecord, buffer, oldtup_new_trans_slot,
-					ZHeapTupleHasMultiLockers(lock_old_infomask) ? false : true,
-					fxid, urecptr, NULL, 0);
-
-		ZHeapTupleHeaderSetXactSlot(oldtup.t_data, result_trans_slot_id);
-
-		oldtup.t_data->t_infomask &= ~ZHEAP_VIS_STATUS_MASK;
-		oldtup.t_data->t_infomask |= lock_old_infomask;
+		zheap_lock_tuple_guts(relation, buffer, &oldtup, save_tup_xid, xid,
+							  *lockmode, LockForUpdate, epoch,
+							  zinfo.trans_slot, oldtup_new_trans_slot,
+							  single_locker_xid, prev_urecptr, cid,
+							  !any_multi_locker_member_alive, hasSubXactLock,
+							  &latest_urecptr, &result_trans_slot_id);
 
 		/* Set prev_urecptr to the latest undo record in the slot. */
-		prev_urecptr = urecptr;
-
-		MarkBufferDirty(buffer);
-
-		/* do xlog stuff */
-		if (RelationNeedsWAL(relation))
-		{
-			ZHeapWALInfo lock_wal_info;
-
-			lock_wal_info.buffer = buffer;
-			lock_wal_info.ztuple = &oldtup;
-			lock_wal_info.urecptr = urecptr;
-			lock_wal_info.prev_urecptr = undorecord.uur_blkprev;
-			lock_wal_info.undometa = &undometa;
-			lock_wal_info.new_trans_slot_id = result_trans_slot_id;
-			lock_wal_info.prior_trans_slot_id = zinfo.trans_slot;
-			lock_wal_info.all_visible_cleared = false;
-			lock_wal_info.undorecord = &undorecord;
-
-			log_zheap_lock_tuple(&lock_wal_info, zinfo.xid,
-								 oldtup_new_trans_slot, hasSubXactLock, *lockmode);
-
-		}
-		END_CRIT_SECTION();
-
-		pfree(undorecord.uur_tuple.data);
-		pfree(undorecord.uur_payload.data);
+		prev_urecptr = latest_urecptr;
 
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-		UnlockReleaseUndoBuffers();
-		UnlockReleaseTPDBuffers();
 
 		/*
 		 * Let the toaster do its thing, if needed.
@@ -1926,7 +1807,7 @@ reacquire_buffer:
 		 * Also note that, there is possibility that our slot might have moved
 		 * to the TPD; in such case we should get previous slot_no + 1.
 		 */
-		if (!ZHeapTupleHasMultiLockers(lock_old_infomask))
+		if (!ZHeapTupleHasMultiLockers(oldtup.t_data->t_infomask))
 		{
 			Assert((result_trans_slot_id == oldtup_new_trans_slot) ||
 				   (ZHeapPageHasTPDSlot((PageHeader) page) &&
@@ -2806,6 +2687,7 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 	bool		any_multi_locker_member_alive = false;
 	bool		lock_reacquired;
 	bool		rollback_and_relocked;
+	bool		hasSubXactLock = false;
 	ZHeapTupleTransInfo zinfo;
 
 	xid = XidFromFullTransactionId(fxid);
@@ -3575,13 +3457,26 @@ failed:
 	}
 
 	/*
+	 * Acquire subtransaction lock, if current transaction is a
+	 * subtransaction.
+	 */
+	if (IsSubTransaction())
+	{
+		SubXactLockTableInsert(GetCurrentSubTransactionId());
+		hasSubXactLock = true;
+	}
+
+	/*
 	 * If all the members were lockers and are all gone, we can do away with
-	 * the MULTI_LOCKERS bit.
+	 * the MULTI_LOCKERS bit.  While locking the tuple, we set the command id
+	 * as FirstCommandId since it doesn't modify the tuple, just updates the
+	 * infomask.
 	 */
 	zheap_lock_tuple_guts(relation, *buffer, &zhtup, zinfo.xid, xid, mode,
 						  lockopr, epoch, zinfo.trans_slot, trans_slot_id,
-						  single_locker_xid, single_locker_trans_slot,
-						  prev_urecptr, cid, !any_multi_locker_member_alive);
+						  single_locker_xid, prev_urecptr, FirstCommandId,
+						  !any_multi_locker_member_alive, hasSubXactLock,
+						  NULL, NULL);
 
 	tuple->t_tableOid = RelationGetRelid(relation);
 	tuple->t_len = zhtup.t_len;
@@ -3756,6 +3651,7 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 	uint32		epoch = EpochFromFullTransactionId(fxid);
 	int			trans_slot_id;
 	bool		lock_reacquired;
+	bool		hasSubXactLock = false;
 	OffsetNumber offnum;
 	ZHeapTupleTransInfo zinfo;
 
@@ -4104,10 +4000,24 @@ lock_tuple:
 			zinfo.xid = InvalidTransactionId;
 		}
 
+		/*
+		 * Acquire subtransaction lock, if current transaction is a
+		 * subtransaction.
+		 */
+		if (IsSubTransaction())
+		{
+			SubXactLockTableInsert(GetCurrentSubTransactionId());
+			hasSubXactLock = true;
+		}
+
+		/*
+		 * While locking the tuple, we set the command id as FirstCommandId since
+		 * it doesn't modify the tuple, just updates the infomask.
+		 */
 		zheap_lock_tuple_guts(rel, buf, &zhtup, zinfo.xid, xid, mode, lockopr,
 							  epoch, zinfo.trans_slot, trans_slot_id,
-							  InvalidTransactionId, InvalidXactSlotId,
-							  prev_urecptr, cid, false);
+							  InvalidTransactionId, prev_urecptr,
+							  FirstCommandId, false, hasSubXactLock, NULL, NULL);
 
 next:
 
@@ -4167,8 +4077,9 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 					  LockTupleMode mode, LockOper lockopr, uint32 epoch,
 					  int tup_trans_slot_id, int trans_slot_id,
 					  TransactionId single_locker_xid,
-					  int single_locker_trans_slot, UndoRecPtr prev_urecptr,
-					  CommandId cid, bool clear_multi_locker)
+					  UndoRecPtr prev_urecptr, CommandId cid,
+					  bool clear_multi_locker, bool hasSubXactLock,
+					  UndoRecPtr *latest_urecptr, int *out_lockers_trans_slot)
 {
 	TransactionId oldestXidHavingUndo;
 	UndoRecPtr	urecptr;
@@ -4177,7 +4088,6 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	uint16		old_infomask;
 	uint16		new_infomask = 0;
 	xl_undolog_meta undometa;
-	bool		hasSubXactLock = false;
 
 	/* Compute the new xid and infomask to store into the tuple. */
 	old_infomask = zhtup->t_data->t_infomask;
@@ -4193,16 +4103,6 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 							 old_infomask, xid, trans_slot_id,
 							 single_locker_xid, mode, lockopr,
 							 &new_infomask, &new_trans_slot_id);
-
-	/*
-	 * Acquire subtransaction lock, if current transaction is a
-	 * subtransaction.
-	 */
-	if (IsSubTransaction())
-	{
-		SubXactLockTableInsert(GetCurrentSubTransactionId());
-		hasSubXactLock = true;
-	}
 
 	/*
 	 * If the last transaction that has updated the tuple is already too old,
@@ -4233,12 +4133,7 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	undorecord.uur_reloid = rel->rd_id;
 	undorecord.uur_prevxid = tup_xid;
 	undorecord.uur_xid = xid;
-
-	/*
-	 * While locking the tuple, we set the command id as FirstCommandId since
-	 * it doesn't modify the tuple, just updates the infomask.
-	 */
-	undorecord.uur_cid = FirstCommandId;
+	undorecord.uur_cid = cid;
 	undorecord.uur_fork = MAIN_FORKNUM;
 	undorecord.uur_blkprev = prev_urecptr;
 	undorecord.uur_block = ItemPointerGetBlockNumber(&(zhtup->t_self));
@@ -4336,6 +4231,15 @@ zheap_lock_tuple_guts(Relation rel, Buffer buf, ZHeapTuple zhtup,
 	pfree(undorecord.uur_payload.data);
 	UnlockReleaseUndoBuffers();
 	UnlockReleaseTPDBuffers();
+
+	/*
+	 * Return the latest undo record pointer where current record is inserted
+	 * and transaction slot id used for locking the tuple.
+	 */
+	if (latest_urecptr)
+		*latest_urecptr = urecptr;
+	if (out_lockers_trans_slot)
+		*out_lockers_trans_slot = new_trans_slot_id;
 }
 
 /*
@@ -5796,7 +5700,6 @@ prepare_xlog:
 
 /*
  * log_zheap_lock_tuple
- * Used in zheap_lock_tuple_guts and zheap_update to perform XLogInsert of lock.
  *
  * We need to store enough information in the WAL record so that undo records
  * can be regenerated at the WAL replay time.
