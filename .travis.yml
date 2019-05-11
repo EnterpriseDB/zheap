@@ -1,0 +1,41 @@
+sudo: required
+env:
+  - PG_TEST_EXTRA="ssl ldap kerberos"
+addons:
+  apt:
+    packages:
+      - gdb
+      - lcov
+      - libipc-run-perl
+      - libperl-dev
+      - libpython-dev
+      - tcl-dev
+      - libldap2-dev
+      - libicu-dev
+      - docbook
+      - docbook-dsssl
+      - docbook-xsl
+      - libxml2-utils
+      - openjade1.3
+      - opensp
+      - xsltproc
+      - krb5-admin-server
+      - krb5-kdc
+      - krb5-user
+      - slapd
+      - ldap-utils
+      - libssl-dev
+language: c
+cache: ccache
+before_install:
+  - echo '/tmp/%e-%s-%p.core' | sudo tee /proc/sys/kernel/core_pattern
+script: ./configure --prefix=$HOME/local_install --enable-debug --enable-cassert --enable-tap-tests --with-tcl --with-python --with-perl --with-ldap --with-openssl --with-gssapi --with-icu && echo "COPT=-Wall -Werror" > src/Makefile.custom && make -j4 all contrib docs && make install && make check-world
+after_failure:
+  - for f in $(find . -name regression.diffs) ; do echo "========= Contents of $f" ; head -1000 $f ; done
+  - |
+    for corefile in $(find /tmp/ -name '*.core' 2>/dev/null) ; do
+      binary=$(gdb -quiet -core $corefile -batch -ex 'info auxv' | grep AT_EXECFN | perl -pe "s/^.*\"(.*)\"\$/\$1/g")
+      echo dumping $corefile for $binary
+      gdb --batch --quiet -ex "thread apply all bt full" -ex "quit" $binary $corefile
+    done
+
