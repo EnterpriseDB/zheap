@@ -745,7 +745,7 @@ UPDATE rw_view1 SET b = 5 WHERE a = 3; -- ok
 UPDATE rw_view1 SET b = -5 WHERE a = 3; -- should fail
 INSERT INTO rw_view1(a) VALUES (9); -- ok
 INSERT INTO rw_view1(a) VALUES (10); -- should fail
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a, b;
 
 DROP TABLE base_tbl CASCADE;
 
@@ -774,7 +774,7 @@ SELECT * FROM information_schema.views WHERE table_name = 'rw_view2';
 
 INSERT INTO rw_view2 VALUES (-10); -- ok, but not in view
 INSERT INTO rw_view2 VALUES (20); -- should fail
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a;
 
 ALTER VIEW rw_view1 SET (check_option=here); -- invalid
 ALTER VIEW rw_view1 SET (check_option=local);
@@ -786,7 +786,7 @@ ALTER VIEW rw_view2 RESET (check_option);
 \d+ rw_view2
 SELECT * FROM information_schema.views WHERE table_name = 'rw_view2';
 INSERT INTO rw_view2 VALUES (30); -- ok, but not in view
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a;
 
 DROP TABLE base_tbl CASCADE;
 
@@ -910,7 +910,7 @@ INSERT INTO rw_view2 VALUES (-5); -- should fail
 INSERT INTO rw_view2 VALUES (5); -- ok
 INSERT INTO rw_view2 VALUES (50); -- ok, but not in view
 UPDATE rw_view2 SET a = a - 10; -- should fail
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a, b;
 
 -- Check option won't cascade down to base view with INSTEAD OF triggers
 

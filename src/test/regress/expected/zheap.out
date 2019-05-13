@@ -348,7 +348,7 @@ BEGIN
     END LOOP;
 END;
 $$;
-SELECT * FROM test1;
+SELECT * FROM test1 order by a, b;
  a | b 
 ---+---
  0 | 
@@ -373,11 +373,11 @@ $$;
 ERROR:  division by zero
 CONTEXT:  SQL statement "INSERT INTO test1 (a) VALUES (12/(r.x-2))"
 PL/pgSQL function inline_code_block line 6 at SQL statement
-SELECT * FROM test1;
+SELECT * FROM test1 order by a, b;
   a  | b 
 -----+---
-  -6 | 
  -12 | 
+  -6 | 
 (2 rows)
 
 -- rollback inside cursor loop
@@ -392,7 +392,7 @@ BEGIN
     END LOOP;
 END;
 $$;
-SELECT * FROM test1;
+SELECT * FROM test1 order by a, b;
  a | b 
 ---+---
 (0 rows)
@@ -413,7 +413,7 @@ BEGIN
     END LOOP;
 END;
 $$;
-SELECT * FROM test1;
+SELECT * FROM test1 order by a, b;
  a | b 
 ---+---
  0 | 
@@ -446,12 +446,12 @@ EXCEPTION WHEN OTHERS THEN
 END;
 $$;
 NOTICE:  cannot commit while a subtransaction is active 2D000
-SELECT * FROM test1;
+SELECT * FROM test1 order by a, b;
  a | b 
 ---+---
 (0 rows)
 
-SELECT * FROM test2;
+SELECT * FROM test2 order by x;
  x 
 ---
  0

@@ -225,7 +225,7 @@ BEGIN
 END;
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 order by a, b;
 
 -- error in cursor loop with commit
 TRUNCATE test1;
@@ -241,7 +241,7 @@ BEGIN
 END;
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 order by a, b;
 
 -- rollback inside cursor loop
 TRUNCATE test1;
@@ -257,7 +257,7 @@ BEGIN
 END;
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 order by a, b;
 
 -- first commit then rollback inside cursor loop
 TRUNCATE test1;
@@ -277,7 +277,7 @@ BEGIN
 END;
 $$;
 
-SELECT * FROM test1;
+SELECT * FROM test1 order by a, b;
 
 SELECT * FROM pg_cursors;
 
@@ -302,8 +302,8 @@ EXCEPTION WHEN OTHERS THEN
 END;
 $$;
 
-SELECT * FROM test1;
-SELECT * FROM test2;
+SELECT * FROM test1 order by a, b;
+SELECT * FROM test2 order by x;
 
 DROP TABLE test1;
 DROP TABLE test2;

@@ -1645,12 +1645,12 @@ INSERT INTO rw_view1(a) VALUES (9); -- ok
 INSERT INTO rw_view1(a) VALUES (10); -- should fail
 ERROR:  new row violates check option for view "rw_view1"
 DETAIL:  Failing row contains (10, 10).
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a, b;
  a | b  
 ---+----
+ 1 | -1
  1 |  2
  2 |  3
- 1 | -1
  3 |  5
  9 | 10
 (5 rows)
@@ -1725,11 +1725,11 @@ INSERT INTO rw_view2 VALUES (-10); -- ok, but not in view
 INSERT INTO rw_view2 VALUES (20); -- should fail
 ERROR:  new row violates check option for view "rw_view2"
 DETAIL:  Failing row contains (20).
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a;
   a  
 -----
-   5
  -10
+   5
 (2 rows)
 
 ALTER VIEW rw_view1 SET (check_option=here); -- invalid
@@ -1762,11 +1762,11 @@ SELECT * FROM information_schema.views WHERE table_name = 'rw_view2';
 (1 row)
 
 INSERT INTO rw_view2 VALUES (30); -- ok, but not in view
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a;
   a  
 -----
-   5
  -10
+   5
   30
 (3 rows)
 
@@ -1927,7 +1927,7 @@ INSERT INTO rw_view2 VALUES (50); -- ok, but not in view
 UPDATE rw_view2 SET a = a - 10; -- should fail
 ERROR:  new row violates check option for view "rw_view2"
 DETAIL:  Failing row contains (-5).
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a, b;
  a  | b  
 ----+----
   5 | 10
