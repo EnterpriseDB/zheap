@@ -511,9 +511,9 @@ GetTupleFromUndo(UndoRecPtr urec_ptr, ZHeapTuple current_tuple,
 		 * ZBORKED: We should really change this to get rid of the special
 		 * case for UNDO_INSERT, either by making it so that this function
 		 * doesn't get called in that case, or by making it so that it doesn't
-		 * need the newer tuple header bytes, or some other clever trick.
-		 * That would eliminate a substantial amount of complexity and
-		 * ugliness here.
+		 * need the newer tuple header bytes, or some other clever trick. That
+		 * would eliminate a substantial amount of complexity and ugliness
+		 * here.
 		 */
 		memcpy(&hdr, current_tuple->t_data, SizeofZHeapTupleHeader);
 
@@ -1327,7 +1327,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ItemPointer tid, ZHeapTuple zhtup,
 		if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN ||
 			FullTransactionIdOlderThanAllUndo(zinfo->epoch_xid))
 		{
-			FullTransactionId	single_locker_fxid;
+			FullTransactionId single_locker_fxid;
 			bool		found = false;
 
 			if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask) &&
@@ -1341,6 +1341,7 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ItemPointer tid, ZHeapTuple zhtup,
 			{
 				*single_locker_xid =
 					XidFromFullTransactionId(single_locker_fxid);
+
 				/*
 				 * If there is a single locker in-progress/aborted locker,
 				 * it's safe to return being updated so that the caller check

@@ -418,6 +418,7 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
 	{
 		FullTransactionId fxid = trans_slots[slot_no].fxid;
 		UndoRecPtr	urec_ptr = trans_slots[slot_no].urec_ptr;
+
 		xid = XidFromFullTransactionId(fxid);
 
 		/*
@@ -633,7 +634,8 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	Buffer		vmbuffer = InvalidBuffer;
 	Page		page;
 	UndoRecPtr	slot_urec_ptr;
-	UndoRecPtr	prev_urec_ptr, block_prev_urp;
+	UndoRecPtr	prev_urec_ptr,
+				block_prev_urp;
 	UndoRecPtr	first_urp;
 	bool		need_init = false;
 	bool		tpd_page_locked = false;
@@ -769,7 +771,7 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 		if (block_prev_urp < urec_info->urp)
 			continue;
 
-		Assert (block_prev_urp == urec_info->urp);
+		Assert(block_prev_urp == urec_info->urp);
 		block_prev_urp = uur->uur_blkprev;
 
 		elog(DEBUG1, "Rollback undo record: "

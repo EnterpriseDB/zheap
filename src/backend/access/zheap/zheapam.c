@@ -1320,9 +1320,9 @@ check_tup_satisfies_update:
 										  &oldtup, newtup);
 
 		/*
-		 * Similar to heap, if we're not updating any "key" column, we can grab
-		 * weaker lock type.  See heap_update.
-		*/
+		 * Similar to heap, if we're not updating any "key" column, we can
+		 * grab weaker lock type.  See heap_update.
+		 */
 		key_intact = !bms_overlap(modified_attrs, key_attrs);
 		*lockmode = key_intact ? LockTupleNoKeyExclusive : LockTupleExclusive;
 	}
@@ -3869,8 +3869,8 @@ lock_tuple:
 		}
 
 		/*
-		 * While locking the tuple, we set the command id as FirstCommandId since
-		 * it doesn't modify the tuple, just updates the infomask.
+		 * While locking the tuple, we set the command id as FirstCommandId
+		 * since it doesn't modify the tuple, just updates the infomask.
 		 */
 		zheap_lock_tuple_guts(rel, buf, &zhtup, zinfo.xid, xid, mode, lockopr,
 							  epoch, zinfo.trans_slot, trans_slot_id,
