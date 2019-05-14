@@ -1708,6 +1708,8 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 				/* Send the error only to server log. */
 				err_out_to_client(false);
 				EmitErrorReport();
+
+				FlushErrorState();
 			}
 			PG_END_TRY();
 		}

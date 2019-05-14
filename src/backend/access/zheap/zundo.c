@@ -30,6 +30,7 @@
 #include "miscadmin.h"
 #include "utils/syscache.h"
 #include "utils/ztqual.h"
+#include "access/relation.h"
 
 static ZHeapTupleHeader RestoreTupleFromUndoRecord(UnpackedUndoRecord *urec,
 												   Page page, ZHeapTupleHeader page_tup_hdr);
@@ -658,11 +659,16 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 		return false;
 	}
 
-	if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(reloid)))
+	/*
+	 * We always try to lock the relation.  If the relation is already gone,
+	 * then we can skip processing the undo actions.
+	 */
+	rel = try_relation_open(reloid, RowExclusiveLock);
+	if (rel == NULL)
+	{
+		elog(LOG, "relation is already dropped.");
 		return false;
-
-	/* We will always lock the relation. */
-	rel = heap_open(reloid, RowExclusiveLock);
+	}
 
 	if (RelationGetNumberOfBlocks(rel) <= blkno)
 	{
@@ -670,7 +676,7 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 		 * This is possible if the underlying relation is truncated just
 		 * before taking the relation lock above.
 		 */
-		heap_close(rel, RowExclusiveLock);
+		relation_close(rel, RowExclusiveLock);
 		return false;
 	}
 
@@ -732,7 +738,7 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 		UnlockReleaseTPDBuffers();
 
 		/* Close the relation. */
-		heap_close(rel, RowExclusiveLock);
+		relation_close(rel, RowExclusiveLock);
 
 		return false;
 	}
@@ -1122,7 +1128,7 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	UnlockReleaseTPDBuffers();
 
 	/* Close the relation. */
-	heap_close(rel, RowExclusiveLock);
+	relation_close(rel, RowExclusiveLock);
 
 	return true;
 }

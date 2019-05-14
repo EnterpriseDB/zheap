@@ -441,6 +441,8 @@ UndoWorkerOnExit(int code, Datum arg)
 static void
 UndoWorkerPerformRequest(UndoRequestInfo * urinfo)
 {
+	bool error = false;
+
 	/* Should be connected to the database. */
 	Assert(MyDatabaseId != InvalidOid);
 
@@ -452,6 +454,8 @@ UndoWorkerPerformRequest(UndoRequestInfo * urinfo)
 	}
 	PG_CATCH();
 	{
+		error = true;
+
 		/*
 		 * Register the unprocessed request in an error queue, so that it can
 		 * be processed in a timely fashion.
@@ -459,12 +463,25 @@ UndoWorkerPerformRequest(UndoRequestInfo * urinfo)
 		if (InsertRequestIntoErrorUndoQueue(urinfo))
 			RollbackHTRemoveEntry(urinfo->full_xid, urinfo->start_urec_ptr);
 
+		/* Prevent interrupts while cleaning up. */
+		HOLD_INTERRUPTS();
+
 		/* Send the error only to server log. */
 		err_out_to_client(false);
 		EmitErrorReport();
+
+		/*
+		 * Abort the transaction and continue processing pending undo requests.
+		 */
+		AbortOutOfAnyTransaction();
+		FlushErrorState();
+
+		RESUME_INTERRUPTS();
 	}
 	PG_END_TRY();
-	CommitTransactionCommand();
+
+	if (!error)
+		CommitTransactionCommand();
 }
 
 /*
