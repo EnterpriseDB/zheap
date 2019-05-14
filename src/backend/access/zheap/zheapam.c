@@ -4769,7 +4769,7 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
 						 UndoRecPtr *new_urecptr)
 {
 	UndoRecPtr	urecptr;
-	Size		payload_len;
+	Size		payload_len = 0;
 	TransactionId xid = XidFromFullTransactionId(zh_undoinfo->gen_info->fxid);
 
 	/*
@@ -6251,7 +6251,7 @@ MultiPageReserveTransSlot(Relation relation,
 	int			slot_id;
 	BlockNumber tmp_new_tpd_blk,
 				tmp_old_tpd_blk;
-	BlockNumber oldbuf_tpd_blk PG_USED_FOR_ASSERTS_ONLY = InvalidBlockNumber;
+	BlockNumber oldbuf_tpd_blk = InvalidBlockNumber;
 	Page		old_heap_page,
 				new_heap_page;
 

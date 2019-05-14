@@ -341,7 +341,7 @@ execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 	ForkNumber	prev_fork = InvalidForkNumber;
 	BlockNumber prev_block = InvalidBlockNumber;
 	int			undo_apply_size = maintenance_work_mem * 1024L;
-	TransactionId	xid = XidFromFullTransactionId(full_xid);
+	TransactionId	xid PG_USED_FOR_ASSERTS_ONLY = XidFromFullTransactionId(full_xid);
 
 	/* 'from' and 'to' pointers must be valid. */
 	Assert(from_urecptr != InvalidUndoRecPtr);
