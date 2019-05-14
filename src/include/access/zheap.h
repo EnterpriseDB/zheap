@@ -116,6 +116,24 @@ typedef struct ZHeapPrepareUndoInfo
 	UndoPersistence undo_persistence;
 } ZHeapPrepareUndoInfo;
 
+/* This is used to prepare update undo records. */
+typedef struct ZHeapPrepareUpdateUndoInfo
+{
+	ZHeapPrepareUndoInfo *gen_info;
+	UnpackedUndoRecord *old_undorec;
+	UnpackedUndoRecord *new_undorec;
+	ItemPointerData *recovery_tid;
+	uint64		new_block;
+	UndoRecPtr	new_prev_urecptr;
+	TransactionId prevxid;
+	OffsetNumber new_offset;
+	int			new_trans_slot_id;
+	int			tup_trans_slot_id;
+	bool		inplace_update;
+	bool		same_buf;
+	bool		hasSubXactLock;
+} ZHeapPrepareUpdateUndoInfo;
+
 /* This is used to write WAL. */
 typedef struct ZHeapWALInfo
 {
@@ -222,6 +240,8 @@ extern UndoRecPtr zheap_prepare_undodelete(ZHeapPrepareUndoInfo *zhUndoInfo, ZHe
 						 TransactionId tup_xid, int tup_trans_slot_id,
 						 SubTransactionId subxid, UnpackedUndoRecord *undorecord,
 						 XLogReaderState *xlog_record, xl_undolog_meta *undometa);
+extern UndoRecPtr zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_up_undo_info, ZHeapTuple zhtup,
+						 XLogReaderState *xlog_record, xl_undolog_meta *undometa, UndoRecPtr *new_urecptr);
 
 
 /* Pruning related API's (prunezheap.c) */

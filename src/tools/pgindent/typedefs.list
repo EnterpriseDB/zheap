@@ -2687,6 +2687,7 @@ ZHeapMetaPageData
 ZHeapMultiInsertWALInfo
 ZHeapPageOpaqueData
 ZHeapPrepareUndoInfo
+ZHeapPrepareUpdateUndoInfo
 ZHeapScanDescData
 ZHeapTuple
 ZHeapTupleData
