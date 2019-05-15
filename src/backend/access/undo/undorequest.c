@@ -746,7 +746,7 @@ FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 				next_insert -= UndoLogBlockHeaderSize;
 
 			end_urecptr = UndoGetPrevUndoRecptr(next_insert, InvalidUndoRecPtr,
-												InvalidBuffer);
+												NULL);
 			sz += (end_urecptr - urecptr);
 			Assert(UndoRecPtrIsValid(end_urecptr));
 			break;
@@ -761,7 +761,7 @@ FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 		{
 			end_urecptr =
 				UndoGetPrevUndoRecptr(next_urecptr, InvalidUndoRecPtr,
-									  InvalidBuffer);
+									  NULL);
 			sz += (end_urecptr - urecptr);
 			Assert(UndoRecPtrIsValid(end_urecptr));
 			break;
@@ -780,7 +780,7 @@ FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 			Assert(UndoRecPtrIsValid(next_insert));
 
 			end_urecptr = UndoGetPrevUndoRecptr(next_insert, InvalidUndoRecPtr,
-												InvalidBuffer);
+												NULL);
 			sz += (next_insert - urecptr);
 			Assert(UndoRecPtrIsValid(end_urecptr));
 			break;
@@ -797,7 +797,7 @@ FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 			Assert(UndoRecPtrIsValid(next_insert));
 
 			end_urecptr = UndoGetPrevUndoRecptr(next_insert, InvalidUndoRecPtr,
-												InvalidBuffer);
+												NULL);
 			sz += (next_insert - urecptr);
 
 			UndoRecordRelease(uur);

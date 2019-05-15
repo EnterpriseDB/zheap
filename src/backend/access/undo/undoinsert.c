@@ -174,7 +174,7 @@ static int UndoGetBufferSlot(RelFileNode rnode, BlockNumber blk,
 				  ReadBufferMode rbm,
 				  UndoPersistence persistence,
 				  XLogReaderState *xlog_record);
-static uint16 UndoGetPrevRecordLen(UndoRecPtr urp, Buffer input_buffer);
+static uint16 UndoGetPrevRecordLen(UndoRecPtr urp, Buffer *input_buffer);
 
 /*
  * Check whether the undo record is discarded or not.  If it's already discarded
@@ -617,7 +617,7 @@ resize:
 				prevloginserturp = MakeUndoRecPtr(prevlogno, log->meta.insert);
 
 				/* Fetch length of the last undo record of the previous log. */
-				prevlen = UndoGetPrevRecordLen(prevloginserturp, InvalidBuffer);
+				prevlen = UndoGetPrevRecordLen(prevloginserturp, NULL);
 
 				/* Compute the last record's undo record pointer. */
 				urec->uur_prevurp =
@@ -1302,19 +1302,20 @@ UndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
  * undo block header size in the total length.
  */
 static uint16
-UndoGetPrevRecordLen(UndoRecPtr urp, Buffer input_buffer)
+UndoGetPrevRecordLen(UndoRecPtr urp, Buffer *input_buffer)
 {
 	UndoLogControl *log;
 	UndoLogNumber logno = UndoRecPtrGetLogNo(urp);
 	UndoLogOffset page_offset = UndoRecPtrGetPageOffset(urp);
 	BlockNumber	  cur_blk = UndoRecPtrGetBlockNum(urp);
-	Buffer	buffer = input_buffer;
+	Buffer	buffer;
 	char   *page;
 	char	prevlen[2];
 	RelFileNode rnode;
 	int		byte_to_read = sizeof(uint16);
 	char	persistence;
 	uint16	prev_rec_len = 0;
+	bool	release_buffer = false;
 
 	/* Get relfilenode and undo persistence */
 	logno = UndoRecPtrGetLogNo(urp);
@@ -1325,13 +1326,18 @@ UndoGetPrevRecordLen(UndoRecPtr urp, Buffer input_buffer)
 	/*
 	 * If caller has passed invalid buffer then read the buffer.
 	 */
-	if (!BufferIsValid(buffer))
+	if (input_buffer == NULL || !BufferIsValid(*input_buffer))
 	{
 		buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
 										   RBM_NORMAL, NULL, persistence);
 
 		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		release_buffer = true;
 	}
+	else
+		buffer = *input_buffer;
+
+	/* Get page from buffer. */
 	page = (char *)BufferGetPage(buffer);
 
 	/*
@@ -1353,9 +1359,12 @@ UndoGetPrevRecordLen(UndoRecPtr urp, Buffer input_buffer)
 		}
 		else
 		{
-			/* Release the buffer if we have locally read it. */
-			if (input_buffer != buffer)
-				UnlockReleaseBuffer(buffer);
+			/*
+			 * Unlock the previous buffer before locking the next buffer to
+			 * avoid the deadlock.
+			 */
+			UnlockReleaseBuffer(buffer);
+			release_buffer = true;
 			cur_blk -= 1;
 			persistence = RelPersistenceForUndoPersistence(log->meta.persistence);
 			buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, cur_blk,
@@ -1378,8 +1387,17 @@ UndoGetPrevRecordLen(UndoRecPtr urp, Buffer input_buffer)
 		prev_rec_len += UndoLogBlockHeaderSize;
 
 	/* Release the buffer if we have locally read it. */
-	if (input_buffer != buffer)
+	if (release_buffer)
+	{
 		UnlockReleaseBuffer(buffer);
+
+		/*
+		 * As we already released the previous buffer, so settiing it as
+		 * invalid so that caller should not try to release again.
+		 */
+		if (input_buffer != NULL)
+			*input_buffer = InvalidBuffer;
+	}
 
 	return prev_rec_len;
  }
@@ -1393,7 +1411,7 @@ UndoGetPrevRecordLen(UndoRecPtr urp, Buffer input_buffer)
  * by using current urp and the prevlen.
  */
 UndoRecPtr
-UndoGetPrevUndoRecptr(UndoRecPtr urp, UndoRecPtr prevurp, Buffer buffer)
+UndoGetPrevUndoRecptr(UndoRecPtr urp, UndoRecPtr prevurp, Buffer *buffer)
 {
 	if (UndoRecPtrIsValid(prevurp))
 		return prevurp;

@@ -240,7 +240,7 @@ UndoRecordBulkFetch(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 			urecptr = InvalidUndoRecPtr;
 		else
 			urecptr = UndoGetPrevUndoRecptr(prev_urec_ptr,  uur->uur_prevurp,
-											buffer);
+											&buffer);
 
 		/* We have consumed all elements of the urp_array so expand its size. */
 		if (urp_index >= urp_array_size)

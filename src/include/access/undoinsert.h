@@ -48,7 +48,7 @@ extern void UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
 				   XLogReaderState *xlog_record, xl_undolog_meta *undometa);
 
 extern UndoRecPtr UndoGetPrevUndoRecptr(UndoRecPtr urp, UndoRecPtr prevurp,
-					  Buffer buffer);
+					  Buffer *buffer);
 
 extern void UndoRecordOnUndoLogChange(UndoPersistence persistence);
 
