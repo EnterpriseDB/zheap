@@ -890,17 +890,17 @@ pgbench(
 check_pgbench_logs($bdir, '001_pgbench_log_3', 1, 10, 10,
 	qr{^\d \d{1,2} \d+ \d \d+ \d+$});
 
-#Test to verify non-inplace updates and rollback in zheap
+# Modifying the default_table_access_method to zheap from heap
 $node->append_conf('postgresql.conf', "default_table_access_method = 'zheap'\n");
 $node->restart;
 
-#Modifying existing setup for the testcase
+# Test to verify non-inplace updates and rollback in zheap
 $node->safe_psql('postgres', 'DROP TABLE pgbench_tellers CASCADE; ');
-$node->safe_psql('postgres', 'DROP TABLE  pgbench_branches CASCADE; ');
+$node->safe_psql('postgres', 'DROP TABLE pgbench_branches CASCADE; ');
 $node->safe_psql('postgres', 'DROP TABLE pgbench_accounts CASCADE; ');
-$node->safe_psql('postgres', 'CREATE  TABLE pgbench_accounts (aid integer,aidp integer,bid integer,abalance integer); ');
-$node->safe_psql('postgres', 'CREATE  TABLE pgbench_branches (bid integer,bidp integer,	bbalance integer); ');
-$node->safe_psql('postgres', 'CREATE  TABLE pgbench_tellers (tid integer,tidp integer,	bid integer,tbalance integer); ');
+$node->safe_psql('postgres', 'CREATE TABLE pgbench_accounts (aid integer,aidp integer,bid integer,abalance integer); ');
+$node->safe_psql('postgres', 'CREATE TABLE pgbench_branches (bid integer,bidp integer,	bbalance integer); ');
+$node->safe_psql('postgres', 'CREATE TABLE pgbench_tellers (tid integer,tidp integer,	bid integer,tbalance integer); ');
 $node->safe_psql('postgres', 'CREATE INDEX pgbench_accounts_pkey ON pgbench_accounts USING BTREE (aid);');
 $node->safe_psql('postgres', 'CREATE INDEX pgbench_branches_pkey ON pgbench_branches USING BTREE (bid);');
 $node->safe_psql('postgres', 'CREATE INDEX pgbench_tellers_pkey ON pgbench_tellers USING BTREE (tid);');
@@ -938,6 +938,7 @@ pgbench(
 		UPDATE pgbench_tellers SET tid = :deltt WHERE tidp = :tid;
 		UPDATE pgbench_branches SET bid = :deltb WHERE bidp = :bid;
 		INSERT INTO pgbench_history (tid, bid, aid, delta, mtime) VALUES (:tid, :bid, :aid, :delta, CURRENT_TIMESTAMP);
+		SELECT * from pgbench_tellers FOR KEY SHARE;
 		END;
 },
 		'001_pgbench_custom_script_zheap_2@5' => q{-- custom_script_rb
@@ -950,9 +951,45 @@ pgbench(
 		SELECT abalance FROM pgbench_accounts WHERE aid = :aid;
 		UPDATE pgbench_tellers SET tbalance = tbalance + :delta WHERE tid = :tid;
 		UPDATE pgbench_branches SET bbalance = bbalance + :delta WHERE bid = :bid;
+		SELECT * from pgbench_branches FOR KEY SHARE;
 		rollback;
 }
 	});
+
+# Test to verify cluster in zheap
+$node->safe_psql('postgres','CREATE TABLE zheap_clst_test(name TEXT NOT NULL, counter INTEGER PRIMARY KEY); ');
+$node->safe_psql('postgres','INSERT into zheap_clst_test select "a",a from generate_series(1,10000)a;');
+$node->safe_psql('postgres','CREATE TABLE zheap_clst_test1 () INHERITS (zheap_clst_test);');
+$node->safe_psql('postgres','CREATE INDEX clstr_tst_c ON zheap_clst_test1 (counter);');
+pgbench(
+	"-j5 -t5 -M prepared",
+0,
+	[
+		qr{factor: 1},
+		qr{mode: prepared},
+		qr{clients: 1},
+		qr{threads: 1},
+		qr{ processed: 5/5}
+	],
+	[qr{starting vacuum...end.}],
+	'Scripts for cluster',
+	{
+		'003_pgbench_cluster_script_zheap_1@1' => q{-- cluster_using_test
+		BEGIN;
+		UPDATE zheap_clst_test set name = 'even' where counter%2 = 0;
+		CLUSTER zheap_clst_test USING zheap_clst_test_pkey ;
+		END;
+},
+		'003_pgbench_cluster_script_zheap_2@5' => q{-- cluster_on_test
+		BEGIN ISOLATION LEVEL SERIALIZABLE;
+		UPDATE zheap_clst_test set name = 'odd' where counter%2 != 0;
+		CLUSTER clstr_tst_c ON zheap_clst_test1;
+		ROLLBACK;
+}
+	});
+
+# cleanup
+$node->safe_psql('postgres','DROP TABLE zheap_clst_test cascade;');
 
 # done
 $node->stop;
