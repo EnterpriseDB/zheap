@@ -957,7 +957,9 @@ ZHeapTupleFetch(Relation rel, Buffer buffer, OffsetNumber offnum,
 
 		oldestXidHavingUndo =
 			pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
-		if (U64FromFullTransactionId(zinfo.epoch_xid) < oldestXidHavingUndo)
+
+		if (TransactionIdIsValid(zinfo.xid) &&
+			U64FromFullTransactionId(zinfo.epoch_xid) < oldestXidHavingUndo)
 		{
 			/* The slot is old enough that we can treat it as frozen. */
 			zinfo.trans_slot = ZHTUP_SLOT_FROZEN;
@@ -970,7 +972,8 @@ ZHeapTupleFetch(Relation rel, Buffer buffer, OffsetNumber offnum,
 			 * our snapshot.  The real XID has to have committed before that
 			 * one, so it will be visible to our snapshot as well.
 			 */
-			if (IsMVCCSnapshot(snapshot) &&
+			if (TransactionIdIsValid(zinfo.xid) &&
+				IsMVCCSnapshot(snapshot) &&
 				!XidInMVCCSnapshot(zinfo.xid, snapshot))
 				zinfo.trans_slot = ZHTUP_SLOT_FROZEN;
 			else
