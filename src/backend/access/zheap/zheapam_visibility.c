@@ -117,7 +117,7 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
 
 		/*
 		 * If the undo record containing the information about the last
-		 * transaction that has operated on the tuple has been discareded,
+		 * transaction that has operated on the tuple has been discarded,
 		 * this version of the tuple must be all-visible.
 		 */
 		if (urec == NULL)
@@ -1102,7 +1102,7 @@ out:
  * (c) the previous version of the tuple should be looked up into the undo
  * log to determine which version, if any, is visible.
  *
- * This function can only handle certian types of snapshots; it is a helper
+ * This function can only handle certain types of snapshots; it is a helper
  * function for ZHeapTupleFetch, not a general-purpose facility.
  */
 static ZVersionSelector
