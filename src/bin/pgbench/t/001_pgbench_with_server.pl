@@ -956,41 +956,6 @@ pgbench(
 }
 	});
 
-# Test to verify cluster in zheap
-$node->safe_psql('postgres','CREATE TABLE zheap_clst_test(name TEXT NOT NULL, counter INTEGER PRIMARY KEY); ');
-$node->safe_psql('postgres','INSERT into zheap_clst_test select "a",a from generate_series(1,10000)a;');
-$node->safe_psql('postgres','CREATE TABLE zheap_clst_test1 () INHERITS (zheap_clst_test);');
-$node->safe_psql('postgres','CREATE INDEX clstr_tst_c ON zheap_clst_test1 (counter);');
-pgbench(
-	"-j5 -t5 -M prepared",
-0,
-	[
-		qr{factor: 1},
-		qr{mode: prepared},
-		qr{clients: 1},
-		qr{threads: 1},
-		qr{ processed: 5/5}
-	],
-	[qr{starting vacuum...end.}],
-	'Scripts for cluster',
-	{
-		'003_pgbench_cluster_script_zheap_1@1' => q{-- cluster_using_test
-		BEGIN;
-		UPDATE zheap_clst_test set name = 'even' where counter%2 = 0;
-		CLUSTER zheap_clst_test USING zheap_clst_test_pkey ;
-		END;
-},
-		'003_pgbench_cluster_script_zheap_2@5' => q{-- cluster_on_test
-		BEGIN ISOLATION LEVEL SERIALIZABLE;
-		UPDATE zheap_clst_test set name = 'odd' where counter%2 != 0;
-		CLUSTER clstr_tst_c ON zheap_clst_test1;
-		ROLLBACK;
-}
-	});
-
-# cleanup
-$node->safe_psql('postgres','DROP TABLE zheap_clst_test cascade;');
-
 # done
 $node->stop;
 done_testing();
