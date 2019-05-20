@@ -27,9 +27,11 @@ CREATE SCHEMA regress_rls_schema;
 GRANT ALL ON SCHEMA regress_rls_schema to public;
 SET search_path = regress_rls_schema;
 -- setup of malicious function
+CREATE TEMP TABLE f_leak_table(a text);
 CREATE OR REPLACE FUNCTION f_leak(text) RETURNS bool
     COST 0.0000001 LANGUAGE plpgsql
-    AS 'BEGIN RAISE NOTICE ''f_leak => %'', $1; RETURN true; END';
+    AS 'BEGIN INSERT INTO f_leak_table values($1); RETURN true; END';
+GRANT INSERT, SELECT,TRUNCATE ON TABLE f_leak_table TO public;
 GRANT EXECUTE ON FUNCTION f_leak(text) TO public;
 -- BASIC Row-Level Security Scenario
 SET SESSION AUTHORIZATION regress_rls_alice;
@@ -151,11 +153,6 @@ SELECT * FROM pg_policies WHERE schemaname = 'regress_rls_schema' AND tablename 
 SET SESSION AUTHORIZATION regress_rls_bob;
 SET row_security TO ON;
 SELECT * FROM document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my first manga
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => great manga
-NOTICE:  f_leak => awesome science fiction
  did | cid | dlevel |      dauthor      |         dtitle          
 -----+-----+--------+-------------------+-------------------------
    1 |  11 |      1 | regress_rls_bob   | my first novel
@@ -165,12 +162,18 @@ NOTICE:  f_leak => awesome science fiction
    9 |  22 |      1 | regress_rls_dave  | awesome science fiction
 (5 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ great manga
+ great science fiction
+ my first manga
+ my first novel
+(5 rows)
+
+TRUNCATE TABLE f_leak_table;
 SELECT * FROM document NATURAL JOIN category WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my first manga
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => great manga
-NOTICE:  f_leak => awesome science fiction
  cid | did | dlevel |      dauthor      |         dtitle          |      cname      
 -----+-----+--------+-------------------+-------------------------+-----------------
   11 |   1 |      1 | regress_rls_bob   | my first novel          | novel
@@ -180,13 +183,20 @@ NOTICE:  f_leak => awesome science fiction
   22 |   9 |      1 | regress_rls_dave  | awesome science fiction | science fiction
 (5 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ great manga
+ great science fiction
+ my first manga
+ my first novel
+(5 rows)
+
+TRUNCATE TABLE f_leak_table;
 -- try a sampled version
 SELECT * FROM document TABLESAMPLE BERNOULLI(50) REPEATABLE(0)
   WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first manga
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => great manga
-NOTICE:  f_leak => awesome science fiction
  did | cid | dlevel |      dauthor      |         dtitle          
 -----+-----+--------+-------------------+-------------------------
    4 |  44 |      1 | regress_rls_bob   | my first manga
@@ -195,19 +205,19 @@ NOTICE:  f_leak => awesome science fiction
    9 |  22 |      1 | regress_rls_dave  | awesome science fiction
 (4 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ great manga
+ great science fiction
+ my first manga
+(4 rows)
+
+TRUNCATE TABLE f_leak_table;
 -- viewpoint from regress_rls_carol
 SET SESSION AUTHORIZATION regress_rls_carol;
 SELECT * FROM document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => my science fiction
-NOTICE:  f_leak => my first manga
-NOTICE:  f_leak => my second manga
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => great technology book
-NOTICE:  f_leak => great manga
-NOTICE:  f_leak => awesome science fiction
-NOTICE:  f_leak => awesome technology book
  did | cid | dlevel |      dauthor      |         dtitle          
 -----+-----+--------+-------------------+-------------------------
    1 |  11 |      1 | regress_rls_bob   | my first novel
@@ -222,17 +232,23 @@ NOTICE:  f_leak => awesome technology book
   10 |  33 |      2 | regress_rls_dave  | awesome technology book
 (10 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ awesome technology book
+ great manga
+ great science fiction
+ great technology book
+ my first manga
+ my first novel
+ my science fiction
+ my second manga
+ my second novel
+(10 rows)
+
+TRUNCATE TABLE f_leak_table;
 SELECT * FROM document NATURAL JOIN category WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => my science fiction
-NOTICE:  f_leak => my first manga
-NOTICE:  f_leak => my second manga
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => great technology book
-NOTICE:  f_leak => great manga
-NOTICE:  f_leak => awesome science fiction
-NOTICE:  f_leak => awesome technology book
  cid | did | dlevel |      dauthor      |         dtitle          |      cname      
 -----+-----+--------+-------------------+-------------------------+-----------------
   11 |   1 |      1 | regress_rls_bob   | my first novel          | novel
@@ -247,16 +263,25 @@ NOTICE:  f_leak => awesome technology book
   33 |  10 |      2 | regress_rls_dave  | awesome technology book | technology
 (10 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ awesome technology book
+ great manga
+ great science fiction
+ great technology book
+ my first manga
+ my first novel
+ my science fiction
+ my second manga
+ my second novel
+(10 rows)
+
+TRUNCATE TABLE f_leak_table;
 -- try a sampled version
 SELECT * FROM document TABLESAMPLE BERNOULLI(50) REPEATABLE(0)
   WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => my science fiction
-NOTICE:  f_leak => my first manga
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => great manga
-NOTICE:  f_leak => awesome science fiction
-NOTICE:  f_leak => awesome technology book
  did | cid | dlevel |      dauthor      |         dtitle          
 -----+-----+--------+-------------------+-------------------------
    2 |  11 |      2 | regress_rls_bob   | my second novel
@@ -268,6 +293,19 @@ NOTICE:  f_leak => awesome technology book
   10 |  33 |      2 | regress_rls_dave  | awesome technology book
 (7 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ awesome technology book
+ great manga
+ great science fiction
+ my first manga
+ my science fiction
+ my second novel
+(7 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM document WHERE f_leak(dtitle);
                      QUERY PLAN                     
 ----------------------------------------------------
@@ -295,13 +333,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM document NATURAL JOIN category WHERE f_leak(dt
 -- viewpoint from regress_rls_dave
 SET SESSION AUTHORIZATION regress_rls_dave;
 SELECT * FROM document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => my science fiction
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => great technology book
-NOTICE:  f_leak => awesome science fiction
-NOTICE:  f_leak => awesome technology book
  did | cid | dlevel |      dauthor      |         dtitle          
 -----+-----+--------+-------------------+-------------------------
    1 |  11 |      1 | regress_rls_bob   | my first novel
@@ -313,14 +344,20 @@ NOTICE:  f_leak => awesome technology book
   10 |  33 |      2 | regress_rls_dave  | awesome technology book
 (7 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ awesome technology book
+ great science fiction
+ great technology book
+ my first novel
+ my science fiction
+ my second novel
+(7 rows)
+
+TRUNCATE TABLE f_leak_table;
 SELECT * FROM document NATURAL JOIN category WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => my science fiction
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => great technology book
-NOTICE:  f_leak => awesome science fiction
-NOTICE:  f_leak => awesome technology book
  cid | did | dlevel |      dauthor      |         dtitle          |      cname      
 -----+-----+--------+-------------------+-------------------------+-----------------
   11 |   1 |      1 | regress_rls_bob   | my first novel          | novel
@@ -332,6 +369,19 @@ NOTICE:  f_leak => awesome technology book
   33 |  10 |      2 | regress_rls_dave  | awesome technology book | technology
 (7 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ awesome technology book
+ great science fiction
+ great technology book
+ my first novel
+ my science fiction
+ my second novel
+(7 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM document WHERE f_leak(dtitle);
                                           QUERY PLAN                                          
 ----------------------------------------------------------------------------------------------
@@ -373,11 +423,6 @@ ALTER POLICY p1 ON document USING (dauthor = current_user);
 -- viewpoint from regress_rls_bob again
 SET SESSION AUTHORIZATION regress_rls_bob;
 SELECT * FROM document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => my science fiction
-NOTICE:  f_leak => my first manga
-NOTICE:  f_leak => my second manga
  did | cid | dlevel |     dauthor     |       dtitle       
 -----+-----+--------+-----------------+--------------------
    1 |  11 |      1 | regress_rls_bob | my first novel
@@ -387,12 +432,18 @@ NOTICE:  f_leak => my second manga
    5 |  44 |      2 | regress_rls_bob | my second manga
 (5 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+         a          
+--------------------
+ my first manga
+ my first novel
+ my science fiction
+ my second manga
+ my second novel
+(5 rows)
+
+TRUNCATE TABLE f_leak_table;
 SELECT * FROM document NATURAL JOIN category WHERE f_leak(dtitle) ORDER by did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => my science fiction
-NOTICE:  f_leak => my first manga
-NOTICE:  f_leak => my second manga
  cid | did | dlevel |     dauthor     |       dtitle       |      cname      
 -----+-----+--------+-----------------+--------------------+-----------------
   11 |   1 |      1 | regress_rls_bob | my first novel     | novel
@@ -402,12 +453,20 @@ NOTICE:  f_leak => my second manga
   44 |   5 |      2 | regress_rls_bob | my second manga    | manga
 (5 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+         a          
+--------------------
+ my first manga
+ my first novel
+ my science fiction
+ my second manga
+ my second novel
+(5 rows)
+
+TRUNCATE TABLE f_leak_table;
 -- viewpoint from rls_regres_carol again
 SET SESSION AUTHORIZATION regress_rls_carol;
 SELECT * FROM document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => great technology book
-NOTICE:  f_leak => great manga
  did | cid | dlevel |      dauthor      |        dtitle         
 -----+-----+--------+-------------------+-----------------------
    6 |  22 |      1 | regress_rls_carol | great science fiction
@@ -415,10 +474,16 @@ NOTICE:  f_leak => great manga
    8 |  44 |      1 | regress_rls_carol | great manga
 (3 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+           a           
+-----------------------
+ great manga
+ great science fiction
+ great technology book
+(3 rows)
+
+TRUNCATE TABLE f_leak_table;
 SELECT * FROM document NATURAL JOIN category WHERE f_leak(dtitle) ORDER by did;
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => great technology book
-NOTICE:  f_leak => great manga
  cid | did | dlevel |      dauthor      |        dtitle         |      cname      
 -----+-----+--------+-------------------+-----------------------+-----------------
   22 |   6 |      1 | regress_rls_carol | great science fiction | science fiction
@@ -426,6 +491,15 @@ NOTICE:  f_leak => great manga
   44 |   8 |      1 | regress_rls_carol | great manga           | manga
 (3 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+           a           
+-----------------------
+ great manga
+ great science fiction
+ great technology book
+(3 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM document WHERE f_leak(dtitle);
                        QUERY PLAN                        
 ---------------------------------------------------------
@@ -675,11 +749,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM t1;
 (7 rows)
 
 SELECT * FROM t1 WHERE f_leak(b);
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => dad
-NOTICE:  f_leak => bcd
-NOTICE:  f_leak => def
-NOTICE:  f_leak => yyy
  id  | a |  b  
 -----+---+-----
  102 | 2 | bbb
@@ -689,6 +758,17 @@ NOTICE:  f_leak => yyy
  302 | 2 | yyy
 (5 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+  a  
+-----
+ bbb
+ bcd
+ dad
+ def
+ yyy
+(5 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM t1 WHERE f_leak(b);
                   QUERY PLAN                   
 -----------------------------------------------
@@ -772,11 +852,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM t1 FOR SHARE;
 (8 rows)
 
 SELECT * FROM t1 WHERE f_leak(b) FOR SHARE;
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => dad
-NOTICE:  f_leak => bcd
-NOTICE:  f_leak => def
-NOTICE:  f_leak => yyy
  id  | a |  b  
 -----+---+-----
  102 | 2 | bbb
@@ -786,6 +861,17 @@ NOTICE:  f_leak => yyy
  302 | 2 | yyy
 (5 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+  a  
+-----
+ bbb
+ bcd
+ dad
+ def
+ yyy
+(5 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM t1 WHERE f_leak(b) FOR SHARE;
                      QUERY PLAN                      
 -----------------------------------------------------
@@ -823,17 +909,6 @@ EXPLAIN (COSTS OFF) SELECT a, b, tableoid::regclass FROM t2 UNION ALL SELECT a, 
 RESET SESSION AUTHORIZATION;
 SET row_security TO OFF;
 SELECT * FROM t1 WHERE f_leak(b);
-NOTICE:  f_leak => aba
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => ccc
-NOTICE:  f_leak => dad
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => bcd
-NOTICE:  f_leak => cde
-NOTICE:  f_leak => def
-NOTICE:  f_leak => xxx
-NOTICE:  f_leak => yyy
-NOTICE:  f_leak => zzz
  id  | a |  b  
 -----+---+-----
  101 | 1 | aba
@@ -849,6 +924,23 @@ NOTICE:  f_leak => zzz
  303 | 3 | zzz
 (11 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+  a  
+-----
+ aba
+ abc
+ bbb
+ bcd
+ ccc
+ cde
+ dad
+ def
+ xxx
+ yyy
+ zzz
+(11 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM t1 WHERE f_leak(b);
         QUERY PLAN         
 ---------------------------
@@ -865,17 +957,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM t1 WHERE f_leak(b);
 SET SESSION AUTHORIZATION regress_rls_exempt_user;
 SET row_security TO OFF;
 SELECT * FROM t1 WHERE f_leak(b);
-NOTICE:  f_leak => aba
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => ccc
-NOTICE:  f_leak => dad
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => bcd
-NOTICE:  f_leak => cde
-NOTICE:  f_leak => def
-NOTICE:  f_leak => xxx
-NOTICE:  f_leak => yyy
-NOTICE:  f_leak => zzz
  id  | a |  b  
 -----+---+-----
  101 | 1 | aba
@@ -891,6 +972,23 @@ NOTICE:  f_leak => zzz
  303 | 3 | zzz
 (11 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+  a  
+-----
+ aba
+ abc
+ bbb
+ bcd
+ ccc
+ cde
+ dad
+ def
+ xxx
+ yyy
+ zzz
+(11 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM t1 WHERE f_leak(b);
         QUERY PLAN         
 ---------------------------
@@ -976,10 +1074,6 @@ SELECT * FROM pg_policies WHERE schemaname = 'regress_rls_schema' AND tablename 
 SET SESSION AUTHORIZATION regress_rls_bob;
 SET row_security TO ON;
 SELECT * FROM part_document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => awesome science fiction
-NOTICE:  f_leak => my first satire
  did | cid | dlevel |      dauthor      |         dtitle          
 -----+-----+--------+-------------------+-------------------------
    1 |  11 |      1 | regress_rls_bob   | my first novel
@@ -988,6 +1082,16 @@ NOTICE:  f_leak => my first satire
    9 |  11 |      1 | regress_rls_dave  | awesome science fiction
 (4 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ great science fiction
+ my first novel
+ my first satire
+(4 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM part_document WHERE f_leak(dtitle);
                      QUERY PLAN                      
 -----------------------------------------------------
@@ -1006,16 +1110,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM part_document WHERE f_leak(dtitle);
 -- viewpoint from regress_rls_carol
 SET SESSION AUTHORIZATION regress_rls_carol;
 SELECT * FROM part_document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => awesome science fiction
-NOTICE:  f_leak => my first satire
-NOTICE:  f_leak => great satire
-NOTICE:  f_leak => my science textbook
-NOTICE:  f_leak => my history book
-NOTICE:  f_leak => great technology book
-NOTICE:  f_leak => awesome technology book
  did | cid | dlevel |      dauthor      |         dtitle          
 -----+-----+--------+-------------------+-------------------------
    1 |  11 |      1 | regress_rls_bob   | my first novel
@@ -1030,6 +1124,22 @@ NOTICE:  f_leak => awesome technology book
   10 |  99 |      2 | regress_rls_dave  | awesome technology book
 (10 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ awesome technology book
+ great satire
+ great science fiction
+ great technology book
+ my first novel
+ my first satire
+ my history book
+ my science textbook
+ my second novel
+(10 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM part_document WHERE f_leak(dtitle);
                      QUERY PLAN                      
 -----------------------------------------------------
@@ -1048,10 +1158,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM part_document WHERE f_leak(dtitle);
 -- viewpoint from regress_rls_dave
 SET SESSION AUTHORIZATION regress_rls_dave;
 SELECT * FROM part_document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => awesome science fiction
  did | cid | dlevel |      dauthor      |         dtitle          
 -----+-----+--------+-------------------+-------------------------
    1 |  11 |      1 | regress_rls_bob   | my first novel
@@ -1060,6 +1166,16 @@ NOTICE:  f_leak => awesome science fiction
    9 |  11 |      1 | regress_rls_dave  | awesome science fiction
 (4 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ great science fiction
+ my first novel
+ my second novel
+(4 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM part_document WHERE f_leak(dtitle);
                           QUERY PLAN                          
 --------------------------------------------------------------
@@ -1084,10 +1200,6 @@ ERROR:  new row violates row-level security policy "pp1r" for table "part_docume
 INSERT INTO part_document_satire VALUES (100, 55, 1, 'regress_rls_dave', 'testing RLS with partitions'); -- success
 -- We still cannot see the row using the parent
 SELECT * FROM part_document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => awesome science fiction
  did | cid | dlevel |      dauthor      |         dtitle          
 -----+-----+--------+-------------------+-------------------------
    1 |  11 |      1 | regress_rls_bob   | my first novel
@@ -1096,11 +1208,18 @@ NOTICE:  f_leak => awesome science fiction
    9 |  11 |      1 | regress_rls_dave  | awesome science fiction
 (4 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ great science fiction
+ my first novel
+ my second novel
+(4 rows)
+
+TRUNCATE TABLE f_leak_table;
 -- But we can if we look directly
 SELECT * FROM part_document_satire WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first satire
-NOTICE:  f_leak => great satire
-NOTICE:  f_leak => testing RLS with partitions
  did | cid | dlevel |      dauthor      |           dtitle            
 -----+-----+--------+-------------------+-----------------------------
    4 |  55 |      1 | regress_rls_bob   | my first satire
@@ -1108,6 +1227,15 @@ NOTICE:  f_leak => testing RLS with partitions
  100 |  55 |      1 | regress_rls_dave  | testing RLS with partitions
 (3 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+              a              
+-----------------------------
+ great satire
+ my first satire
+ testing RLS with partitions
+(3 rows)
+
+TRUNCATE TABLE f_leak_table;
 -- Turn on RLS and create policy on child to show RLS is checked before constraints
 SET SESSION AUTHORIZATION regress_rls_alice;
 ALTER TABLE part_document_satire ENABLE ROW LEVEL SECURITY;
@@ -1123,13 +1251,15 @@ SELECT * FROM part_document_satire WHERE f_leak(dtitle) ORDER BY did;
 -----+-----+--------+---------+--------
 (0 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+ a 
+---
+(0 rows)
+
+TRUNCATE TABLE f_leak_table;
 -- The parent looks same as before
 -- viewpoint from regress_rls_dave
 SELECT * FROM part_document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => awesome science fiction
  did | cid | dlevel |      dauthor      |         dtitle          
 -----+-----+--------+-------------------+-------------------------
    1 |  11 |      1 | regress_rls_bob   | my first novel
@@ -1138,6 +1268,16 @@ NOTICE:  f_leak => awesome science fiction
    9 |  11 |      1 | regress_rls_dave  | awesome science fiction
 (4 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+            a            
+-------------------------
+ awesome science fiction
+ great science fiction
+ my first novel
+ my second novel
+(4 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM part_document WHERE f_leak(dtitle);
                           QUERY PLAN                          
 --------------------------------------------------------------
@@ -1151,17 +1291,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM part_document WHERE f_leak(dtitle);
 -- viewpoint from regress_rls_carol
 SET SESSION AUTHORIZATION regress_rls_carol;
 SELECT * FROM part_document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => awesome science fiction
-NOTICE:  f_leak => my first satire
-NOTICE:  f_leak => great satire
-NOTICE:  f_leak => testing RLS with partitions
-NOTICE:  f_leak => my science textbook
-NOTICE:  f_leak => my history book
-NOTICE:  f_leak => great technology book
-NOTICE:  f_leak => awesome technology book
  did | cid | dlevel |      dauthor      |           dtitle            
 -----+-----+--------+-------------------+-----------------------------
    1 |  11 |      1 | regress_rls_bob   | my first novel
@@ -1177,6 +1306,23 @@ NOTICE:  f_leak => awesome technology book
  100 |  55 |      1 | regress_rls_dave  | testing RLS with partitions
 (11 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+              a              
+-----------------------------
+ awesome science fiction
+ awesome technology book
+ great satire
+ great science fiction
+ great technology book
+ my first novel
+ my first satire
+ my history book
+ my science textbook
+ my second novel
+ testing RLS with partitions
+(11 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM part_document WHERE f_leak(dtitle);
                      QUERY PLAN                      
 -----------------------------------------------------
@@ -1202,11 +1348,6 @@ ALTER POLICY pp1 ON part_document USING (dauthor = current_user);
 -- viewpoint from regress_rls_bob again
 SET SESSION AUTHORIZATION regress_rls_bob;
 SELECT * FROM part_document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => my first novel
-NOTICE:  f_leak => my second novel
-NOTICE:  f_leak => my first satire
-NOTICE:  f_leak => my science textbook
-NOTICE:  f_leak => my history book
  did | cid | dlevel |     dauthor     |       dtitle        
 -----+-----+--------+-----------------+---------------------
    1 |  11 |      1 | regress_rls_bob | my first novel
@@ -1216,12 +1357,20 @@ NOTICE:  f_leak => my history book
    5 |  99 |      2 | regress_rls_bob | my history book
 (5 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+          a          
+---------------------
+ my first novel
+ my first satire
+ my history book
+ my science textbook
+ my second novel
+(5 rows)
+
+TRUNCATE TABLE f_leak_table;
 -- viewpoint from rls_regres_carol again
 SET SESSION AUTHORIZATION regress_rls_carol;
 SELECT * FROM part_document WHERE f_leak(dtitle) ORDER BY did;
-NOTICE:  f_leak => great science fiction
-NOTICE:  f_leak => great satire
-NOTICE:  f_leak => great technology book
  did | cid | dlevel |      dauthor      |        dtitle         
 -----+-----+--------+-------------------+-----------------------
    6 |  11 |      1 | regress_rls_carol | great science fiction
@@ -1229,6 +1378,15 @@ NOTICE:  f_leak => great technology book
    8 |  55 |      2 | regress_rls_carol | great satire
 (3 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+           a           
+-----------------------
+ great satire
+ great science fiction
+ great technology book
+(3 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM part_document WHERE f_leak(dtitle);
                           QUERY PLAN                           
 ---------------------------------------------------------------
@@ -1425,6 +1583,12 @@ SET SESSION AUTHORIZATION regress_rls_bob;
 CREATE VIEW v2 AS SELECT * FROM s2 WHERE y like '%af%';
 SELECT * FROM s1 WHERE f_leak(b); -- fail (infinite recursion)
 ERROR:  infinite recursion detected in policy for relation "s1"
+SELECT * FROM f_leak_table ORDER BY a;
+ a 
+---
+(0 rows)
+
+TRUNCATE TABLE f_leak_table;
 INSERT INTO s1 VALUES (1, 'foo'); -- fail (infinite recursion)
 ERROR:  infinite recursion detected in policy for relation "s1"
 SET SESSION AUTHORIZATION regress_rls_alice;
@@ -1432,14 +1596,20 @@ DROP POLICY p3 on s1;
 ALTER POLICY p2 ON s2 USING (x % 2 = 0);
 SET SESSION AUTHORIZATION regress_rls_bob;
 SELECT * FROM s1 WHERE f_leak(b);	-- OK
-NOTICE:  f_leak => c81e728d9d4c2f636f067f89cc14862c
-NOTICE:  f_leak => a87ff679a2f3e71d9181a67b7542122c
  a |                b                 
 ---+----------------------------------
  2 | c81e728d9d4c2f636f067f89cc14862c
  4 | a87ff679a2f3e71d9181a67b7542122c
 (2 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+                a                 
+----------------------------------
+ a87ff679a2f3e71d9181a67b7542122c
+ c81e728d9d4c2f636f067f89cc14862c
+(2 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM only s1 WHERE f_leak(b);
                         QUERY PLAN                         
 -----------------------------------------------------------
@@ -1454,14 +1624,20 @@ SET SESSION AUTHORIZATION regress_rls_alice;
 ALTER POLICY p1 ON s1 USING (a in (select x from v2)); -- using VIEW in RLS policy
 SET SESSION AUTHORIZATION regress_rls_bob;
 SELECT * FROM s1 WHERE f_leak(b);	-- OK
-NOTICE:  f_leak => 0267aaf632e87a63288a08331f22c7c3
-NOTICE:  f_leak => 1679091c5a880faf6fb5e6087eb1b2dc
  a  |                b                 
 ----+----------------------------------
  -4 | 0267aaf632e87a63288a08331f22c7c3
   6 | 1679091c5a880faf6fb5e6087eb1b2dc
 (2 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+                a                 
+----------------------------------
+ 0267aaf632e87a63288a08331f22c7c3
+ 1679091c5a880faf6fb5e6087eb1b2dc
+(2 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM s1 WHERE f_leak(b);
                         QUERY PLAN                         
 -----------------------------------------------------------
@@ -1499,6 +1675,12 @@ ALTER POLICY p2 ON s2 USING (x in (select a from s1 where b like '%d2%'));
 SET SESSION AUTHORIZATION regress_rls_bob;
 SELECT * FROM s1 WHERE f_leak(b);	-- fail (infinite recursion via view)
 ERROR:  infinite recursion detected in policy for relation "s1"
+SELECT * FROM f_leak_table ORDER BY a;
+ a 
+---
+(0 rows)
+
+TRUNCATE TABLE f_leak_table;
 -- prepared statement with regress_rls_alice privilege
 PREPARE p1(int) AS SELECT * FROM t1 WHERE a <= $1;
 EXECUTE p1(2);
@@ -1525,17 +1707,6 @@ EXPLAIN (COSTS OFF) EXECUTE p1(2);
 RESET SESSION AUTHORIZATION;
 SET row_security TO OFF;
 SELECT * FROM t1 WHERE f_leak(b);
-NOTICE:  f_leak => aba
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => ccc
-NOTICE:  f_leak => dad
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => bcd
-NOTICE:  f_leak => cde
-NOTICE:  f_leak => def
-NOTICE:  f_leak => xxx
-NOTICE:  f_leak => yyy
-NOTICE:  f_leak => zzz
  id  | a |  b  
 -----+---+-----
  101 | 1 | aba
@@ -1551,6 +1722,23 @@ NOTICE:  f_leak => zzz
  303 | 3 | zzz
 (11 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+  a  
+-----
+ aba
+ abc
+ bbb
+ bcd
+ ccc
+ cde
+ dad
+ def
+ xxx
+ yyy
+ zzz
+(11 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM t1 WHERE f_leak(b);
         QUERY PLAN         
 ---------------------------
@@ -1651,11 +1839,17 @@ EXPLAIN (COSTS OFF) UPDATE t1 SET b = b || b WHERE f_leak(b);
 (10 rows)
 
 UPDATE t1 SET b = b || b WHERE f_leak(b);
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => dad
-NOTICE:  f_leak => bcd
-NOTICE:  f_leak => def
-NOTICE:  f_leak => yyy
+SELECT * FROM f_leak_table ORDER BY a;
+  a  
+-----
+ bbb
+ bcd
+ dad
+ def
+ yyy
+(5 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) UPDATE only t1 SET b = b || '_updt' WHERE f_leak(b);
                   QUERY PLAN                   
 -----------------------------------------------
@@ -1665,48 +1859,75 @@ EXPLAIN (COSTS OFF) UPDATE only t1 SET b = b || '_updt' WHERE f_leak(b);
 (3 rows)
 
 UPDATE only t1 SET b = b || '_updt' WHERE f_leak(b);
-NOTICE:  f_leak => bbbbbb
-NOTICE:  f_leak => daddad
+SELECT * FROM f_leak_table ORDER BY a;
+   a    
+--------
+ bbbbbb
+ daddad
+(2 rows)
+
+TRUNCATE TABLE f_leak_table;
 -- returning clause with system column
-UPDATE only t1 SET b = b WHERE f_leak(b) RETURNING tableoid::regclass, *, t1;
-NOTICE:  f_leak => bbbbbb_updt
-NOTICE:  f_leak => daddad_updt
+WITH UPDATED AS (UPDATE only t1 SET b = b WHERE f_leak(b)
+RETURNING tableoid::regclass, *, t1) SELECT * FROM UPDATED ORDER BY (a,b);
  tableoid | id  | a |      b      |         t1          
 ----------+-----+---+-------------+---------------------
  t1       | 102 | 2 | bbbbbb_updt | (102,2,bbbbbb_updt)
  t1       | 104 | 4 | daddad_updt | (104,4,daddad_updt)
 (2 rows)
 
-UPDATE t1 SET b = b WHERE f_leak(b) RETURNING *;
-NOTICE:  f_leak => bbbbbb_updt
-NOTICE:  f_leak => daddad_updt
-NOTICE:  f_leak => bcdbcd
-NOTICE:  f_leak => defdef
-NOTICE:  f_leak => yyyyyy
+SELECT * from f_leak_table ORDER BY a;
+      a      
+-------------
+ bbbbbb_updt
+ daddad_updt
+(2 rows)
+
+TRUNCATE table f_leak_table;
+WITH UPDATED AS (UPDATE t1 SET b = b WHERE f_leak(b)
+RETURNING *) SELECT * FROM UPDATED ORDER BY (a,b);
  id  | a |      b      
 -----+---+-------------
  102 | 2 | bbbbbb_updt
- 104 | 4 | daddad_updt
  202 | 2 | bcdbcd
- 204 | 4 | defdef
  302 | 2 | yyyyyy
+ 104 | 4 | daddad_updt
+ 204 | 4 | defdef
 (5 rows)
 
-UPDATE t1 SET b = b WHERE f_leak(b) RETURNING tableoid::regclass, *, t1;
-NOTICE:  f_leak => bbbbbb_updt
-NOTICE:  f_leak => daddad_updt
-NOTICE:  f_leak => bcdbcd
-NOTICE:  f_leak => defdef
-NOTICE:  f_leak => yyyyyy
+SELECT * from f_leak_table ORDER BY a;
+      a      
+-------------
+ bbbbbb_updt
+ bcdbcd
+ daddad_updt
+ defdef
+ yyyyyy
+(5 rows)
+
+TRUNCATE table f_leak_table;
+WITH UPDATED AS (UPDATE t1 SET b = b WHERE f_leak(b)
+RETURNING tableoid::regclass, *, t1) SELECT * FROM UPDATED ORDER BY (a,b);
  tableoid | id  | a |      b      |         t1          
 ----------+-----+---+-------------+---------------------
  t1       | 102 | 2 | bbbbbb_updt | (102,2,bbbbbb_updt)
- t1       | 104 | 4 | daddad_updt | (104,4,daddad_updt)
  t2       | 202 | 2 | bcdbcd      | (202,2,bcdbcd)
- t2       | 204 | 4 | defdef      | (204,4,defdef)
  t3       | 302 | 2 | yyyyyy      | (302,2,yyyyyy)
+ t1       | 104 | 4 | daddad_updt | (104,4,daddad_updt)
+ t2       | 204 | 4 | defdef      | (204,4,defdef)
 (5 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+      a      
+-------------
+ bbbbbb_updt
+ bcdbcd
+ daddad_updt
+ defdef
+ yyyyyy
+(5 rows)
+
+TRUNCATE table f_leak_table;
 -- updates with from clause
 EXPLAIN (COSTS OFF) UPDATE t2 SET b=t2.b FROM t3
 WHERE t2.a = 3 and t3.a = 2 AND f_leak(t2.b) AND f_leak(t3.b);
@@ -1722,8 +1943,14 @@ WHERE t2.a = 3 and t3.a = 2 AND f_leak(t2.b) AND f_leak(t3.b);
 
 UPDATE t2 SET b=t2.b FROM t3
 WHERE t2.a = 3 and t3.a = 2 AND f_leak(t2.b) AND f_leak(t3.b);
-NOTICE:  f_leak => cde
-NOTICE:  f_leak => yyyyyy
+SELECT * from f_leak_table ORDER BY a;
+   a    
+--------
+ cde
+ yyyyyy
+(2 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) UPDATE t1 SET b=t1.b FROM t2
 WHERE t1.a = 3 and t2.a = 3 AND f_leak(t1.b) AND f_leak(t2.b);
                            QUERY PLAN                            
@@ -1751,6 +1978,12 @@ WHERE t1.a = 3 and t2.a = 3 AND f_leak(t1.b) AND f_leak(t2.b);
 
 UPDATE t1 SET b=t1.b FROM t2
 WHERE t1.a = 3 and t2.a = 3 AND f_leak(t1.b) AND f_leak(t2.b);
+SELECT * from f_leak_table ORDER BY a;
+ a 
+---
+(0 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) UPDATE t2 SET b=t2.b FROM t1
 WHERE t1.a = 3 and t2.a = 3 AND f_leak(t1.b) AND f_leak(t2.b);
                               QUERY PLAN                               
@@ -1770,7 +2003,13 @@ WHERE t1.a = 3 and t2.a = 3 AND f_leak(t1.b) AND f_leak(t2.b);
 
 UPDATE t2 SET b=t2.b FROM t1
 WHERE t1.a = 3 and t2.a = 3 AND f_leak(t1.b) AND f_leak(t2.b);
-NOTICE:  f_leak => cde
+SELECT * from f_leak_table ORDER BY a;
+  a  
+-----
+ cde
+(1 row)
+
+TRUNCATE table f_leak_table;
 -- updates with from clause self join
 EXPLAIN (COSTS OFF) UPDATE t2 t2_1 SET b = t2_2.b FROM t2 t2_2
 WHERE t2_1.a = 3 AND t2_2.a = t2_1.a AND t2_2.b = t2_1.b
@@ -1786,16 +2025,22 @@ AND f_leak(t2_1.b) AND f_leak(t2_2.b) RETURNING *, t2_1, t2_2;
                Filter: ((a = 3) AND ((a % 2) = 1) AND f_leak(b))
 (7 rows)
 
-UPDATE t2 t2_1 SET b = t2_2.b FROM t2 t2_2
+WITH UPDATED AS (UPDATE t2 t2_1 SET b = t2_2.b FROM t2 t2_2
 WHERE t2_1.a = 3 AND t2_2.a = t2_1.a AND t2_2.b = t2_1.b
-AND f_leak(t2_1.b) AND f_leak(t2_2.b) RETURNING *, t2_1, t2_2;
-NOTICE:  f_leak => cde
-NOTICE:  f_leak => cde
- id  | a |  b  |  c  | id  | a |  b  |  c  |      t2_1       |      t2_2       
------+---+-----+-----+-----+---+-----+-----+-----------------+-----------------
- 203 | 3 | cde | 3.3 | 203 | 3 | cde | 3.3 | (203,3,cde,3.3) | (203,3,cde,3.3)
+AND f_leak(t2_1.b) AND f_leak(t2_2.b) RETURNING *, t2_1.a d, t2_2.b e) SELECT * FROM UPDATED ORDER BY (d,e);
+ id  | a |  b  |  c  | id  | a |  b  |  c  | d |  e  
+-----+---+-----+-----+-----+---+-----+-----+---+-----
+ 203 | 3 | cde | 3.3 | 203 | 3 | cde | 3.3 | 3 | cde
 (1 row)
 
+SELECT * from f_leak_table ORDER BY a;
+  a  
+-----
+ cde
+ cde
+(2 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) UPDATE t1 t1_1 SET b = t1_2.b FROM t1 t1_2
 WHERE t1_1.a = 4 AND t1_2.a = t1_1.a AND t1_2.b = t1_1.b
 AND f_leak(t1_1.b) AND f_leak(t1_2.b) RETURNING *, t1_1, t1_2;
@@ -1840,21 +2085,27 @@ AND f_leak(t1_1.b) AND f_leak(t1_2.b) RETURNING *, t1_1, t1_2;
                      Filter: ((a = 4) AND ((a % 2) = 0) AND f_leak(b))
 (37 rows)
 
-UPDATE t1 t1_1 SET b = t1_2.b FROM t1 t1_2
+WITH UPDATED AS (UPDATE t1 t1_1 SET b = t1_2.b FROM t1 t1_2
 WHERE t1_1.a = 4 AND t1_2.a = t1_1.a AND t1_2.b = t1_1.b
-AND f_leak(t1_1.b) AND f_leak(t1_2.b) RETURNING *, t1_1, t1_2;
-NOTICE:  f_leak => daddad_updt
-NOTICE:  f_leak => daddad_updt
-NOTICE:  f_leak => defdef
-NOTICE:  f_leak => defdef
-NOTICE:  f_leak => daddad_updt
-NOTICE:  f_leak => defdef
- id  | a |      b      | id  | a |      b      |        t1_1         |        t1_2         
------+---+-------------+-----+---+-------------+---------------------+---------------------
- 104 | 4 | daddad_updt | 104 | 4 | daddad_updt | (104,4,daddad_updt) | (104,4,daddad_updt)
- 204 | 4 | defdef      | 204 | 4 | defdef      | (204,4,defdef)      | (204,4,defdef)
+AND f_leak(t1_1.b) AND f_leak(t1_2.b) RETURNING *, t1_1.a d, t1_2.b e) SELECT * FROM UPDATED ORDER BY (d,e);
+ id  | a |      b      | id  | a |      b      | d |      e      
+-----+---+-------------+-----+---+-------------+---+-------------
+ 104 | 4 | daddad_updt | 104 | 4 | daddad_updt | 4 | daddad_updt
+ 204 | 4 | defdef      | 204 | 4 | defdef      | 4 | defdef
 (2 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+      a      
+-------------
+ daddad_updt
+ daddad_updt
+ daddad_updt
+ defdef
+ defdef
+ defdef
+(6 rows)
+
+TRUNCATE table f_leak_table;
 RESET SESSION AUTHORIZATION;
 SET row_security TO OFF;
 SELECT * FROM t1 ORDER BY a,b;
@@ -1898,26 +2149,38 @@ EXPLAIN (COSTS OFF) DELETE FROM t1 WHERE f_leak(b);
          Filter: (((a % 2) = 0) AND f_leak(b))
 (10 rows)
 
-DELETE FROM only t1 WHERE f_leak(b) RETURNING tableoid::regclass, *, t1;
-NOTICE:  f_leak => daddad_updt
-NOTICE:  f_leak => bbbbbb_updt
+WITH CTE1 AS (DELETE FROM only t1 WHERE f_leak(b) RETURNING tableoid::regclass, *, t1) SELECT * FROM CTE1 ORDER BY (a,b);
  tableoid | id  | a |      b      |         t1          
 ----------+-----+---+-------------+---------------------
- t1       | 104 | 4 | daddad_updt | (104,4,daddad_updt)
  t1       | 102 | 2 | bbbbbb_updt | (102,2,bbbbbb_updt)
+ t1       | 104 | 4 | daddad_updt | (104,4,daddad_updt)
 (2 rows)
 
-DELETE FROM t1 WHERE f_leak(b) RETURNING tableoid::regclass, *, t1;
-NOTICE:  f_leak => bcdbcd
-NOTICE:  f_leak => defdef
-NOTICE:  f_leak => yyyyyy
+SELECT * FROM f_leak_table ORDER BY a;
+      a      
+-------------
+ bbbbbb_updt
+ daddad_updt
+(2 rows)
+
+TRUNCATE TABLE f_leak_table;
+WITH CTE1 AS (DELETE FROM t1 WHERE f_leak(b) RETURNING tableoid::regclass, *, t1) SELECT * FROM CTE1 ORDER BY (a,b);
  tableoid | id  | a |   b    |       t1       
 ----------+-----+---+--------+----------------
  t2       | 202 | 2 | bcdbcd | (202,2,bcdbcd)
- t2       | 204 | 4 | defdef | (204,4,defdef)
  t3       | 302 | 2 | yyyyyy | (302,2,yyyyyy)
+ t2       | 204 | 4 | defdef | (204,4,defdef)
 (3 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+   a    
+--------
+ bcdbcd
+ defdef
+ yyyyyy
+(3 rows)
+
+TRUNCATE TABLE f_leak_table;
 --
 -- S.b. view on top of Row-level security
 --
@@ -1941,11 +2204,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM bv1 WHERE f_leak(b);
 (4 rows)
 
 SELECT * FROM bv1 WHERE f_leak(b);
-NOTICE:  f_leak => c81e728d9d4c2f636f067f89cc14862c
-NOTICE:  f_leak => a87ff679a2f3e71d9181a67b7542122c
-NOTICE:  f_leak => 1679091c5a880faf6fb5e6087eb1b2dc
-NOTICE:  f_leak => c9f0f895fb98ab9159f51fd0297e236d
-NOTICE:  f_leak => d3d9446802a44259755d38e6d163e820
  a  |                b                 
 ----+----------------------------------
   2 | c81e728d9d4c2f636f067f89cc14862c
@@ -1955,6 +2213,17 @@ NOTICE:  f_leak => d3d9446802a44259755d38e6d163e820
  10 | d3d9446802a44259755d38e6d163e820
 (5 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+                a                 
+----------------------------------
+ 1679091c5a880faf6fb5e6087eb1b2dc
+ a87ff679a2f3e71d9181a67b7542122c
+ c81e728d9d4c2f636f067f89cc14862c
+ c9f0f895fb98ab9159f51fd0297e236d
+ d3d9446802a44259755d38e6d163e820
+(5 rows)
+
+TRUNCATE table f_leak_table;
 INSERT INTO bv1 VALUES (-1, 'xxx'); -- should fail view WCO
 ERROR:  new row violates row-level security policy for table "b1"
 INSERT INTO bv1 VALUES (11, 'xxx'); -- should fail RLS check
@@ -1969,7 +2238,13 @@ EXPLAIN (COSTS OFF) UPDATE bv1 SET b = 'yyy' WHERE a = 4 AND f_leak(b);
 (3 rows)
 
 UPDATE bv1 SET b = 'yyy' WHERE a = 4 AND f_leak(b);
-NOTICE:  f_leak => a87ff679a2f3e71d9181a67b7542122c
+SELECT * from f_leak_table ORDER BY a;
+                a                 
+----------------------------------
+ a87ff679a2f3e71d9181a67b7542122c
+(1 row)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) DELETE FROM bv1 WHERE a = 6 AND f_leak(b);
                               QUERY PLAN                               
 -----------------------------------------------------------------------
@@ -1979,7 +2254,13 @@ EXPLAIN (COSTS OFF) DELETE FROM bv1 WHERE a = 6 AND f_leak(b);
 (3 rows)
 
 DELETE FROM bv1 WHERE a = 6 AND f_leak(b);
-NOTICE:  f_leak => 1679091c5a880faf6fb5e6087eb1b2dc
+SELECT * from f_leak_table ORDER BY a;
+                a                 
+----------------------------------
+ 1679091c5a880faf6fb5e6087eb1b2dc
+(1 row)
+
+TRUNCATE table f_leak_table;
 SET SESSION AUTHORIZATION regress_rls_alice;
 SELECT * FROM b1 ORDER BY a;
   a  |                b                 
@@ -2158,14 +2439,20 @@ CREATE POLICY p2 ON z1 TO regress_rls_group2 USING (a % 2 = 1);
 ALTER TABLE z1 ENABLE ROW LEVEL SECURITY;
 SET SESSION AUTHORIZATION regress_rls_bob;
 SELECT * FROM z1 WHERE f_leak(b);
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => dad
  a |  b  
 ---+-----
  2 | bbb
  4 | dad
 (2 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+  a  
+-----
+ bbb
+ dad
+(2 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM z1 WHERE f_leak(b);
                QUERY PLAN                
 -----------------------------------------
@@ -2174,6 +2461,12 @@ EXPLAIN (COSTS OFF) SELECT * FROM z1 WHERE f_leak(b);
 (2 rows)
 
 PREPARE plancache_test AS SELECT * FROM z1 WHERE f_leak(b);
+SELECT * from f_leak_table ORDER BY a;
+ a 
+---
+(0 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) EXECUTE plancache_test;
                QUERY PLAN                
 -----------------------------------------
@@ -2182,6 +2475,12 @@ EXPLAIN (COSTS OFF) EXECUTE plancache_test;
 (2 rows)
 
 PREPARE plancache_test2 AS WITH q AS MATERIALIZED (SELECT * FROM z1 WHERE f_leak(b)) SELECT * FROM q,z2;
+SELECT * from f_leak_table ORDER BY a;
+ a 
+---
+(0 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) EXECUTE plancache_test2;
                    QUERY PLAN                    
 -------------------------------------------------
@@ -2195,6 +2494,12 @@ EXPLAIN (COSTS OFF) EXECUTE plancache_test2;
 (7 rows)
 
 PREPARE plancache_test3 AS WITH q AS MATERIALIZED (SELECT * FROM z2) SELECT * FROM q,z1 WHERE f_leak(z1.b);
+SELECT * from f_leak_table ORDER BY a;
+ a 
+---
+(0 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) EXECUTE plancache_test3;
                      QUERY PLAN                      
 -----------------------------------------------------
@@ -2209,14 +2514,20 @@ EXPLAIN (COSTS OFF) EXECUTE plancache_test3;
 
 SET ROLE regress_rls_group1;
 SELECT * FROM z1 WHERE f_leak(b);
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => dad
  a |  b  
 ---+-----
  2 | bbb
  4 | dad
 (2 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+  a  
+-----
+ bbb
+ dad
+(2 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM z1 WHERE f_leak(b);
                QUERY PLAN                
 -----------------------------------------
@@ -2257,14 +2568,20 @@ EXPLAIN (COSTS OFF) EXECUTE plancache_test3;
 
 SET SESSION AUTHORIZATION regress_rls_carol;
 SELECT * FROM z1 WHERE f_leak(b);
-NOTICE:  f_leak => aba
-NOTICE:  f_leak => ccc
  a |  b  
 ---+-----
  1 | aba
  3 | ccc
 (2 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+  a  
+-----
+ aba
+ ccc
+(2 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM z1 WHERE f_leak(b);
                QUERY PLAN                
 -----------------------------------------
@@ -2305,14 +2622,20 @@ EXPLAIN (COSTS OFF) EXECUTE plancache_test3;
 
 SET ROLE regress_rls_group2;
 SELECT * FROM z1 WHERE f_leak(b);
-NOTICE:  f_leak => aba
-NOTICE:  f_leak => ccc
  a |  b  
 ---+-----
  1 | aba
  3 | ccc
 (2 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+  a  
+-----
+ aba
+ ccc
+(2 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM z1 WHERE f_leak(b);
                QUERY PLAN                
 -----------------------------------------
@@ -2361,10 +2684,6 @@ GRANT SELECT ON rls_view TO regress_rls_bob;
 -- Query as role that is not owner of view or table.  Should return all records.
 SET SESSION AUTHORIZATION regress_rls_bob;
 SELECT * FROM rls_view;
-NOTICE:  f_leak => aba
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => ccc
-NOTICE:  f_leak => dad
  a |  b  
 ---+-----
  1 | aba
@@ -2373,6 +2692,16 @@ NOTICE:  f_leak => dad
  4 | dad
 (4 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+  a  
+-----
+ aba
+ bbb
+ ccc
+ dad
+(4 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM rls_view;
      QUERY PLAN      
 ---------------------
@@ -2383,10 +2712,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM rls_view;
 -- Query as view/table owner.  Should return all records.
 SET SESSION AUTHORIZATION regress_rls_alice;
 SELECT * FROM rls_view;
-NOTICE:  f_leak => aba
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => ccc
-NOTICE:  f_leak => dad
  a |  b  
 ---+-----
  1 | aba
@@ -2395,6 +2720,16 @@ NOTICE:  f_leak => dad
  4 | dad
 (4 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+  a  
+-----
+ aba
+ bbb
+ ccc
+ dad
+(4 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM rls_view;
      QUERY PLAN      
 ---------------------
@@ -2411,14 +2746,20 @@ GRANT SELECT ON rls_view TO regress_rls_alice;
 -- Should return records based on view owner policies.
 SET SESSION AUTHORIZATION regress_rls_alice;
 SELECT * FROM rls_view;
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => dad
  a |  b  
 ---+-----
  2 | bbb
  4 | dad
 (2 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+  a  
+-----
+ bbb
+ dad
+(2 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM rls_view;
                QUERY PLAN                
 -----------------------------------------
@@ -2430,14 +2771,20 @@ EXPLAIN (COSTS OFF) SELECT * FROM rls_view;
 -- Should return records based on view owner policies.
 SET SESSION AUTHORIZATION regress_rls_bob;
 SELECT * FROM rls_view;
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => dad
  a |  b  
 ---+-----
  2 | bbb
  4 | dad
 (2 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+  a  
+-----
+ bbb
+ dad
+(2 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM rls_view;
                QUERY PLAN                
 -----------------------------------------
@@ -2449,20 +2796,32 @@ EXPLAIN (COSTS OFF) SELECT * FROM rls_view;
 SET SESSION AUTHORIZATION regress_rls_carol;
 SELECT * FROM rls_view; --fail - permission denied.
 ERROR:  permission denied for view rls_view
+SELECT * FROM f_leak_table ORDER BY a;
+ a 
+---
+(0 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM rls_view; --fail - permission denied.
 ERROR:  permission denied for view rls_view
 -- Query as role that is not the owner of the table or view with permissions.
 SET SESSION AUTHORIZATION regress_rls_bob;
 GRANT SELECT ON rls_view TO regress_rls_carol;
 SELECT * FROM rls_view;
-NOTICE:  f_leak => bbb
-NOTICE:  f_leak => dad
  a |  b  
 ---+-----
  2 | bbb
  4 | dad
 (2 rows)
 
+SELECT * FROM f_leak_table ORDER BY a;
+  a  
+-----
+ bbb
+ dad
+(2 rows)
+
+TRUNCATE TABLE f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM rls_view;
                QUERY PLAN                
 -----------------------------------------
@@ -2495,12 +2854,6 @@ CREATE POLICY p4 ON x1 FOR DELETE USING (a < 8);
 ALTER TABLE x1 ENABLE ROW LEVEL SECURITY;
 SET SESSION AUTHORIZATION regress_rls_bob;
 SELECT * FROM x1 WHERE f_leak(b) ORDER BY a ASC;
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => bcd
-NOTICE:  f_leak => def
-NOTICE:  f_leak => efg
-NOTICE:  f_leak => fgh
-NOTICE:  f_leak => fgh
  a |  b  |         c         
 ---+-----+-------------------
  1 | abc | regress_rls_bob
@@ -2511,13 +2864,20 @@ NOTICE:  f_leak => fgh
  8 | fgh | regress_rls_carol
 (6 rows)
 
-UPDATE x1 SET b = b || '_updt' WHERE f_leak(b) RETURNING *;
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => bcd
-NOTICE:  f_leak => def
-NOTICE:  f_leak => efg
-NOTICE:  f_leak => fgh
-NOTICE:  f_leak => fgh
+SELECT * from f_leak_table ORDER BY a;
+  a  
+-----
+ abc
+ bcd
+ def
+ efg
+ fgh
+ fgh
+(6 rows)
+
+TRUNCATE table f_leak_table;
+WITH UPDATED AS (UPDATE x1 SET b = b || '_updt' WHERE f_leak(b)
+RETURNING *) SELECT * FROM UPDATED ORDER BY (a,b);
  a |    b     |         c         
 ---+----------+-------------------
  1 | abc_updt | regress_rls_bob
@@ -2528,14 +2888,20 @@ NOTICE:  f_leak => fgh
  8 | fgh_updt | regress_rls_carol
 (6 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+  a  
+-----
+ abc
+ bcd
+ def
+ efg
+ fgh
+ fgh
+(6 rows)
+
+TRUNCATE table f_leak_table;
 SET SESSION AUTHORIZATION regress_rls_carol;
 SELECT * FROM x1 WHERE f_leak(b) ORDER BY a ASC;
-NOTICE:  f_leak => cde
-NOTICE:  f_leak => fgh
-NOTICE:  f_leak => bcd_updt
-NOTICE:  f_leak => def_updt
-NOTICE:  f_leak => fgh_updt
-NOTICE:  f_leak => fgh_updt
  a |    b     |         c         
 ---+----------+-------------------
  2 | bcd_updt | regress_rls_bob
@@ -2546,40 +2912,65 @@ NOTICE:  f_leak => fgh_updt
  8 | fgh_updt | regress_rls_carol
 (6 rows)
 
-UPDATE x1 SET b = b || '_updt' WHERE f_leak(b) RETURNING *;
-NOTICE:  f_leak => cde
-NOTICE:  f_leak => fgh
-NOTICE:  f_leak => bcd_updt
-NOTICE:  f_leak => def_updt
-NOTICE:  f_leak => fgh_updt
-NOTICE:  f_leak => fgh_updt
+SELECT * from f_leak_table ORDER BY a;
+    a     
+----------
+ bcd_updt
+ cde
+ def_updt
+ fgh
+ fgh_updt
+ fgh_updt
+(6 rows)
+
+TRUNCATE table f_leak_table;
+WITH UPDATED AS (UPDATE x1 SET b = b || '_updt' WHERE f_leak(b)
+RETURNING *) SELECT * FROM UPDATED ORDER BY (a,b);
  a |       b       |         c         
 ---+---------------+-------------------
- 3 | cde_updt      | regress_rls_carol
- 7 | fgh_updt      | regress_rls_carol
  2 | bcd_updt_updt | regress_rls_bob
+ 3 | cde_updt      | regress_rls_carol
  4 | def_updt_updt | regress_rls_carol
  6 | fgh_updt_updt | regress_rls_bob
+ 7 | fgh_updt      | regress_rls_carol
  8 | fgh_updt_updt | regress_rls_carol
 (6 rows)
 
-DELETE FROM x1 WHERE f_leak(b) RETURNING *;
-NOTICE:  f_leak => cde_updt
-NOTICE:  f_leak => fgh_updt
-NOTICE:  f_leak => bcd_updt_updt
-NOTICE:  f_leak => def_updt_updt
-NOTICE:  f_leak => fgh_updt_updt
-NOTICE:  f_leak => fgh_updt_updt
+SELECT * from f_leak_table ORDER BY a;
+    a     
+----------
+ bcd_updt
+ cde
+ def_updt
+ fgh
+ fgh_updt
+ fgh_updt
+(6 rows)
+
+TRUNCATE table f_leak_table;
+WITH cte1 AS (DELETE FROM x1 WHERE f_leak(b) RETURNING *) SELECT * FROM cte1 ORDER BY (a,b);
  a |       b       |         c         
 ---+---------------+-------------------
- 3 | cde_updt      | regress_rls_carol
- 7 | fgh_updt      | regress_rls_carol
  2 | bcd_updt_updt | regress_rls_bob
+ 3 | cde_updt      | regress_rls_carol
  4 | def_updt_updt | regress_rls_carol
  6 | fgh_updt_updt | regress_rls_bob
+ 7 | fgh_updt      | regress_rls_carol
  8 | fgh_updt_updt | regress_rls_carol
 (6 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+       a       
+---------------
+ bcd_updt_updt
+ cde_updt
+ def_updt_updt
+ fgh_updt
+ fgh_updt_updt
+ fgh_updt_updt
+(6 rows)
+
+TRUNCATE table f_leak_table;
 --
 -- Duplicate Policy Names
 --
@@ -2601,6 +2992,12 @@ ALTER TABLE y2 ENABLE ROW LEVEL SECURITY;
 SET SESSION AUTHORIZATION regress_rls_alice;
 CREATE VIEW rls_sbv WITH (security_barrier) AS
     SELECT * FROM y1 WHERE f_leak(b);
+SELECT * from f_leak_table ORDER BY a;
+ a 
+---
+(0 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM rls_sbv WHERE (a = 1);
             QUERY PLAN             
 -----------------------------------
@@ -2613,6 +3010,12 @@ DROP VIEW rls_sbv;
 SET SESSION AUTHORIZATION regress_rls_bob;
 CREATE VIEW rls_sbv WITH (security_barrier) AS
     SELECT * FROM y1 WHERE f_leak(b);
+SELECT * from f_leak_table ORDER BY a;
+ a 
+---
+(0 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM rls_sbv WHERE (a = 1);
                             QUERY PLAN                            
 ------------------------------------------------------------------
@@ -2630,20 +3033,6 @@ CREATE POLICY p2 ON y2 USING (a % 3 = 0);
 CREATE POLICY p3 ON y2 USING (a % 4 = 0);
 SET SESSION AUTHORIZATION regress_rls_bob;
 SELECT * FROM y2 WHERE f_leak(b);
-NOTICE:  f_leak => cfcd208495d565ef66e7dff9f98764da
-NOTICE:  f_leak => c81e728d9d4c2f636f067f89cc14862c
-NOTICE:  f_leak => eccbc87e4b5ce2fe28308fd9f2a7baf3
-NOTICE:  f_leak => a87ff679a2f3e71d9181a67b7542122c
-NOTICE:  f_leak => 1679091c5a880faf6fb5e6087eb1b2dc
-NOTICE:  f_leak => c9f0f895fb98ab9159f51fd0297e236d
-NOTICE:  f_leak => 45c48cce2e2d7fbdea1afc51c7c6ad26
-NOTICE:  f_leak => d3d9446802a44259755d38e6d163e820
-NOTICE:  f_leak => c20ad4d76fe97759aa27a0c99bff6710
-NOTICE:  f_leak => aab3238922bcc25a6f606eb525ffdc56
-NOTICE:  f_leak => 9bf31c7ff062936a96d3c8bd1f8f2ff3
-NOTICE:  f_leak => c74d97b01eae257e44aa9d5bade97baf
-NOTICE:  f_leak => 6f4922f45568161a8cdf4ad2299f6d23
-NOTICE:  f_leak => 98f13708210194c475687be6106a3b84
  a  |                b                 
 ----+----------------------------------
   0 | cfcd208495d565ef66e7dff9f98764da
@@ -2662,6 +3051,26 @@ NOTICE:  f_leak => 98f13708210194c475687be6106a3b84
  20 | 98f13708210194c475687be6106a3b84
 (14 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+                a                 
+----------------------------------
+ 1679091c5a880faf6fb5e6087eb1b2dc
+ 45c48cce2e2d7fbdea1afc51c7c6ad26
+ 6f4922f45568161a8cdf4ad2299f6d23
+ 98f13708210194c475687be6106a3b84
+ 9bf31c7ff062936a96d3c8bd1f8f2ff3
+ a87ff679a2f3e71d9181a67b7542122c
+ aab3238922bcc25a6f606eb525ffdc56
+ c20ad4d76fe97759aa27a0c99bff6710
+ c74d97b01eae257e44aa9d5bade97baf
+ c81e728d9d4c2f636f067f89cc14862c
+ c9f0f895fb98ab9159f51fd0297e236d
+ cfcd208495d565ef66e7dff9f98764da
+ d3d9446802a44259755d38e6d163e820
+ eccbc87e4b5ce2fe28308fd9f2a7baf3
+(14 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM y2 WHERE f_leak(b);
                                  QUERY PLAN                                  
 -----------------------------------------------------------------------------
@@ -2673,27 +3082,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM y2 WHERE f_leak(b);
 -- Qual push-down of leaky functions, when not referring to table
 --
 SELECT * FROM y2 WHERE f_leak('abc');
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => abc
  a  |                b                 
 ----+----------------------------------
   0 | cfcd208495d565ef66e7dff9f98764da
@@ -2712,6 +3100,33 @@ NOTICE:  f_leak => abc
  20 | 98f13708210194c475687be6106a3b84
 (14 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+  a  
+-----
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+ abc
+(21 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM y2 WHERE f_leak('abc');
                                       QUERY PLAN                                       
 ---------------------------------------------------------------------------------------
@@ -2724,12 +3139,18 @@ CREATE TABLE test_qual_pushdown (
 );
 INSERT INTO test_qual_pushdown VALUES ('abc'),('def');
 SELECT * FROM y2 JOIN test_qual_pushdown ON (b = abc) WHERE f_leak(abc);
-NOTICE:  f_leak => abc
-NOTICE:  f_leak => def
  a | b | abc 
 ---+---+-----
 (0 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+  a  
+-----
+ abc
+ def
+(2 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM y2 JOIN test_qual_pushdown ON (b = abc) WHERE f_leak(abc);
                                QUERY PLAN                                
 -------------------------------------------------------------------------
@@ -2743,24 +3164,30 @@ EXPLAIN (COSTS OFF) SELECT * FROM y2 JOIN test_qual_pushdown ON (b = abc) WHERE 
 (7 rows)
 
 SELECT * FROM y2 JOIN test_qual_pushdown ON (b = abc) WHERE f_leak(b);
-NOTICE:  f_leak => cfcd208495d565ef66e7dff9f98764da
-NOTICE:  f_leak => c81e728d9d4c2f636f067f89cc14862c
-NOTICE:  f_leak => eccbc87e4b5ce2fe28308fd9f2a7baf3
-NOTICE:  f_leak => a87ff679a2f3e71d9181a67b7542122c
-NOTICE:  f_leak => 1679091c5a880faf6fb5e6087eb1b2dc
-NOTICE:  f_leak => c9f0f895fb98ab9159f51fd0297e236d
-NOTICE:  f_leak => 45c48cce2e2d7fbdea1afc51c7c6ad26
-NOTICE:  f_leak => d3d9446802a44259755d38e6d163e820
-NOTICE:  f_leak => c20ad4d76fe97759aa27a0c99bff6710
-NOTICE:  f_leak => aab3238922bcc25a6f606eb525ffdc56
-NOTICE:  f_leak => 9bf31c7ff062936a96d3c8bd1f8f2ff3
-NOTICE:  f_leak => c74d97b01eae257e44aa9d5bade97baf
-NOTICE:  f_leak => 6f4922f45568161a8cdf4ad2299f6d23
-NOTICE:  f_leak => 98f13708210194c475687be6106a3b84
  a | b | abc 
 ---+---+-----
 (0 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+                a                 
+----------------------------------
+ 1679091c5a880faf6fb5e6087eb1b2dc
+ 45c48cce2e2d7fbdea1afc51c7c6ad26
+ 6f4922f45568161a8cdf4ad2299f6d23
+ 98f13708210194c475687be6106a3b84
+ 9bf31c7ff062936a96d3c8bd1f8f2ff3
+ a87ff679a2f3e71d9181a67b7542122c
+ aab3238922bcc25a6f606eb525ffdc56
+ c20ad4d76fe97759aa27a0c99bff6710
+ c74d97b01eae257e44aa9d5bade97baf
+ c81e728d9d4c2f636f067f89cc14862c
+ c9f0f895fb98ab9159f51fd0297e236d
+ cfcd208495d565ef66e7dff9f98764da
+ d3d9446802a44259755d38e6d163e820
+ eccbc87e4b5ce2fe28308fd9f2a7baf3
+(14 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF) SELECT * FROM y2 JOIN test_qual_pushdown ON (b = abc) WHERE f_leak(b);
                                        QUERY PLAN                                        
 -----------------------------------------------------------------------------------------
@@ -2829,17 +3256,6 @@ GRANT ALL ON t1 TO regress_rls_bob;
 INSERT INTO t1 (SELECT x, md5(x::text) FROM generate_series(0,20) x);
 SET SESSION AUTHORIZATION regress_rls_bob;
 WITH cte1 AS MATERIALIZED (SELECT * FROM t1 WHERE f_leak(b)) SELECT * FROM cte1;
-NOTICE:  f_leak => cfcd208495d565ef66e7dff9f98764da
-NOTICE:  f_leak => c81e728d9d4c2f636f067f89cc14862c
-NOTICE:  f_leak => a87ff679a2f3e71d9181a67b7542122c
-NOTICE:  f_leak => 1679091c5a880faf6fb5e6087eb1b2dc
-NOTICE:  f_leak => c9f0f895fb98ab9159f51fd0297e236d
-NOTICE:  f_leak => d3d9446802a44259755d38e6d163e820
-NOTICE:  f_leak => c20ad4d76fe97759aa27a0c99bff6710
-NOTICE:  f_leak => aab3238922bcc25a6f606eb525ffdc56
-NOTICE:  f_leak => c74d97b01eae257e44aa9d5bade97baf
-NOTICE:  f_leak => 6f4922f45568161a8cdf4ad2299f6d23
-NOTICE:  f_leak => 98f13708210194c475687be6106a3b84
  a  |                b                 
 ----+----------------------------------
   0 | cfcd208495d565ef66e7dff9f98764da
@@ -2855,6 +3271,23 @@ NOTICE:  f_leak => 98f13708210194c475687be6106a3b84
  20 | 98f13708210194c475687be6106a3b84
 (11 rows)
 
+SELECT * from f_leak_table ORDER BY a;
+                a                 
+----------------------------------
+ 1679091c5a880faf6fb5e6087eb1b2dc
+ 6f4922f45568161a8cdf4ad2299f6d23
+ 98f13708210194c475687be6106a3b84
+ a87ff679a2f3e71d9181a67b7542122c
+ aab3238922bcc25a6f606eb525ffdc56
+ c20ad4d76fe97759aa27a0c99bff6710
+ c74d97b01eae257e44aa9d5bade97baf
+ c81e728d9d4c2f636f067f89cc14862c
+ c9f0f895fb98ab9159f51fd0297e236d
+ cfcd208495d565ef66e7dff9f98764da
+ d3d9446802a44259755d38e6d163e820
+(11 rows)
+
+TRUNCATE table f_leak_table;
 EXPLAIN (COSTS OFF)
 WITH cte1 AS MATERIALIZED (SELECT * FROM t1 WHERE f_leak(b)) SELECT * FROM cte1;
                    QUERY PLAN                    
@@ -3937,6 +4370,12 @@ SELECT * FROM rls_view; -- OK
  10
 (1 row)
 
+SELECT * FROM f_leak_table ORDER BY a;
+ a 
+---
+(0 rows)
+
+TRUNCATE TABLE f_leak_table;
 RESET SESSION AUTHORIZATION;
 DROP VIEW rls_view;
 DROP TABLE rls_tbl;
