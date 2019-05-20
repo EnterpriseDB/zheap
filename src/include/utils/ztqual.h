@@ -19,11 +19,11 @@
 
 typedef struct ZHeapTupleTransInfo
 {
-	int trans_slot;
+	int			trans_slot;
 	FullTransactionId epoch_xid;
 	TransactionId xid;
-	CommandId cid;
-	UndoRecPtr urec_ptr;
+	CommandId	cid;
+	UndoRecPtr	urec_ptr;
 } ZHeapTupleTransInfo;
 
 /* Result codes for ZHeapTupleSatisfiesOldestXmin */
@@ -62,10 +62,10 @@ extern TM_Result ZHeapTupleSatisfiesUpdate(Relation rel, ItemPointer tid,
 extern bool ZHeapTupleIsSurelyDead(ZHeapTuple zhtup, Buffer buffer,
 					   OffsetNumber offnum);
 extern ZHTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup,
-							  TransactionId OldestXmin,
-							  Buffer buffer, bool resolve_abort_in_progress,
-							  ZHeapTuple *preabort_tuple,
-							  TransactionId *xid, SubTransactionId *subxid);
+												  TransactionId OldestXmin,
+												  Buffer buffer, bool resolve_abort_in_progress,
+												  ZHeapTuple *preabort_tuple,
+												  TransactionId *xid, SubTransactionId *subxid);
 
 extern bool ZHeapTupleFetch(Relation rel, Buffer buffer, OffsetNumber offnum,
 				Snapshot snapshot, ZHeapTuple *visible_tuple,

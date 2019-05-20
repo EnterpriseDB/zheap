@@ -2682,6 +2682,7 @@ YYSTYPE
 YY_BUFFER_STATE
 ZipfCache
 ZipfCell
+ZHTSV_Result
 ZHeapFreeOffsetRanges
 ZHeapMetaPageData
 ZHeapMultiInsertWALInfo

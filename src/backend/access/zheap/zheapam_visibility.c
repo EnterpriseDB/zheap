@@ -117,8 +117,8 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
 
 		/*
 		 * If the undo record containing the information about the last
-		 * transaction that has operated on the tuple has been discarded,
-		 * this version of the tuple must be all-visible.
+		 * transaction that has operated on the tuple has been discarded, this
+		 * version of the tuple must be all-visible.
 		 */
 		if (urec == NULL)
 		{

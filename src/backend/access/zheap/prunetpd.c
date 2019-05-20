@@ -258,7 +258,7 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
 	memcpy((char *) trans_slots, tpdpage + loc_trans_slots, size_tpd_e_slots);
 
 	oldestXidWithEpochHavingUndo = FullTransactionIdFromU64(
-		pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+															pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 
 	for (slot_no = 0; slot_no < num_trans_slots; slot_no++)
 	{

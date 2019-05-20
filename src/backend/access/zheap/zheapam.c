@@ -5565,7 +5565,8 @@ prepare_xlog:
  *
  * Returns true if all the slots are empty except current transaction slot.
  */
-static bool CheckZheapPageSlotsAreEmpty(Page page)
+static bool
+CheckZheapPageSlotsAreEmpty(Page page)
 {
 	ZHeapPageOpaque opaque;
 	TransInfo  *thistrans;
@@ -5585,9 +5586,9 @@ static bool CheckZheapPageSlotsAreEmpty(Page page)
 
 		/* If fxid is valid then it should be current trasaction fxid. */
 		if ((FullTransactionIdIsValid(thistrans->fxid) &&
-			FullTransactionIdEquals(thistrans->fxid, fxid)) ||
+			 FullTransactionIdEquals(thistrans->fxid, fxid)) ||
 			(!FullTransactionIdIsValid(thistrans->fxid) &&
-			thistrans->urec_ptr == InvalidUndoRecPtr))
+			 thistrans->urec_ptr == InvalidUndoRecPtr))
 			continue;
 
 		/*
