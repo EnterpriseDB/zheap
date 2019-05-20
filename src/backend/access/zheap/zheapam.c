@@ -129,6 +129,7 @@ static bool RefetchAndCheckTupleStatus(Relation relation, Buffer buffer,
 						   int old_infomask, TransactionId tup_xid,
 						   TransactionId *single_locker_xid,
 						   LockTupleMode *mode, ZHeapTupleData *zhtup);
+static bool CheckZheapPageSlotsAreEmpty(Page page);
 
 /*
  * Subroutine for zheap_insert(). Prepares a tuple for insertion.
@@ -5153,10 +5154,12 @@ log_zheap_insert(ZHeapWALInfo *walinfo, Relation relation,
 	/*
 	 * If this is the single and first tuple on page, we can reinit the page
 	 * instead of restoring the whole thing.  Set flag, and hide buffer
-	 * references from XLogInsert.
+	 * references from XLogInsert and we will check that all slots of zheap
+	 * page are empty or not.  If empty, then only we will set reinit flag.
 	 */
 	if (ItemPointerGetOffsetNumber(&(walinfo->ztuple->t_self)) == FirstOffsetNumber &&
-		PageGetMaxOffsetNumber(page) == FirstOffsetNumber)
+		PageGetMaxOffsetNumber(page) == FirstOffsetNumber &&
+		CheckZheapPageSlotsAreEmpty(page))
 	{
 		info |= XLOG_ZHEAP_INIT_PAGE;
 		bufflags |= REGBUF_WILL_INIT;
@@ -5396,7 +5399,8 @@ log_zheap_update(ZHeapWALInfo *old_walinfo, ZHeapWALInfo *new_walinfo,
 		Assert(new_walinfo->ztuple);
 		/* If new tuple is the single and first tuple on page... */
 		if (ItemPointerGetOffsetNumber(&(new_walinfo->ztuple->t_self)) == FirstOffsetNumber &&
-			PageGetMaxOffsetNumber(page) == FirstOffsetNumber)
+			PageGetMaxOffsetNumber(page) == FirstOffsetNumber &&
+			CheckZheapPageSlotsAreEmpty(page))
 		{
 			info |= XLOG_ZHEAP_INIT_PAGE;
 			bufflags |= REGBUF_WILL_INIT;
@@ -5556,6 +5560,46 @@ prepare_xlog:
 	UndoLogBuffersSetLSN(recptr);
 }
 
+/*
+ * CheckZheapPageSlotsAreEmpty - To check zheap page slots
+ *
+ * Returns true if all the slots are empty except current transaction slot.
+ */
+static bool CheckZheapPageSlotsAreEmpty(Page page)
+{
+	ZHeapPageOpaque opaque;
+	TransInfo  *thistrans;
+	int			i;
+	FullTransactionId fxid;
+
+	/* If page has TPD slot, then we will not reinit page. */
+	if (ZHeapPageHasTPDSlot((PageHeader) page))
+		return false;
+
+	fxid = GetTopFullTransactionId();
+	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
+
+	for (i = 0; i < ZHEAP_PAGE_TRANS_SLOTS; i++)
+	{
+		thistrans = &opaque->transinfo[i];
+
+		/* If fxid is valid then it should be current trasaction fxid. */
+		if ((FullTransactionIdIsValid(thistrans->fxid) &&
+			FullTransactionIdEquals(thistrans->fxid, fxid)) ||
+			(!FullTransactionIdIsValid(thistrans->fxid) &&
+			thistrans->urec_ptr == InvalidUndoRecPtr))
+			continue;
+
+		/*
+		 * Return false, because page has valid slot info other than current
+		 * transaction.
+		 */
+		return false;
+	}
+
+	/* Return true, because page have only one valid slot. */
+	return true;
+}
 
 /*
  * log_zheap_delete - Perform XLogInsert for a zheap-delete operation.
