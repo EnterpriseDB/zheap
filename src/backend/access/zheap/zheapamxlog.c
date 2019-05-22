@@ -1134,10 +1134,12 @@ zheap_xlog_lock(XLogReaderState *record)
 	Relation	reln;
 	ItemId		lp = NULL;
 	FullTransactionId fxid = XLogRecGetFullXid(record);
-	TransactionId xid = XidFromFullTransactionId(fxid);
 	int		   *trans_slot_for_urec = NULL;
 	int		   *tup_trans_slot_id = NULL;
 	int			undo_slot_no;
+	int			trans_slot = InvalidXactSlotId;
+	ZHeapPrepareUndoInfo zh_gen_undo_info;
+	ZHeapPrepareLockUndoInfo zh_lock_undo_info;
 
 	xlrec = (xl_zheap_lock *) ((char *) xlundohdr + SizeOfUndoHeader);
 
@@ -1166,76 +1168,45 @@ zheap_xlog_lock(XLogReaderState *record)
 	tup_hdr = (char *) xlrec + SizeOfZHeapLock;
 
 	/* prepare an undo record */
-	undorecord.uur_rmid = RM_ZHEAP_ID;
-	if (ZHeapTupleHasMultiLockers(xlrec->infomask))
-		undorecord.uur_type = UNDO_XID_MULTI_LOCK_ONLY;
-	else if (xlrec->flags & XLZ_LOCK_FOR_UPDATE)
-		undorecord.uur_type = UNDO_XID_LOCK_FOR_UPDATE;
-	else
-		undorecord.uur_type = UNDO_XID_LOCK_ONLY;
-	undorecord.uur_info = 0;
-	undorecord.uur_reloid = xlundohdr->reloid;
-	undorecord.uur_prevxid = xlrec->prev_xid;
-	undorecord.uur_xid = xid;
-	undorecord.uur_cid = FirstCommandId;
-	undorecord.uur_fork = MAIN_FORKNUM;
-	undorecord.uur_blkprev = xlundohdr->blkprev;
-	undorecord.uur_block = ItemPointerGetBlockNumber(&target_tid);
-	undorecord.uur_offset = ItemPointerGetOffsetNumber(&target_tid);
+	zh_gen_undo_info.reloid = xlundohdr->reloid;
+	zh_gen_undo_info.blkno = ItemPointerGetBlockNumber(&target_tid);
+	zh_gen_undo_info.offnum = ItemPointerGetOffsetNumber(&target_tid);
+	zh_gen_undo_info.prev_urecptr = xlundohdr->blkprev;
+	zh_gen_undo_info.fxid = fxid;
+	zh_gen_undo_info.cid = FirstCommandId;
+	zh_gen_undo_info.undo_persistence = UNDO_PERMANENT;
 
-	initStringInfo(&undorecord.uur_payload);
-	initStringInfo(&undorecord.uur_tuple);
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   tup_hdr,
-						   SizeofZHeapTupleHeader);
-
-	appendBinaryStringInfo(&undorecord.uur_payload,
-						   (char *) (tup_hdr + SizeofZHeapTupleHeader),
-						   sizeof(LockTupleMode));
-
+	/* Get the trans slot number */
 	if (xlrec->flags & XLZ_LOCK_TRANS_SLOT_FOR_UREC)
 	{
 		trans_slot_for_urec = (int *) ((char *) tup_hdr +
 									   SizeofZHeapTupleHeader + sizeof(LockTupleMode));
-		if (xlrec->trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS)
-			appendBinaryStringInfo(&undorecord.uur_payload,
-								   (char *) &(xlrec->trans_slot_id),
-								   sizeof(int));
+		trans_slot = xlrec->trans_slot_id;
 	}
 	else if (xlrec->flags & XLZ_LOCK_CONTAINS_TPD_SLOT)
 	{
-		tup_trans_slot_id = (int *) ((char *) tup_hdr +
-									 SizeofZHeapTupleHeader + sizeof(LockTupleMode));
-
 		/*
 		 * We must have logged the tuple's original transaction slot if it is
 		 * a TPD slot.
 		 */
-		Assert(*tup_trans_slot_id > ZHEAP_PAGE_TRANS_SLOTS);
-		appendBinaryStringInfo(&undorecord.uur_payload,
-							   (char *) tup_trans_slot_id,
-							   sizeof(*tup_trans_slot_id));
+		tup_trans_slot_id = (int *) ((char *) tup_hdr +
+									 SizeofZHeapTupleHeader + sizeof(LockTupleMode));
+		trans_slot = *tup_trans_slot_id;
+		Assert(trans_slot > ZHEAP_PAGE_TRANS_SLOTS);
 	}
 
-	/*
-	 * For sub-transactions, we store the dummy contains subxact token in the
-	 * undorecord so that, the size of undorecord in DO function matches with
-	 * the size of undorecord in REDO function. This ensures that, for
-	 * sub-transactions, the assert condition used later in this function to
-	 * ensure that the undo pointer in DO and REDO function remains the same
-	 * is true.
-	 */
-	if (xlrec->flags & XLZ_LOCK_CONTAINS_SUBXACT)
-	{
-		SubTransactionId dummy_subXactToken = 1;
+	zh_lock_undo_info.gen_info = &zh_gen_undo_info;
+	zh_lock_undo_info.mode = *(tup_hdr + SizeofZHeapTupleHeader);
+	zh_lock_undo_info.tup_hdr = tup_hdr;
+	zh_lock_undo_info.tup_trans_slot = trans_slot;
+	zh_lock_undo_info.tup_xid = xlrec->prev_xid;
+	zh_lock_undo_info.new_infomask = xlrec->infomask;
+	zh_lock_undo_info.IsLockForUpdate = (xlrec->flags & XLZ_LOCK_FOR_UPDATE);
+	zh_lock_undo_info.hasSubXactLock = (xlrec->flags & XLZ_LOCK_CONTAINS_SUBXACT);
 
-		appendBinaryStringInfo(&undorecord.uur_payload,
-							   (char *) &dummy_subXactToken,
-							   sizeof(SubTransactionId));
-	}
+	urecptr = zheap_prepare_undolock(&zh_lock_undo_info,
+									 &undorecord, record, NULL);
 
-	urecptr = PrepareUndoInsert(&undorecord, fxid, UNDO_PERMANENT, record,
-								NULL);
 	InsertPreparedUndo();
 
 	/*

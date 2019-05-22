@@ -134,6 +134,19 @@ typedef struct ZHeapPrepareUpdateUndoInfo
 	bool		hasSubXactLock;
 } ZHeapPrepareUpdateUndoInfo;
 
+/* This is used to prepare lock undo records. */
+typedef struct ZHeapPrepareLockUndoInfo
+{
+	ZHeapPrepareUndoInfo *gen_info;
+	LockTupleMode mode;
+	char	   *tup_hdr;
+	int			tup_trans_slot;
+	TransactionId tup_xid;
+	uint16		new_infomask;
+	bool		IsLockForUpdate;
+	bool		hasSubXactLock;
+} ZHeapPrepareLockUndoInfo;
+
 /* This is used to write WAL. */
 typedef struct ZHeapWALInfo
 {
@@ -242,6 +255,9 @@ extern UndoRecPtr zheap_prepare_undodelete(ZHeapPrepareUndoInfo *zhUndoInfo, ZHe
 						 XLogReaderState *xlog_record, xl_undolog_meta *undometa);
 extern UndoRecPtr zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_up_undo_info, ZHeapTuple zhtup,
 						 XLogReaderState *xlog_record, xl_undolog_meta *undometa, UndoRecPtr *new_urecptr);
+extern UndoRecPtr zheap_prepare_undolock(ZHeapPrepareLockUndoInfo *zh_undo_info,
+					   UnpackedUndoRecord *undorecord,
+					   XLogReaderState *xlog_record, xl_undolog_meta *undometa);
 
 
 /* Pruning related API's (prunezheap.c) */

@@ -2687,6 +2687,7 @@ ZHeapFreeOffsetRanges
 ZHeapMetaPageData
 ZHeapMultiInsertWALInfo
 ZHeapPageOpaqueData
+ZHeapPrepareLockUndoInfo
 ZHeapPrepareUndoInfo
 ZHeapPrepareUpdateUndoInfo
 ZHeapScanDescData

@@ -4048,6 +4048,7 @@ zheap_lock_tuple_guts(Buffer buf, ZHeapTuple zhtup, ZHeapTupleTransInfo *tup_inf
 	uint16		new_infomask = 0;
 	xl_undolog_meta undometa;
 	int			result_trans_slot;
+	ZHeapPrepareLockUndoInfo zh_lock_undo_info;
 
 	/* Compute the new xid and infomask to store into the tuple. */
 	old_infomask = zhtup->t_data->t_infomask;
@@ -4084,76 +4085,17 @@ zheap_lock_tuple_guts(Buffer buf, ZHeapTuple zhtup, ZHeapTupleTransInfo *tup_inf
 	if (TransactionIdPrecedes(tup_xid, oldestXidHavingUndo))
 		tup_xid = FrozenTransactionId;
 
-	/*
-	 * Prepare an undo record.  We need to separately store the latest
-	 * transaction id that has changed the tuple to ensure that we don't try
-	 * to process the tuple in undo chain that is already discarded. See
-	 * GetTupleFromUndo.
-	 */
-	undorecord.uur_rmid = RM_ZHEAP_ID;
-	if (ZHeapTupleHasMultiLockers(new_infomask))
-		undorecord.uur_type = UNDO_XID_MULTI_LOCK_ONLY;
-	else if (lockopr == LockForUpdate)
-		undorecord.uur_type = UNDO_XID_LOCK_FOR_UPDATE;
-	else
-		undorecord.uur_type = UNDO_XID_LOCK_ONLY;
-	undorecord.uur_info = 0;
-	undorecord.uur_reloid = zh_undo_info->reloid;
-	undorecord.uur_prevxid = tup_xid;
-	undorecord.uur_xid = XidFromFullTransactionId(zh_undo_info->fxid);
-	undorecord.uur_cid = zh_undo_info->cid;
-	undorecord.uur_fork = MAIN_FORKNUM;
-	undorecord.uur_blkprev = zh_undo_info->prev_urecptr;
-	undorecord.uur_block = zh_undo_info->blkno;
-	undorecord.uur_offset = zh_undo_info->offnum;
+	/* Prepare undo info */
+	zh_lock_undo_info.gen_info = zh_undo_info;
+	zh_lock_undo_info.mode = mode;
+	zh_lock_undo_info.tup_hdr = (char *) zhtup->t_data;
+	zh_lock_undo_info.tup_trans_slot = tup_info->trans_slot;
+	zh_lock_undo_info.tup_xid = tup_xid;
+	zh_lock_undo_info.new_infomask = new_infomask;
+	zh_lock_undo_info.IsLockForUpdate = (lockopr == LockForUpdate);
+	zh_lock_undo_info.hasSubXactLock = hasSubXactLock;
 
-	initStringInfo(&undorecord.uur_tuple);
-	initStringInfo(&undorecord.uur_payload);
-
-	/*
-	 * Here, we are storing zheap tuple header which is required to
-	 * reconstruct the old copy of tuple.
-	 */
-	appendBinaryStringInfo(&undorecord.uur_tuple,
-						   (char *) zhtup->t_data,
-						   SizeofZHeapTupleHeader);
-
-	/*
-	 * We keep the lock mode in undo record as for multi lockers we can't have
-	 * that information in tuple header.  We need lock mode later to detect
-	 * conflicts.
-	 */
-	appendBinaryStringInfo(&undorecord.uur_payload,
-						   (char *) &(mode),
-						   sizeof(LockTupleMode));
-
-	if (tup_info->trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
-	{
-		undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SLOT;
-		appendBinaryStringInfo(&undorecord.uur_payload,
-							   (char *) &(tup_info->trans_slot),
-							   sizeof(int));
-	}
-
-	/*
-	 * Store subtransaction id in undo record.  See SubXactLockTableWait to
-	 * know why we need to store subtransaction id in undo.
-	 */
-	if (hasSubXactLock)
-	{
-		SubTransactionId subxid = GetCurrentSubTransactionId();
-
-		undorecord.uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SUBXACT;
-		appendBinaryStringInfo(&undorecord.uur_payload,
-							   (char *) &subxid,
-							   sizeof(subxid));
-	}
-
-	urecptr = PrepareUndoInsert(&undorecord,
-								InvalidFullTransactionId,
-								zh_undo_info->undo_persistence,
-								NULL,
-								&undometa);
+	urecptr = zheap_prepare_undolock(&zh_lock_undo_info, &undorecord, NULL, &undometa);
 
 	START_CRIT_SECTION();
 
@@ -5197,6 +5139,98 @@ zheap_prepare_undodelete(ZHeapPrepareUndoInfo *zhUndoInfo, ZHeapTuple zhtup,
 	urecptr = PrepareUndoInsert(undorecord,
 								zhUndoInfo->fxid,
 								zhUndoInfo->undo_persistence,
+								xlog_record,
+								undometa);
+
+	return urecptr;
+}
+
+/*
+ * zheap_prepare_undolock - prepare undo record for zheap lock operation.
+ *
+ * Returns the undo record pointer (aka location) where the undo record
+ * will be inserted in undo log.
+ */
+UndoRecPtr
+zheap_prepare_undolock(ZHeapPrepareLockUndoInfo *zh_undo_info,
+					   UnpackedUndoRecord *undorecord,
+					   XLogReaderState *xlog_record, xl_undolog_meta *undometa)
+{
+	UndoRecPtr	urecptr;
+
+	/*
+	 * Prepare an undo record.  We need to separately store the latest
+	 * transaction id that has changed the tuple to ensure that we don't try
+	 * to process the tuple in undo chain that is already discarded. See
+	 * GetTupleFromUndo.
+	 */
+	undorecord->uur_rmid = RM_ZHEAP_ID;
+	if (ZHeapTupleHasMultiLockers(zh_undo_info->new_infomask))
+		undorecord->uur_type = UNDO_XID_MULTI_LOCK_ONLY;
+	else if (zh_undo_info->IsLockForUpdate)
+		undorecord->uur_type = UNDO_XID_LOCK_FOR_UPDATE;
+	else
+		undorecord->uur_type = UNDO_XID_LOCK_ONLY;
+	undorecord->uur_info = 0;
+	undorecord->uur_reloid = zh_undo_info->gen_info->reloid;
+	undorecord->uur_prevxid = zh_undo_info->tup_xid;
+	undorecord->uur_xid = XidFromFullTransactionId(zh_undo_info->gen_info->fxid);
+	undorecord->uur_cid = zh_undo_info->gen_info->cid;
+	undorecord->uur_fork = MAIN_FORKNUM;
+	undorecord->uur_blkprev = zh_undo_info->gen_info->prev_urecptr;
+	undorecord->uur_block = zh_undo_info->gen_info->blkno;
+	undorecord->uur_offset = zh_undo_info->gen_info->offnum;
+
+	initStringInfo(&undorecord->uur_tuple);
+	initStringInfo(&undorecord->uur_payload);
+
+	/*
+	 * Here, we are storing zheap tuple header which is required to
+	 * reconstruct the old copy of tuple.
+	 */
+	appendBinaryStringInfo(&(undorecord->uur_tuple),
+						   zh_undo_info->tup_hdr,
+						   SizeofZHeapTupleHeader);
+
+	/*
+	 * We keep the lock mode in undo record as for multi lockers we can't have
+	 * that information in tuple header.  We need lock mode later to detect
+	 * conflicts.
+	 */
+	appendBinaryStringInfo(&undorecord->uur_payload,
+						   (char *) &(zh_undo_info->mode),
+						   sizeof(LockTupleMode));
+
+	if (zh_undo_info->tup_trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
+	{
+		undorecord->uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SLOT;
+		appendBinaryStringInfo(&undorecord->uur_payload,
+							   (char *) &(zh_undo_info->tup_trans_slot),
+							   sizeof(int));
+	}
+
+	/*
+	 * Store subtransaction id in undo record.  See SubXactLockTableWait to
+	 * know why we need to store subtransaction id in undo.
+	 *
+	 * While in recovery, we store the dummy subxact token in the undorecord
+	 * so that, the size of undorecord in DO function matches with the size of
+	 * undorecord in REDO function. This ensures that the undo pointer in DO
+	 * and REDO function remains the same.
+	 */
+	if (zh_undo_info->hasSubXactLock)
+	{
+		SubTransactionId subxid = (InRecovery) ? 1 : GetCurrentSubTransactionId();
+
+		undorecord->uur_info |= UREC_INFO_PAYLOAD_CONTAINS_SUBXACT;
+		appendBinaryStringInfo(&(undorecord->uur_payload),
+							   (char *) &subxid,
+							   sizeof(subxid));
+	}
+
+	urecptr = PrepareUndoInsert(undorecord,
+								InRecovery ? zh_undo_info->gen_info->fxid : InvalidFullTransactionId,
+								zh_undo_info->gen_info->undo_persistence,
 								xlog_record,
 								undometa);
 
