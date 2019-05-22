@@ -75,6 +75,14 @@
 
 extern bool synchronize_seqscans;
 
+/* defines the return status for a lock wait */
+typedef enum
+{
+	LOCK_WAIT_RECHECK,			/* recheck if we can still modify the tuple */
+	LOCK_WAIT_FAILED,			/* we can't modify the tuple */
+	LOCK_WAIT_SUCCESS			/* we can modify the tuple */
+}			LockWaitStatus;
+
 static bool zheap_delete_wait_helper(Relation relation,
 						 Buffer buffer, ZHeapTuple zheaptup,
 						 FullTransactionId fxid, TransactionId xwait,
@@ -95,6 +103,17 @@ static bool zheap_update_wait_helper(Relation relation,
 						 bool *any_multi_locker_member_alive,
 						 bool *checked_lockers, bool *locker_remains,
 						 TM_Result *result);
+static bool zheap_tuple_already_locked(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
+						   TransactionId xid, LockTupleMode mode,
+						   int trans_slot_id, uint16 infomask, TM_Result *result);
+static LockWaitStatus zheap_lock_wait_helper(Relation relation, Buffer buffer,
+											 ZHeapTuple zhtup, FullTransactionId fxid, TransactionId xwait,
+											 int xwait_trans_slot, SubTransactionId xwait_subxid,
+											 CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
+											 LockOper lockopr, ItemPointer ctid, ItemId lp,
+											 TransactionId tup_xid, uint16 infomask, bool follow_updates,
+											 TransactionId *single_locker_xid, TM_Result *result,
+											 bool *any_multi_locker_member_alive, bool *have_tuple_lock);
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
 					 int options, uint32 specToken);
 static TM_Result zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
@@ -2543,12 +2562,10 @@ zheap_lock_tuple(Relation relation, ItemPointer tid,
 				single_locker_trans_slot;
 	OffsetNumber offnum;
 	LockOper	lockopr;
-	bool		require_sleep;
 	bool		have_tuple_lock = false;
 	bool		in_place_updated_or_locked = false;
 	bool		any_multi_locker_member_alive = false;
 	bool		lock_reacquired;
-	bool		rollback_and_relocked;
 	bool		hasSubXactLock = false;
 	ZHeapTupleTransInfo zinfo;
 	ZHeapPrepareUndoInfo zh_undo_info;
@@ -2603,6 +2620,7 @@ check_tup_satisfies_update:
 	{
 		TransactionId xwait;
 		SubTransactionId xwait_subxid;
+		LockWaitStatus wait_status;
 		int			xwait_trans_slot;
 		uint16		infomask;
 
@@ -2635,525 +2653,30 @@ check_tup_satisfies_update:
 		LockBuffer(*buffer, BUFFER_LOCK_UNLOCK);
 
 		/*
-		 * If any subtransaction of the current top transaction already holds
-		 * a lock as strong as or stronger than what we're requesting, we
-		 * effectively hold the desired lock already.  We *must* succeed
-		 * without trying to take the tuple lock, else we will deadlock
-		 * against anyone wanting to acquire a stronger lock.
+		 * Check if tuple already holds the desired lock already.  If so, we
+		 * *must* succeed without trying to take the tuple lock, else we will
+		 * deadlock against anyone wanting to acquire a stronger lock.
 		 */
-		if (ZHeapTupleHasMultiLockers(infomask))
-		{
-			if (trans_slot_id != InvalidXactSlotId &&
-				ZCurrentXactHasTupleLockMode(&zhtup, urec_ptr, mode))
-			{
-				result = TM_Ok;
-				goto out_unlocked;
-			}
-		}
-		else if (TransactionIdIsCurrentTransactionId(xwait))
-		{
-			switch (mode)
-			{
-				case LockTupleKeyShare:
-					Assert(ZHEAP_XID_IS_KEYSHR_LOCKED(infomask) ||
-						   ZHEAP_XID_IS_SHR_LOCKED(infomask) ||
-						   ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
-						   ZHEAP_XID_IS_EXCL_LOCKED(infomask));
-					{
-						result = TM_Ok;
-						goto out_unlocked;
-					}
-					break;
-				case LockTupleShare:
-					if (ZHEAP_XID_IS_SHR_LOCKED(infomask) ||
-						ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
-						ZHEAP_XID_IS_EXCL_LOCKED(infomask))
-					{
-						result = TM_Ok;
-						goto out_unlocked;
-					}
-					break;
-				case LockTupleNoKeyExclusive:
-					if (ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
-						ZHEAP_XID_IS_EXCL_LOCKED(infomask))
-					{
-						result = TM_Ok;
-						goto out_unlocked;
-					}
-					break;
-				case LockTupleExclusive:
-					if (ZHEAP_XID_IS_EXCL_LOCKED(infomask))
-					{
-						result = TM_Ok;
-						goto out_unlocked;
-					}
-					break;
-			}
-		}
+		if (zheap_tuple_already_locked(&zhtup, urec_ptr, xwait, mode,
+									   trans_slot_id, infomask, &result))
+			goto out_unlocked;
 
-		/*
-		 * Initially assume that we will have to wait for the locking
-		 * transaction(s) to finish.  We check various cases below in which
-		 * this can be turned off.
-		 */
-		require_sleep = true;
-		if (mode == LockTupleKeyShare)
-		{
-			if (!(ZHEAP_XID_IS_EXCL_LOCKED(infomask)))
-			{
-				bool		updated;
+		wait_status = zheap_lock_wait_helper(relation, *buffer, &zhtup, fxid,
+											 xwait, xwait_trans_slot,
+											 xwait_subxid, cid, mode,
+											 wait_policy, lockopr, &ctid, lp,
+											 zinfo.xid, infomask,
+											 follow_updates,
+											 &single_locker_xid, &result,
+											 &any_multi_locker_member_alive,
+											 &have_tuple_lock);
 
-				updated = !ZHEAP_XID_IS_LOCKED_ONLY(infomask);
-
-				/*
-				 * If there are updates, follow the update chain; bail out if
-				 * that cannot be done.
-				 */
-				if (follow_updates && updated)
-				{
-					if (!ZHeapTupleIsMoved(zhtup.t_data->t_infomask) &&
-						!ItemPointerEquals(&zhtup.t_self, &ctid))
-					{
-						TM_Result	res;
-
-						res = zheap_lock_updated_tuple(relation, &zhtup, &ctid,
-													   fxid, mode, lockopr, cid,
-													   &rollback_and_relocked);
-
-						/*
-						 * If the update was by some aborted transaction and
-						 * its pending undo actions are applied now, then
-						 * check the latest copy of the tuple.
-						 */
-						if (rollback_and_relocked)
-						{
-							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-							goto check_tup_satisfies_update;
-						}
-						else if (res != TM_Ok)
-						{
-							result = res;
-							/* recovery code expects to have buffer lock held */
-							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-							goto failed;
-						}
-					}
-				}
-
-				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-
-				/*
-				 * Also take care of cases when page is pruned after we
-				 * release the buffer lock. For this we check if ItemId is not
-				 * deleted and refresh the tuple offset position in page.  If
-				 * TID is already delete marked due to pruning, then get new
-				 * ctid, so that we can lock the new tuple.
-				 */
-				if (ItemIdIsDeleted(lp))
-					goto check_tup_satisfies_update;
-
-				if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
-												zinfo.xid, &single_locker_xid,
-												&mode, &zhtup))
-					goto check_tup_satisfies_update;
-
-				/* Skip sleeping */
-				require_sleep = false;
-			}
-		}
-		else if (mode == LockTupleShare)
-		{
-			/*
-			 * If we're requesting Share, we can similarly avoid sleeping if
-			 * there's no update and no exclusive lock present.
-			 */
-			if (ZHEAP_XID_IS_LOCKED_ONLY(infomask) &&
-				!ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) &&
-				!ZHEAP_XID_IS_EXCL_LOCKED(infomask))
-			{
-				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-
-				/*
-				 * Also take care of cases when page is pruned after we
-				 * release the buffer lock. For this we check if ItemId is not
-				 * deleted and refresh the tuple offset position in page.  If
-				 * TID is already delete marked due to pruning, then get new
-				 * ctid, so that we can lock the new tuple.
-				 */
-				if (ItemIdIsDeleted(lp))
-					goto check_tup_satisfies_update;
-
-				if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
-												zinfo.xid, &single_locker_xid,
-												&mode, &zhtup))
-					goto check_tup_satisfies_update;
-
-				/* Skip sleeping */
-				require_sleep = false;
-			}
-		}
-		else if (mode == LockTupleNoKeyExclusive)
-		{
-			LockTupleMode old_lock_mode;
-			bool		buf_lock_reacquired = false;
-
-			old_lock_mode = get_old_lock_mode(infomask);
-
-			/*
-			 * If we're requesting NoKeyExclusive, we might also be able to
-			 * avoid sleeping; just ensure that there is no conflicting lock
-			 * already acquired.
-			 */
-			if (ZHeapTupleHasMultiLockers(infomask))
-			{
-				if (!DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
-										 HWLOCKMODE_from_locktupmode(mode)))
-				{
-					LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-					buf_lock_reacquired = true;
-				}
-			}
-			else if (old_lock_mode == LockTupleKeyShare)
-			{
-				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-				buf_lock_reacquired = true;
-			}
-
-			if (buf_lock_reacquired)
-			{
-				/*
-				 * Also take care of cases when page is pruned after we
-				 * release the buffer lock. For this we check if ItemId is not
-				 * deleted and refresh the tuple offset position in page.  If
-				 * TID is already delete marked due to pruning, then get new
-				 * ctid, so that we can lock the new tuple.
-				 */
-				if (ItemIdIsDeleted(lp))
-					goto check_tup_satisfies_update;
-
-				if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
-												zinfo.xid, &single_locker_xid,
-												&mode, &zhtup))
-					goto check_tup_satisfies_update;
-
-				/* Skip sleeping */
-				require_sleep = false;
-			}
-		}
-
-		/*
-		 * As a check independent from those above, we can also avoid sleeping
-		 * if the current transaction is the sole locker of the tuple.  Note
-		 * that the strength of the lock already held is irrelevant; this is
-		 * not about recording the lock (which will be done regardless of this
-		 * optimization, below).  Also, note that the cases where we hold a
-		 * lock stronger than we are requesting are already handled above by
-		 * not doing anything.
-		 */
-		if (require_sleep &&
-			!ZHeapTupleHasMultiLockers(infomask) &&
-			TransactionIdIsCurrentTransactionId(xwait))
-		{
-			/*
-			 * If the xid changed in the meantime, start over.
-			 *
-			 * Also take care of cases when page is pruned after we release
-			 * the buffer lock. For this we check if ItemId is not deleted and
-			 * refresh the tuple offset position in page.  If TID is already
-			 * delete marked due to pruning, then get new ctid, so that we can
-			 * lock the new tuple.
-			 */
-			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-			if (ItemIdIsDeleted(lp))
-				goto check_tup_satisfies_update;
-
-			if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
-											zinfo.xid, &single_locker_xid,
-											NULL, &zhtup))
-				goto check_tup_satisfies_update;
-			require_sleep = false;
-		}
-
-		if (require_sleep && result == TM_Updated)
-		{
-			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
+		if (wait_status == LOCK_WAIT_RECHECK)
+			goto check_tup_satisfies_update;
+		else if (wait_status == LOCK_WAIT_FAILED)
 			goto failed;
-		}
-		else if (require_sleep)
-		{
-			List	   *mlmembers = NIL;
-			bool		upd_xact_aborted = false;
-
-			/*
-			 * Acquire tuple lock to establish our priority for the tuple, or
-			 * die trying.  LockTuple will release us when we are next-in-line
-			 * for the tuple.  We must do this even if we are share-locking.
-			 *
-			 * If we are forced to "start over" below, we keep the tuple lock;
-			 * this arranges that we stay at the head of the line while
-			 * rechecking tuple state.
-			 */
-			if (!heap_acquire_tuplock(relation, tid, mode, wait_policy,
-									  &have_tuple_lock))
-			{
-				/*
-				 * This can only happen if wait_policy is Skip and the lock
-				 * couldn't be obtained.
-				 */
-				result = TM_WouldBlock;
-				/* recovery code expects to have buffer lock held */
-				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-				goto failed;
-			}
-
-			if (ZHeapTupleHasMultiLockers(infomask))
-			{
-				LockTupleMode old_lock_mode;
-				TransactionId update_xact;
-
-				old_lock_mode = get_old_lock_mode(infomask);
-
-				/*
-				 * For aborted updates, we must allow to reverify the tuple in
-				 * case it's values got changed.
-				 */
-				if (!ZHEAP_XID_IS_LOCKED_ONLY(infomask))
-					update_xact = ZHeapTupleGetTransXID(&zhtup, *buffer, true);
-				else
-					update_xact = InvalidTransactionId;
-
-				if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
-										HWLOCKMODE_from_locktupmode(mode)))
-				{
-					/*
-					 * There is a potential conflict.  It is quite possible
-					 * that by this time the locker has already been
-					 * committed. So we need to check for conflict with all
-					 * the possible lockers and wait for each of them.
-					 */
-					mlmembers = ZGetMultiLockMembers(relation, &zhtup,
-													 *buffer, true);
-
-					/* wait for multixact to end, or die trying  */
-					switch (wait_policy)
-					{
-						case LockWaitBlock:
-							ZMultiLockMembersWait(relation, mlmembers, &zhtup,
-												  *buffer, update_xact, mode,
-												  false, XLTW_Lock, NULL,
-												  &upd_xact_aborted);
-							break;
-						case LockWaitSkip:
-							if (!ConditionalZMultiLockMembersWait(relation,
-																  mlmembers,
-																  *buffer,
-																  update_xact,
-																  mode,
-																  NULL,
-																  &upd_xact_aborted))
-							{
-								result = TM_WouldBlock;
-
-								/*
-								 * recovery code expects to have buffer lock
-								 * held
-								 */
-								LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-								goto failed;
-							}
-							break;
-						case LockWaitError:
-							if (!ConditionalZMultiLockMembersWait(relation,
-																  mlmembers,
-																  *buffer,
-																  update_xact,
-																  mode,
-																  NULL,
-																  &upd_xact_aborted))
-								ereport(ERROR,
-										(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-										 errmsg("could not obtain lock on row in relation \"%s\"",
-												RelationGetRelationName(relation))));
-
-							break;
-					}
-				}
-			}
-			else
-			{
-				/* wait for regular transaction to end, or die trying */
-				switch (wait_policy)
-				{
-					case LockWaitBlock:
-						{
-							if (xwait_subxid != InvalidSubTransactionId)
-								SubXactLockTableWait(xwait, xwait_subxid, relation,
-													 &zhtup.t_self, XLTW_Lock);
-							else
-								XactLockTableWait(xwait, relation, &zhtup.t_self,
-												  XLTW_Lock);
-						}
-						break;
-					case LockWaitSkip:
-						if (xwait_subxid != InvalidSubTransactionId)
-						{
-							if (!ConditionalSubXactLockTableWait(xwait, xwait_subxid))
-							{
-								result = TM_WouldBlock;
-
-								/*
-								 * recovery code expects to have buffer lock
-								 * held
-								 */
-								LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-								goto failed;
-							}
-						}
-						else if (!ConditionalXactLockTableWait(xwait))
-						{
-							result = TM_WouldBlock;
-							/* recovery code expects to have buffer lock held */
-							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-							goto failed;
-						}
-						break;
-					case LockWaitError:
-						if (xwait_subxid != InvalidSubTransactionId)
-						{
-							if (!ConditionalSubXactLockTableWait(xwait, xwait_subxid))
-								ereport(ERROR,
-										(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-										 errmsg("could not obtain lock on row in relation \"%s\"",
-												RelationGetRelationName(relation))));
-						}
-						else if (!ConditionalXactLockTableWait(xwait))
-							ereport(ERROR,
-									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-									 errmsg("could not obtain lock on row in relation \"%s\"",
-											RelationGetRelationName(relation))));
-						break;
-				}
-			}
-
-			/* if there are updates, follow the update chain */
-			if (follow_updates && !ZHEAP_XID_IS_LOCKED_ONLY(infomask))
-			{
-				TM_Result	res;
-
-				if (!ZHeapTupleIsMoved(zhtup.t_data->t_infomask) &&
-					!ItemPointerEquals(&zhtup.t_self, &ctid))
-				{
-					res = zheap_lock_updated_tuple(relation, &zhtup, &ctid,
-												   fxid, mode, lockopr, cid,
-												   &rollback_and_relocked);
-
-					/*
-					 * If the update was by some aborted transaction and its
-					 * pending undo actions are applied now, then check the
-					 * latest copy of the tuple.
-					 */
-					if (rollback_and_relocked)
-					{
-						LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-						goto check_tup_satisfies_update;
-					}
-					else if (res != TM_Ok)
-					{
-						result = res;
-						/* recovery code expects to have buffer lock held */
-						LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-						goto failed;
-					}
-				}
-			}
-
-			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-
-			/*
-			 * Also take care of cases when page is pruned after we release
-			 * the buffer lock. For this we check if ItemId is not deleted and
-			 * refresh the tuple offset position in page.  If TID is already
-			 * delete marked due to pruning, then get new ctid, so that we can
-			 * lock the new tuple.
-			 */
-			if (ItemIdIsDeleted(lp))
-				goto check_tup_satisfies_update;
-
-			if (ZHeapTupleHasMultiLockers(infomask))
-			{
-				List	   *new_mlmembers;
-
-				/*
-				 * If the aborted xact is for update, then we need to reverify
-				 * the tuple.
-				 */
-				if (upd_xact_aborted)
-					goto check_tup_satisfies_update;
-
-				new_mlmembers = ZGetMultiLockMembers(relation, &zhtup,
-													 *buffer, false);
-
-				/*
-				 * Ensure, no new lockers have been added, if so, then start
-				 * again.
-				 */
-				if (!ZMultiLockMembersSame(mlmembers, new_mlmembers))
-				{
-					list_free_deep(mlmembers);
-					list_free_deep(new_mlmembers);
-					goto check_tup_satisfies_update;
-				}
-
-				any_multi_locker_member_alive =
-					ZIsAnyMultiLockMemberRunning(new_mlmembers, &zhtup,
-												 *buffer);
-				list_free_deep(mlmembers);
-				list_free_deep(new_mlmembers);
-			}
-
-			/*
-			 * xwait is done, but if xwait had just locked the tuple then some
-			 * other xact could update/lock this tuple before we get to this
-			 * point.  Check for xid change, and start over if so.  We need to
-			 * do some special handling for lockers because their xid is never
-			 * stored on the tuples.  If there was a single locker on the
-			 * tuple and that locker is gone and some new locker has locked
-			 * the tuple, we won't be able to identify that by infomask/xid on
-			 * the tuple, rather we need to fetch the locker xid.
-			 */
-			if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
-											zinfo.xid, &single_locker_xid,
-											NULL, &zhtup))
-				goto check_tup_satisfies_update;
-		}
-
-		if (TransactionIdIsValid(xwait) && TransactionIdDidAbort(xwait))
-		{
-			/*
-			 * For aborted transaction, if the undo actions are not applied
-			 * yet, then apply them before modifying the page.
-			 */
-			if (!TransactionIdIsCurrentTransactionId(xwait))
-				zheap_exec_pending_rollback(relation, *buffer, xwait_trans_slot,
-											xwait, NULL);
-
-			if (!RefetchAndCheckTupleStatus(relation, *buffer, infomask,
-											zinfo.xid, &single_locker_xid,
-											NULL, &zhtup))
-				goto check_tup_satisfies_update;
-		}
-
-		/*
-		 * We may lock if previous xid committed or aborted but only locked
-		 * the tuple without updating it; or if we didn't have to wait at all
-		 * for whatever reason.
-		 */
-		if (!require_sleep ||
-			ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask) ||
-			result == TM_Ok)
-			result = TM_Ok;
 		else
-			result = TM_Updated;
+			Assert(wait_status == LOCK_WAIT_SUCCESS);
 	}
 	else if (result == TM_Ok)
 	{
@@ -3377,6 +2900,560 @@ out_unlocked:
 		UnlockTupleTuplock(relation, tid, mode);
 
 	return result;
+}
+
+/*
+ * zheap_tuple_already_locked - Check whether the tuple is already locked in
+ *		given mode.
+ *
+ * We consider tuple to be locked in required mode if any subtransaction of
+ * the current top transaction already holds a lock as strong as or stronger
+ * than what we're requesting.
+ */
+static bool
+zheap_tuple_already_locked(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
+						   TransactionId xid, LockTupleMode mode,
+						   int trans_slot_id, uint16 infomask,
+						   TM_Result *result)
+{
+	if (ZHeapTupleHasMultiLockers(infomask))
+	{
+		if (trans_slot_id != InvalidXactSlotId &&
+			ZCurrentXactHasTupleLockMode(zhtup, urec_ptr, mode))
+		{
+			*result = TM_Ok;
+			return true;
+		}
+	}
+	else if (TransactionIdIsCurrentTransactionId(xid))
+	{
+		switch (mode)
+		{
+			case LockTupleKeyShare:
+				Assert(ZHEAP_XID_IS_KEYSHR_LOCKED(infomask) ||
+					   ZHEAP_XID_IS_SHR_LOCKED(infomask) ||
+					   ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
+					   ZHEAP_XID_IS_EXCL_LOCKED(infomask));
+				{
+					*result = TM_Ok;
+					return true;
+				}
+				break;
+			case LockTupleShare:
+				if (ZHEAP_XID_IS_SHR_LOCKED(infomask) ||
+					ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
+					ZHEAP_XID_IS_EXCL_LOCKED(infomask))
+				{
+					*result = TM_Ok;
+					return true;
+				}
+				break;
+			case LockTupleNoKeyExclusive:
+				if (ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) ||
+					ZHEAP_XID_IS_EXCL_LOCKED(infomask))
+				{
+					*result = TM_Ok;
+					return true;
+				}
+				break;
+			case LockTupleExclusive:
+				if (ZHEAP_XID_IS_EXCL_LOCKED(infomask))
+				{
+					*result = TM_Ok;
+					return true;
+				}
+				break;
+		}
+	}
+
+	return false;
+}
+
+/*
+ * zheap_lock_wait_helper
+ *
+ * This is a helper function that encapsulates some of the logic that
+ * zheap_lock_tuple needs to wait for concurrent transactions.
+ *
+ * XXX. This is very similar to zheap_delete_wait_helper, q.v.
+ */
+static LockWaitStatus
+zheap_lock_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zhtup,
+					   FullTransactionId fxid, TransactionId xwait,
+					   int xwait_trans_slot, SubTransactionId xwait_subxid,
+					   CommandId cid, LockTupleMode mode,
+					   LockWaitPolicy wait_policy, LockOper lockopr,
+					   ItemPointer ctid, ItemId lp, TransactionId tup_xid,
+					   uint16 infomask, bool follow_updates,
+					   TransactionId *single_locker_xid, TM_Result *result,
+					   bool *any_multi_locker_member_alive,
+					   bool *have_tuple_lock)
+{
+	bool		require_sleep;
+	bool		rollback_and_relocked;
+
+	/*
+	 * Initially assume that we will have to wait for the locking
+	 * transaction(s) to finish.  We check various cases below in which this
+	 * can be turned off.
+	 */
+	require_sleep = true;
+	if (mode == LockTupleKeyShare)
+	{
+		if (!(ZHEAP_XID_IS_EXCL_LOCKED(infomask)))
+		{
+			bool		updated;
+
+			updated = !ZHEAP_XID_IS_LOCKED_ONLY(infomask);
+
+			/*
+			 * If there are updates, follow the update chain; bail out if that
+			 * cannot be done.
+			 */
+			if (follow_updates && updated)
+			{
+				if (!ZHeapTupleIsMoved(zhtup->t_data->t_infomask) &&
+					!ItemPointerEquals(&zhtup->t_self, ctid))
+				{
+					TM_Result	res;
+
+					res = zheap_lock_updated_tuple(relation, zhtup, ctid,
+												   fxid, mode, lockopr, cid,
+												   &rollback_and_relocked);
+
+					/*
+					 * If the update was by some aborted transaction and its
+					 * pending undo actions are applied now, then check the
+					 * latest copy of the tuple.
+					 */
+					if (rollback_and_relocked)
+					{
+						LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+						return LOCK_WAIT_RECHECK;
+					}
+					else if (res != TM_Ok)
+					{
+						*result = res;
+						/* recovery code expects to have buffer lock held */
+						LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+						return LOCK_WAIT_FAILED;
+					}
+				}
+			}
+
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+			/*
+			 * Also take care of cases when page is pruned after we release
+			 * the buffer lock. For this we check if ItemId is not deleted and
+			 * refresh the tuple offset position in page.  If TID is already
+			 * delete marked due to pruning, then get new ctid, so that we can
+			 * lock the new tuple.
+			 */
+			if (ItemIdIsDeleted(lp))
+				return LOCK_WAIT_RECHECK;
+
+			if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
+											tup_xid, single_locker_xid,
+											&mode, zhtup))
+				return LOCK_WAIT_RECHECK;
+
+			/* Skip sleeping */
+			require_sleep = false;
+		}
+	}
+	else if (mode == LockTupleShare)
+	{
+		/*
+		 * If we're requesting Share, we can similarly avoid sleeping if
+		 * there's no update and no exclusive lock present.
+		 */
+		if (ZHEAP_XID_IS_LOCKED_ONLY(infomask) &&
+			!ZHEAP_XID_IS_NOKEY_EXCL_LOCKED(infomask) &&
+			!ZHEAP_XID_IS_EXCL_LOCKED(infomask))
+		{
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+			/*
+			 * Also take care of cases when page is pruned after we release
+			 * the buffer lock. For this we check if ItemId is not deleted and
+			 * refresh the tuple offset position in page.  If TID is already
+			 * delete marked due to pruning, then get new ctid, so that we can
+			 * lock the new tuple.
+			 */
+			if (ItemIdIsDeleted(lp))
+				return LOCK_WAIT_RECHECK;
+
+			if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
+											tup_xid, single_locker_xid,
+											&mode, zhtup))
+				return LOCK_WAIT_RECHECK;
+
+			/* Skip sleeping */
+			require_sleep = false;
+		}
+	}
+	else if (mode == LockTupleNoKeyExclusive)
+	{
+		LockTupleMode old_lock_mode;
+		bool		buf_lock_reacquired = false;
+
+		old_lock_mode = get_old_lock_mode(infomask);
+
+		/*
+		 * If we're requesting NoKeyExclusive, we might also be able to avoid
+		 * sleeping; just ensure that there is no conflicting lock already
+		 * acquired.
+		 */
+		if (ZHeapTupleHasMultiLockers(infomask))
+		{
+			if (!DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
+									 HWLOCKMODE_from_locktupmode(mode)))
+			{
+				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+				buf_lock_reacquired = true;
+			}
+		}
+		else if (old_lock_mode == LockTupleKeyShare)
+		{
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+			buf_lock_reacquired = true;
+		}
+
+		if (buf_lock_reacquired)
+		{
+			/*
+			 * Also take care of cases when page is pruned after we release
+			 * the buffer lock. For this we check if ItemId is not deleted and
+			 * refresh the tuple offset position in page.  If TID is already
+			 * delete marked due to pruning, then get new ctid, so that we can
+			 * lock the new tuple.
+			 */
+			if (ItemIdIsDeleted(lp))
+				return LOCK_WAIT_RECHECK;
+
+			if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
+											tup_xid, single_locker_xid,
+											&mode, zhtup))
+				return LOCK_WAIT_RECHECK;
+
+			/* Skip sleeping */
+			require_sleep = false;
+		}
+	}
+
+	/*
+	 * As a check independent from those above, we can also avoid sleeping if
+	 * the current transaction is the sole locker of the tuple.  Note that the
+	 * strength of the lock already held is irrelevant; this is not about
+	 * recording the lock (which will be done regardless of this optimization,
+	 * below).  Also, note that the cases where we hold a lock stronger than
+	 * we are requesting are already handled above by not doing anything.
+	 */
+	if (require_sleep &&
+		!ZHeapTupleHasMultiLockers(infomask) &&
+		TransactionIdIsCurrentTransactionId(xwait))
+	{
+		/*
+		 * If the xid changed in the meantime, start over.
+		 *
+		 * Also take care of cases when page is pruned after we release the
+		 * buffer lock. For this we check if ItemId is not deleted and refresh
+		 * the tuple offset position in page.  If TID is already delete marked
+		 * due to pruning, then get new ctid, so that we can lock the new
+		 * tuple.
+		 */
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		if (ItemIdIsDeleted(lp))
+			return LOCK_WAIT_RECHECK;
+
+		if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
+										tup_xid, single_locker_xid,
+										NULL, zhtup))
+			return LOCK_WAIT_RECHECK;
+		require_sleep = false;
+	}
+
+	if (require_sleep && *result == TM_Updated)
+	{
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		return LOCK_WAIT_FAILED;
+	}
+	else if (require_sleep)
+	{
+		List	   *mlmembers = NIL;
+		bool		upd_xact_aborted = false;
+
+		/*
+		 * Acquire tuple lock to establish our priority for the tuple, or die
+		 * trying.  LockTuple will release us when we are next-in-line for the
+		 * tuple.  We must do this even if we are share-locking.
+		 *
+		 * If we are forced to "start over" below, we keep the tuple lock;
+		 * this arranges that we stay at the head of the line while rechecking
+		 * tuple state.
+		 */
+		if (!heap_acquire_tuplock(relation, &zhtup->t_self, mode, wait_policy,
+								  have_tuple_lock))
+		{
+			/*
+			 * This can only happen if wait_policy is Skip and the lock
+			 * couldn't be obtained.
+			 */
+			*result = TM_WouldBlock;
+			/* recovery code expects to have buffer lock held */
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+			return LOCK_WAIT_FAILED;
+		}
+
+		if (ZHeapTupleHasMultiLockers(infomask))
+		{
+			LockTupleMode old_lock_mode;
+			TransactionId update_xact;
+
+			old_lock_mode = get_old_lock_mode(infomask);
+
+			/*
+			 * For aborted updates, we must allow to reverify the tuple in
+			 * case it's values got changed.
+			 */
+			if (!ZHEAP_XID_IS_LOCKED_ONLY(infomask))
+				update_xact = ZHeapTupleGetTransXID(zhtup, buffer, true);
+			else
+				update_xact = InvalidTransactionId;
+
+			if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
+									HWLOCKMODE_from_locktupmode(mode)))
+			{
+				/*
+				 * There is a potential conflict.  It is quite possible that
+				 * by this time the locker has already been committed. So we
+				 * need to check for conflict with all the possible lockers
+				 * and wait for each of them.
+				 */
+				mlmembers = ZGetMultiLockMembers(relation, zhtup,
+												 buffer, true);
+
+				/* wait for multixact to end, or die trying  */
+				switch (wait_policy)
+				{
+					case LockWaitBlock:
+						ZMultiLockMembersWait(relation, mlmembers, zhtup,
+											  buffer, update_xact, mode,
+											  false, XLTW_Lock, NULL,
+											  &upd_xact_aborted);
+						break;
+					case LockWaitSkip:
+						if (!ConditionalZMultiLockMembersWait(relation,
+															  mlmembers,
+															  buffer,
+															  update_xact,
+															  mode,
+															  NULL,
+															  &upd_xact_aborted))
+						{
+							*result = TM_WouldBlock;
+
+							/*
+							 * recovery code expects to have buffer lock held
+							 */
+							LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+							return LOCK_WAIT_FAILED;
+						}
+						break;
+					case LockWaitError:
+						if (!ConditionalZMultiLockMembersWait(relation,
+															  mlmembers,
+															  buffer,
+															  update_xact,
+															  mode,
+															  NULL,
+															  &upd_xact_aborted))
+							ereport(ERROR,
+									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+									 errmsg("could not obtain lock on row in relation \"%s\"",
+											RelationGetRelationName(relation))));
+
+						break;
+				}
+			}
+		}
+		else
+		{
+			/* wait for regular transaction to end, or die trying */
+			switch (wait_policy)
+			{
+				case LockWaitBlock:
+					{
+						if (xwait_subxid != InvalidSubTransactionId)
+							SubXactLockTableWait(xwait, xwait_subxid, relation,
+												 &zhtup->t_self, XLTW_Lock);
+						else
+							XactLockTableWait(xwait, relation, &zhtup->t_self,
+											  XLTW_Lock);
+					}
+					break;
+				case LockWaitSkip:
+					if (xwait_subxid != InvalidSubTransactionId)
+					{
+						if (!ConditionalSubXactLockTableWait(xwait, xwait_subxid))
+						{
+							*result = TM_WouldBlock;
+
+							/*
+							 * recovery code expects to have buffer lock held
+							 */
+							LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+							return LOCK_WAIT_FAILED;
+						}
+					}
+					else if (!ConditionalXactLockTableWait(xwait))
+					{
+						*result = TM_WouldBlock;
+						/* recovery code expects to have buffer lock held */
+						LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+						return LOCK_WAIT_FAILED;
+					}
+					break;
+				case LockWaitError:
+					if (xwait_subxid != InvalidSubTransactionId)
+					{
+						if (!ConditionalSubXactLockTableWait(xwait, xwait_subxid))
+							ereport(ERROR,
+									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+									 errmsg("could not obtain lock on row in relation \"%s\"",
+											RelationGetRelationName(relation))));
+					}
+					else if (!ConditionalXactLockTableWait(xwait))
+						ereport(ERROR,
+								(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+								 errmsg("could not obtain lock on row in relation \"%s\"",
+										RelationGetRelationName(relation))));
+					break;
+			}
+		}
+
+		/* if there are updates, follow the update chain */
+		if (follow_updates && !ZHEAP_XID_IS_LOCKED_ONLY(infomask))
+		{
+			TM_Result	res;
+
+			if (!ZHeapTupleIsMoved(zhtup->t_data->t_infomask) &&
+				!ItemPointerEquals(&zhtup->t_self, ctid))
+			{
+				res = zheap_lock_updated_tuple(relation, zhtup, ctid,
+											   fxid, mode, lockopr, cid,
+											   &rollback_and_relocked);
+
+				/*
+				 * If the update was by some aborted transaction and its
+				 * pending undo actions are applied now, then check the latest
+				 * copy of the tuple.
+				 */
+				if (rollback_and_relocked)
+				{
+					LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+					return LOCK_WAIT_RECHECK;
+				}
+				else if (res != TM_Ok)
+				{
+					*result = res;
+					/* recovery code expects to have buffer lock held */
+					LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+					return LOCK_WAIT_FAILED;
+				}
+			}
+		}
+
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+		/*
+		 * Also take care of cases when page is pruned after we release the
+		 * buffer lock. For this we check if ItemId is not deleted and refresh
+		 * the tuple offset position in page.  If TID is already delete marked
+		 * due to pruning, then get new ctid, so that we can lock the new
+		 * tuple.
+		 */
+		if (ItemIdIsDeleted(lp))
+			return LOCK_WAIT_RECHECK;
+
+		if (ZHeapTupleHasMultiLockers(infomask))
+		{
+			List	   *new_mlmembers;
+
+			/*
+			 * If the aborted xact is for update, then we need to reverify the
+			 * tuple.
+			 */
+			if (upd_xact_aborted)
+				return LOCK_WAIT_RECHECK;
+
+			new_mlmembers = ZGetMultiLockMembers(relation, zhtup,
+												 buffer, false);
+
+			/*
+			 * Ensure, no new lockers have been added, if so, then start
+			 * again.
+			 */
+			if (!ZMultiLockMembersSame(mlmembers, new_mlmembers))
+			{
+				list_free_deep(mlmembers);
+				list_free_deep(new_mlmembers);
+				return LOCK_WAIT_RECHECK;
+			}
+
+			*any_multi_locker_member_alive =
+				ZIsAnyMultiLockMemberRunning(new_mlmembers, zhtup,
+											 buffer);
+			list_free_deep(mlmembers);
+			list_free_deep(new_mlmembers);
+		}
+
+		/*
+		 * xwait is done, but if xwait had just locked the tuple then some
+		 * other xact could update/lock this tuple before we get to this
+		 * point.  Check for xid change, and start over if so.  We need to do
+		 * some special handling for lockers because their xid is never stored
+		 * on the tuples.  If there was a single locker on the tuple and that
+		 * locker is gone and some new locker has locked the tuple, we won't
+		 * be able to identify that by infomask/xid on the tuple, rather we
+		 * need to fetch the locker xid.
+		 */
+		if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
+										tup_xid, single_locker_xid,
+										NULL, zhtup))
+			return LOCK_WAIT_RECHECK;
+	}
+
+	if (TransactionIdIsValid(xwait) && TransactionIdDidAbort(xwait))
+	{
+		/*
+		 * For aborted transaction, if the undo actions are not applied yet,
+		 * then apply them before modifying the page.
+		 */
+		if (!TransactionIdIsCurrentTransactionId(xwait))
+			zheap_exec_pending_rollback(relation, buffer, xwait_trans_slot,
+										xwait, NULL);
+
+		if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
+										tup_xid, single_locker_xid,
+										NULL, zhtup))
+			return LOCK_WAIT_RECHECK;
+	}
+
+	/*
+	 * We may lock if previous xid committed or aborted but only locked the
+	 * tuple without updating it; or if we didn't have to wait at all for
+	 * whatever reason.
+	 */
+	if (!require_sleep ||
+		ZHEAP_XID_IS_LOCKED_ONLY(zhtup->t_data->t_infomask) ||
+		*result == TM_Ok)
+		*result = TM_Ok;
+	else
+		*result = TM_Updated;
+
+	return LOCK_WAIT_SUCCESS;
 }
 
 /*
