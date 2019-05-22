@@ -3825,10 +3825,10 @@ lock_tuple:
 		 * actual operation.  It will be costly to wait for getting the slot,
 		 * but we do that by releasing the buffer lock.
 		 */
-		trans_slot_id = PageReserveTransactionSlot(rel, buf, offnum,
-												   fxid, &prev_urecptr,
-												   &lock_reacquired, false,
-												   InvalidBuffer, NULL);
+		trans_slot_id = PageReserveTransactionSlot(rel, buf,
+							PageGetMaxOffsetNumber(BufferGetPage(buf)),
+							fxid, &prev_urecptr, &lock_reacquired, false,
+							InvalidBuffer, NULL);
 		if (lock_reacquired)
 		{
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);

@@ -267,6 +267,7 @@ AllocateAndFormTPDEntry(Buffer buf, OffsetNumber offset,
 		max_required_offset = PageGetMaxOffsetNumber(page);
 
 	num_map_entries = max_required_offset + ADDITIONAL_MAP_ELEM_IN_TPD_ENTRY;
+	Assert(num_map_entries > PageGetMaxOffsetNumber(page));
 
 	/* form tpd entry header */
 	tpe_header.blkno = BufferGetBlockNumber(buf);
