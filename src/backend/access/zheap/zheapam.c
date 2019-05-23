@@ -1069,6 +1069,8 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 
 	if (lock_reacquired)
 	{
+		bool	pending_actions_applied = false;
+
 		/*
 		 * By the time, we require the lock on buffer, some other xact could
 		 * have updated this tuple.  We need take care of the cases when page
@@ -1101,8 +1103,9 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 			}
 
 			*any_multi_locker_member_alive =
-				ZIsAnyMultiLockMemberRunning(new_mlmembers, zheaptup,
-											 buffer);
+				ZIsAnyMultiLockMemberRunning(relation, xwait_trans_slot,
+											 new_mlmembers, zheaptup,
+											 buffer, &pending_actions_applied);
 			list_free_deep(mlmembers);
 			list_free_deep(new_mlmembers);
 		}
@@ -1117,7 +1120,8 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 		 * be able to identify that by infomask/xid on the tuple, rather we
 		 * need to fetch the locker xid.
 		 */
-		if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
+		if (pending_actions_applied || !RefetchAndCheckTupleStatus(relation,
+										buffer, infomask,
 										tup_xid,
 										single_locker_xid, NULL, zheaptup))
 			return false;
@@ -2315,6 +2319,8 @@ zheap_update_wait_helper(Relation relation,
 		if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_lock_mode),
 								HWLOCKMODE_from_locktupmode(lockmode)))
 		{
+			bool	pending_actions_applied = false;
+
 			/*
 			 * There is a potential conflict.  It is quite possible that by
 			 * this time the locker has already been committed. So we need to
@@ -2382,14 +2388,18 @@ zheap_update_wait_helper(Relation relation,
 				}
 
 				*any_multi_locker_member_alive =
-					ZIsAnyMultiLockMemberRunning(new_mlmembers, zheaptup,
-												 buffer);
+					ZIsAnyMultiLockMemberRunning(relation, xwait_trans_slot,
+												 new_mlmembers, zheaptup,
+												 buffer,
+												 &pending_actions_applied);
 				list_free_deep(mlmembers);
 				list_free_deep(new_mlmembers);
 			}
 
-			if (!RefetchAndCheckTupleStatus(relation, buffer, infomask, tup_xid,
-											single_locker_xid, NULL, zheaptup))
+			if (pending_actions_applied || !RefetchAndCheckTupleStatus(
+											relation, buffer, infomask,
+											tup_xid, single_locker_xid, NULL,
+											zheaptup))
 				return false;
 		}
 		else if (TransactionIdIsValid(update_xact))
@@ -3183,6 +3193,7 @@ zheap_lock_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zhtup,
 	{
 		List	   *mlmembers = NIL;
 		bool		upd_xact_aborted = false;
+		bool		pending_actions_applied = false;
 
 		/*
 		 * Acquire tuple lock to establish our priority for the tuple, or die
@@ -3403,8 +3414,10 @@ zheap_lock_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zhtup,
 			}
 
 			*any_multi_locker_member_alive =
-				ZIsAnyMultiLockMemberRunning(new_mlmembers, zhtup,
-											 buffer);
+				ZIsAnyMultiLockMemberRunning(relation, xwait_trans_slot,
+											 new_mlmembers, zhtup,
+											 buffer,
+											 &pending_actions_applied);
 			list_free_deep(mlmembers);
 			list_free_deep(new_mlmembers);
 		}
@@ -3419,7 +3432,8 @@ zheap_lock_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zhtup,
 		 * be able to identify that by infomask/xid on the tuple, rather we
 		 * need to fetch the locker xid.
 		 */
-		if (!RefetchAndCheckTupleStatus(relation, buffer, infomask,
+		if (pending_actions_applied || !RefetchAndCheckTupleStatus(relation,
+										buffer, infomask,
 										tup_xid, single_locker_xid,
 										NULL, zhtup))
 			return LOCK_WAIT_RECHECK;

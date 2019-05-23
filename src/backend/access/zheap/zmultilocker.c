@@ -452,7 +452,9 @@ ConditionalZMultiLockMembersWait(Relation rel, List *mlmembers,
  * transaction.
  */
 bool
-ZIsAnyMultiLockMemberRunning(List *mlmembers, ZHeapTuple zhtup, Buffer buf)
+ZIsAnyMultiLockMemberRunning(Relation rel, int xwait_trans_slot,
+							 List *mlmembers, ZHeapTuple zhtup, Buffer buf,
+							 bool *pending_actions_applied)
 {
 	ListCell   *lc;
 	BufferDesc *bufhdr PG_USED_FOR_ASSERTS_ONLY;
@@ -483,6 +485,22 @@ ZIsAnyMultiLockMemberRunning(List *mlmembers, ZHeapTuple zhtup, Buffer buf)
 		{
 			elog(DEBUG2, "ZIsRunning: member %d is running", memxid);
 			return true;
+		}
+		else if(TransactionIdDidAbort(memxid))
+		{
+			bool	action_applied;
+
+			action_applied = zheap_exec_pending_rollback(rel, buf,
+														 xwait_trans_slot,
+														 memxid,
+														 NULL);
+
+			/*
+			 * If actions are applied, then set pending_actions_applied flag
+			 * so that the caller can identify that buffer lock is reacquired.
+			 */
+			if (action_applied && !*pending_actions_applied)
+				*pending_actions_applied = true;
 		}
 	}
 

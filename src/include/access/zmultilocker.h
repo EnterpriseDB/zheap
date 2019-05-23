@@ -36,8 +36,9 @@ extern bool ConditionalZMultiLockMembersWait(Relation rel, List *mlmembers,
 								 Buffer buf, TransactionId update_xact,
 								 LockTupleMode required_mode, int *remaining,
 								 bool *upd_xact_aborted);
-extern bool ZIsAnyMultiLockMemberRunning(List *mlmembers, ZHeapTuple zhtup,
-							 Buffer buf);
+extern bool ZIsAnyMultiLockMemberRunning(Relation rel, int xwait_trans_slot,
+									List *mlmembers, ZHeapTuple zhtup,
+									Buffer buf, bool *pending_actions_applied);
 extern bool ZMultiLockMembersSame(List *old_members, List *new_members);
 extern void ZGetMultiLockInfo(uint16 old_infomask, TransactionId tup_xid,
 				  int tup_trans_slot, TransactionId add_to_xid,
