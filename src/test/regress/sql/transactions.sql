@@ -286,7 +286,7 @@ create or replace function max_xacttest() returns smallint language sql as
 
 begin;
 update xacttest set a = max_xacttest() + 10 where a > 0;
-select * from xacttest;
+select * from xacttest order by a, b;
 rollback;
 
 -- But a volatile function can see the partial results of the calling query
@@ -295,7 +295,7 @@ create or replace function max_xacttest() returns smallint language sql as
 
 begin;
 update xacttest set a = max_xacttest() + 10 where a > 0;
-select * from xacttest;
+select * from xacttest order by a, b;
 rollback;
 
 -- Now the same test with plpgsql (since it depends on SPI which is different)
@@ -304,7 +304,7 @@ create or replace function max_xacttest() returns smallint language plpgsql as
 
 begin;
 update xacttest set a = max_xacttest() + 10 where a > 0;
-select * from xacttest;
+select * from xacttest order by a, b;
 rollback;
 
 create or replace function max_xacttest() returns smallint language plpgsql as
@@ -312,7 +312,7 @@ create or replace function max_xacttest() returns smallint language plpgsql as
 
 begin;
 update xacttest set a = max_xacttest() + 10 where a > 0;
-select * from xacttest;
+select * from xacttest order by a, b;
 rollback;
 
 

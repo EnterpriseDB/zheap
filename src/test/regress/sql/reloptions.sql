@@ -1,5 +1,7 @@
 
 -- Simple create
+CREATE TABLE reloptions_empty(i INT);
+
 CREATE TABLE reloptions_test(i INT) WITH (FiLLFaCToR=30,
 	autovacuum_enabled = false, autovacuum_analyze_scale_factor = 0.2);
 SELECT reloptions FROM pg_class WHERE oid = 'reloptions_test'::regclass;
@@ -62,7 +64,7 @@ CREATE TABLE reloptions_test(i INT NOT NULL, j text)
 SELECT reloptions FROM pg_class WHERE oid = 'reloptions_test'::regclass;
 INSERT INTO reloptions_test VALUES (1, NULL), (NULL, NULL);
 VACUUM reloptions_test;
-SELECT pg_relation_size('reloptions_test') > 0;
+SELECT pg_relation_size('reloptions_test') > pg_relation_size('reloptions_empty');
 
 SELECT reloptions FROM pg_class WHERE oid =
 	(SELECT reltoastrelid FROM pg_class
@@ -72,7 +74,7 @@ ALTER TABLE reloptions_test RESET (vacuum_truncate);
 SELECT reloptions FROM pg_class WHERE oid = 'reloptions_test'::regclass;
 INSERT INTO reloptions_test VALUES (1, NULL), (NULL, NULL);
 VACUUM reloptions_test;
-SELECT pg_relation_size('reloptions_test') = 0;
+SELECT pg_relation_size('reloptions_test') = pg_relation_size('reloptions_empty');
 
 -- Test toast.* options
 DROP TABLE reloptions_test;

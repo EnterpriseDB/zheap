@@ -37,8 +37,9 @@ typedef enum BufferAccessStrategyType
 typedef enum
 {
 	RBM_NORMAL,					/* Normal read */
-	RBM_ZERO_AND_LOCK,			/* Don't read from disk, caller will
-								 * initialize. Also locks the page. */
+	RBM_ZERO,					/* Don't read from disk, caller will
+								 * initialize. */
+	RBM_ZERO_AND_LOCK,			/* Like RBM_ZERO, but also locks the page. */
 	RBM_ZERO_AND_CLEANUP_LOCK,	/* Like RBM_ZERO_AND_LOCK, but locks the page
 								 * in "cleanup" mode */
 	RBM_ZERO_ON_ERROR,			/* Read, but return an all-zeros page on error */
@@ -164,13 +165,18 @@ extern PGDLLIMPORT int32 *LocalRefCount;
 extern bool ComputeIoConcurrency(int io_concurrency, double *target);
 extern void PrefetchBuffer(Relation reln, ForkNumber forkNum,
 						   BlockNumber blockNum);
+extern void PrefetchBufferWithoutRelcache(RelFileNode rnode, ForkNumber forkNum,
+										  BlockNumber blockNum, char relpersistence);
 extern Buffer ReadBuffer(Relation reln, BlockNumber blockNum);
 extern Buffer ReadBufferExtended(Relation reln, ForkNumber forkNum,
 								 BlockNumber blockNum, ReadBufferMode mode,
 								 BufferAccessStrategy strategy);
 extern Buffer ReadBufferWithoutRelcache(RelFileNode rnode,
 										ForkNumber forkNum, BlockNumber blockNum,
-										ReadBufferMode mode, BufferAccessStrategy strategy);
+										ReadBufferMode mode, BufferAccessStrategy strategy,
+										char relpersistence);
+extern void ForgetBuffer(RelFileNode rnode, ForkNumber forkNum,
+						 BlockNumber blockNum);
 extern void ReleaseBuffer(Buffer buffer);
 extern void UnlockReleaseBuffer(Buffer buffer);
 extern void MarkBufferDirty(Buffer buffer);
@@ -226,6 +232,10 @@ extern bool BgBufferSync(struct WritebackContext *wb_context);
 extern void AtProcExit_LocalBuffers(void);
 
 extern void TestForOldSnapshot_impl(Snapshot snapshot, Relation relation);
+
+/* in localbuf.c */
+extern void ForgetLocalBuffer(RelFileNode rnode, ForkNumber forkNum,
+							  BlockNumber blockNum);
 
 /* in freelist.c */
 extern BufferAccessStrategy GetAccessStrategy(BufferAccessStrategyType btype);

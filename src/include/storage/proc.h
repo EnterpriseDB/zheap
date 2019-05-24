@@ -272,6 +272,8 @@ typedef struct PROC_HDR
 	int			startupProcPid;
 	/* Buffer id of the buffer that Startup process waits for pin on, or -1 */
 	int			startupBufferPinWaitBufId;
+	/* Oldest transaction id which is having undo. */
+	pg_atomic_uint64 oldestXidWithEpochHavingUndo;
 } PROC_HDR;
 
 extern PGDLLIMPORT PROC_HDR *ProcGlobal;
@@ -331,5 +333,13 @@ extern PGPROC *AuxiliaryPidGetProc(int pid);
 
 extern void BecomeLockGroupLeader(void);
 extern bool BecomeLockGroupMember(PGPROC *leader, int pid);
+
+static inline bool
+FullTransactionIdOlderThanAllUndo(FullTransactionId full_xid)
+{
+	uint64		cutoff = pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo);
+
+	return U64FromFullTransactionId(full_xid) < cutoff;
+}
 
 #endif							/* PROC_H */

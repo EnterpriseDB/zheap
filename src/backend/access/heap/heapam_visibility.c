@@ -751,6 +751,7 @@ HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot,
 	Assert(htup->t_tableOid != InvalidOid);
 
 	snapshot->xmin = snapshot->xmax = InvalidTransactionId;
+	snapshot->subxid = InvalidSubTransactionId;
 	snapshot->speculativeToken = 0;
 
 	if (!HeapTupleHeaderXminCommitted(tuple))
@@ -1715,4 +1716,75 @@ HeapTupleSatisfiesVisibility(HeapTuple tup, Snapshot snapshot, Buffer buffer)
 	}
 
 	return false;				/* keep compiler quiet */
+}
+
+/*
+ * This is a helper function for CheckForSerializableConflictOut.
+ *
+ * Check to see whether the tuple has been written to by a concurrent
+ * transaction, either to create it not visible to us, or to delete it
+ * while it is visible to us.  The "visible" bool indicates whether the
+ * tuple is visible to us, while HeapTupleSatisfiesVacuum checks what else
+ * is going on with it.  The caller should have a share lock on the buffer.
+ */
+bool
+HeapTupleHasSerializableConflictOut(bool visible, HeapTuple tuple, Buffer buffer,
+									TransactionId *xid)
+{
+	HTSV_Result htsvResult;
+
+	htsvResult = HeapTupleSatisfiesVacuum(tuple, TransactionXmin, buffer);
+	switch (htsvResult)
+	{
+		case HEAPTUPLE_LIVE:
+			if (visible)
+				return false;
+			*xid = HeapTupleHeaderGetXmin(tuple->t_data);
+			break;
+		case HEAPTUPLE_RECENTLY_DEAD:
+			if (!visible)
+				return false;
+			*xid = HeapTupleHeaderGetUpdateXid(tuple->t_data);
+			break;
+		case HEAPTUPLE_DELETE_IN_PROGRESS:
+			*xid = HeapTupleHeaderGetUpdateXid(tuple->t_data);
+			break;
+		case HEAPTUPLE_INSERT_IN_PROGRESS:
+			*xid = HeapTupleHeaderGetXmin(tuple->t_data);
+			break;
+		case HEAPTUPLE_DEAD:
+			return false;
+		default:
+
+			/*
+			 * The only way to get to this default clause is if a new value is
+			 * added to the enum type without adding it to this switch
+			 * statement.  That's a bug, so elog.
+			 */
+			elog(ERROR, "unrecognized return value from HeapTupleSatisfiesVacuum: %u", htsvResult);
+
+			/*
+			 * In spite of having all enum values covered and calling elog on
+			 * this default, some compilers think this is a code path which
+			 * allows xid to be used below without initialization. Silence
+			 * that warning.
+			 */
+			*xid = InvalidTransactionId;
+	}
+	Assert(TransactionIdIsValid(*xid));
+	Assert(TransactionIdFollowsOrEquals(*xid, TransactionXmin));
+
+	/*
+	 * Find top level xid.  Bail out if xid is too early to be a conflict, or
+	 * if it's our own xid.
+	 */
+	if (TransactionIdEquals(*xid, GetTopTransactionIdIfAny()))
+		return false;
+	*xid = SubTransGetTopmostTransaction(*xid);
+	if (TransactionIdPrecedes(*xid, TransactionXmin))
+		return false;
+	if (TransactionIdEquals(*xid, GetTopTransactionIdIfAny()))
+		return false;
+
+	return true;
 }

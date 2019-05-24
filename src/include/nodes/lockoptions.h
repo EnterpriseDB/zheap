@@ -43,6 +43,8 @@ typedef enum LockWaitPolicy
 	LockWaitError
 } LockWaitPolicy;
 
+#define MaxLockTupleMode	LockTupleExclusive
+
 /*
  * Possible lock modes for a tuple.
  */
@@ -57,5 +59,12 @@ typedef enum LockTupleMode
 	/* SELECT FOR UPDATE, UPDATEs that modify key columns, and DELETE */
 	LockTupleExclusive
 } LockTupleMode;
+
+/*  ZBORKED: Why is the eval flag needed, and what's it's actual documentation? */
+/*  Because surely */
+/*   *	eval - indicates whether the tuple will be evaluated to see if it still */
+/*   *	matches the qualification. */
+/*  isn't very descriptive. */
+#define TUPLE_LOCK_FLAG_WEIRD					(1 << 2)
 
 #endif							/* LOCKOPTIONS_H */

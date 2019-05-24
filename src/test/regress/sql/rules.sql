@@ -212,11 +212,11 @@ select * from rtest_v1;
 
 -- now updates with constant expression
 update rtest_v1 set b = 42 where a = 2;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
 update rtest_v1 set b = 99 where b = 42;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
 update rtest_v1 set b = 88 where b < 50;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
 delete from rtest_v1;
 insert into rtest_v1 select rtest_t2.a, rtest_t3.b
     from rtest_t2, rtest_t3
@@ -225,13 +225,13 @@ select * from rtest_v1;
 
 -- updates in a mergejoin
 update rtest_v1 set b = rtest_t2.b from rtest_t2 where rtest_v1.a = rtest_t2.a;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
 insert into rtest_v1 select * from rtest_t3;
-select * from rtest_v1;
+select * from rtest_v1 order by a, b;
 update rtest_t1 set a = a + 10 where b > 30;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
 update rtest_v1 set a = rtest_t3.a + 20 from rtest_t3 where rtest_v1.b = rtest_t3.b;
-select * from rtest_v1;
+select * from rtest_v1 order by a, b;
 
 --
 -- Test for constraint updates/deletes
@@ -268,7 +268,7 @@ select * from rtest_admin order by pname, sysname;
 delete from rtest_system where sysname = 'orion';
 
 select * from rtest_interface;
-select * from rtest_admin;
+select * from rtest_admin order by pname, sysname;
 
 --
 -- Rule qualification test
@@ -975,8 +975,8 @@ insert into t1 select * from generate_series(5,19,1) g;
 update t1 set a = 4 where a = 5;
 
 select * from only t1;
-select * from only t1_1;
-select * from only t1_2;
+select * from only t1_1 order by a;
+select * from only t1_2 order by a;
 
 reset constraint_exclusion;
 

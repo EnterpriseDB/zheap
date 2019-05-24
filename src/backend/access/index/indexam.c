@@ -180,7 +180,7 @@ index_insert(Relation indexRelation,
 
 	if (!(indexRelation->rd_indam->ampredlocks))
 		CheckForSerializableConflictIn(indexRelation,
-									   (HeapTuple) NULL,
+									   (ItemPointer) NULL,
 									   InvalidBuffer);
 
 	return indexRelation->rd_indam->aminsert(indexRelation, values, isnull,

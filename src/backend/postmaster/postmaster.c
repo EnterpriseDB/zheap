@@ -93,7 +93,9 @@
 #include <pthread.h>
 #endif
 
+#include "access/discardworker.h"
 #include "access/transam.h"
+#include "access/undoworker.h"
 #include "access/xlog.h"
 #include "bootstrap/bootstrap.h"
 #include "catalog/pg_control.h"
@@ -245,6 +247,8 @@ bool		Db_user_namespace = false;
 bool		enable_bonjour = false;
 char	   *bonjour_name;
 bool		restart_after_crash = true;
+
+bool		disable_undo_launcher;
 
 /* PIDs of special child processes; 0 when not running */
 static pid_t StartupPID = 0,
@@ -981,6 +985,13 @@ PostmasterMain(int argc, char *argv[])
 	 * background worker slots.
 	 */
 	ApplyLauncherRegister();
+
+	/* Register the Undo worker launcher. */
+	if (!disable_undo_launcher)
+		UndoLauncherRegister();
+
+	/* Register the Undo Discard worker. */
+	DiscardWorkerRegister();
 
 	/*
 	 * process any libraries that should be preloaded at postmaster start

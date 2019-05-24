@@ -21,6 +21,9 @@
 #include "access/nbtree.h"
 #include "access/subtrans.h"
 #include "access/twophase.h"
+#include "access/undolog.h"
+#include "access/undorequest.h"
+#include "access/undoworker.h"
 #include "commands/async.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -125,6 +128,7 @@ CreateSharedMemoryAndSemaphores(int port)
 		size = add_size(size, ProcGlobalShmemSize());
 		size = add_size(size, XLOGShmemSize());
 		size = add_size(size, CLOGShmemSize());
+		size = add_size(size, UndoLogShmemSize());
 		size = add_size(size, CommitTsShmemSize());
 		size = add_size(size, SUBTRANSShmemSize());
 		size = add_size(size, TwoPhaseShmemSize());
@@ -147,6 +151,8 @@ CreateSharedMemoryAndSemaphores(int port)
 		size = add_size(size, BTreeShmemSize());
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
+		size = add_size(size, PendingUndoShmemSize());
+		size = add_size(size, UndoLauncherShmemSize());
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif
@@ -213,10 +219,12 @@ CreateSharedMemoryAndSemaphores(int port)
 	 */
 	XLOGShmemInit();
 	CLOGShmemInit();
+	UndoLogShmemInit();
 	CommitTsShmemInit();
 	SUBTRANSShmemInit();
 	MultiXactShmemInit();
 	InitBufferPool();
+	PendingUndoShmemInit();
 
 	/*
 	 * Set up lock manager
@@ -255,6 +263,7 @@ CreateSharedMemoryAndSemaphores(int port)
 	WalSndShmemInit();
 	WalRcvShmemInit();
 	ApplyLauncherShmemInit();
+	UndoLauncherShmemInit();
 
 	/*
 	 * Set up other modules that need some shared memory space

@@ -40,6 +40,9 @@ typedef struct binaryheap
 extern binaryheap *binaryheap_allocate(int capacity,
 									   binaryheap_comparator compare,
 									   void *arg);
+extern binaryheap *binaryheap_allocate_shm(const char *name, int capacity,
+										   binaryheap_comparator compare,
+										   void *arg);
 extern void binaryheap_reset(binaryheap *heap);
 extern void binaryheap_free(binaryheap *heap);
 extern void binaryheap_add_unordered(binaryheap *heap, Datum d);
@@ -48,7 +51,12 @@ extern void binaryheap_add(binaryheap *heap, Datum d);
 extern Datum binaryheap_first(binaryheap *heap);
 extern Datum binaryheap_remove_first(binaryheap *heap);
 extern void binaryheap_replace_first(binaryheap *heap, Datum d);
+extern Size binaryheap_shmem_size(int capacity);
+extern Datum binaryheap_nth(binaryheap *heap, int n);
+extern Datum binaryheap_remove_nth(binaryheap *heap, int n);
+extern Datum binaryheap_remove_nth_unordered(binaryheap *heap, int n);
 
 #define binaryheap_empty(h)			((h)->bh_size == 0)
+#define binaryheap_cur_size(h)		((h)->bh_size)
 
 #endif							/* BINARYHEAP_H */

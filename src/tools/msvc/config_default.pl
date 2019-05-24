@@ -11,6 +11,7 @@ our $config = {
 
 	# blocksize => 8,         # --with-blocksize, 8kB by default
 	# wal_blocksize => 8,     # --with-wal-blocksize, 8kB by default
+	# trans_slots_per_page => 4, # --with-trans_slots_per_page, 4 by default
 	# wal_segsize => 16,      # --with-wal-segsize, 16MB by default
 	ldap      => 1,        # --with-ldap
 	extraver  => undef,    # --with-extra-version=<string>

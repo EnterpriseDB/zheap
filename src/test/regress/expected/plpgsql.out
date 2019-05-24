@@ -1615,15 +1615,15 @@ select test_found();
  t
 (1 row)
 
-select * from found_test_tbl;
+select * from found_test_tbl order by a;
   a  
 -----
    2
- 100
    3
    4
    5
    6
+ 100
 (6 rows)
 
 --
@@ -1638,15 +1638,15 @@ BEGIN
 	END LOOP;
 	RETURN;
 END;' language plpgsql;
-select * from test_table_func_rec();
+select * from test_table_func_rec() order by a;
   a  
 -----
    2
- 100
    3
    4
    5
    6
+ 100
 (6 rows)
 
 create function test_table_func_row() returns setof found_test_tbl as '
@@ -1658,15 +1658,15 @@ BEGIN
 	END LOOP;
 	RETURN;
 END;' language plpgsql;
-select * from test_table_func_row();
+select * from test_table_func_row() order by a;
   a  
 -----
    2
- 100
    3
    4
    5
    6
+ 100
 (6 rows)
 
 create function test_ret_set_scalar(int,int) returns setof int as '

@@ -2273,7 +2273,8 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 			if (valid)
 			{
 				hscan->rs_vistuples[ntup++] = offnum;
-				PredicateLockTuple(scan->rs_rd, &loctup, snapshot);
+				PredicateLockTid(scan->rs_rd, &loctup.t_self, snapshot,
+								 HeapTupleHeaderGetXmin(loctup.t_data));
 			}
 			CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
 											buffer, snapshot);

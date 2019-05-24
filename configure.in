@@ -337,6 +337,29 @@ AC_DEFINE_UNQUOTED([XLOG_BLCKSZ], ${XLOG_BLCKSZ}, [
 ])
 
 #
+# transaction slots per zheap page
+#
+AC_MSG_CHECKING([for transaction slots per zheap page])
+PGAC_ARG_REQ(with, trans_slots_per_zheap_page, [SLOTS], [set transaction slots per zheap page [4]],
+             [trans_slots_per_page=$withval],
+             [trans_slots_per_page=4])
+case ${trans_slots_per_page} in
+  2) ZHEAP_PAGE_TRANS_SLOTS=2;;
+  4) ZHEAP_PAGE_TRANS_SLOTS=4;;
+  8) ZHEAP_PAGE_TRANS_SLOTS=8;;
+ 16) ZHEAP_PAGE_TRANS_SLOTS=16;;
+ 31) ZHEAP_PAGE_TRANS_SLOTS=31;;
+  *) AC_MSG_ERROR([Invalid transaction slots per zheap page. Allowed values are 2,4,8,16,31.])
+esac
+AC_MSG_RESULT([${trans_slots_per_page}])
+
+AC_DEFINE_UNQUOTED([ZHEAP_PAGE_TRANS_SLOTS], ${ZHEAP_PAGE_TRANS_SLOTS}, [
+ transaction slots per zheap page. By default, it is set to 4.
+
+ Changing ZHEAP_PAGE_TRANS_SLOTS requires an initdb.
+])
+
+#
 # C compiler
 #
 

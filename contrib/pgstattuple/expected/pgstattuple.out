@@ -4,7 +4,7 @@ CREATE EXTENSION pgstattuple;
 -- the pgstattuple functions, but the results for empty tables and
 -- indexes should be that.
 --
-create table test (a int primary key, b int[]);
+create table test (a int primary key, b int[]) using heap;
 select * from pgstattuple('test');
  table_len | tuple_count | tuple_len | tuple_percent | dead_tuple_count | dead_tuple_len | dead_tuple_percent | free_space | free_percent 
 -----------+-------------+-----------+---------------+------------------+----------------+--------------------+------------+--------------
@@ -199,7 +199,7 @@ ERROR:  relation "test_foreign_table" is not a GIN index
 select pgstathashindex('test_foreign_table');
 ERROR:  "test_foreign_table" is not an index
 -- a partition of a partitioned table should work though
-create table test_partition partition of test_partitioned for values from (1) to (100);
+create table test_partition partition of test_partitioned for values from (1) to (100) using heap;
 select pgstattuple('test_partition');
      pgstattuple     
 ---------------------

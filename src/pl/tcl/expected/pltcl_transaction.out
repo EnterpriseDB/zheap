@@ -14,7 +14,7 @@ for {set i 0} {$i < 10} {incr i} {
 }
 $$;
 CALL transaction_test1();
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
  0 | 
@@ -41,7 +41,7 @@ return 1
 $$;
 SELECT transaction_test2();
 ERROR:  invalid transaction termination
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
 (0 rows)
@@ -55,7 +55,7 @@ return 1
 $$;
 SELECT transaction_test3();
 ERROR:  invalid transaction termination
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
 (0 rows)
@@ -74,7 +74,7 @@ spi_exec -array row "SELECT * FROM test2 ORDER BY x" {
 $$;
 CALL transaction_test4a();
 ERROR:  cannot commit while a subtransaction is active
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
 (0 rows)
@@ -91,7 +91,7 @@ spi_exec -array row "SELECT * FROM test2 ORDER BY x" {
 $$;
 CALL transaction_test4b();
 ERROR:  cannot roll back while a subtransaction is active
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
  a | b 
 ---+---
 (0 rows)

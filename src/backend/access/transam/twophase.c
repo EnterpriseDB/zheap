@@ -927,6 +927,16 @@ typedef struct TwoPhaseFileHeader
 	uint16		gidlen;			/* length of the GID - GID follows the header */
 	XLogRecPtr	origin_lsn;		/* lsn of this record at origin node */
 	TimestampTz origin_timestamp;	/* time of prepare at origin node */
+
+	/*
+	 * We need the locations of start and end undo record pointers when
+	 * rollbacks are to be performed for prepared transactions using zheap
+	 * relations. We need to store these information in file as user might
+	 * rollback the prepared transaction after recovery and for that we need
+	 * it's start and end undo locations.
+	 */
+	UndoRecPtr	start_urec_ptr[UndoPersistenceLevels];
+	UndoRecPtr	end_urec_ptr[UndoPersistenceLevels];
 } TwoPhaseFileHeader;
 
 /*
@@ -1001,7 +1011,8 @@ save_state_data(const void *data, uint32 len)
  * Initializes data structure and inserts the 2PC file header record.
  */
 void
-StartPrepare(GlobalTransaction gxact)
+StartPrepare(GlobalTransaction gxact, UndoRecPtr *start_urec_ptr,
+			 UndoRecPtr *end_urec_ptr)
 {
 	PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
 	PGXACT	   *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
@@ -1032,6 +1043,11 @@ StartPrepare(GlobalTransaction gxact)
 	hdr.database = proc->databaseId;
 	hdr.prepared_at = gxact->prepared_at;
 	hdr.owner = gxact->owner;
+
+	/* save the start and end undo record pointers */
+	memcpy(hdr.start_urec_ptr, start_urec_ptr, sizeof(hdr.start_urec_ptr));
+	memcpy(hdr.end_urec_ptr, end_urec_ptr, sizeof(hdr.end_urec_ptr));
+
 	hdr.nsubxacts = xactGetCommittedChildren(&children);
 	hdr.ncommitrels = smgrGetPendingDeletes(true, &commitrels);
 	hdr.nabortrels = smgrGetPendingDeletes(false, &abortrels);
@@ -1468,6 +1484,9 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	RelFileNode *delrels;
 	int			ndelrels;
 	SharedInvalidationMessage *invalmsgs;
+	int			i;
+	UndoRecPtr	start_urec_ptr[UndoPersistenceLevels];
+	UndoRecPtr	end_urec_ptr[UndoPersistenceLevels];
 
 	/*
 	 * Validate the GID, and lock the GXACT to ensure that two backends do not
@@ -1504,6 +1523,10 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	bufptr += MAXALIGN(hdr->nabortrels * sizeof(RelFileNode));
 	invalmsgs = (SharedInvalidationMessage *) bufptr;
 	bufptr += MAXALIGN(hdr->ninvalmsgs * sizeof(SharedInvalidationMessage));
+
+	/* save the start and end undo record pointers */
+	memcpy(start_urec_ptr, hdr->start_urec_ptr, sizeof(start_urec_ptr));
+	memcpy(end_urec_ptr, hdr->end_urec_ptr, sizeof(end_urec_ptr));
 
 	/* compute latestXid among all children */
 	latestXid = TransactionIdLatest(xid, hdr->nsubxacts, children);
@@ -1611,6 +1634,86 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 		RemoveTwoPhaseFile(xid, true);
 
 	MyLockedGxact = NULL;
+
+	/*
+	 * Perform undo actions, if there are undologs for this transaction. We
+	 * need to perform undo actions while we are still in transaction. Never
+	 * push rollbacks of temp tables to undo worker.
+	 */
+	for (i = 0; i < UndoPersistenceLevels; i++)
+	{
+		volatile UndoRequestInfo urinfo;
+		uint32		epoch;
+		FullTransactionId full_xid;
+
+		/*
+		 * We don't allow XIDs with an age of more than 2 billion in undo, so
+		 * we can infer the epoch here. (XXX We can add full transaction id in
+		 * TwoPhaseFileHeader instead. )
+		 */
+		epoch = GetEpochForXid(hdr->xid);
+		full_xid = FullTransactionIdFromEpochAndXid(epoch, hdr->xid);
+
+		if (end_urec_ptr[i] != InvalidUndoRecPtr && !isCommit)
+		{
+			uint32		save_holdoff;
+
+			save_holdoff = InterruptHoldoffCount;
+			PG_TRY();
+			{
+				bool		result = false;
+
+				/*
+				 * Prepare required undo request info so that it can be used
+				 * in exception.
+				 */
+				ResetUndoRequestInfo(&urinfo);
+				urinfo.dbid = MyDatabaseId;
+				urinfo.full_xid = full_xid;
+
+				if (i != UNDO_TEMP)
+					result = RegisterRollbackReq(end_urec_ptr[i],
+												 start_urec_ptr[i],
+												 hdr->database,
+												 full_xid);
+
+				if (!result)
+					execute_undo_actions(full_xid, end_urec_ptr[i],
+										 start_urec_ptr[i], true);
+			}
+			PG_CATCH();
+			{
+				if (i == UNDO_TEMP)
+					pg_rethrow_as_fatal();
+
+				/*
+				 * Add the request into an error queue so that it can be
+				 * processed in a timely fashion.
+				 *
+				 * If we fail to add the request in an error queue, then
+				 * remove the entry from the hash table and continue to
+				 * process the remaining undo requests if any.  This request
+				 * will be later processed by discard worker.
+				 */
+				if (!InsertRequestIntoErrorUndoQueue(&urinfo))
+					RollbackHTRemoveEntry(urinfo.full_xid, urinfo.start_urec_ptr);
+
+				/*
+				 * Errors can reset holdoff count, so restore back.  This is
+				 * required because this function can be called after holding
+				 * interrupts.
+				 */
+				InterruptHoldoffCount = save_holdoff;
+
+				/* Send the error only to server log. */
+				err_out_to_client(false);
+				EmitErrorReport();
+
+				FlushErrorState();
+			}
+			PG_END_TRY();
+		}
+	}
 
 	RESUME_INTERRUPTS();
 

@@ -446,7 +446,7 @@ insert into T_pkey2 values (1, 'key1-3', 'test key');
 insert into T_pkey2 values (2, 'key2-1', 'test key');
 insert into T_pkey2 values (2, 'key2-2', 'test key');
 insert into T_pkey2 values (2, 'key2-3', 'test key');
-select * from T_pkey1;
+select * from T_pkey1 order by 1, 2;
  key1 |         key2         |                   txt                    
 ------+----------------------+------------------------------------------
     1 | key1-1               | test key                                
@@ -458,7 +458,7 @@ select * from T_pkey1;
 (6 rows)
 
 -- key2 in T_pkey2 should have upper case only
-select * from T_pkey2;
+select * from T_pkey2 order by 1, 2;
  key1 |         key2         |                   txt                    
 ------+----------------------+------------------------------------------
     1 | KEY1-1               | test key                                
@@ -485,7 +485,7 @@ insert into T_dta2 values ('trec 3', 1, 'KEY1-3');
 -- Must fail due to unknown key in T_pkey2
 insert into T_dta2 values ('trec 4', 1, 'KEY1-4');
 ERROR:  key for t_dta2 not in t_pkey2
-select * from T_dta1;
+select * from T_dta1 order by 1, 2;
     tkey    | ref1 |         ref2         
 ------------+------+----------------------
  trec 1     |    1 | key1-1              
@@ -493,7 +493,7 @@ select * from T_dta1;
  trec 3     |    1 | key1-3              
 (3 rows)
 
-select * from T_dta2;
+select * from T_dta2 order by 1, 2;
     tkey    | ref1 |         ref2         
 ------------+------+----------------------
  trec 1     |    1 | KEY1-1              
@@ -513,27 +513,27 @@ NOTICE:  updated 1 entries in T_dta2 for new key in T_pkey2
 delete from T_pkey2 where key1 = 2 and key2 = 'KEY2-2';
 delete from T_pkey2 where key1 = 1 and key2 = 'KEY1-2';
 NOTICE:  deleted 1 entries from T_dta2
-select * from T_pkey1;
+select * from T_pkey1 order by 1, 2;
  key1 |         key2         |                   txt                    
 ------+----------------------+------------------------------------------
     1 | key1-1               | test key                                
     1 | key1-2               | test key                                
     1 | key1-3               | test key                                
-    2 | key2-3               | test key                                
     1 | KEY1-3               | should work                             
+    2 | key2-3               | test key                                
     2 | key2-9               | test key                                
 (6 rows)
 
-select * from T_pkey2;
+select * from T_pkey2 order by 1, 2;
  key1 |         key2         |                   txt                    
 ------+----------------------+------------------------------------------
     1 | KEY1-3               | test key                                
+    1 | KEY1-9               | test key                                
     2 | KEY2-3               | test key                                
     2 | KEY2-9               | test key                                
-    1 | KEY1-9               | test key                                
 (4 rows)
 
-select * from T_dta1;
+select * from T_dta1 order by 1, 2;
     tkey    | ref1 |         ref2         
 ------------+------+----------------------
  trec 1     |    1 | key1-1              
@@ -541,11 +541,11 @@ select * from T_dta1;
  trec 3     |    1 | key1-3              
 (3 rows)
 
-select * from T_dta2;
+select * from T_dta2 order by 1, 2;
     tkey    | ref1 |         ref2         
 ------------+------+----------------------
- trec 3     |    1 | KEY1-3              
  trec 1     |    1 | KEY1-9              
+ trec 3     |    1 | KEY1-3              
 (2 rows)
 
 select tcl_avg(key1) from T_pkey1;
@@ -881,7 +881,7 @@ FOR EACH ROW EXECUTE PROCEDURE generated_test_func1();
 TRUNCATE trigger_test_generated;
 INSERT INTO trigger_test_generated (i) VALUES (1);
 ERROR:  cannot set generated column "j"
-SELECT * FROM trigger_test_generated;
+SELECT * FROM trigger_test_generated order by 1, 2;
  i | j 
 ---+---
 (0 rows)

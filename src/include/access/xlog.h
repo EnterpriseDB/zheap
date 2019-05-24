@@ -258,6 +258,7 @@ struct XLogRecData;
 
 extern XLogRecPtr XLogInsertRecord(struct XLogRecData *rdata,
 								   XLogRecPtr fpw_lsn,
+								   XLogRecPtr OldRedoRecPtr,
 								   uint8 flags);
 extern void XLogFlush(XLogRecPtr RecPtr);
 extern bool XLogBackgroundFlush(void);

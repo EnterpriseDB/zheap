@@ -1017,6 +1017,10 @@ GRANT SELECT (subdbid, subname, subowner, subenabled, subslotname, subpublicatio
     ON pg_subscription TO public;
 
 
+CREATE VIEW pg_stat_undo_logs AS
+    SELECT *
+    FROM pg_stat_get_undo_logs();
+
 --
 -- We have a few function definitions in here, too.
 -- At some point there might be enough to justify breaking them out into

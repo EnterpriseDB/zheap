@@ -348,6 +348,13 @@ typedef struct
 #define VARDATA_ANY(PTR) \
 	 (VARATT_IS_1B(PTR) ? VARDATA_1B(PTR) : VARDATA_4B(PTR))
 
+/* Does att's datatype allow packing into the 1-byte-header varlena format? */
+#define ATT_IS_PACKABLE(att) \
+	((att)->attlen == -1 && (att)->attstorage != 'p')
+
+/* Use this if it's already known varlena */
+#define VARLENA_ATT_IS_PACKABLE(att) \
+	((att)->attstorage != 'p')
 
 /* ----------------------------------------------------------------
  *				Section 2:	Datum type + support macros

@@ -1,4 +1,4 @@
-CREATE TABLE test_hash (a int, b text);
+CREATE TABLE test_hash (a int, b text) USING heap;
 INSERT INTO test_hash VALUES (1, 'one');
 CREATE INDEX test_hash_a_idx ON test_hash USING hash (a);
 
@@ -69,12 +69,12 @@ SELECT live_items, dead_items, page_size, hasho_prevblkno, hasho_nextblkno,
 hasho_bucket, hasho_flag, hasho_page_id FROM
 hash_page_stats(get_raw_page('test_hash_a_idx', 5));
 
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 0));
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 1));
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 2));
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 3));
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 4));
-SELECT * FROM hash_page_items(get_raw_page('test_hash_a_idx', 5));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 0));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 1));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 2));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 3));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 4));
+SELECT itemoffset, data FROM hash_page_items(get_raw_page('test_hash_a_idx', 5));
 
 
 DROP TABLE test_hash;

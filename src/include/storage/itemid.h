@@ -41,6 +41,20 @@ typedef ItemIdData *ItemId;
 #define LP_DEAD			3		/* dead, may or may not have storage */
 
 /*
+ * Flags used in zheap.  These flags are used in a line pointer of a deleted
+ * item that has no actual storage.  These help in fetching the tuple from
+ * undo when required.
+ */
+#define ITEMID_DELETED	0x0001	/* Item is deleted */
+#define	ITEMID_XACT_INVALID	0x0002	/* transaction slot on tuple got reused */
+#define	ITEMID_XACT_PENDING	0x0003	/* transaction that has marked item as
+									 * unused is pending */
+#define VISIBILTY_MASK	0x007F	/* 7 bits (1..7) for visibility mask */
+#define XACT_SLOT		0x7F80	/* 8 bits (8..15) of offset for transaction
+								 * slot */
+#define XACT_SLOT_MASK	0x0007	/* 7 - mask to retrieve transaction slot */
+
+/*
  * Item offsets and lengths are represented by these types when
  * they're not actually stored in an ItemIdData.
  */
@@ -114,6 +128,13 @@ typedef uint16 ItemLength;
 	((itemId)->lp_flags == LP_DEAD)
 
 /*
+ * ItemIdIsDeleted
+ *		True iff item identifier is in state REDIRECT.
+ */
+#define ItemIdIsDeleted(itemId) \
+	((itemId)->lp_flags == LP_REDIRECT)
+
+/*
  * ItemIdHasStorage
  *		True iff item identifier has associated storage.
  */
@@ -145,6 +166,20 @@ typedef uint16 ItemLength;
 )
 
 /*
+ * ItemIdChangeLen
+ *		Change the length of itemid.
+ */
+#define ItemIdChangeLen(itemId, len) \
+	(itemId)->lp_len = (len)
+
+/*
+ * ItemIdChangeOff
+ * 		Change the Offset of itemid.
+ */
+#define ItemIdChangeOff(itemId, off) \
+	(itemId)->lp_off = (off)
+
+/*
  * ItemIdSetRedirect
  *		Set the item identifier to be REDIRECT, with the specified link.
  *		Beware of multiple evaluations of itemId!
@@ -155,6 +190,97 @@ typedef uint16 ItemLength;
 	(itemId)->lp_off = (link), \
 	(itemId)->lp_len = 0 \
 )
+
+/*
+ * ItemIdSetUnusedExtended
+ *		Set the item identifier to be UNUSED, with transaction slot
+ *		information.  The most significant 8 bits in offset are used to store
+ *		transaction slot information.  Such an item doesn't have any storage.
+ *		We don't allow such an item to be reused till the transaction that has
+ *		marked it as UNUSED is committed. Beware of multiple evaluations of
+ *		itemId!
+ */
+static inline
+void
+ItemIdSetUnusedExtended(ItemId itemId, int trans_slot)
+{
+	/*
+	 * The slots that belongs to TPD entry always point to last slot on the
+	 * page.
+	 */
+	if (trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
+		trans_slot = ZHEAP_PAGE_TRANS_SLOTS;
+	itemId->lp_flags = LP_UNUSED;
+	itemId->lp_off = (itemId->lp_off & ~VISIBILTY_MASK) | ITEMID_XACT_PENDING;
+	itemId->lp_off = (itemId->lp_off & ~XACT_SLOT) | trans_slot << XACT_SLOT_MASK;
+	itemId->lp_len = 0;
+}
+
+/*
+ * ItemIdSetDeadExtended
+ *		Set the item identifier to be DEAD, with transaction slot
+ *		information.  The most significant 8 bits in offset are used to store
+ *		transaction slot information.  Such an item doesn't have any storage.
+ *		We do this to identify this happened in speculative abort case.
+ *		Beware of multiple evaluations of itemId!
+ */
+
+static inline
+void
+ItemIdSetDeadExtended(ItemId itemId, int trans_slot)
+{
+	/*
+	 * The slots that belongs to TPD entry always point to last slot on the
+	 * page.
+	 */
+	if (trans_slot > ZHEAP_PAGE_TRANS_SLOTS)
+		trans_slot = ZHEAP_PAGE_TRANS_SLOTS;
+	itemId->lp_flags = LP_DEAD;
+	itemId->lp_off = (itemId->lp_off & ~VISIBILTY_MASK) | ITEMID_XACT_PENDING;
+	itemId->lp_off = (itemId->lp_off & ~XACT_SLOT) | trans_slot << XACT_SLOT_MASK;
+	itemId->lp_len = 0;
+}
+
+/*
+ * ItemIdSetDeleted
+ *		Set the item identifier to be Deleted, with the specified visibility
+ *		info and transaction slot info.  The most significant 8 bits are used
+ *		to store transaction slot information and the lower 7 bits are used to
+ *		store visibility info.  Such an item has no storage.
+ *		Beware of multiple evaluations of itemId!
+ */
+#define ItemIdSetDeleted(itemId, trans_slot, vis_info) \
+( \
+	(itemId)->lp_flags = LP_REDIRECT, \
+	(itemId)->lp_off = ((itemId)->lp_off & ~VISIBILTY_MASK) | (vis_info), \
+	(itemId)->lp_off = ((itemId)->lp_off & ~XACT_SLOT) | (trans_slot) << XACT_SLOT_MASK, \
+	(itemId)->lp_len = 0 \
+)
+
+#define ItemIdSetInvalidXact(itemId) \
+	((itemId)->lp_off = ((itemId)->lp_off & ~VISIBILTY_MASK) | ITEMID_XACT_INVALID)
+
+#define ItemIdResetInvalidXact(itemId) \
+	((itemId)->lp_off = ((itemId)->lp_off & ~VISIBILTY_MASK) & ~(ITEMID_XACT_INVALID))
+
+/*
+ * ItemIdGetTransactionSlot
+ *	In a REDIRECT pointer, lp_off contains the transaction slot information in
+ *	most significant 8 bits.
+ */
+#define ItemIdGetTransactionSlot(itemId) \
+   (((itemId)->lp_off & XACT_SLOT) >> XACT_SLOT_MASK)
+
+/*
+ * ItemIdGetVisibilityInfo
+ *	In a REDIRECT pointer, lp_off contains the visibility information in
+ *	least significant 7 bits.
+ */
+#define ItemIdGetVisibilityInfo(itemId) \
+   ((itemId)->lp_off & VISIBILTY_MASK)
+
+#define ItemIdHasPendingXact(itemId) \
+   (((itemId)->lp_off & VISIBILTY_MASK) & ITEMID_XACT_PENDING)
 
 /*
  * ItemIdSetDead

@@ -92,7 +92,7 @@
  * To avoid the livelock, one of the backends must back out first, and then
  * wait, while the other one waits without backing out.  It doesn't matter
  * which one backs out, so we employ an arbitrary rule that the transaction
- * with the higher XID backs out.
+ * with the higher top XID backs out.
  *
  *
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
@@ -108,6 +108,7 @@
 
 #include "access/genam.h"
 #include "access/relscan.h"
+#include "access/subtrans.h"
 #include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
@@ -727,7 +728,8 @@ retry:
 
 	while (index_getnext_slot(index_scan, ForwardScanDirection, existing_slot))
 	{
-		TransactionId xwait;
+		TransactionId xwait,
+					xid;
 		XLTW_Oper	reason_wait;
 		Datum		existing_values[INDEX_MAX_KEYS];
 		bool		existing_isnull[INDEX_MAX_KEYS];
@@ -779,18 +781,31 @@ retry:
 		xwait = TransactionIdIsValid(DirtySnapshot.xmin) ?
 			DirtySnapshot.xmin : DirtySnapshot.xmax;
 
+		/*
+		 * When a speculative insertion conflict is detected among two
+		 * in-progress transactions, one of the backends must back out first,
+		 * and then wait, while the other one waits without backing out.  It
+		 * doesn't matter which one backs out, so we employ an arbitrary rule
+		 * that the transaction with the higher top XID backs out. (See notes
+		 * in file header)
+		 */
+		xid = GetTopTransactionId();
+
 		if (TransactionIdIsValid(xwait) &&
 			(waitMode == CEOUC_WAIT ||
 			 (waitMode == CEOUC_LIVELOCK_PREVENTING_WAIT &&
 			  DirtySnapshot.speculativeToken &&
-			  TransactionIdPrecedes(GetCurrentTransactionId(), xwait))))
+			  TransactionIdPrecedes(xid, SubTransGetTopmostTransaction(xwait)))))
 		{
 			reason_wait = indexInfo->ii_ExclusionOps ?
 				XLTW_RecheckExclusionConstr : XLTW_InsertIndex;
 			index_endscan(index_scan);
 			if (DirtySnapshot.speculativeToken)
-				SpeculativeInsertionWait(DirtySnapshot.xmin,
+				SpeculativeInsertionWait(SubTransGetTopmostTransaction(DirtySnapshot.xmin),
 										 DirtySnapshot.speculativeToken);
+			else if (DirtySnapshot.subxid != InvalidSubTransactionId)
+				SubXactLockTableWait(xwait, DirtySnapshot.subxid, heap,
+									 &existing_slot->tts_tid, reason_wait);
 			else
 				XactLockTableWait(xwait, heap,
 								  &existing_slot->tts_tid, reason_wait);

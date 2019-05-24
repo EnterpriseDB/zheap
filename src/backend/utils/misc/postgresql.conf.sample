@@ -749,4 +749,10 @@
 # CUSTOMIZED OPTIONS
 #------------------------------------------------------------------------------
 
+# If often there are large transactions requiring rollbacks, then we can push
+# them to undo-workers for better performance. The size specifeid by the
+# parameter below, determines the minimum size of the rollback requests to be
+# sent to the undo-worker.
+#
+#rollback_overflow_size = 64
 # Add settings for extensions here

@@ -15,7 +15,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
-#include "access/xlog.h"
+#include "access/table.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_type.h"
 #include "common/ip.h"
@@ -29,6 +29,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/inet.h"
+#include "utils/rel.h"
 #include "utils/timestamp.h"
 
 #define UINT32_ACCESS_ONCE(var)		 ((uint32)(*((volatile uint32 *)&(var))))
@@ -138,11 +139,35 @@ pg_stat_get_tuples_hot_updated(PG_FUNCTION_ARGS)
 	Oid			relid = PG_GETARG_OID(0);
 	int64		result;
 	PgStat_StatTabEntry *tabentry;
+	Relation	rel = table_open(relid, AccessShareLock);
+
+	/*
+	 * Counter tuples_hot_updated stores number of hot updates for heap table
+	 * and the number of inplace updates for zheap table.
+	 */
+	if ((tabentry = pgstat_fetch_stat_tabentry(relid)) == NULL ||
+		RelationStorageIsZHeap(rel))
+		result = 0;
+	else
+		result = (int64) (tabentry->tuples_hot_updated);
+
+	table_close(rel, AccessShareLock);
+
+	PG_RETURN_INT64(result);
+}
+
+
+Datum
+pg_stat_get_tuples_inplace_updated(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	int64		result;
+	PgStat_StatTabEntry *tabentry;
 
 	if ((tabentry = pgstat_fetch_stat_tabentry(relid)) == NULL)
 		result = 0;
 	else
-		result = (int64) (tabentry->tuples_hot_updated);
+		result = (int64) (tabentry->tuples_inplace_updated);
 
 	PG_RETURN_INT64(result);
 }
@@ -1773,11 +1798,42 @@ pg_stat_get_xact_tuples_hot_updated(PG_FUNCTION_ARGS)
 	Oid			relid = PG_GETARG_OID(0);
 	int64		result;
 	PgStat_TableStatus *tabentry;
+	Relation	rel = table_open(relid, AccessShareLock);
 
-	if ((tabentry = find_tabstat_entry(relid)) == NULL)
+	/*
+	 * Counter t_tuples_hot_updated stores number of hot updates for heap
+	 * table and the number of inplace updates for zheap table.
+	 */
+	if ((tabentry = find_tabstat_entry(relid)) == NULL ||
+		RelationStorageIsZHeap(rel))
 		result = 0;
 	else
 		result = (int64) (tabentry->t_counts.t_tuples_hot_updated);
+
+	table_close(rel, AccessShareLock);
+
+	PG_RETURN_INT64(result);
+}
+
+Datum
+pg_stat_get_xact_tuples_inplace_updated(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	int64		result;
+	PgStat_TableStatus *tabentry;
+	Relation	rel = table_open(relid, AccessShareLock);
+
+	/*
+	 * Counter t_tuples_hot_updated stores number of hot updates for heap
+	 * table and the number of inplace updates for zheap table.
+	 */
+	if ((tabentry = find_tabstat_entry(relid)) == NULL ||
+		!RelationStorageIsZHeap(rel))
+		result = 0;
+	else
+		result = (int64) (tabentry->t_counts.t_tuples_hot_updated);
+
+	table_close(rel, AccessShareLock);
 
 	PG_RETURN_INT64(result);
 }

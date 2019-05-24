@@ -249,6 +249,38 @@ appendBinaryStringInfoNT(StringInfo str, const char *data, int datalen)
 	str->len += datalen;
 }
 
+/* appendBinaryStringInfoNoExtend
+ *
+ * Append arbitrary binary data to a StringInfo.
+ *
+ * Returns false, if more space is required to append the string, true
+ * otherwise.
+ *
+ * This can be used in critical section.
+ */
+bool
+appendBinaryStringInfoNoExtend(StringInfo str, const char *data, int datalen)
+{
+	Assert(str != NULL);
+
+	/* fail, if more space is required */
+	if (datalen > str->maxlen)
+		return false;
+
+	/* OK, append the data */
+	memcpy(str->data + str->len, data, datalen);
+	str->len += datalen;
+
+	/*
+	 * Keep a trailing null in place, even though it's probably useless for
+	 * binary data.  (Some callers are dealing with text but call this because
+	 * their input isn't null-terminated.)
+	 */
+	str->data[str->len] = '\0';
+
+	return true;
+}
+
 /*
  * enlargeStringInfo
  *

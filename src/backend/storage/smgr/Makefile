@@ -12,6 +12,6 @@ subdir = src/backend/storage/smgr
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = md.o smgr.o
+OBJS = md.o smgr.o undofile.o
 
 include $(top_srcdir)/src/backend/common.mk

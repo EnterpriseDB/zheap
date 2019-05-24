@@ -85,7 +85,7 @@ UPDATE FLOAT4_TBL
    SET f1 = FLOAT4_TBL.f1 * '-1'
    WHERE FLOAT4_TBL.f1 > '0.0';
 
-SELECT '' AS five, * FROM FLOAT4_TBL;
+SELECT '' AS five, * FROM FLOAT4_TBL ORDER BY f1 DESC;
 
 -- test edge-case coercions to integer
 SELECT '32767.4'::float4::int2;

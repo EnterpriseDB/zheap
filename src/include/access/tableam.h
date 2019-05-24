@@ -19,6 +19,7 @@
 
 #include "access/relscan.h"
 #include "access/sdir.h"
+#include "storage/bufmgr.h"
 #include "utils/guc.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
@@ -118,6 +119,10 @@ typedef enum TM_Result
  * tuple); otherwise cmax is zero.  (We make this restriction because
  * HeapTupleHeaderGetCmax doesn't work for tuples outdated in other
  * transactions.)
+ *
+ * in_place_updated_or_locked indicates whether the tuple is updated or locked.
+ * We need to re-verify the tuple even if it is just marked as locked, because
+ * previously someone could have updated it in place.
  */
 typedef struct TM_FailureData
 {
@@ -125,6 +130,7 @@ typedef struct TM_FailureData
 	TransactionId xmax;
 	CommandId	cmax;
 	bool		traversed;
+	bool		in_place_updated_or_locked;
 } TM_FailureData;
 
 /* "options" flag bits for table_tuple_insert */
@@ -1737,5 +1743,21 @@ extern const TableAmRoutine *GetTableAmRoutine(Oid amhandler);
 extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
 extern bool check_default_table_access_method(char **newval, void **extra,
 											  GucSource source);
+
+/* ----------------------------------------------------------------------------
+ * Functions common to heap and zheap
+ * ----------------------------------------------------------------------------
+ */
+typedef struct BulkInsertStateData *BulkInsertState;
+
+extern bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
+								 LockTupleMode mode, LockWaitPolicy wait_policy,
+								 bool *have_tuple_lock);
+extern void GetVisibilityMapPins(Relation relation, Buffer buffer1,
+								 Buffer buffer2, BlockNumber block1, BlockNumber block2,
+								 Buffer *vmbuffer1, Buffer *vmbuffer2);
+extern void RelationAddExtraBlocks(Relation relation, BulkInsertState bistate);
+extern Buffer ReadBufferBI(Relation relation, BlockNumber targetBlock,
+						   ReadBufferMode mode, BulkInsertState bistate);
 
 #endif							/* TABLEAM_H */

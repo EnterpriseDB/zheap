@@ -152,6 +152,14 @@ extern void appendBinaryStringInfoNT(StringInfo str,
 									 const char *data, int datalen);
 
 /*------------------------
+ * appendBinaryStringInfo
+ * Append arbitrary binary data to a StringInfo, fail if more space
+ * is required.
+ */
+extern bool appendBinaryStringInfoNoExtend(StringInfo str,
+										   const char *data, int datalen);
+
+/*------------------------
  * enlargeStringInfo
  * Make sure a StringInfo's buffer can hold at least 'needed' more bytes.
  */

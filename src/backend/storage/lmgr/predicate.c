@@ -212,6 +212,7 @@
 #include "storage/procarray.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/ztqual.h"
 
 /* Uncomment the next line to test the graceful degradation code. */
 /* #define TEST_OLDSERXID */
@@ -479,7 +480,6 @@ static void SetNewSxactGlobalXmin(void);
 static void ClearOldPredicateLocks(void);
 static void ReleaseOneSerializableXact(SERIALIZABLEXACT *sxact, bool partial,
 									   bool summarize);
-static bool XidIsConcurrent(TransactionId xid);
 static void CheckTargetForConflictsIn(PREDICATELOCKTARGETTAG *targettag);
 static void FlagRWConflict(SERIALIZABLEXACT *reader, SERIALIZABLEXACT *writer);
 static void OnConflict_CheckForSerializationFailure(const SERIALIZABLEXACT *reader,
@@ -1068,6 +1068,12 @@ CheckPointPredicate(void)
 }
 
 /*------------------------------------------------------------------------*/
+
+bool
+IsSerializableXact()
+{
+	return (MySerializableXact != InvalidSerializableXact);
+}
 
 /*
  * InitPredicateLocks -- Initialize the predicate locking data structures.
@@ -2545,11 +2551,10 @@ PredicateLockPage(Relation relation, BlockNumber blkno, Snapshot snapshot)
  * Skip if this is a temporary table.
  */
 void
-PredicateLockTuple(Relation relation, HeapTuple tuple, Snapshot snapshot)
+PredicateLockTid(Relation relation, ItemPointer tid, Snapshot snapshot,
+				 TransactionId targetxmin)
 {
 	PREDICATELOCKTARGETTAG tag;
-	ItemPointer tid;
-	TransactionId targetxmin;
 
 	if (!SerializationNeededForRead(relation, snapshot))
 		return;
@@ -2560,8 +2565,6 @@ PredicateLockTuple(Relation relation, HeapTuple tuple, Snapshot snapshot)
 	if (relation->rd_index == NULL)
 	{
 		TransactionId myxid;
-
-		targetxmin = HeapTupleHeaderGetXmin(tuple->t_data);
 
 		myxid = GetTopTransactionIdIfAny();
 		if (TransactionIdIsValid(myxid))
@@ -2591,7 +2594,6 @@ PredicateLockTuple(Relation relation, HeapTuple tuple, Snapshot snapshot)
 	if (PredicateLockExists(&tag))
 		return;
 
-	tid = &(tuple->t_self);
 	SET_PREDICATELOCKTARGETTAG_TUPLE(tag,
 									 relation->rd_node.dbNode,
 									 relation->rd_id,
@@ -4010,7 +4012,7 @@ ReleaseOneSerializableXact(SERIALIZABLEXACT *sxact, bool partial,
  * that to this function to save the overhead of checking the snapshot's
  * subxip array.
  */
-static bool
+bool
 XidIsConcurrent(TransactionId xid)
 {
 	Snapshot	snap;
@@ -4055,14 +4057,13 @@ XidIsConcurrent(TransactionId xid)
  */
 void
 CheckForSerializableConflictOut(bool visible, Relation relation,
-								HeapTuple tuple, Buffer buffer,
+								void *stup, Buffer buffer,
 								Snapshot snapshot)
 {
 	TransactionId xid;
 	SERIALIZABLEXIDTAG sxidtag;
 	SERIALIZABLEXID *sxid;
 	SERIALIZABLEXACT *sxact;
-	HTSV_Result htsvResult;
 
 	if (!SerializationNeededForRead(relation, snapshot))
 		return;
@@ -4077,65 +4078,17 @@ CheckForSerializableConflictOut(bool visible, Relation relation,
 				 errhint("The transaction might succeed if retried.")));
 	}
 
-	/*
-	 * Check to see whether the tuple has been written to by a concurrent
-	 * transaction, either to create it not visible to us, or to delete it
-	 * while it is visible to us.  The "visible" bool indicates whether the
-	 * tuple is visible to us, while HeapTupleSatisfiesVacuum checks what else
-	 * is going on with it.
-	 */
-	htsvResult = HeapTupleSatisfiesVacuum(tuple, TransactionXmin, buffer);
-	switch (htsvResult)
+	if (RelationStorageIsZHeap(relation))
 	{
-		case HEAPTUPLE_LIVE:
-			if (visible)
-				return;
-			xid = HeapTupleHeaderGetXmin(tuple->t_data);
-			break;
-		case HEAPTUPLE_RECENTLY_DEAD:
-			if (!visible)
-				return;
-			xid = HeapTupleHeaderGetUpdateXid(tuple->t_data);
-			break;
-		case HEAPTUPLE_DELETE_IN_PROGRESS:
-			xid = HeapTupleHeaderGetUpdateXid(tuple->t_data);
-			break;
-		case HEAPTUPLE_INSERT_IN_PROGRESS:
-			xid = HeapTupleHeaderGetXmin(tuple->t_data);
-			break;
-		case HEAPTUPLE_DEAD:
+		if (!ZHeapTupleHasSerializableConflictOut(visible, relation,
+												  (ItemPointer) stup, buffer, &xid))
 			return;
-		default:
-
-			/*
-			 * The only way to get to this default clause is if a new value is
-			 * added to the enum type without adding it to this switch
-			 * statement.  That's a bug, so elog.
-			 */
-			elog(ERROR, "unrecognized return value from HeapTupleSatisfiesVacuum: %u", htsvResult);
-
-			/*
-			 * In spite of having all enum values covered and calling elog on
-			 * this default, some compilers think this is a code path which
-			 * allows xid to be used below without initialization. Silence
-			 * that warning.
-			 */
-			xid = InvalidTransactionId;
 	}
-	Assert(TransactionIdIsValid(xid));
-	Assert(TransactionIdFollowsOrEquals(xid, TransactionXmin));
-
-	/*
-	 * Find top level xid.  Bail out if xid is too early to be a conflict, or
-	 * if it's our own xid.
-	 */
-	if (TransactionIdEquals(xid, GetTopTransactionIdIfAny()))
-		return;
-	xid = SubTransGetTopmostTransaction(xid);
-	if (TransactionIdPrecedes(xid, TransactionXmin))
-		return;
-	if (TransactionIdEquals(xid, GetTopTransactionIdIfAny()))
-		return;
+	else
+	{
+		if (!HeapTupleHasSerializableConflictOut(visible, (HeapTuple) stup, buffer, &xid))
+			return;
+	}
 
 	/*
 	 * Find sxact or summarized info for the top level xid.
@@ -4439,7 +4392,7 @@ CheckTargetForConflictsIn(PREDICATELOCKTARGETTAG *targettag)
  * tuple itself.
  */
 void
-CheckForSerializableConflictIn(Relation relation, HeapTuple tuple,
+CheckForSerializableConflictIn(Relation relation, ItemPointer tid,
 							   Buffer buffer)
 {
 	PREDICATELOCKTARGETTAG targettag;
@@ -4470,13 +4423,13 @@ CheckForSerializableConflictIn(Relation relation, HeapTuple tuple,
 	 * It is not possible to take and hold a lock across the checks for all
 	 * granularities because each target could be in a separate partition.
 	 */
-	if (tuple != NULL)
+	if (ItemPointerIsValid(tid))
 	{
 		SET_PREDICATELOCKTARGETTAG_TUPLE(targettag,
 										 relation->rd_node.dbNode,
 										 relation->rd_id,
-										 ItemPointerGetBlockNumber(&(tuple->t_self)),
-										 ItemPointerGetOffsetNumber(&(tuple->t_self)));
+										 ItemPointerGetBlockNumber(tid),
+										 ItemPointerGetOffsetNumber(tid));
 		CheckTargetForConflictsIn(&targettag);
 	}
 

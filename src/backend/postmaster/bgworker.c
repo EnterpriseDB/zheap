@@ -15,7 +15,9 @@
 #include <unistd.h>
 
 #include "libpq/pqsignal.h"
+#include "access/discardworker.h"
 #include "access/parallel.h"
+#include "access/undoworker.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "port/atomics.h"
@@ -129,6 +131,15 @@ static const struct
 	},
 	{
 		"ApplyWorkerMain", ApplyWorkerMain
+	},
+	{
+		"UndoLauncherMain", UndoLauncherMain
+	},
+	{
+		"UndoWorkerMain", UndoWorkerMain
+	},
+	{
+		"DiscardWorkerMain", DiscardWorkerMain
 	}
 };
 

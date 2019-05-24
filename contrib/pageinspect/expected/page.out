@@ -1,5 +1,5 @@
 CREATE EXTENSION pageinspect;
-CREATE TABLE test1 (a int, b int);
+CREATE TABLE test1 (a int, b int) USING heap;
 INSERT INTO test1 VALUES (16777217, 131584);
 VACUUM test1;  -- set up FSM
 -- The page contents can vary, so just test that it can be read
@@ -92,12 +92,12 @@ ERROR:  cannot get raw page from partitioned table "test_partitioned"
 select get_raw_page('test_partitioned_index', 0); -- error about partitioned index
 ERROR:  cannot get raw page from partitioned index "test_partitioned_index"
 -- a regular table which is a member of a partition set should work though
-create table test_part1 partition of test_partitioned for values from ( 1 ) to (100);
+create table test_part1 partition of test_partitioned for values from ( 1 ) to (100) USING heap;
 select get_raw_page('test_part1', 0); -- get farther and error about empty table
 ERROR:  block number 0 is out of range for relation "test_part1"
 drop table test_partitioned;
 -- check null bitmap alignment for table whose number of attributes is multiple of 8
-create table test8 (f1 int, f2 int, f3 int, f4 int, f5 int, f6 int, f7 int, f8 int);
+create table test8 (f1 int, f2 int, f3 int, f4 int, f5 int, f6 int, f7 int, f8 int) USING heap;
 insert into test8(f1, f8) values (x'7f00007f'::int, 0);
 select t_bits, t_data from heap_page_items(get_raw_page('test8', 0));
   t_bits  |       t_data       

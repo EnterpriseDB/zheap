@@ -36,6 +36,13 @@ typedef enum
 extern XLogRedoAction XLogReadBufferForRedo(XLogReaderState *record,
 											uint8 buffer_id, Buffer *buf);
 extern Buffer XLogInitBufferForRedo(XLogReaderState *record, uint8 block_id);
+extern XLogRedoAction XLogReadBufferForRedoBlock(XLogReaderState *record,
+												 RelFileNode rnode,
+												 ForkNumber forknum,
+												 BlockNumber blockno,
+												 ReadBufferMode mode,
+												 bool get_cleanup_lock,
+												 Buffer *buf);
 extern XLogRedoAction XLogReadBufferForRedoExtended(XLogReaderState *record,
 													uint8 buffer_id,
 													ReadBufferMode mode, bool get_cleanup_lock,

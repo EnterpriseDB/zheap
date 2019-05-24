@@ -985,7 +985,10 @@ slot_deform_heap_tuple(TupleTableSlot *slot, HeapTuple tuple, uint32 *offp,
 		slot->tts_flags &= ~TTS_FLAG_SLOW;
 }
 
-
+/*
+ * TupleTableSlotOps for each of TupleTableSlotTypes. These are used to
+ * identify the type of slot.
+ */
 const TupleTableSlotOps TTSOpsVirtual = {
 	.base_slot_size = sizeof(VirtualTupleTableSlot),
 	.init = tts_virtual_init,
@@ -1056,7 +1059,6 @@ const TupleTableSlotOps TTSOpsBufferHeapTuple = {
 	.copy_heap_tuple = tts_buffer_heap_copy_heap_tuple,
 	.copy_minimal_tuple = tts_buffer_heap_copy_minimal_tuple
 };
-
 
 /* ----------------------------------------------------------------
  *				  tuple table create/delete functions
