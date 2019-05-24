@@ -317,3 +317,28 @@ INSERT INTO ctoast (key, val) VALUES (1, ctoast_large_val());
 ROLLBACK;
 DROP TABLE ctoast;
 DROP FUNCTION ctoast_large_val;
+
+-- check that new relations have no relfrozenxid/relminmxid and that
+-- that's not changed by VACUUM, VACUUM FULL and CLUSTER
+
+-- new relation
+CREATE TABLE testvacuum(id serial) USING zheap;
+SELECT relfrozenxid, relminmxid FROM pg_class WHERE oid = 'testvacuum'::regclass;
+INSERT INTO testvacuum DEFAULT VALUES;
+SELECT relfrozenxid, relminmxid FROM pg_class WHERE oid = 'testvacuum'::regclass;
+
+-- plain VACUUM
+VACUUM testvacuum;
+SELECT relfrozenxid, relminmxid FROM pg_class WHERE oid = 'testvacuum'::regclass;
+
+-- VACUUM FULL
+VACUUM FULL testvacuum;
+SELECT relfrozenxid, relminmxid FROM pg_class WHERE oid = 'testvacuum'::regclass;
+
+-- CLUSTER
+CREATE INDEX testvacuum_id ON testvacuum(id);
+CLUSTER testvacuum USING testvacuum_id;
+SELECT relfrozenxid, relminmxid FROM pg_class WHERE oid = 'testvacuum'::regclass;
+
+-- and that there's still content after this ordeal
+SELECT * FROM testvacuum ORDER BY id;

@@ -472,3 +472,52 @@ INSERT INTO ctoast (key, val) VALUES (1, ctoast_large_val());
 ROLLBACK;
 DROP TABLE ctoast;
 DROP FUNCTION ctoast_large_val;
+-- check that new relations have no relfrozenxid/relminmxid and that
+-- that's not changed by VACUUM, VACUUM FULL and CLUSTER
+-- new relation
+CREATE TABLE testvacuum(id serial) USING zheap;
+SELECT relfrozenxid, relminmxid FROM pg_class WHERE oid = 'testvacuum'::regclass;
+ relfrozenxid | relminmxid 
+--------------+------------
+            0 |          0
+(1 row)
+
+INSERT INTO testvacuum DEFAULT VALUES;
+SELECT relfrozenxid, relminmxid FROM pg_class WHERE oid = 'testvacuum'::regclass;
+ relfrozenxid | relminmxid 
+--------------+------------
+            0 |          0
+(1 row)
+
+-- plain VACUUM
+VACUUM testvacuum;
+SELECT relfrozenxid, relminmxid FROM pg_class WHERE oid = 'testvacuum'::regclass;
+ relfrozenxid | relminmxid 
+--------------+------------
+            0 |          0
+(1 row)
+
+-- VACUUM FULL
+VACUUM FULL testvacuum;
+SELECT relfrozenxid, relminmxid FROM pg_class WHERE oid = 'testvacuum'::regclass;
+ relfrozenxid | relminmxid 
+--------------+------------
+            0 |          0
+(1 row)
+
+-- CLUSTER
+CREATE INDEX testvacuum_id ON testvacuum(id);
+CLUSTER testvacuum USING testvacuum_id;
+SELECT relfrozenxid, relminmxid FROM pg_class WHERE oid = 'testvacuum'::regclass;
+ relfrozenxid | relminmxid 
+--------------+------------
+            0 |          0
+(1 row)
+
+-- and that there's still content after this ordeal
+SELECT * FROM testvacuum ORDER BY id;
+ id 
+----
+  1
+(1 row)
+
