@@ -3412,9 +3412,22 @@ GetTupleForTrigger(EState *estate,
 		 * We expect the tuple to be present, thus very simple error handling
 		 * suffices.
 		 */
-		if (!table_tuple_fetch_row_version(relation, tid, SnapshotAny,
+		if (!table_tuple_fetch_row_version(relation, tid, estate->es_snapshot,
 										   oldslot))
-			elog(ERROR, "failed to fetch tuple for trigger");
+		{
+			/*
+			 * If the tuple is not visible to the current snapshot, it has to
+			 * be one that we followed via EPQ. In that case, it needs to have
+			 * been modified by an already committed transaction, otherwise
+			 * we'd not get here. So get a new snapshot, and try to fetch it
+			 * using that.
+			 *
+			 * PBORKED: ZBORKED: Better approach?
+			 */
+			if (!table_tuple_fetch_row_version(relation, tid, GetLatestSnapshot(),
+											   oldslot))
+				elog(PANIC, "couldn't fetch tuple");
+		}
 	}
 
 	return true;
@@ -3642,7 +3655,9 @@ typedef struct AfterTriggerEventData *AfterTriggerEvent;
 typedef struct AfterTriggerEventData
 {
 	TriggerFlags ate_flags;		/* status bits and offset to shared data */
+	CommandId	ate_cid1;
 	ItemPointerData ate_ctid1;	/* inserted, deleted, or old updated tuple */
+	CommandId	ate_cid2;
 	ItemPointerData ate_ctid2;	/* new updated tuple */
 } AfterTriggerEventData;
 
@@ -3650,6 +3665,7 @@ typedef struct AfterTriggerEventData
 typedef struct AfterTriggerEventDataOneCtid
 {
 	TriggerFlags ate_flags;		/* status bits and offset to shared data */
+	CommandId	ate_cid1;
 	ItemPointerData ate_ctid1;	/* inserted, deleted, or old updated tuple */
 }			AfterTriggerEventDataOneCtid;
 
@@ -4267,39 +4283,56 @@ AfterTriggerExecute(EState *estate,
 			break;
 
 		default:
-			if (ItemPointerIsValid(&(event->ate_ctid1)))
 			{
-				LocTriggerData.tg_trigslot = ExecGetTriggerOldSlot(estate, relInfo);
+				Assert(ActiveSnapshotSet());
+				if (ItemPointerIsValid(&(event->ate_ctid1)))
+				{
+					Snapshot	snap = GetActiveSnapshot();
+					CommandId	saved_cid = snap->curcid;
 
-				if (!table_tuple_fetch_row_version(rel, &(event->ate_ctid1),
-												   SnapshotAny,
-												   LocTriggerData.tg_trigslot))
-					elog(ERROR, "failed to fetch tuple1 for AFTER trigger");
-				LocTriggerData.tg_trigtuple =
-					ExecFetchSlotHeapTuple(LocTriggerData.tg_trigslot, false, &should_free_trig);
-			}
-			else
-			{
-				LocTriggerData.tg_trigtuple = NULL;
-			}
+					snap->curcid = event->ate_cid1;
 
-			/* don't touch ctid2 if not there */
-			if ((event->ate_flags & AFTER_TRIGGER_TUP_BITS) ==
-				AFTER_TRIGGER_2CTID &&
-				ItemPointerIsValid(&(event->ate_ctid2)))
-			{
-				LocTriggerData.tg_newslot = ExecGetTriggerNewSlot(estate, relInfo);
+					LocTriggerData.tg_trigslot = ExecGetTriggerOldSlot(estate, relInfo);
 
-				if (!table_tuple_fetch_row_version(rel, &(event->ate_ctid2),
-												   SnapshotAny,
-												   LocTriggerData.tg_newslot))
-					elog(ERROR, "failed to fetch tuple2 for AFTER trigger");
-				LocTriggerData.tg_newtuple =
-					ExecFetchSlotHeapTuple(LocTriggerData.tg_newslot, false, &should_free_new);
-			}
-			else
-			{
-				LocTriggerData.tg_newtuple = NULL;
+					if (!table_tuple_fetch_row_version(rel, &(event->ate_ctid1),
+													   snap,
+													   LocTriggerData.tg_trigslot))
+						elog(ERROR, "failed to fetch tuple1 for AFTER trigger");
+					LocTriggerData.tg_trigtuple =
+						ExecFetchSlotHeapTuple(LocTriggerData.tg_trigslot,
+											   false, &should_free_trig);
+					snap->curcid = saved_cid;
+				}
+				else
+				{
+					LocTriggerData.tg_trigtuple = NULL;
+				}
+
+				/* don't touch ctid2 if not there */
+				if ((event->ate_flags & AFTER_TRIGGER_TUP_BITS) ==
+					AFTER_TRIGGER_2CTID &&
+					ItemPointerIsValid(&(event->ate_ctid2)))
+				{
+					Snapshot	snap = GetActiveSnapshot();
+					CommandId	saved_cid = snap->curcid;
+
+					snap->curcid = event->ate_cid2;
+
+					LocTriggerData.tg_newslot = ExecGetTriggerNewSlot(estate, relInfo);
+
+					if (!table_tuple_fetch_row_version(rel, &(event->ate_ctid2),
+													   snap,
+													   LocTriggerData.tg_newslot))
+						elog(ERROR, "failed to fetch tuple2 for AFTER trigger");
+					LocTriggerData.tg_newtuple =
+						ExecFetchSlotHeapTuple(LocTriggerData.tg_newslot,
+											   false, &should_free_new);
+					snap->curcid = saved_cid;
+				}
+				else
+				{
+					LocTriggerData.tg_newtuple = NULL;
+				}
 			}
 	}
 
@@ -5866,14 +5899,18 @@ AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 				Assert(oldslot == NULL);
 				Assert(newslot != NULL);
 				ItemPointerCopy(&(newslot->tts_tid), &(new_event.ate_ctid1));
+				new_event.ate_cid1 = estate->es_output_cid + 1;
 				ItemPointerSetInvalid(&(new_event.ate_ctid2));
+				new_event.ate_cid2 = InvalidCommandId;
 			}
 			else
 			{
 				Assert(oldslot == NULL);
 				Assert(newslot == NULL);
 				ItemPointerSetInvalid(&(new_event.ate_ctid1));
+				new_event.ate_cid1 = InvalidCommandId;
 				ItemPointerSetInvalid(&(new_event.ate_ctid2));
+				new_event.ate_cid2 = InvalidCommandId;
 				cancel_prior_stmt_triggers(RelationGetRelid(rel),
 										   CMD_INSERT, event);
 			}
@@ -5885,14 +5922,18 @@ AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 				Assert(oldslot != NULL);
 				Assert(newslot == NULL);
 				ItemPointerCopy(&(oldslot->tts_tid), &(new_event.ate_ctid1));
+				new_event.ate_cid1 = estate->es_snapshot->curcid;
 				ItemPointerSetInvalid(&(new_event.ate_ctid2));
+				new_event.ate_cid2 = InvalidCommandId;
 			}
 			else
 			{
 				Assert(oldslot == NULL);
 				Assert(newslot == NULL);
 				ItemPointerSetInvalid(&(new_event.ate_ctid1));
+				new_event.ate_cid1 = InvalidCommandId;
 				ItemPointerSetInvalid(&(new_event.ate_ctid2));
+				new_event.ate_cid2 = InvalidCommandId;
 				cancel_prior_stmt_triggers(RelationGetRelid(rel),
 										   CMD_DELETE, event);
 			}
@@ -5904,14 +5945,18 @@ AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 				Assert(oldslot != NULL);
 				Assert(newslot != NULL);
 				ItemPointerCopy(&(oldslot->tts_tid), &(new_event.ate_ctid1));
+				new_event.ate_cid1 = estate->es_snapshot->curcid;
 				ItemPointerCopy(&(newslot->tts_tid), &(new_event.ate_ctid2));
+				new_event.ate_cid2 = estate->es_output_cid + 1;
 			}
 			else
 			{
 				Assert(oldslot == NULL);
 				Assert(newslot == NULL);
 				ItemPointerSetInvalid(&(new_event.ate_ctid1));
+				new_event.ate_cid1 = InvalidCommandId;
 				ItemPointerSetInvalid(&(new_event.ate_ctid2));
+				new_event.ate_cid2 = InvalidCommandId;
 				cancel_prior_stmt_triggers(RelationGetRelid(rel),
 										   CMD_UPDATE, event);
 			}
@@ -5921,7 +5966,9 @@ AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 			Assert(oldslot == NULL);
 			Assert(newslot == NULL);
 			ItemPointerSetInvalid(&(new_event.ate_ctid1));
+			new_event.ate_cid1 = InvalidCommandId;
 			ItemPointerSetInvalid(&(new_event.ate_ctid2));
+			new_event.ate_cid2 = InvalidCommandId;
 			break;
 		default:
 			elog(ERROR, "invalid after-trigger event code: %d", event);

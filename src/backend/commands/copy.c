@@ -2840,6 +2840,8 @@ CopyFrom(CopyState cstate)
 	estate->es_result_relations = resultRelInfo;
 	estate->es_num_result_relations = 1;
 	estate->es_result_relation_info = resultRelInfo;
+	estate->es_snapshot = GetActiveSnapshot();
+	estate->es_output_cid = GetCurrentCommandId(true);
 
 	ExecInitRangeTable(estate, cstate->range_table);
 
