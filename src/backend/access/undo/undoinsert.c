@@ -811,9 +811,6 @@ UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
 		txid = fxid;
 	}
 
-	prepared_urec_ptr = UndoRecordAllocate(undorecords, nrecords, txid,
-										   upersistence, xlog_record,
-										   undometa);
 	if (nrecords <= MAX_PREPARED_UNDO)
 		return;
 
@@ -826,6 +823,9 @@ UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
 	undo_buffer = palloc0((nrecords + 1) * MAX_BUFFER_PER_UNDO *
 						  sizeof(UndoBuffers));
 	max_prepared_undo = nrecords;
+	prepared_urec_ptr = UndoRecordAllocate(undorecords, nrecords, txid,
+										   upersistence, xlog_record,
+										   undometa);
 }
 
 /*
