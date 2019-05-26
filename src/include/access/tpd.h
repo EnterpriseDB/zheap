@@ -34,6 +34,13 @@ typedef TPDPageOpaqueData *TPDPageOpaque;
 
 #define SizeofTPDPageOpaque (offsetof(TPDPageOpaqueData, tpd_latest_xid) + sizeof(TransactionId))
 
+/*
+ * IsTPDPage
+ * 		returns true iff page is TPD page.
+ */
+#define IsTPDPage(page) \
+	(PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+
 /* TPD entry information */
 #define INITIAL_TRANS_SLOTS_IN_TPD_ENTRY	8
 /*

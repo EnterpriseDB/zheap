@@ -846,7 +846,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		 * Prune the TPD pages and if all the entries are removed, then record
 		 * it in FSM, so that it can be reused as a zheap page.
 		 */
-		if (PageGetSpecialSize(page) == sizeof(TPDPageOpaqueData))
+		if (IsTPDPage(page))
 		{
 			bool		should_free_page = true;
 

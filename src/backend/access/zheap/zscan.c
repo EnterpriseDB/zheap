@@ -404,7 +404,7 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 	 * Fixme - As an exception, the size of special space for zheap page with
 	 * one transaction slot will match with TPD page's special size.
 	 */
-	if (PageGetSpecialSize(dp) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+	if (IsTPDPage(dp))
 	{
 		UnlockReleaseBuffer(buffer);
 		return false;
@@ -1186,7 +1186,7 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 	 * Fixme - As an exception, the size of special space for zheap page with
 	 * one transaction slot will match with TPD page's special size.
 	 */
-	if (PageGetSpecialSize(dp) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+	if (IsTPDPage(dp))
 	{
 		UnlockReleaseBuffer(buffer);
 		return false;

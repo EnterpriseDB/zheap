@@ -1265,7 +1265,7 @@ zheapam_scan_analyze_next_block(TableScanDesc sscan, BlockNumber blockno, Buffer
 
 	/* Skip TPD pages for zheap relations. */
 	targpage = BufferGetPage(scan->rs_cbuf);
-	if (PageGetSpecialSize(targpage) == sizeof(TPDPageOpaqueData))
+	if (IsTPDPage(targpage))
 	{
 		UnlockReleaseBuffer(scan->rs_cbuf);
 		scan->rs_cbuf = InvalidBuffer;
@@ -1289,7 +1289,7 @@ zheapam_scan_analyze_next_tuple(TableScanDesc sscan, TransactionId OldestXmin, d
 	targpage = BufferGetPage(scan->rs_cbuf);
 	maxoffset = PageGetMaxOffsetNumber(targpage);
 
-	Assert(PageGetSpecialSize(targpage) != sizeof(TPDPageOpaqueData));
+	Assert(!IsTPDPage(targpage));
 
 	/* Inner loop over all tuples on the selected page */
 	for (; scan->rs_cindex <= maxoffset; scan->rs_cindex++)

@@ -8458,8 +8458,7 @@ copy_zrelation_data(Relation srcRel, SMgrRelation dst)
 			buffer = ReadBuffer(srcRel, blkno);
 
 			/* If it's a zheap page, apply the pending undo actions */
-			if (PageGetSpecialSize(BufferGetPage(buffer)) !=
-				MAXALIGN(sizeof(TPDPageOpaqueData)))
+			if (!IsTPDPage(BufferGetPage(buffer)))
 				zheap_exec_pending_rollback(srcRel, buffer, InvalidXactSlotId,
 											InvalidTransactionId, &tpd_blkno);
 		}

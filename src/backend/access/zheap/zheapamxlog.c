@@ -2222,7 +2222,7 @@ zheap_mask(char *pagedata, BlockNumber blkno)
 		return;
 	}
 
-	if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+	if (IsTPDPage(page))
 	{
 		/* It's a TPD page, no need to mask further. */
 		return;

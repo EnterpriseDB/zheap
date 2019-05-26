@@ -595,7 +595,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	/*
 	 * If we reach here, then the page must be a TPD page.
 	 */
-	Assert(PageGetSpecialSize(old_tpd_page) == MAXALIGN(sizeof(TPDPageOpaqueData)));
+	Assert(IsTPDPage(old_tpd_page));
 
 	/* TPD entry isn't pruned */
 	tpd_e_offset = ItemIdGetOffset(itemId);
@@ -1380,7 +1380,7 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 
 					LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);
 
-					if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+					if (IsTPDPage(page))
 						pageFreeSpace = PageGetTPDFreeSpace(page);
 					else
 						pageFreeSpace = PageGetZHeapFreeSpace(page);
@@ -1999,7 +1999,7 @@ TPDPageIsValid(Relation relation, Buffer heapbuf, bool *tpd_e_pruned,
 	if (PageIsEmpty(tpdpage))
 		goto failed;
 
-	if (PageGetSpecialSize(tpdpage) != MAXALIGN(sizeof(TPDPageOpaqueData)))
+	if (!IsTPDPage(tpdpage))
 		goto failed;
 
 	/*

@@ -453,7 +453,7 @@ CheckBufferHasTPDPage(Buffer buffer)
 	bool		tpdPage = false;
 	Page		page = BufferGetPage(buffer);
 
-	if (PageGetSpecialSize(page) == MAXALIGN(sizeof(TPDPageOpaqueData)))
+	if (IsTPDPage(page))
 	{
 		tpdPage = true;
 
