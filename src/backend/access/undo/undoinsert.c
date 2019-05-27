@@ -811,18 +811,19 @@ UndoSetPrepareSize(UnpackedUndoRecord *undorecords, int nrecords,
 		txid = fxid;
 	}
 
-	if (nrecords <= MAX_PREPARED_UNDO)
-		return;
+	if (nrecords > MAX_PREPARED_UNDO)
+	{
+		prepared_undo = palloc0(nrecords * sizeof(PreparedUndoSpace));
 
-	prepared_undo = palloc0(nrecords * sizeof(PreparedUndoSpace));
+		/*
+		 * Consider buffers needed for updating previous transaction's starting
+		 * undo record. Hence increased by 1.
+		 */
+		undo_buffer = palloc0((nrecords + 1) * MAX_BUFFER_PER_UNDO *
+							  sizeof(UndoBuffers));
+		max_prepared_undo = nrecords;
+	}
 
-	/*
-	 * Consider buffers needed for updating previous transaction's starting
-	 * undo record. Hence increased by 1.
-	 */
-	undo_buffer = palloc0((nrecords + 1) * MAX_BUFFER_PER_UNDO *
-						  sizeof(UndoBuffers));
-	max_prepared_undo = nrecords;
 	prepared_urec_ptr = UndoRecordAllocate(undorecords, nrecords, txid,
 										   upersistence, xlog_record,
 										   undometa);
