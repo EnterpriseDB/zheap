@@ -16,6 +16,7 @@
 #include <math.h>
 
 #include "lib/binaryheap.h"
+#include "storage/shmem.h"
 
 static void sift_down(binaryheap *heap, int node_off);
 static void sift_up(binaryheap *heap, int node_off);
@@ -43,6 +44,36 @@ binaryheap_allocate(int capacity, binaryheap_comparator compare, void *arg)
 
 	heap->bh_size = 0;
 	heap->bh_has_heap_property = true;
+
+	return heap;
+}
+
+/*
+ * binaryheap_allocate_shm
+ *
+ * It works same as binaryheap_allocate except that the heap will be created
+ * in shared memory.
+ */
+binaryheap *
+binaryheap_allocate_shm(const char *name, int capacity,
+						binaryheap_comparator compare, void *arg)
+{
+	Size		sz;
+	binaryheap *heap;
+	bool		foundBHeap;
+
+	sz = binaryheap_shmem_size(capacity);
+	heap = (binaryheap *) ShmemInitStruct(name, sz, &foundBHeap);
+
+	if (!foundBHeap)
+	{
+		heap->bh_space = capacity;
+		heap->bh_compare = compare;
+		heap->bh_arg = arg;
+
+		heap->bh_size = 0;
+		heap->bh_has_heap_property = true;
+	}
 
 	return heap;
 }
@@ -212,6 +243,79 @@ binaryheap_replace_first(binaryheap *heap, Datum d)
 }
 
 /*
+ * binaryheap_nth
+ *
+ * Returns a pointer to the nth (0-based) node in the heap without modifying
+ * the heap in O(1).  The caller must ensure that this routine is not used on
+ * an empty heap and is not called with n greater than or equal to the heap
+ * size.
+ */
+Datum
+binaryheap_nth(binaryheap *heap, int n)
+{
+	Assert(!binaryheap_empty(heap));
+	Assert(n < heap->bh_size);
+	return heap->bh_nodes[n];
+}
+
+/*
+ * binaryheap_remove_nth
+ *
+ * Removes the nth node (0-based) in the heap and returns a
+ * pointer to it after rebalancing the heap. The caller must ensure
+ * that this routine is not used on an empty heap.  O(log n) worst
+ * case.
+ */
+Datum
+binaryheap_remove_nth(binaryheap *heap, int n)
+{
+	Assert(!binaryheap_empty(heap) && heap->bh_has_heap_property);
+	Assert(n < heap->bh_size);
+
+
+	if (n == heap->bh_size - 1)
+	{
+		heap->bh_size--;
+		return heap->bh_nodes[heap->bh_size];
+	}
+
+	swap_nodes(heap, n, heap->bh_size - 1);
+	heap->bh_size--;
+	sift_down(heap, n);
+
+	return heap->bh_nodes[heap->bh_size];
+}
+
+/*
+ * binaryheap_remove_nth_unordered
+ *
+ * Removes the nth node (0-based) in the heap and returns a pointer to it in
+ * O(1) without preserving the heap property.  This is a convenience routine
+ * to remove elements quickly.  To obtain a valid heap, one must call
+ * binaryheap_build() afterwards.  The caller must ensure that this routine is
+ * not used on an empty heap.
+ */
+Datum
+binaryheap_remove_nth_unordered(binaryheap *heap, int n)
+{
+	Assert(!binaryheap_empty(heap));
+	Assert(n < heap->bh_size);
+
+	heap->bh_has_heap_property = false;
+
+	if (n == heap->bh_size - 1)
+	{
+		heap->bh_size--;
+		return heap->bh_nodes[heap->bh_size];
+	}
+
+	swap_nodes(heap, n, heap->bh_size - 1);
+	heap->bh_size--;
+
+	return heap->bh_nodes[heap->bh_size];
+}
+
+/*
  * Swap the contents of two nodes.
  */
 static inline void
@@ -304,4 +408,18 @@ sift_down(binaryheap *heap, int node_off)
 		swap_nodes(heap, swap_off, node_off);
 		node_off = swap_off;
 	}
+}
+
+/*
+ * Compute the size required by binary heap structure.
+ */
+Size
+binaryheap_shmem_size(int capacity)
+{
+	Size		sz;
+
+	sz = add_size(offsetof(binaryheap, bh_nodes),
+				  mul_size(sizeof(Datum), capacity));
+
+	return sz;
 }
