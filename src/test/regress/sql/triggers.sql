@@ -5,7 +5,7 @@
 create table pkeys (pkey1 int4 not null, pkey2 text not null);
 create table fkeys (fkey1 int4, fkey2 text, fkey3 int);
 create table fkeys2 (fkey21 int4, fkey22 text, pkey23 int not null);
-
+create temp table tmp_del_table (a text);
 create index fkeys_i on fkeys (fkey1, fkey2);
 create index fkeys2_i on fkeys2 (fkey21, fkey22);
 create index fkeys2p_i on fkeys2 (pkey23);
@@ -644,7 +644,7 @@ begin
         end if;
 
         if TG_OP = 'DELETE' then
-            raise NOTICE 'OLD: %', OLD;
+            insert into tmp_del_table values (OLD);
             DELETE FROM main_table WHERE a = OLD.a AND b = OLD.b;
             if NOT FOUND then RETURN NULL; end if;
             RETURN OLD;
@@ -654,7 +654,6 @@ begin
     RETURN NULL;
 end;
 $$;
-
 -- Before row triggers aren't allowed on views
 CREATE TRIGGER invalid_trig BEFORE INSERT ON main_view
 FOR EACH ROW EXECUTE PROCEDURE trigger_func('before_ins_row');
@@ -754,7 +753,11 @@ UPDATE main_view SET b = 0 WHERE false;
 
 -- Delete from view using trigger
 DELETE FROM main_view WHERE a IN (20,21);
+select * from tmp_del_table order by 1;
+truncate table tmp_del_table;
 DELETE FROM main_view WHERE a = 31 RETURNING a, b;
+select * from tmp_del_table order by 1;
+truncate table tmp_del_table;
 
 \set QUIET true
 

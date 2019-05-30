@@ -4,6 +4,7 @@
 create table pkeys (pkey1 int4 not null, pkey2 text not null);
 create table fkeys (fkey1 int4, fkey2 text, fkey3 int);
 create table fkeys2 (fkey21 int4, fkey22 text, pkey23 int not null);
+create temp table tmp_del_table (a text);
 create index fkeys_i on fkeys (fkey1, fkey2);
 create index fkeys2_i on fkeys2 (fkey21, fkey22);
 create index fkeys2p_i on fkeys2 (pkey23);
@@ -902,7 +903,7 @@ begin
         end if;
 
         if TG_OP = 'DELETE' then
-            raise NOTICE 'OLD: %', OLD;
+            insert into tmp_del_table values (OLD);
             DELETE FROM main_table WHERE a = OLD.a AND b = OLD.b;
             if NOT FOUND then RETURN NULL; end if;
             RETURN OLD;
@@ -1080,17 +1081,23 @@ UPDATE 0
 DELETE FROM main_view WHERE a IN (20,21);
 NOTICE:  main_view BEFORE DELETE STATEMENT (before_view_del_stmt)
 NOTICE:  main_view INSTEAD OF DELETE ROW (instead_of_del)
-NOTICE:  OLD: (21,10)
 NOTICE:  main_view INSTEAD OF DELETE ROW (instead_of_del)
-NOTICE:  OLD: (20,31)
 NOTICE:  main_view INSTEAD OF DELETE ROW (instead_of_del)
-NOTICE:  OLD: (21,32)
 NOTICE:  main_view AFTER DELETE STATEMENT (after_view_del_stmt)
 DELETE 3
+select * from tmp_del_table order by 1;
+    a    
+---------
+ (20,31)
+ (21,10)
+ (21,32)
+(3 rows)
+
+truncate table tmp_del_table;
+TRUNCATE TABLE
 DELETE FROM main_view WHERE a = 31 RETURNING a, b;
 NOTICE:  main_view BEFORE DELETE STATEMENT (before_view_del_stmt)
 NOTICE:  main_view INSTEAD OF DELETE ROW (instead_of_del)
-NOTICE:  OLD: (31,10)
 NOTICE:  main_view AFTER DELETE STATEMENT (after_view_del_stmt)
  a  | b  
 ----+----
@@ -1098,6 +1105,14 @@ NOTICE:  main_view AFTER DELETE STATEMENT (after_view_del_stmt)
 (1 row)
 
 DELETE 1
+select * from tmp_del_table order by 1;
+    a    
+---------
+ (31,10)
+(1 row)
+
+truncate table tmp_del_table;
+TRUNCATE TABLE
 \set QUIET true
 -- Describe view should list triggers
 \d main_view
