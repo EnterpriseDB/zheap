@@ -80,7 +80,7 @@ int			undo_worker_quantum_ms = 10000;
 
 /* Flags set by signal handlers */
 static volatile sig_atomic_t got_SIGHUP = false;
-
+static volatile sig_atomic_t got_SIGTERM = false;
 static TimestampTz last_xact_processed_at;
 
 typedef struct UndoApplyWorker
@@ -127,6 +127,7 @@ static void UndoWorkerOnExit(int code, Datum arg);
 static void UndoWorkerCleanup(UndoApplyWorker * worker);
 static void UndoWorkerIsLingering(bool sleep);
 static void UndoWorkerGetSlotInfo(int slot, UndoRequestInfo *urinfo);
+static void UndoworkerSigtermHandler(SIGNAL_ARGS);
 
 /*
  * Cleanup function for undo worker launcher.
@@ -138,6 +139,16 @@ UndoLauncherOnExit(int code, Datum arg)
 {
 	UndoApplyCtx->launcher_pid = 0;
 	UndoApplyCtx->undo_launcher_latch = NULL;
+}
+
+/* SIGTERM: set flag to exit at next convenient time */
+static void
+UndoworkerSigtermHandler(SIGNAL_ARGS)
+{
+	got_SIGTERM = true;
+
+	/* Waken anything waiting on the process latch */
+	SetLatch(MyLatch);
 }
 
 /* SIGHUP: set flag to reload configuration at next convenient time */
@@ -569,7 +580,7 @@ UndoLauncherMain(Datum main_arg)
 
 	/* Establish signal handlers. */
 	pqsignal(SIGHUP, UndoLauncherSighup);
-	pqsignal(SIGTERM, die);
+	pqsignal(SIGTERM, UndoworkerSigtermHandler);
 	BackgroundWorkerUnblockSignals();
 
 	/* Establish connection to nailed catalogs. */
@@ -582,7 +593,7 @@ UndoLauncherMain(Datum main_arg)
 	UndoApplyCtx->undo_launcher_latch = &MyProc->procLatch;
 
 	/* Enter main loop */
-	for (;;)
+	while (!got_SIGTERM)
 	{
 		int			rc;
 
@@ -616,6 +627,12 @@ UndoLauncherMain(Datum main_arg)
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 	}
+
+	/* we're done */
+	ereport(LOG,
+			(errmsg("undo launcher shutting down")));
+	proc_exit(0);
+
 }
 
 /*
