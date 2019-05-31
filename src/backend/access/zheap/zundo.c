@@ -40,6 +40,7 @@ static void RestoreXactFromUndoRecord(UnpackedUndoRecord *urec, Buffer buffer,
 									  bool *is_tpd_map_updated);
 static int	TransSlotFromUndoRecord(UnpackedUndoRecord *urec,
 									ZHeapTupleHeader hdr, Page page);
+static void log_zheap_undo_actions(ZHeapUndoActionWALInfo *wal_info);
 
 /*
  * Per-undorecord callback from UndoFetchRecord to check whether
@@ -1026,76 +1027,21 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 
 	MarkBufferDirty(buffer);
 
-	/*
-	 * We are logging the complete page for undo actions, so we don't need to
-	 * record the data for individual operations.  We can optimize it by
-	 * recording the data for individual operations, but again if there are
-	 * multiple operations, then it might be better to log the complete page.
-	 * So we can have some threshold above which we always log the complete
-	 * page.
-	 */
 	if (RelationNeedsWAL(rel))
 	{
-		XLogRecPtr	recptr;
-		uint8		flags = 0;
+		ZHeapUndoActionWALInfo wal_info;
 
-		if (slot_no > ZHEAP_PAGE_TRANS_SLOTS)
-			flags |= XLU_PAGE_CONTAINS_TPD_SLOT;
-		if (BufferIsValid(vmbuffer))
-			flags |= XLU_PAGE_CLEAR_VISIBILITY_MAP;
-		if (is_tpd_map_updated)
-		{
-			/* TPD page must be locked. */
-			Assert(tpd_page_locked);
-			/* tpd_offset_map must be non-null. */
-			Assert(tpd_offset_map);
-			flags |= XLU_CONTAINS_TPD_OFFSET_MAP;
-		}
-		if (need_init)
-			flags |= XLU_INIT_PAGE;
-
-		XLogBeginInsert();
-
-		XLogRegisterData((char *) &flags, sizeof(uint8));
-		XLogRegisterBuffer(0, buffer, REGBUF_FORCE_IMAGE | REGBUF_STANDARD);
-
-		/* Log the TPD details, if the transaction slot belongs to TPD. */
-		if (flags & XLU_PAGE_CONTAINS_TPD_SLOT)
-		{
-			xl_zundo_page xlrec;
-
-			xlrec.urec_ptr = prev_urec_ptr;
-			xlrec.xid = xid;
-			xlrec.trans_slot_id = slot_no;
-			XLogRegisterData((char *) &xlrec, SizeOfZUndoPage);
-		}
-
-		/*
-		 * Log the TPD offset map if we have modified it.
-		 *
-		 * XXX Another option could be that we track all the offset map
-		 * entries of TPD which got modified while applying the undo and only
-		 * log those information into the WAL.
-		 */
-		if (is_tpd_map_updated)
-		{
-			/* Fetch the TPD offset map and write into the WAL record. */
-			TPDPageGetOffsetMap(buffer, tpd_offset_map, tpd_map_size);
-			XLogRegisterData((char *) tpd_offset_map, tpd_map_size);
-		}
-
-		if (flags & XLU_PAGE_CONTAINS_TPD_SLOT ||
-			flags & XLU_CONTAINS_TPD_OFFSET_MAP)
-		{
-			RegisterTPDBuffer(page, 1);
-		}
-
-		recptr = XLogInsert(RM_ZUNDO_ID, XLOG_ZUNDO_PAGE);
-
-		PageSetLSN(page, recptr);
-		if (flags & XLU_PAGE_CONTAINS_TPD_SLOT ||
-			flags & XLU_CONTAINS_TPD_OFFSET_MAP)
-			TPDPageSetLSN(page, recptr);
+		wal_info.buffer = buffer;
+		wal_info.vmbuffer = vmbuffer;
+		wal_info.prev_urecptr = prev_urec_ptr;
+		wal_info.slot_id = slot_no;
+		wal_info.tpd_page_locked = tpd_page_locked;
+		wal_info.tpd_offset_map = tpd_offset_map;
+		wal_info.is_tpd_map_updated = is_tpd_map_updated;
+		wal_info.tpd_map_size = tpd_map_size;
+		wal_info.xid = xid;
+		wal_info.need_init = need_init;
+		log_zheap_undo_actions(&wal_info);
 	}
 
 	/*
@@ -1131,6 +1077,81 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	relation_close(rel, RowExclusiveLock);
 
 	return true;
+}
+
+ /*
+  * log_zheap_undo_actions Perform XLogInsert for zheap_undo_actions.
+  *
+  * We are logging the complete page for undo actions, so we don't need to
+  * record the data for individual operations.  We can optimize it by
+  * recording the data for individual operations, but again if there are
+  * multiple operations, then it might be better to log the complete page. So
+  * we can have some threshold above which we always log the complete page.
+  */
+static void
+log_zheap_undo_actions(ZHeapUndoActionWALInfo *wal_info)
+{
+	XLogRecPtr	recptr;
+	uint8		flags = 0;
+	Page		page = BufferGetPage(wal_info->buffer);
+
+	if (wal_info->slot_id > ZHEAP_PAGE_TRANS_SLOTS)
+		flags |= XLU_PAGE_CONTAINS_TPD_SLOT;
+	if (BufferIsValid(wal_info->vmbuffer))
+		flags |= XLU_PAGE_CLEAR_VISIBILITY_MAP;
+	if (wal_info->is_tpd_map_updated)
+	{
+		/* TPD page must be locked. */
+		Assert(wal_info->tpd_page_locked);
+		/* tpd_offset_map must be non-null. */
+		Assert(wal_info->tpd_offset_map);
+		flags |= XLU_CONTAINS_TPD_OFFSET_MAP;
+	}
+	if (wal_info->need_init)
+		flags |= XLU_INIT_PAGE;
+
+	XLogBeginInsert();
+
+	XLogRegisterData((char *) &flags, sizeof(uint8));
+	XLogRegisterBuffer(0, wal_info->buffer, REGBUF_FORCE_IMAGE | REGBUF_STANDARD);
+
+	/* Log the TPD details, if the transaction slot belongs to TPD. */
+	if (flags & XLU_PAGE_CONTAINS_TPD_SLOT)
+	{
+		xl_zundo_page xlrec;
+
+		xlrec.urec_ptr = wal_info->prev_urecptr;
+		xlrec.xid = wal_info->xid;
+		xlrec.trans_slot_id = wal_info->slot_id;
+		XLogRegisterData((char *) &xlrec, SizeOfZUndoPage);
+	}
+
+	/*
+	 * Log the TPD offset map if we have modified it.
+	 *
+	 * XXX Another option could be that we track all the offset map entries of
+	 * TPD which got modified while applying the undo and only log those
+	 * information into the WAL.
+	 */
+	if (wal_info->is_tpd_map_updated)
+	{
+		/* Fetch the TPD offset map and write into the WAL record. */
+		TPDPageGetOffsetMap(wal_info->buffer, wal_info->tpd_offset_map, wal_info->tpd_map_size);
+		XLogRegisterData((char *) wal_info->tpd_offset_map, wal_info->tpd_map_size);
+	}
+
+	if (flags & XLU_PAGE_CONTAINS_TPD_SLOT ||
+		flags & XLU_CONTAINS_TPD_OFFSET_MAP)
+	{
+		RegisterTPDBuffer(page, 1);
+	}
+
+	recptr = XLogInsert(RM_ZUNDO_ID, XLOG_ZUNDO_PAGE);
+
+	PageSetLSN(page, recptr);
+	if (flags & XLU_PAGE_CONTAINS_TPD_SLOT ||
+		flags & XLU_CONTAINS_TPD_OFFSET_MAP)
+		TPDPageSetLSN(page, recptr);
 }
 
 /*

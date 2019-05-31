@@ -2746,6 +2746,7 @@ ZHeapTupleData
 ZHeapTupleHeaderData
 ZHeapTupleTableSlot
 ZHeapTupleTransInfo
+ZHeapUndoActionWALInfo
 ZHeapWALInfo
 ZMultiLockMember
 ZPruneState

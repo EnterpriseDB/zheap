@@ -174,6 +174,21 @@ typedef struct ZHeapMultiInsertWALInfo
 	int			ndone;			/* tuples processed */
 } ZHeapMultiInsertWALInfo;
 
+/* This is used to write WAL for undo actions */
+typedef struct ZHeapUndoActionWALInfo
+{
+	char	   *tpd_offset_map;
+	UndoRecPtr	prev_urecptr;
+	TransactionId xid;
+	Buffer		buffer;
+	Buffer		vmbuffer;
+	int			slot_id;
+	int			tpd_map_size;
+	bool		tpd_page_locked;
+	bool		is_tpd_map_updated;
+	bool		need_init;
+} ZHeapUndoActionWALInfo;
+
 extern void zheap_insert(Relation relation, ZHeapTuple tup, CommandId cid,
 						 int options, BulkInsertState bistate, uint32 specToken);
 extern void simple_zheap_delete(Relation relation, ItemPointer tid, Snapshot snapshot);
