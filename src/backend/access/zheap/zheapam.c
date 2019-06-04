@@ -1334,7 +1334,7 @@ check_tup_satisfies_update:
 									   &single_locker_trans_slot, false,
 									   snapshot, &in_place_updated_or_locked);
 	/* Determine columns modified by the update, if not yet done. */
-	if (!computed_modified_attrs)
+	if (!computed_modified_attrs && oldtup.t_data != NULL)
 	{
 		computed_modified_attrs = true;
 		modified_attrs =
