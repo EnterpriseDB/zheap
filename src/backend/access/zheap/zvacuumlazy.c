@@ -848,66 +848,15 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		 */
 		if (IsTPDPage(page))
 		{
-			bool		should_free_page = true;
+			TPDPagePrune(onerel, buf, vac_strategy, InvalidOffsetNumber, 0,
+						 true, NULL, NULL);
 
 			/*
-			 * The empty pages are not guaranteed to be removed from the TPD
-			 * page list.  See TPDPagePrune.  So, ensure that we remove empty
-			 * pages from the TPD page list if required.
+			 * Remember the location of the last page with non-removable
+			 * tuples.
 			 */
-			if (PageIsEmpty(page))
-			{
-				TPDPageOpaque tpdopaque;
-
-				tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(BufferGetPage(buf));
-
-				/*
-				 * If TPD page still have valid previous or next block, then
-				 * we are sure that this page is still not removed from meta
-				 * list.  So we will remove now.
-				 *
-				 * If previous and next TPD blocks are invalid then also we
-				 * are not sure that this TPD page is already removed from
-				 * meta list because it is possible that this is first used
-				 * TPD page.
-				 */
-				if (tpdopaque->tpd_prevblkno == InvalidBlockNumber &&
-					tpdopaque->tpd_nextblkno == InvalidBlockNumber)
-				{
-					Buffer		metabuf;
-					ZHeapMetaPage metapage;
-
-					/*
-					 * Here, we will take lock on meta page and will check
-					 * that this TPD page is first used TPD page or not.  If
-					 * this is not first used TPD page, then we are sure that
-					 * this page is already removed from list.
-					 */
-					metabuf = ReadBufferExtended(onerel, MAIN_FORKNUM,
-												 ZHEAP_METAPAGE, RBM_NORMAL,
-												 vac_strategy);
-					LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
-					metapage = ZHeapPageGetMeta(BufferGetPage(metabuf));
-					Assert(metapage->zhm_magic == ZHEAP_MAGIC);
-					if (metapage->zhm_first_used_tpd_page != blkno)
-						should_free_page = false;
-					UnlockReleaseBuffer(metabuf);
-				}
-			}
-
-			/* If the page is already pruned, skip it. */
-			if (should_free_page)
-			{
-				TPDPagePrune(onerel, buf, vac_strategy, InvalidOffsetNumber, 0,
-							 true, NULL, NULL);
-
-				/*
-				 * Remember the location of the last page with non-removable
-				 * tuples.
-				 */
-				if (!PageIsEmpty(page))
-					vacrelstats->nonempty_pages = blkno + 1;
-			}
+			if (!PageIsNew(page))
+				vacrelstats->nonempty_pages = blkno + 1;
 
 			UnlockReleaseBuffer(buf);
 			continue;

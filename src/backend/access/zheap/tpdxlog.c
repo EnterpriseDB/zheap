@@ -409,22 +409,15 @@ tpd_xlog_free_page(XLogReaderState *record)
 	 */
 	if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
 	{
-		TPDPageOpaque tpdopaque;
-
-		tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(page);
-
-		tpdopaque->tpd_prevblkno = InvalidBlockNumber;
-		tpdopaque->tpd_nextblkno = InvalidBlockNumber;
-		tpdopaque->tpd_latest_xid_epoch = 0;
-		tpdopaque->tpd_latest_xid = InvalidTransactionId;
+		MemSet((PageHeader) page, 0, BufferGetPageSize(buffer));
 
 		MarkBufferDirty(buffer);
-		PageSetLSN(page, lsn);
 	}
 
-	Assert(PageIsEmpty(page));
+	/* Page should be marked as NEW. */
+	Assert(PageIsNew(page));
 	Assert(blkno == BufferGetBlockNumber(buffer));
-	freespace = PageGetTPDFreeSpace(page);
+	freespace = BLCKSZ - SizeOfPageHeaderData;
 
 	if (XLogRecHasBlockRef(record, 2))
 	{

@@ -997,7 +997,7 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 				prevtpdopaque,
 				nexttpdopaque;
 	ZHeapMetaPage metapage;
-	Page		page = NULL,
+	Page		page,
 				prevpage = NULL,
 				nextpage = NULL;
 	BlockNumber curblkno PG_USED_FOR_ASSERTS_ONLY = InvalidBlockNumber;
@@ -1007,6 +1007,12 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 	Buffer		nextbuf = InvalidBuffer;
 	Buffer		metabuf = InvalidBuffer;
 	bool		update_meta = false;
+
+	/* Get the page from buffer. */
+	page = BufferGetPage(buf);
+
+	/* Page should be an empty TPD page. */
+	Assert(IsTPDPage(page) && PageIsEmpty(page));
 
 	/*
 	 * We must acquire the cleanup lock here to wait for backends that have
@@ -1038,12 +1044,17 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 	LockBufferForCleanup(buf);
 
 	/*
+	 * Page should be still a TPD page but it can be non-empty because we
+	 * re-acquiried the lock.
+	 */
+	Assert(IsTPDPage(page));
+
+	/*
 	 * After re-acquiring the lock, check whether page is still empty, if not,
 	 * then we don't need to do anything.  As of now, there is no possibility
 	 * that the empty page in the chain can be reused, however, in future, we
 	 * can use it.
 	 */
-	page = BufferGetPage(buf);
 	if (!PageIsEmpty(page))
 		return false;
 
@@ -1071,14 +1082,16 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 		 * not, then we don't need to do anything.  As of now, there is no
 		 * possibility that the empty page in the chain can be reused,
 		 * however, in future, we can use it.
+		 *
+		 * Page should be still a TPD page but it can be non-empty because we
+		 * re-acquiried the lock.
 		 */
-		page = BufferGetPage(buf);
+		Assert(IsTPDPage(page));
 		if (!PageIsEmpty(page))
 		{
 			UnlockReleaseBuffer(prevbuf);
 			return false;
 		}
-		tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(page);
 	}
 
 	nextblkno = tpdopaque->tpd_nextblkno;
@@ -1100,11 +1113,16 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 
 	START_CRIT_SECTION();
 
-	/* Update the current page. */
-	tpdopaque->tpd_prevblkno = InvalidBlockNumber;
-	tpdopaque->tpd_nextblkno = InvalidBlockNumber;
-	tpdopaque->tpd_latest_xid_epoch = 0;
-	tpdopaque->tpd_latest_xid = InvalidTransactionId;
+	/*
+	 * Update the current page so that it can be reused as new TPD or zheap
+	 * page from FSM.
+	 * Here, we will meset full page as zero because if we will not do this,
+	 * then from RelationGetBufferForZTuple, it will be costly to decide that
+	 * page is still in meta list or not because it is possible that empty TPD
+	 * page is still in meta list(see ExtendTPDEntry, there we can make page
+	 * as empty and will not remove from mera list to avoid deadlock).
+	 */
+	MemSet((PageHeader) page, 0, BufferGetPageSize(buf));
 
 	MarkBufferDirty(buf);
 
@@ -1213,7 +1231,6 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
 
 		if (BufferIsValid(prevbuf))
 			PageSetLSN(prevpage, recptr);
-		PageSetLSN(page, recptr);
 		if (BufferIsValid(nextbuf))
 			PageSetLSN(nextpage, recptr);
 		if (update_meta)
@@ -1370,7 +1387,7 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 				{
 					page = BufferGetPage(tpd_buf);
 
-					if (PageIsEmpty(page))
+					if (PageIsNew(page) || PageIsEmpty(page))
 					{
 						GetTPDBuffer(relation, targetBlock, tpd_buf,
 									 TPD_BUF_FIND_OR_KNOWN_ENTER,
@@ -1719,6 +1736,10 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 		/* We don't need to lock the buffer, if it is already locked */
 		if (!already_exists)
 			LockBuffer(tpd_buf, BUFFER_LOCK_EXCLUSIVE);
+
+		/* Page should be a TPD page. */
+		Assert(IsTPDPage(BufferGetPage(tpd_buf)));
+
 		tpdpageFreeSpace = PageGetTPDFreeSpace(BufferGetPage(tpd_buf));
 
 		if (tpdpageFreeSpace < size_tpd_entry)

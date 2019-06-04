@@ -63,6 +63,9 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
 	prstate.nunused = 0;
 	tpdpage = BufferGetPage(tpdbuf);
 
+	/* Page should be a TPD page. */
+	Assert(IsTPDPage(tpdpage));
+
 	/* Initialize the out variables. */
 	if (update_tpd_inplace)
 		*update_tpd_inplace = false;

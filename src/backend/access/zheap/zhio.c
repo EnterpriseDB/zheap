@@ -25,8 +25,6 @@
 #include "storage/lmgr.h"
 #include "storage/smgr.h"
 
-static bool CheckBufferHasTPDPage(Buffer buffer);
-
 /*
  * RelationGetBufferForZTuple
  *
@@ -187,18 +185,33 @@ loop:
 			 * pruned TPD buffer and some other backend is trying to use it
 			 * while holding lock on a zheap buffer with higher block number.
 			 *
-			 * To avoid deadlocking, we simply don't lock otherBuffer. We
-			 * below update the FSM to remove TPD pages from the FSM -
-			 * otherwise we'd potentially encounter this over-and-over.
+			 * To avoid deadlocking, we simply don't lock otherBuffer.  First
+			 * we will check that target block is TPD block or not, if TPD
+			 * block then we will not lock otherBuffer.
+			 *
+			 * We will never get TPD page from FSM but concurrently other
+			 * backend can get same page from FSM to use as new TPD page.  If
+			 * other backend gets same page, then that backend will make our
+			 * page as non-empty by putting TPD entry so here, we are checking
+			 * that if our page is TPD page or not, if TPD page, then directly
+			 * ignore page without checking PageIsEmpty.
+			 *
+			 * XXX: When we will not get any page from FSM, then we are
+			 * checking space in last block of relation.  It is possible that
+			 * last block of relation is empty TPD page(See ExtendTPDEntry,
+			 * there we are not removing empty TPD block from meta list to
+			 * avoid deadlock).  But we are not using empty TPD page.  If we
+			 * want, we can use that empty TPD page here by freeing empty TPD
+			 * page from meta list but will be costly.
 			 */
-			if (!CheckBufferHasTPDPage(buffer))
+			if (!IsTPDPage(BufferGetPage(buffer)))
 			{
 				LockBuffer(otherBuffer, BUFFER_LOCK_EXCLUSIVE);
 				other_buffer_locked = true;
 			}
 		}
 
-		if (targetBlock == ZHEAP_METAPAGE || CheckBufferHasTPDPage(buffer))
+		if (targetBlock == ZHEAP_METAPAGE || IsTPDPage(BufferGetPage(buffer)))
 		{
 			/*
 			 * ZBORKED: I (Andres) had to implement this because the previous
@@ -440,30 +453,4 @@ loop:
 	RelationSetTargetBlock(relation, BufferGetBlockNumber(buffer));
 
 	return buffer;
-}
-
-/*
- * CheckBufferHasTPDPage - Check if buffer has TPD page.
- *
- * Returns true, if the buffer has a TPD page, otherwise, false.
- */
-static bool
-CheckBufferHasTPDPage(Buffer buffer)
-{
-	bool		tpdPage = false;
-	Page		page = BufferGetPage(buffer);
-
-	if (IsTPDPage(page))
-	{
-		tpdPage = true;
-
-		/* Empty tpd page can be use as a zheap page. */
-		if (PageIsEmpty(page))
-		{
-			ZheapInitPage(page, BufferGetPageSize(buffer));
-			tpdPage = false;
-		}
-	}
-
-	return tpdPage;
 }
