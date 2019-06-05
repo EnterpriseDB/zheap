@@ -89,3 +89,4 @@ test: truncate-conflict
 test: serializable-parallel
 test: serializable-parallel-2
 test: tpd_offset_map_updation
+test: deleted_item_id
