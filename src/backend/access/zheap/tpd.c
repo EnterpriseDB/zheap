@@ -971,8 +971,7 @@ TPDInitPage(Page page, Size pageSize)
 	tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(page);
 	tpdopaque->tpd_prevblkno = InvalidBlockNumber;
 	tpdopaque->tpd_nextblkno = InvalidBlockNumber;
-	tpdopaque->tpd_latest_xid_epoch = 0;
-	tpdopaque->tpd_latest_xid = InvalidTransactionId;
+	tpdopaque->tpd_latest_fxid = InvalidFullTransactionId;
 }
 
 /*
@@ -2555,7 +2554,7 @@ slot_is_frozen_and_buf_not_locked:
  */
 void
 TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
-							  uint32 epoch, TransactionId xid,
+							  FullTransactionId fxid,
 							  UndoRecPtr urec_ptr)
 {
 	TransInfo	trans_slot_info;
@@ -2566,8 +2565,6 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 	BlockNumber tpdblk;
 	TPDEntryHeaderData tpd_e_hdr;
 	TPDPageOpaque tpdopaque;
-	uint64		tpd_latest_xid_epoch,
-				current_xid_epoch;
 	Size		size_tpd_e_map;
 	int			trans_slot_loc;
 	int			buf_idx;
@@ -2624,7 +2621,7 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 	/* Set the required transaction slot information. */
 	trans_slot_loc = (trans_slot_id - ZHEAP_PAGE_TRANS_SLOTS - 1) *
 		sizeof(TransInfo);
-	trans_slot_info.fxid = FullTransactionIdFromEpochAndXid(epoch, xid);
+	trans_slot_info.fxid = fxid;
 	trans_slot_info.urec_ptr = urec_ptr;
 
 	memcpy(tpd_entry_data + size_tpd_e_map + trans_slot_loc,
@@ -2633,16 +2630,8 @@ TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 
 	/* Update latest transaction information on the page. */
 	tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(tpdpage);
-	tpd_latest_xid_epoch = U64FromFullTransactionId(
-													FullTransactionIdFromEpochAndXid(tpdopaque->tpd_latest_xid_epoch,
-																					 tpdopaque->tpd_latest_xid));
-	current_xid_epoch = U64FromFullTransactionId(
-												 FullTransactionIdFromEpochAndXid(epoch, xid));
-	if (tpd_latest_xid_epoch < current_xid_epoch)
-	{
-		tpdopaque->tpd_latest_xid_epoch = epoch;
-		tpdopaque->tpd_latest_xid = xid;
-	}
+	if (FullTransactionIdPrecedes(tpdopaque->tpd_latest_fxid, fxid))
+		tpdopaque->tpd_latest_fxid = fxid;
 
 	MarkBufferDirty(tpd_buf);
 }
@@ -2880,8 +2869,6 @@ TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
 	BlockNumber tpdblk;
 	TPDEntryHeaderData tpd_e_hdr;
 	TPDPageOpaque tpdopaque;
-	uint64		tpd_latest_xid_epoch,
-				current_xid_epoch;
 	Size		size_tpd_e_map;
 	uint32		tpd_e_num_map_entries;
 	int			trans_slot_loc;
@@ -3001,15 +2988,9 @@ TPDPageSetUndo(Buffer heapbuf, int trans_slot_id, bool set_tpd_map_slot,
 		   sizeof(TransInfo));
 	/* Update latest transaction information on the page. */
 	tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(tpdpage);
-	tpd_latest_xid_epoch = U64FromFullTransactionId(
-													FullTransactionIdFromEpochAndXid(tpdopaque->tpd_latest_xid_epoch,
-																					 tpdopaque->tpd_latest_xid));
-	current_xid_epoch = U64FromFullTransactionId(fxid);
-	if (tpd_latest_xid_epoch < current_xid_epoch)
-	{
-		tpdopaque->tpd_latest_xid_epoch = EpochFromFullTransactionId(fxid);
-		tpdopaque->tpd_latest_xid = XidFromFullTransactionId(fxid);
-	}
+
+	if (FullTransactionIdPrecedes(tpdopaque->tpd_latest_fxid, fxid))
+		tpdopaque->tpd_latest_fxid = fxid;
 
 	MarkBufferDirty(tpd_buf);
 }

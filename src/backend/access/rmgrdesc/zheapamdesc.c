@@ -138,7 +138,9 @@ zundo_desc(StringInfo buf, XLogReaderState *record)
 			(xl_zundo_page *) ((char *) flags + sizeof(uint8));
 
 			appendStringInfo(buf, "urec_ptr %lu xid %u trans_slot_id %u",
-							 xlrec->urec_ptr, xlrec->xid, xlrec->trans_slot_id);
+							 xlrec->urec_ptr,
+							 XidFromFullTransactionId(xlrec->fxid),
+							 xlrec->trans_slot_id);
 		}
 	}
 	else if (info == XLOG_ZUNDO_RESET_SLOT)

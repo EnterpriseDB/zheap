@@ -179,7 +179,7 @@ typedef struct ZHeapUndoActionWALInfo
 {
 	char	   *tpd_offset_map;
 	UndoRecPtr	prev_urecptr;
-	TransactionId xid;
+	FullTransactionId fxid;
 	Buffer		buffer;
 	Buffer		vmbuffer;
 	int			slot_id;
@@ -242,7 +242,7 @@ extern void zheap_get_latest_tid(TableScanDesc sscan,
 extern XLogRecPtr log_zheap_visible(RelFileNode rnode, Buffer heap_buffer,
 									Buffer vm_buf, TransactionId cutoff_xid, uint8 flags);
 extern void PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id,
-									   uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr);
+									   FullTransactionId fxid, UndoRecPtr urec_ptr);
 extern void PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer,
 						int trans_slot_id, bool set_tpd_map_slot,
 						FullTransactionId fxid, UndoRecPtr urecptr, OffsetNumber *usedoff,

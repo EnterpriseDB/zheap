@@ -331,7 +331,7 @@ typedef struct xl_zheap_visible
 typedef struct xl_zundo_page
 {
 	UndoRecPtr	urec_ptr;
-	TransactionId xid;
+	FullTransactionId fxid;
 	int			trans_slot_id;	/* transaction slot id */
 } xl_zundo_page;
 

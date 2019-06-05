@@ -56,9 +56,8 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
 	OffsetNumber offnum,
 				maxoff;
 	ItemId		itemId;
-	uint64		epoch_xid;
-	uint32		epoch;
 	Size		space_freed;
+	FullTransactionId	oldest_fxid_having_undo;
 
 	prstate.nunused = 0;
 	tpdpage = BufferGetPage(tpdbuf);
@@ -74,10 +73,11 @@ TPDPagePrune(Relation rel, Buffer tpdbuf, BufferAccessStrategy strategy,
 
 	/* Can we prune the entire page? */
 	tpdopaque = (TPDPageOpaque) PageGetSpecialPointer(tpdpage);
-	epoch = tpdopaque->tpd_latest_xid_epoch;
-	epoch_xid = U64FromFullTransactionId(FullTransactionIdFromEpochAndXid(epoch,
-																		  tpdopaque->tpd_latest_xid));
-	if (epoch_xid < pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo))
+	oldest_fxid_having_undo = FullTransactionIdFromU64(
+				pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
+
+	if (FullTransactionIdPrecedes(tpdopaque->tpd_latest_fxid,
+								  oldest_fxid_having_undo))
 	{
 		prstate.nunused = TPDPruneEntirePage(rel, tpdbuf);
 		goto free_tpd_page;

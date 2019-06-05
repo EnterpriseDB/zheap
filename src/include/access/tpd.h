@@ -26,13 +26,12 @@ typedef struct TPDPageOpaqueData
 {
 	BlockNumber tpd_prevblkno;
 	BlockNumber tpd_nextblkno;
-	uint32		tpd_latest_xid_epoch;
-	TransactionId tpd_latest_xid;
+	FullTransactionId tpd_latest_fxid;
 } TPDPageOpaqueData;
 
 typedef TPDPageOpaqueData *TPDPageOpaque;
 
-#define SizeofTPDPageOpaque (offsetof(TPDPageOpaqueData, tpd_latest_xid) + sizeof(TransactionId))
+#define SizeofTPDPageOpaque (offsetof(TPDPageOpaqueData, tpd_latest_fxid) + sizeof(FullTransactionId))
 
 /*
  * IsTPDPage
@@ -114,7 +113,7 @@ extern int	TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 										  OffsetNumber offset, uint32 *epoch, TransactionId *xid,
 										  UndoRecPtr *urec_ptr, bool NoTPDBufLock, bool keepTPDBufLock);
 extern void TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
-										  uint32 epoch, TransactionId xid, UndoRecPtr urec_ptr);
+										  FullTransactionId fxid, UndoRecPtr urec_ptr);
 extern void TPDPageSetUndo(Buffer heapbuf, int trans_slot_id,
 						   bool set_tpd_map_slot, FullTransactionId xid,
 						   UndoRecPtr urec_ptr, OffsetNumber *usedoff, int ucnt);

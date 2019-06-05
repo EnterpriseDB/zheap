@@ -6263,8 +6263,8 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
  * map in TPD.
  */
 void
-PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id, uint32 epoch,
-						   TransactionId xid, UndoRecPtr urec_ptr)
+PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id,
+						   FullTransactionId fxid, UndoRecPtr urec_ptr)
 {
 	ZHeapPageOpaque opaque;
 	Page		page;
@@ -6280,12 +6280,12 @@ PageSetTransactionSlotInfo(Buffer buf, int trans_slot_id, uint32 epoch,
 	{
 		TransInfo  *thistrans = &opaque->transinfo[trans_slot_id - 1];
 
-		thistrans->fxid = FullTransactionIdFromEpochAndXid(epoch, xid);
+		thistrans->fxid = fxid;
 		thistrans->urec_ptr = urec_ptr;
 	}
 	else
 	{
-		TPDPageSetTransactionSlotInfo(buf, trans_slot_id, epoch, xid,
+		TPDPageSetTransactionSlotInfo(buf, trans_slot_id, fxid,
 									  urec_ptr);
 	}
 }
@@ -7159,8 +7159,8 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 				tpd_slot_id = slot_no + ZHEAP_PAGE_TRANS_SLOTS + 1;
 
 				/* Initialize the TPD slot. */
-				TPDPageSetTransactionSlotInfo(buf, tpd_slot_id, 0,
-											  InvalidTransactionId,
+				TPDPageSetTransactionSlotInfo(buf, tpd_slot_id,
+											  InvalidFullTransactionId,
 											  InvalidUndoRecPtr);
 			}
 		}
@@ -7285,8 +7285,8 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 				tpd_slot_id = slot_no + ZHEAP_PAGE_TRANS_SLOTS + 1;
 
 				/* Clear xid from the TPD slot but keep the urec_ptr intact. */
-				TPDPageSetTransactionSlotInfo(buf, tpd_slot_id, 0,
-											  InvalidTransactionId,
+				TPDPageSetTransactionSlotInfo(buf, tpd_slot_id,
+											  InvalidFullTransactionId,
 											  transinfo[slot_no].urec_ptr);
 			}
 		}

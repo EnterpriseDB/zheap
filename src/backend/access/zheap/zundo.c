@@ -536,8 +536,8 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 			START_CRIT_SECTION();
 
 			/* Clear the epoch and xid from the slot. */
-			PageSetTransactionSlotInfo(buffer, slot_no, 0,
-									   InvalidTransactionId, urec_ptr);
+			PageSetTransactionSlotInfo(buffer, slot_no,
+									   InvalidFullTransactionId, urec_ptr);
 			MarkBufferDirty(buffer);
 
 			/* XLOG stuff */
@@ -1019,11 +1019,9 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	 * transaction's urec_ptr.
 	 */
 	if (blk_chain_complete)
-	{
-		epoch = 0;
-		xid = InvalidTransactionId;
-	}
-	PageSetTransactionSlotInfo(buffer, slot_no, epoch, xid, prev_urec_ptr);
+		full_xid = InvalidFullTransactionId;
+
+	PageSetTransactionSlotInfo(buffer, slot_no, full_xid, prev_urec_ptr);
 
 	MarkBufferDirty(buffer);
 
@@ -1039,7 +1037,7 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 		wal_info.tpd_offset_map = tpd_offset_map;
 		wal_info.is_tpd_map_updated = is_tpd_map_updated;
 		wal_info.tpd_map_size = tpd_map_size;
-		wal_info.xid = xid;
+		wal_info.fxid = full_xid;
 		wal_info.need_init = need_init;
 		log_zheap_undo_actions(&wal_info);
 	}
@@ -1121,7 +1119,7 @@ log_zheap_undo_actions(ZHeapUndoActionWALInfo *wal_info)
 		xl_zundo_page xlrec;
 
 		xlrec.urec_ptr = wal_info->prev_urecptr;
-		xlrec.xid = wal_info->xid;
+		xlrec.fxid = wal_info->fxid;
 		xlrec.trans_slot_id = wal_info->slot_id;
 		XLogRegisterData((char *) &xlrec, SizeOfZUndoPage);
 	}

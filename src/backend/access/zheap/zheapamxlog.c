@@ -1006,8 +1006,8 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 			tpd_slot_id = frozen[i] + ZHEAP_PAGE_TRANS_SLOTS + 1;
 
 			/* Clear slot information from the TPD slot. */
-			TPDPageSetTransactionSlotInfo(buffer, tpd_slot_id, 0,
-										  InvalidTransactionId,
+			TPDPageSetTransactionSlotInfo(buffer, tpd_slot_id,
+										  InvalidFullTransactionId,
 										  InvalidUndoRecPtr);
 		}
 
@@ -1101,8 +1101,8 @@ zheap_xlog_invalid_xact_slot(XLogReaderState *record)
 			tpd_slot_id = completed_slots[i] + ZHEAP_PAGE_TRANS_SLOTS + 1;
 
 			/* Clear the XID information from the TPD. */
-			TPDPageSetTransactionSlotInfo(buffer, tpd_slot_id, 0,
-										  InvalidTransactionId,
+			TPDPageSetTransactionSlotInfo(buffer, tpd_slot_id,
+										  InvalidFullTransactionId,
 										  tpd_slots[completed_slots[i]].urec_ptr);
 		}
 
@@ -2010,8 +2010,6 @@ zheap_undo_xlog_page(XLogReaderState *record)
 	/* replay the record for tpd buffer */
 	if (XLogRecHasBlockRef(record, 1))
 	{
-		uint32		xid_epoch = 0;
-
 		/*
 		 * We need to replay the record for TPD only when this record contains
 		 * slot from TPD.
@@ -2022,17 +2020,8 @@ zheap_undo_xlog_page(XLogReaderState *record)
 		if (action == BLK_NEEDS_REDO)
 		{
 			if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
-			{
-				if (TransactionIdIsValid(xlrec->xid))
-				{
-					FullTransactionId fxid = XLogRecGetFullXid(record);
-
-					xid_epoch = EpochFromFullTransactionId(fxid);
-				}
 				TPDPageSetTransactionSlotInfo(buf, xlrec->trans_slot_id,
-											  xid_epoch,
-											  xlrec->xid, xlrec->urec_ptr);
-			}
+											  xlrec->fxid, xlrec->urec_ptr);
 
 			if (offsetmap)
 				TPDPageSetOffsetMap(buf, offsetmap);
@@ -2111,7 +2100,7 @@ zheap_undo_xlog_reset_xid(XLogReaderState *record)
 		if (action == BLK_NEEDS_REDO)
 		{
 			TPDPageSetTransactionSlotInfo(buf, xlrec->trans_slot_id,
-										  0, InvalidTransactionId,
+										  InvalidFullTransactionId,
 										  xlrec->urec_ptr);
 			TPDPageSetLSN(BufferGetPage(buf), lsn);
 		}
