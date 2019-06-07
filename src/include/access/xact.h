@@ -15,6 +15,7 @@
 #define XACT_H
 
 #include "access/transam.h"
+#include "access/undolog.h"
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
@@ -427,6 +428,8 @@ extern XLogRecPtr XactLogAbortRecord(TimestampTz abort_time,
 									 int xactflags, TransactionId twophase_xid,
 									 const char *twophase_gid);
 extern void xact_redo(XLogReaderState *record);
+extern void SetUndoLogXactStart(UndoLogCategory logcat, UndoRecPtr xact_start);
+extern UndoRecPtr GetUndoLogXactStart(UndoLogCategory logcat);
 
 /* xactdesc.c */
 extern void xact_desc(StringInfo buf, XLogReaderState *record);

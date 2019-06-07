@@ -167,6 +167,15 @@ typedef enum TBlockState
 } TBlockState;
 
 /*
+ * Transaction's undo related info.
+ */
+typedef struct XactUndoInfo
+{
+	/* Transaction's header undo record pointer in last undo log. */
+	UndoRecPtr	prevlog_xact_start[UndoLogCategories];
+} XactUndoInfo;
+
+/*
  *	transaction state structure
  */
 typedef struct TransactionStateData
@@ -191,6 +200,7 @@ typedef struct TransactionStateData
 	bool		didLogXid;		/* has xid been included in WAL record? */
 	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
 	bool		chain;			/* start a new block after this one */
+	XactUndoInfo *undo_info;        /* Transaction's undo related undo. */
 	struct TransactionStateData *parent;	/* back link to parent */
 } TransactionStateData;
 
@@ -2023,6 +2033,9 @@ StartTransaction(void)
 	AtStart_GUC();
 	AtStart_Cache();
 	AfterTriggerBeginXact();
+
+	/* Allocate memory for undo related info. */
+	s->undo_info = palloc0(sizeof(XactUndoInfo));
 
 	/*
 	 * done with start processing, set current transaction state to "in
@@ -5976,4 +5989,16 @@ xact_redo(XLogReaderState *record)
 	}
 	else
 		elog(PANIC, "xact_redo: unknown op code %u", info);
+}
+
+void
+SetUndoLogXactStart(UndoLogCategory logcat, UndoRecPtr xact_start)
+{
+	TopTransactionStateData.undo_info->prevlog_xact_start[logcat] = xact_start;
+}
+
+UndoRecPtr
+GetUndoLogXactStart(UndoLogCategory logcat)
+{
+	return TopTransactionStateData.undo_info->prevlog_xact_start[logcat];
 }

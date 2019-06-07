@@ -48,14 +48,6 @@ typedef struct xl_undolog_discard
 	bool		  entirely_discarded;
 } xl_undolog_discard;
 
-/* Switch undo log. */
-typedef struct xl_undolog_switch
-{
-	UndoLogNumber logno;
-	UndoRecPtr prevlog_xact_start;
-	UndoRecPtr prevlog_last_urp;
-} xl_undolog_switch;
-
 extern void undolog_desc(StringInfo buf,XLogReaderState *record);
 extern const char *undolog_identify(uint8 info);
 
