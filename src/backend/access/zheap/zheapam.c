@@ -5252,6 +5252,76 @@ zheap_prepare_undolock(ZHeapPrepareLockUndoInfo *zh_undo_info,
 }
 
 /*
+ * zheap_prepare_undo_multi_insert - prepare the undo record for zheap
+ *	multi-insert operation.
+ *
+ * Returns the undo record pointer (aka location) where the undo record
+ * will be inserted in undo log.
+ */
+UndoRecPtr
+zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
+								int nranges, UnpackedUndoRecord **uur_ptr,
+								XLogReaderState *xlog_record,
+								xl_undolog_meta *undometa)
+{
+	UndoRecPtr	urecptr;
+	int			i;
+	UnpackedUndoRecord *undorecord;
+
+	/*
+	 * For every contiguous free or new offsets, we insert an undo record. In
+	 * the payload data of each undo record, we store the start and end
+	 * available offset for a contiguous range.
+	 */
+	undorecord = (UnpackedUndoRecord *) palloc(nranges
+												* sizeof(UnpackedUndoRecord));
+
+	/* Start UNDO prepare Stuff */
+	for (i = 0; i < nranges; i++)
+	{
+		/* prepare an undo record */
+		undorecord[i].uur_rmid = RM_ZHEAP_ID;
+		undorecord[i].uur_type = UNDO_MULTI_INSERT;
+		undorecord[i].uur_info = 0;
+		undorecord[i].uur_reloid = zh_undo_info->reloid;
+		undorecord[i].uur_prevxid = FrozenTransactionId;
+		undorecord[i].uur_xid = XidFromFullTransactionId(zh_undo_info->fxid);
+		undorecord[i].uur_cid = zh_undo_info->cid;
+		undorecord[i].uur_fork = MAIN_FORKNUM;
+		undorecord[i].uur_blkprev = zh_undo_info->prev_urecptr;
+		undorecord[i].uur_block = zh_undo_info->blkno;
+		undorecord[i].uur_tuple.len = 0;
+		undorecord[i].uur_offset = 0;
+		undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
+	}
+
+	UndoSetPrepareSize(undorecord, nranges,
+					   InRecovery ? zh_undo_info->fxid : InvalidFullTransactionId,
+					   zh_undo_info->undo_persistence,
+					   xlog_record, undometa);
+
+	urecptr = zh_undo_info->prev_urecptr;
+	for (i = 0; i < nranges; i++)
+	{
+		undorecord[i].uur_blkprev = urecptr;
+		urecptr = PrepareUndoInsert(&(undorecord[i]),
+									InRecovery ? zh_undo_info->fxid : InvalidFullTransactionId,
+									zh_undo_info->undo_persistence,
+									xlog_record,
+									NULL);
+
+		initStringInfo(&(undorecord[i].uur_payload));
+	}
+
+	Assert(UndoRecPtrIsValid(urecptr));
+	elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
+		 nranges, zh_undo_info->blkno);
+
+	*uur_ptr = undorecord;
+	return urecptr;
+}
+
+/*
  * log_zheap_insert - Perform XLogInsert for a zheap-insert operation.
  *
  * We need to store enough information in the WAL record so that undo records
@@ -7658,7 +7728,6 @@ zheap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 	bool		need_cids = RelationIsAccessibleInLogicalDecoding(relation);
 	Size		saveFreeSpace;
 	FullTransactionId fxid = GetTopFullTransactionId();
-	TransactionId xid = XidFromFullTransactionId(fxid);
 	xl_undolog_meta undometa;
 	bool		lock_reacquired;
 	bool		skip_undo;
@@ -7763,6 +7832,8 @@ reacquire_buffer:
 		 */
 		if (!skip_undo)
 		{
+			ZHeapPrepareUndoInfo zh_undo_info;
+
 			/*
 			 * The transaction information of tuple needs to be set in
 			 * transaction slot, so needs to reserve the slot before
@@ -7796,53 +7867,17 @@ reacquire_buffer:
 			/* transaction slot must be reserved before adding tuple to page */
 			Assert(trans_slot_id != InvalidXactSlotId);
 
-			/*
-			 * For every contiguous free or new offsets, we insert an undo
-			 * record. In the payload data of each undo record, we store the
-			 * start and end available offset for a contiguous range.
-			 */
-			undorecord = (UnpackedUndoRecord *) palloc(zfree_offset_ranges->nranges
-													   * sizeof(UnpackedUndoRecord));
-			/* Start UNDO prepare Stuff */
-			urecptr = prev_urecptr;
-			for (i = 0; i < zfree_offset_ranges->nranges; i++)
-			{
-				/* prepare an undo record */
-				undorecord[i].uur_rmid = RM_ZHEAP_ID;
-				undorecord[i].uur_type = UNDO_MULTI_INSERT;
-				undorecord[i].uur_info = 0;
-				undorecord[i].uur_reloid = relation->rd_id;
-				undorecord[i].uur_prevxid = FrozenTransactionId;
-				undorecord[i].uur_xid = xid;
-				undorecord[i].uur_cid = cid;
-				undorecord[i].uur_fork = MAIN_FORKNUM;
-				undorecord[i].uur_blkprev = urecptr;
-				undorecord[i].uur_block = BufferGetBlockNumber(buffer);
-				undorecord[i].uur_tuple.len = 0;
-				undorecord[i].uur_offset = 0;
-				undorecord[i].uur_payload.len = 2 * sizeof(OffsetNumber);
-			}
+			/* Prepare an undo record for this operation. */
+			zh_undo_info.reloid = relation->rd_id;
+			zh_undo_info.blkno = BufferGetBlockNumber(buffer);
+			zh_undo_info.offnum = InvalidOffsetNumber;
+			zh_undo_info.prev_urecptr = prev_urecptr;
+			zh_undo_info.fxid = fxid;
+			zh_undo_info.cid = cid;
+			zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
 
-			UndoSetPrepareSize(undorecord, zfree_offset_ranges->nranges,
-							   InvalidFullTransactionId,
-							   UndoPersistenceForRelation(relation), NULL, &undometa);
-
-			for (i = 0; i < zfree_offset_ranges->nranges; i++)
-			{
-				undorecord[i].uur_blkprev = urecptr;
-				urecptr = PrepareUndoInsert(&undorecord[i],
-											InvalidFullTransactionId,
-											UndoPersistenceForRelation(relation),
-											NULL,
-											NULL);
-
-				initStringInfo(&undorecord[i].uur_payload);
-			}
-
-			Assert(UndoRecPtrIsValid(urecptr));
-			elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
-				 zfree_offset_ranges->nranges, BufferGetBlockNumber(buffer));
-			/* End UNDO prepare Stuff */
+			urecptr = zheap_prepare_undo_multi_insert(&zh_undo_info, zfree_offset_ranges->nranges, &undorecord,
+													  NULL, &undometa);
 		}
 
 		/*

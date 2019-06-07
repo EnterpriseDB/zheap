@@ -342,3 +342,21 @@ SELECT relfrozenxid, relminmxid FROM pg_class WHERE oid = 'testvacuum'::regclass
 
 -- and that there's still content after this ordeal
 SELECT * FROM testvacuum ORDER BY id;
+
+-- Test multi insert
+CREATE TABLE test_multi_insert(id int) USING zheap;
+INSERT INTO test_multi_insert SELECT generate_series(1,10);
+DELETE FROM test_multi_insert WHERE id%2=0;
+VACUUM test_multi_insert;
+BEGIN;
+COPY test_multi_insert FROM STDIN;
+11
+12
+13
+14
+15
+\.
+SELECT * FROM test_multi_insert;
+ROLLBACK;
+SELECT * FROM test_multi_insert;
+DROP TABLE test_multi_insert;

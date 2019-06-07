@@ -272,6 +272,9 @@ extern UndoRecPtr zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_up_und
 extern UndoRecPtr zheap_prepare_undolock(ZHeapPrepareLockUndoInfo *zh_undo_info,
 										 UnpackedUndoRecord *undorecord,
 										 XLogReaderState *xlog_record, xl_undolog_meta *undometa);
+extern UndoRecPtr zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
+								int nranges, UnpackedUndoRecord **uur_ptr,
+								XLogReaderState *xlog_record, xl_undolog_meta *undometa);
 
 
 /* Pruning related API's (prunezheap.c) */
