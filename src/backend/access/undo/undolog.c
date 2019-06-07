@@ -611,8 +611,7 @@ UndoLogAllocate(UndoLogAllocContext *context,
 				uint16 size,
 				bool *need_xact_header,
 				UndoRecPtr *last_xact_start,
-				UndoRecPtr *prevlog_xact_start,
-				UndoRecPtr *prevlog_insert_urp)
+				UndoRecPtr *prevlog_xact_start)
 {
 	Session *session = CurrentSession;
 	UndoLogSlot *slot;
@@ -718,11 +717,8 @@ UndoLogAllocate(UndoLogAllocContext *context,
 				 * store the previous log number in new log.  See detailed
 				 * comments in undorecord.c file header.
 				 */
-				*prevlog_xact_start =
-					MakeUndoRecPtr(slot->logno,
-								   slot->meta.unlogged.this_xact_start);
-				*prevlog_insert_urp =
-					MakeUndoRecPtr(slot->logno, slot->meta.unlogged.insert);
+				*prevlog_xact_start = MakeUndoRecPtr(slot->logno,
+												 slot->meta.unlogged.this_xact_start);
 			}
 			elog(DEBUG1, "undo log %u is full, switching to a new one", slot->logno);
 			slot = NULL;
@@ -779,6 +775,23 @@ UndoLogAllocate(UndoLogAllocContext *context,
 	*last_xact_start =
 		MakeUndoRecPtr(slot->logno, slot->meta.unlogged.last_xact_start);
 
+	/*
+	 * If this is the first record for the transaction in this log then we need
+	 * to check for the log switch.  If there is log switch during this
+	 * allocation then set this in the top transaction state's indp info so that
+	 * if this insertion is not successful then we can get this information for
+	 * the next insert under this transaction.
+	 */
+	if (*need_xact_header)
+	{
+		XactUndoInfo	*undoinfo = GetTopTransactionUndoInfo();
+
+		if (UndoRecPtrIsValid(*prevlog_xact_start))
+			undoinfo->prevlog_xact_start[context->category] = *prevlog_xact_start;
+		else if (UndoRecPtrIsValid(undoinfo->prevlog_xact_start[context->category]))
+			*prevlog_xact_start = undoinfo->prevlog_xact_start[context->category];
+	}
+
 	return context->try_location;
 }
 
@@ -810,8 +823,7 @@ UndoLogAllocateInRecovery(UndoLogAllocContext *context,
 						  uint16 size,
 						  bool *need_xact_header,
 						  UndoRecPtr *last_xact_start,
-						  UndoRecPtr *prevlog_xact_start,
-						  UndoRecPtr *prevlog_last_urp)
+						  UndoRecPtr *prevlog_xact_start)
 {
 	UndoLogSlot *slot;
 
@@ -849,6 +861,8 @@ UndoLogAllocateInRecovery(UndoLogAllocContext *context,
 			*need_xact_header = false;
 			return try_offset;
 		}
+
+		*prevlog_xact_start = MakeUndoRecPtr(slot->logno, slot->meta.unlogged.this_xact_start);
 
 		/* Full.  Ignore try_location and find the next log that was used. */
 		Assert(slot->meta.status == UNDO_LOG_STATUS_FULL);
@@ -929,22 +943,23 @@ UndoLogAllocateInRecovery(UndoLogAllocContext *context,
 			 * allocation.  If we don't, something is screwed up.
 			 */
 			if (UndoLogOffsetPlusUsableBytes(slot->meta.unlogged.insert, size) > slot->meta.end)
-				elog(ERROR,
-					 "cannot allocate %d bytes in undo log %d",
-					 (int) size, slot->logno);
+			{
+				/*
+				 * Full.  Ignore try_location and find the next log that was
+				 * used.
+				 */
+				Assert(slot->meta.status == UNDO_LOG_STATUS_FULL);
+				*prevlog_xact_start = MakeUndoRecPtr(slot->logno,
+										slot->meta.unlogged.this_xact_start);
+				++context->recovery_block_id;
+				continue;
+			}
 
 			*need_xact_header =
 				context->try_location == InvalidUndoRecPtr &&
 				slot->meta.unlogged.insert == slot->meta.unlogged.this_xact_start;
 			*last_xact_start = slot->meta.unlogged.last_xact_start;
 			context->recovery_logno = slot->logno;
-
-			/* Read log switch information from meta and reset it. */
-			*prevlog_xact_start = slot->meta.unlogged.prevlog_xact_start;
-			*prevlog_last_urp = slot->meta.unlogged.prevlog_last_urp;
-
-			slot->meta.unlogged.prevlog_xact_start = InvalidUndoRecPtr;
-			slot->meta.unlogged.prevlog_last_urp = InvalidUndoRecPtr;
 
 			return MakeUndoRecPtr(slot->logno, slot->meta.unlogged.insert);
 		}
@@ -1263,43 +1278,6 @@ UndoLogGetOldestRecord(UndoLogNumber logno, bool *full)
 	LWLockRelease(&slot->mutex);
 
 	return result;
-}
-
-/*
- * UndoLogSwitchSetPrevLogInfo - Store previous log info on the log switch and
- * wal log the same.
- */
-void
-UndoLogSwitchSetPrevLogInfo(UndoLogNumber logno, UndoRecPtr prevlog_xact_start,
-							UndoRecPtr prevlog_last_urp)
-{
-	UndoLogSlot *slot;
-
-	slot = find_undo_log_slot(logno, false);
-
-	/*
-	 * Either we're in recovery, or is a log we are currently attached to, or
-	 * recently detached from because it was full.
-	 */
-	Assert(AmAttachedToUndoLogSlot(slot));
-
-	LWLockAcquire(&slot->mutex, LW_EXCLUSIVE);
-	slot->meta.unlogged.prevlog_xact_start = prevlog_last_urp;
-	slot->meta.unlogged.prevlog_last_urp = prevlog_last_urp;
-	LWLockRelease(&slot->mutex);
-
-	/* Wal log the log switch. */
-	{
-		xl_undolog_switch xlrec;
-
-		xlrec.logno = logno;
-		xlrec.prevlog_xact_start = prevlog_last_urp;
-		xlrec.prevlog_last_urp = prevlog_xact_start;
-
-		XLogBeginInsert();
-		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
-		XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_SWITCH);
-	}
 }
 
 /*
@@ -2556,25 +2534,6 @@ undolog_xlog_discard(XLogReaderState *record)
 		free_undo_log_slot(slot);
 }
 
-/*
- * replay the switch of a undo log
- */
-static void
-undolog_xlog_switch(XLogReaderState *record)
-{
-	xl_undolog_switch *xlrec = (xl_undolog_switch *) XLogRecGetData(record);
-	UndoLogSlot *slot;
-
-	slot = find_undo_log_slot(xlrec->logno, false);
-
-	/*
-	 * Restore the log switch information in the MyUndoLogState this will be
-	 * reset by following UndoLogAllocateDuringRecovery.
-	 */
-	slot->meta.unlogged.prevlog_xact_start = xlrec->prevlog_xact_start;
-	slot->meta.unlogged.prevlog_last_urp = xlrec->prevlog_last_urp;
-}
-
 void
 undolog_redo(XLogReaderState *record)
 {
@@ -2591,8 +2550,6 @@ undolog_redo(XLogReaderState *record)
 		case XLOG_UNDOLOG_DISCARD:
 			undolog_xlog_discard(record);
 			break;
-		case XLOG_UNDOLOG_SWITCH:
-			undolog_xlog_switch(record);
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);
 	}

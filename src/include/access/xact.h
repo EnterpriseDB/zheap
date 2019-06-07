@@ -15,6 +15,7 @@
 #define XACT_H
 
 #include "access/transam.h"
+#include "access/undolog.h"
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
@@ -126,6 +127,15 @@ typedef enum
 	SUBXACT_EVENT_ABORT_SUB,
 	SUBXACT_EVENT_PRE_COMMIT_SUB
 } SubXactEvent;
+
+/*
+ * Transaction's undo related info.
+ */
+typedef struct XactUndoInfo
+{
+	/* Transaction's header undo record pointer in last undo log. */
+	UndoRecPtr	prevlog_xact_start[UndoLogCategories];
+} XactUndoInfo;
 
 typedef void (*SubXactCallback) (SubXactEvent event, SubTransactionId mySubid,
 								 SubTransactionId parentSubid, void *arg);
@@ -355,6 +365,7 @@ extern bool IsTransactionState(void);
 extern bool IsAbortedTransactionBlockState(void);
 extern TransactionId GetTopTransactionId(void);
 extern TransactionId GetTopTransactionIdIfAny(void);
+extern XactUndoInfo* GetTopTransactionUndoInfo(void);
 extern TransactionId GetCurrentTransactionId(void);
 extern TransactionId GetCurrentTransactionIdIfAny(void);
 extern TransactionId GetStableLatestTransactionId(void);

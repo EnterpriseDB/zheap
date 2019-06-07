@@ -211,16 +211,6 @@ typedef struct UndoLogUnloggedMetaData
 	UndoLogOffset last_xact_start;	/* last transaction's first byte in this log */
 	UndoLogOffset this_xact_start;	/* this transaction's first byte in this log */
 	TransactionId xid;				/* currently attached/writing xid */
-
-	/*
-	 * Below two variable are used during recovery when transaction's undo
-	 * records are split across undo logs.  Replay of switch will restore
-	 * these two undo record pointers which will be reset on next allocation
-	 * during recovery. */
-	UndoRecPtr	prevlog_xact_start; /* Transaction's start undo record pointer
-									 * in the previous log. */
-	UndoRecPtr	prevlog_last_urp;	/* Transaction's last undo record pointer in
-									 * the previous log. */
 } UndoLogUnloggedMetaData;
 
 /*
@@ -409,15 +399,13 @@ extern UndoRecPtr UndoLogAllocate(UndoLogAllocContext *context,
 								  uint16 size,
 								  bool *need_xact_header,
 								  UndoRecPtr *last_xact_start,
-								  UndoRecPtr *prevlog_xact_start,
-								  UndoRecPtr *prevlog_insert_urp);
+								  UndoRecPtr *prevlog_xact_start);
 extern UndoRecPtr UndoLogAllocateInRecovery(UndoLogAllocContext *context,
 											TransactionId xid,
 											uint16 size,
 											bool *need_xact_header,
 											UndoRecPtr *last_xact_start,
-											UndoRecPtr *prevlog_xact_start,
-											UndoRecPtr *prevlog_last_urp);
+											UndoRecPtr *prevlog_xact_start);
 extern void UndoLogAdvance(UndoLogAllocContext *context, size_t size);
 extern void UndoLogAdvanceFinal(UndoRecPtr insertion_point, size_t size);
 extern bool UndoLogDiscard(UndoRecPtr discard_point, TransactionId xid);
@@ -473,9 +461,6 @@ extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
 
 extern UndoRecPtr UndoLogGetLastXactStartPoint(UndoLogNumber logno);
 extern UndoRecPtr UndoLogGetNextInsertPtr(UndoLogNumber logno);
-extern void UndoLogSwitchSetPrevLogInfo(UndoLogNumber logno,
-										UndoRecPtr prevlog_last_urp,
-										UndoRecPtr prevlog_xact_start);
 extern void UndoLogSetLSN(XLogRecPtr lsn);
 void UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);
 /* Redo interface. */

@@ -191,6 +191,7 @@ typedef struct TransactionStateData
 	bool		didLogXid;		/* has xid been included in WAL record? */
 	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
 	bool		chain;			/* start a new block after this one */
+	XactUndoInfo *undo_info;        /* Transaction's undo related undo. */
 	struct TransactionStateData *parent;	/* back link to parent */
 } TransactionStateData;
 
@@ -410,6 +411,17 @@ TransactionId
 GetTopTransactionIdIfAny(void)
 {
 	return XidFromFullTransactionId(XactTopFullTransactionId);
+}
+
+/*
+ *	GetTopTransactionUndoInfo
+ *
+ * This will return the undo information stored in the top transaction state.
+ */
+XactUndoInfo*
+GetTopTransactionUndoInfo(void)
+{
+	return TopTransactionStateData.undo_info;
 }
 
 /*
@@ -2023,6 +2035,9 @@ StartTransaction(void)
 	AtStart_GUC();
 	AtStart_Cache();
 	AfterTriggerBeginXact();
+
+	/* Allocate memory for undo related info. */
+	s->undo_info = palloc0(sizeof(XactUndoInfo));
 
 	/*
 	 * done with start processing, set current transaction state to "in
