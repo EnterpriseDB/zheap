@@ -940,11 +940,11 @@ UndoLogAllocateInRecovery(UndoLogAllocContext *context,
 			context->recovery_logno = slot->logno;
 
 			/* Read log switch information from meta and reset it. */
-			*prevlog_xact_start = slot->meta.unlogged.prevlog_xact_start;
-			*prevlog_last_urp = slot->meta.unlogged.prevlog_last_urp;
+			*prevlog_xact_start = slot->meta.prevlog_xact_start;
+			*prevlog_last_urp = slot->meta.prevlog_last_urp;
 
-			slot->meta.unlogged.prevlog_xact_start = InvalidUndoRecPtr;
-			slot->meta.unlogged.prevlog_last_urp = InvalidUndoRecPtr;
+			slot->meta.prevlog_xact_start = InvalidUndoRecPtr;
+			slot->meta.prevlog_last_urp = InvalidUndoRecPtr;
 
 			return MakeUndoRecPtr(slot->logno, slot->meta.unlogged.insert);
 		}
@@ -1284,8 +1284,8 @@ UndoLogSwitchSetPrevLogInfo(UndoLogNumber logno, UndoRecPtr prevlog_xact_start,
 	Assert(AmAttachedToUndoLogSlot(slot));
 
 	LWLockAcquire(&slot->mutex, LW_EXCLUSIVE);
-	slot->meta.unlogged.prevlog_xact_start = prevlog_last_urp;
-	slot->meta.unlogged.prevlog_last_urp = prevlog_last_urp;
+	slot->meta.prevlog_xact_start = prevlog_xact_start;
+	slot->meta.prevlog_last_urp = prevlog_last_urp;
 	LWLockRelease(&slot->mutex);
 
 	/* Wal log the log switch. */
@@ -1293,7 +1293,7 @@ UndoLogSwitchSetPrevLogInfo(UndoLogNumber logno, UndoRecPtr prevlog_xact_start,
 		xl_undolog_switch xlrec;
 
 		xlrec.logno = logno;
-		xlrec.prevlog_xact_start = prevlog_last_urp;
+		xlrec.prevlog_xact_start = prevlog_xact_start;
 		xlrec.prevlog_last_urp = prevlog_xact_start;
 
 		XLogBeginInsert();
@@ -2571,8 +2571,8 @@ undolog_xlog_switch(XLogReaderState *record)
 	 * Restore the log switch information in the MyUndoLogState this will be
 	 * reset by following UndoLogAllocateDuringRecovery.
 	 */
-	slot->meta.unlogged.prevlog_xact_start = xlrec->prevlog_xact_start;
-	slot->meta.unlogged.prevlog_last_urp = xlrec->prevlog_last_urp;
+	slot->meta.prevlog_xact_start = xlrec->prevlog_xact_start;
+	slot->meta.prevlog_last_urp = xlrec->prevlog_last_urp;
 }
 
 void

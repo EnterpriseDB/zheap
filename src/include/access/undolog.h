@@ -211,16 +211,6 @@ typedef struct UndoLogUnloggedMetaData
 	UndoLogOffset last_xact_start;	/* last transaction's first byte in this log */
 	UndoLogOffset this_xact_start;	/* this transaction's first byte in this log */
 	TransactionId xid;				/* currently attached/writing xid */
-
-	/*
-	 * Below two variable are used during recovery when transaction's undo
-	 * records are split across undo logs.  Replay of switch will restore
-	 * these two undo record pointers which will be reset on next allocation
-	 * during recovery. */
-	UndoRecPtr	prevlog_xact_start; /* Transaction's start undo record pointer
-									 * in the previous log. */
-	UndoRecPtr	prevlog_last_urp;	/* Transaction's last undo record pointer in
-									 * the previous log. */
 } UndoLogUnloggedMetaData;
 
 /*
@@ -241,6 +231,16 @@ typedef struct UndoLogMetaData
 	UndoLogStatus status;
 	UndoLogOffset end;				/* one past end of highest segment */
 	UndoLogOffset discard;			/* oldest data needed (tail) */
+
+	/*
+	 * Below two variable are used during recovery when transaction's undo
+	 * records are split across undo logs.  Replay of switch will restore
+	 * these two undo record pointers which will be reset on next allocation
+	 * during recovery. */
+	UndoRecPtr	prevlog_xact_start; /* Transaction's start undo record pointer
+									 * in the previous log. */
+	UndoRecPtr	prevlog_last_urp;	/* Transaction's last undo record pointer in
+									 * the previous log. */
 } UndoLogMetaData;
 
 /*
