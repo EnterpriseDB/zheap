@@ -1985,7 +1985,7 @@ zheap_undo_xlog_page(XLogReaderState *record)
 		if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
 		{
 			xlrec = (xl_zundo_page *) data;
-			data += sizeof(xl_zundo_page);
+			data += SizeOfZUndoPage;
 		}
 		if (*flags & XLU_CONTAINS_TPD_OFFSET_MAP)
 			offsetmap = data;
