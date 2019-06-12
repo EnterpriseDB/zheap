@@ -6447,50 +6447,6 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, FullTransactionId fxid,
 }
 
 /*
- * PageGetTransactionSlotInfo - Get the transaction slot info for the given
- *	slot no.
- */
-void
-PageGetTransactionSlotInfo(Buffer buf, int slot_no, FullTransactionId *fxid,
-						   UndoRecPtr *urec_ptr, bool keepTPDBufLock)
-{
-	ZHeapPageOpaque opaque;
-	Page		page;
-	PageHeader	phdr;
-
-	page = BufferGetPage(buf);
-	phdr = (PageHeader) page;
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-
-	/*
-	 * Fetch the required information from the transaction slot. The
-	 * transaction slot can either be on the heap page or TPD page.
-	 */
-	if (slot_no < ZHEAP_PAGE_TRANS_SLOTS ||
-		(slot_no == ZHEAP_PAGE_TRANS_SLOTS &&
-		 !ZHeapPageHasTPDSlot(phdr)))
-	{
-		TransInfo  *thistrans = &opaque->transinfo[slot_no - 1];
-
-		if (fxid)
-			*fxid = thistrans->fxid;
-		if (urec_ptr)
-			*urec_ptr = thistrans->urec_ptr;
-	}
-	else
-	{
-		Assert((ZHeapPageHasTPDSlot(phdr)));
-		(void) TPDPageGetTransactionSlotInfo(buf,
-											 slot_no,
-											 InvalidOffsetNumber,
-											 fxid,
-											 urec_ptr,
-											 false,
-											 true);
-	}
-}
-
-/*
  *  MultiPageReserveTransSlot - Reserve the transaction slots on old and
  *		new buffer.
  *
