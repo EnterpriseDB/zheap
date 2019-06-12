@@ -30,7 +30,7 @@ static void
 zheap_xlog_insert(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	xl_undo_header *xlundohdr;
+	xl_undo_header *xlundohdr = NULL;
 	xl_zheap_insert *xlrec = (xl_zheap_insert *) XLogRecGetData(record);
 	Buffer		buffer;
 	Page		page;

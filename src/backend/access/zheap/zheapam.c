@@ -8529,7 +8529,7 @@ zheap_compute_xid_horizon_for_tuples(Relation rel,
 	TransactionId latestRemovedXid = InvalidTransactionId;
 	BlockNumber hblkno;
 	Buffer		buf = InvalidBuffer;
-	Page		hpage;
+	Page		hpage = NULL;
 
 	/*
 	 * Sort to avoid repeated lookups for the same page, and to make it more
