@@ -1334,19 +1334,34 @@ check_tup_satisfies_update:
 									   &single_locker_trans_slot, false,
 									   snapshot, &in_place_updated_or_locked);
 	/* Determine columns modified by the update, if not yet done. */
-	if (!computed_modified_attrs && oldtup.t_data != NULL)
+	if (!computed_modified_attrs)
 	{
-		computed_modified_attrs = true;
-		modified_attrs =
-			ZHeapDetermineModifiedColumns(relation, interesting_attrs,
-										  &oldtup, newtup);
+		if (oldtup.t_data != NULL)
+		{
+			computed_modified_attrs = true;
+			modified_attrs =
+				ZHeapDetermineModifiedColumns(relation, interesting_attrs,
+											  &oldtup, newtup);
 
-		/*
-		 * Similar to heap, if we're not updating any "key" column, we can
-		 * grab weaker lock type.  See heap_update.
-		 */
-		key_intact = !bms_overlap(modified_attrs, key_attrs);
-		*lockmode = key_intact ? LockTupleNoKeyExclusive : LockTupleExclusive;
+			/*
+			 * Similar to heap, if we're not updating any "key" column, we can
+			 * grab weaker lock type.  See heap_update.
+			 */
+			key_intact = !bms_overlap(modified_attrs, key_attrs);
+			*lockmode = key_intact ? LockTupleNoKeyExclusive :
+				LockTupleExclusive;
+		}
+		else
+		{
+			/*
+			 * Since tuple data is gone let's be conservative about lock mode.
+			 *
+			 * XXX We could optimize here by checking whether the key column is
+			 * not updated and if so, then use lower lock level, but this case
+			 * should be rare enough that it won't matter.
+			 */
+			*lockmode = LockTupleExclusive;
+		}
 	}
 
 	if (result == TM_Invisible)
