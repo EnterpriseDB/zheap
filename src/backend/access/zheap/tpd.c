@@ -1326,7 +1326,7 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 				last_tpdopaque;
 	TPDEntryHeader old_tpd_entry;
 	Buffer		last_used_tpd_buf = InvalidBuffer;
-	Buffer		tpd_buf;
+	Buffer		tpd_buf = InvalidBuffer;
 	Page		tpdpage;
 	BlockNumber prevblk = InvalidBlockNumber;
 	BlockNumber nextblk = InvalidBlockNumber;

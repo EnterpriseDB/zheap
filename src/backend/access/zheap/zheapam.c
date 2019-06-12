@@ -1239,8 +1239,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 				newbuf,
 				vmbuffer = InvalidBuffer,
 				vmbuffer_new = InvalidBuffer;
-	Size		newtupsize,
-				oldtupsize,
+	Size		newtupsize = 0,
+				oldtupsize = 0,
 				pagefree;
 	int			oldtup_new_trans_slot,
 				newtup_trans_slot,
@@ -1264,7 +1264,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	bool		locker_remains = false;
 	bool		any_multi_locker_member_alive = false;
 	bool		lock_reacquired;
-	bool		need_toast;
+	bool		need_toast = false;
 	bool		hasSubXactLock = false;
 	xl_undolog_meta undometa;
 	uint8		vm_status;

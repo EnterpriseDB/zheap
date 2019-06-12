@@ -639,7 +639,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 	TransInfo  *trans_slots = NULL;
 	FullTransactionId fxid;
 	FullTransactionId oldestXidWithEpochHavingUndo;
-	int			trans_slot_id;
+	int			trans_slot_id = InvalidXactSlotId;
 	uint8		uur_type;
 	int			slot_no;
 	int			total_trans_slots = 0;
