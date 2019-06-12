@@ -6201,7 +6201,6 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 	ZHeapPageOpaque opaque;
 	Page		page;
 	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
-	uint32		epoch = 0;
 
 	zinfo->trans_slot = trans_slot_id;
 	zinfo->cid = InvalidCommandId;
@@ -6216,7 +6215,7 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 	 */
 	if (trans_slot_id == ZHTUP_SLOT_FROZEN)
 	{
-		zinfo->xid = InvalidTransactionId;
+		zinfo->epoch_xid = InvalidFullTransactionId;
 		zinfo->urec_ptr = InvalidUndoRecPtr;
 	}
 	else if (trans_slot_id < ZHEAP_PAGE_TRANS_SLOTS ||
@@ -6225,8 +6224,7 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 	{
 		TransInfo  *thistrans = &opaque->transinfo[trans_slot_id - 1];
 
-		epoch = EpochFromFullTransactionId(thistrans->fxid);
-		zinfo->xid = XidFromFullTransactionId(thistrans->fxid);
+		zinfo->epoch_xid = thistrans->fxid;
 		zinfo->urec_ptr = thistrans->urec_ptr;
 	}
 	else
@@ -6245,8 +6243,7 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 				TPDPageGetTransactionSlotInfo(buf,
 											  trans_slot_id,
 											  InvalidOffsetNumber,
-											  &epoch,
-											  &zinfo->xid,
+											  &zinfo->epoch_xid,
 											  &zinfo->urec_ptr,
 											  NoTPDBufLock,
 											  false);
@@ -6258,15 +6255,14 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 				TPDPageGetTransactionSlotInfo(buf,
 											  trans_slot_id,
 											  offset,
-											  &epoch,
-											  &zinfo->xid,
+											  &zinfo->epoch_xid,
 											  &zinfo->urec_ptr,
 											  NoTPDBufLock,
 											  false);
 		}
 	}
 
-	zinfo->epoch_xid = FullTransactionIdFromEpochAndXid(epoch, zinfo->xid);
+	zinfo->xid = XidFromFullTransactionId(zinfo->epoch_xid);
 }
 
 /*
@@ -6455,9 +6451,8 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, FullTransactionId fxid,
  *	slot no.
  */
 void
-PageGetTransactionSlotInfo(Buffer buf, int slot_no, uint32 *epoch,
-						   TransactionId *xid, UndoRecPtr *urec_ptr,
-						   bool keepTPDBufLock)
+PageGetTransactionSlotInfo(Buffer buf, int slot_no, FullTransactionId *fxid,
+						   UndoRecPtr *urec_ptr, bool keepTPDBufLock)
 {
 	ZHeapPageOpaque opaque;
 	Page		page;
@@ -6477,10 +6472,8 @@ PageGetTransactionSlotInfo(Buffer buf, int slot_no, uint32 *epoch,
 	{
 		TransInfo  *thistrans = &opaque->transinfo[slot_no - 1];
 
-		if (epoch)
-			*epoch = EpochFromFullTransactionId(thistrans->fxid);
-		if (xid)
-			*xid = XidFromFullTransactionId(thistrans->fxid);
+		if (fxid)
+			*fxid = thistrans->fxid;
 		if (urec_ptr)
 			*urec_ptr = thistrans->urec_ptr;
 	}
@@ -6490,8 +6483,7 @@ PageGetTransactionSlotInfo(Buffer buf, int slot_no, uint32 *epoch,
 		(void) TPDPageGetTransactionSlotInfo(buf,
 											 slot_no,
 											 InvalidOffsetNumber,
-											 epoch,
-											 xid,
+											 fxid,
 											 urec_ptr,
 											 false,
 											 true);
@@ -6963,7 +6955,7 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 			 * info from the TPD.
 			 */
 			trans_slot = TPDPageGetTransactionSlotInfo(buf, trans_slot, offnum,
-													   NULL, NULL, NULL, false,
+													   NULL, NULL, false,
 													   false);
 
 			/*

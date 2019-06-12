@@ -110,7 +110,7 @@ extern int	TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumbe
 								   FullTransactionId fxid, UndoRecPtr *urec_ptr,
 								   bool keepTPDBufLock, bool checkOffset);
 extern int	TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
-										  OffsetNumber offset, uint32 *epoch, TransactionId *xid,
+										  OffsetNumber offset, FullTransactionId *fxid,
 										  UndoRecPtr *urec_ptr, bool NoTPDBufLock, bool keepTPDBufLock);
 extern void TPDPageSetTransactionSlotInfo(Buffer heapbuf, int trans_slot_id,
 										  FullTransactionId fxid, UndoRecPtr urec_ptr);

@@ -226,7 +226,7 @@ extern int	PageGetTransactionSlotId(Relation rel, Buffer buf,
 									 bool keepTPDBufLock, bool locktpd,
 									 bool *tpd_page_locked);
 extern void PageGetTransactionSlotInfo(Buffer buf, int slot_no,
-									   uint32 *epoch, TransactionId *xid,
+									   FullTransactionId *fxid,
 									   UndoRecPtr *urec_ptr,
 									   bool keepTPDBufLock);
 extern TransInfo *GetTransactionsSlotsForPage(Relation rel, Buffer buf,

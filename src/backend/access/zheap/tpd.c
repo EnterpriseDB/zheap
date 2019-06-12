@@ -2337,9 +2337,9 @@ TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
  */
 int
 TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
-							  OffsetNumber offset, uint32 *epoch,
-							  TransactionId *xid, UndoRecPtr *urec_ptr,
-							  bool NoTPDBufLock, bool keepTPDBufLock)
+							  OffsetNumber offset, FullTransactionId *fxid,
+							  UndoRecPtr *urec_ptr, bool NoTPDBufLock,
+							  bool keepTPDBufLock)
 {
 	TransInfo	trans_slot_info;
 	RelFileNode rnode;
@@ -2516,10 +2516,8 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 		   sizeof(TransInfo));
 
 	/* Update the required output */
-	if (epoch)
-		*epoch = EpochFromFullTransactionId(trans_slot_info.fxid);
-	if (xid)
-		*xid = XidFromFullTransactionId(trans_slot_info.fxid);
+	if (fxid)
+		*fxid = trans_slot_info.fxid;
 	if (urec_ptr)
 		*urec_ptr = trans_slot_info.urec_ptr;
 
@@ -2534,10 +2532,8 @@ slot_is_frozen:
 
 slot_is_frozen_and_buf_not_locked:
 	trans_slot_id = ZHTUP_SLOT_FROZEN;
-	if (epoch)
-		*epoch = 0;
-	if (xid)
-		*xid = InvalidTransactionId;
+	if (fxid)
+		*fxid = InvalidFullTransactionId;
 	if (urec_ptr)
 		*urec_ptr = InvalidUndoRecPtr;
 
