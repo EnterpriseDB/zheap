@@ -84,8 +84,6 @@ static UnpackedUndoRecord *UndoGetOneRecord(UnpackedUndoRecord *urec,
 											Buffer *prevbuf);
 static int	UndoRecordPrepareTransInfo(UndoRecordInsertContext *context,
 									   UndoRecPtr xact_urp, int size, int offset);
-static void UndoRecordUpdateTransInfo(UndoRecordInsertContext *context,
-									  int idx);
 static void UndoRecordPrepareUpdateNext(UndoRecordInsertContext *context,
 										UndoRecPtr urecptr, UndoRecPtr xact_urp);
 static int	UndoGetBufferSlot(UndoRecordInsertContext *context,
@@ -285,6 +283,41 @@ UndoRecordPrepareUpdateNext(UndoRecordInsertContext *context,
 }
 
 /*
+ * Prepare to update the undo apply progress in the transaction header.
+ */
+void
+UndoRecordPrepareApplyProgress(UndoRecordInsertContext *context,
+							   UndoRecPtr xact_urp, BlockNumber progress)
+{
+	int			index = 0;
+	int			offset;
+
+	Assert(UndoRecPtrIsValid(xact_urp));
+
+	/*
+	 * Temporary undo logs are discarded on transaction commit so we don't
+	 * need to do anything.
+	 */
+	if (UndoRecPtrGetCategory(xact_urp) == UNDO_TEMP)
+		return;
+
+	/* It shouldn't be discarded. */
+	Assert(!UndoRecPtrIsDiscarded(xact_urp));
+
+	/* Compute the offset of the uur_next in the undo record. */
+	offset = SizeOfUndoRecordHeader +
+					offsetof(UndoRecordTransaction, urec_progress);
+
+	index = UndoRecordPrepareTransInfo(context, xact_urp,
+									   sizeof(UndoRecPtr), offset);
+	/*
+	 * Set the undo action progress in xact_urec_info, this will be overwritten
+	 * in actual undo record during update phase.
+	 */
+	context->xact_urec_info[index].progress = progress;
+}
+
+/*
  * Overwrite the first undo record of the previous transaction to update its
  * next pointer.
  *
@@ -292,7 +325,7 @@ UndoRecordPrepareUpdateNext(UndoRecordInsertContext *context,
  * This must be called under the critical section.  This will just overwrite the
  * header of the undo record.
  */
-static void
+void
 UndoRecordUpdateTransInfo(UndoRecordInsertContext *context, int idx)
 {
 	Page		page = NULL;

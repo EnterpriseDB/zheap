@@ -223,8 +223,5 @@ extern FullTransactionId RollbackHTGetOldestFullXid(FullTransactionId oldestXmin
 /* functions exposed from undoaction.c */
 extern void execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 					 UndoRecPtr to_urecptr, bool nopartial);
-extern bool execute_undo_actions_page(UndoRecInfo *urp_array, int first_idx,
-						  int last_idx, Oid reloid, FullTransactionId full_xid,
-						  BlockNumber blkno, bool blk_chain_complete);
 
 #endif							/* _UNDOREQUEST_H */
