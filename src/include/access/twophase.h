@@ -14,6 +14,7 @@
 #ifndef TWOPHASE_H
 #define TWOPHASE_H
 
+#include "access/undolog.h"
 #include "access/xlogdefs.h"
 #include "access/xact.h"
 #include "datatype/timestamp.h"
@@ -41,7 +42,7 @@ extern GlobalTransaction MarkAsPreparing(TransactionId xid, const char *gid,
 										 TimestampTz prepared_at,
 										 Oid owner, Oid databaseid);
 
-extern void StartPrepare(GlobalTransaction gxact);
+extern void StartPrepare(GlobalTransaction gxact, UndoRecPtr *, UndoRecPtr *);
 extern void EndPrepare(GlobalTransaction gxact);
 extern bool StandbyTransactionIdIsPrepared(TransactionId xid);
 

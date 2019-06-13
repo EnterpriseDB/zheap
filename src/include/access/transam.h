@@ -231,6 +231,7 @@ extern void SetTransactionIdLimit(TransactionId oldest_datfrozenxid,
 extern void AdvanceOldestClogXid(TransactionId oldest_datfrozenxid);
 extern bool ForceTransactionIdLimitUpdate(void);
 extern Oid	GetNewObjectId(void);
+extern uint32 GetEpochForXid(TransactionId xid);
 
 /*
  * Some frontend programs include this header.  For compilers that emit static

@@ -82,6 +82,7 @@
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/twophase_rmgr.h"
+#include "access/undorequest.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -927,6 +928,16 @@ typedef struct TwoPhaseFileHeader
 	uint16		gidlen;			/* length of the GID - GID follows the header */
 	XLogRecPtr	origin_lsn;		/* lsn of this record at origin node */
 	TimestampTz origin_timestamp;	/* time of prepare at origin node */
+
+	/*
+	 * We need the locations of the start and end undo record pointers when
+	 * rollbacks are to be performed for prepared transactions using undo-based
+	 * relations.  We need to store this information in the file as the user
+	 * might rollback the prepared transaction after recovery and for that we
+	 * need it's start and end undo locations.
+	 */
+	UndoRecPtr	start_urec_ptr[UndoLogCategories];
+	UndoRecPtr	end_urec_ptr[UndoLogCategories];
 } TwoPhaseFileHeader;
 
 /*
@@ -1001,7 +1012,8 @@ save_state_data(const void *data, uint32 len)
  * Initializes data structure and inserts the 2PC file header record.
  */
 void
-StartPrepare(GlobalTransaction gxact)
+StartPrepare(GlobalTransaction gxact, UndoRecPtr *start_urec_ptr,
+			 UndoRecPtr *end_urec_ptr)
 {
 	PGPROC	   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
 	PGXACT	   *pgxact = &ProcGlobal->allPgXact[gxact->pgprocno];
@@ -1032,6 +1044,11 @@ StartPrepare(GlobalTransaction gxact)
 	hdr.database = proc->databaseId;
 	hdr.prepared_at = gxact->prepared_at;
 	hdr.owner = gxact->owner;
+
+	/* save the start and end undo record pointers */
+	memcpy(hdr.start_urec_ptr, start_urec_ptr, sizeof(hdr.start_urec_ptr));
+	memcpy(hdr.end_urec_ptr, end_urec_ptr, sizeof(hdr.end_urec_ptr));
+
 	hdr.nsubxacts = xactGetCommittedChildren(&children);
 	hdr.ncommitrels = smgrGetPendingDeletes(true, &commitrels);
 	hdr.nabortrels = smgrGetPendingDeletes(false, &abortrels);
@@ -1468,6 +1485,12 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	RelFileNode *delrels;
 	int			ndelrels;
 	SharedInvalidationMessage *invalmsgs;
+	UndoRecPtr	start_urec_ptr[UndoLogCategories];
+	UndoRecPtr	end_urec_ptr[UndoLogCategories];
+	bool		undo_action_pushed[UndoLogCategories];
+	uint32		epoch;
+	int			i;
+	FullTransactionId full_xid;
 
 	/*
 	 * Validate the GID, and lock the GXACT to ensure that two backends do not
@@ -1505,6 +1528,10 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	invalmsgs = (SharedInvalidationMessage *) bufptr;
 	bufptr += MAXALIGN(hdr->ninvalmsgs * sizeof(SharedInvalidationMessage));
 
+	/* save the start and end undo record pointers */
+	memcpy(start_urec_ptr, hdr->start_urec_ptr, sizeof(start_urec_ptr));
+	memcpy(end_urec_ptr, hdr->end_urec_ptr, sizeof(end_urec_ptr));
+
 	/* compute latestXid among all children */
 	latestXid = TransactionIdLatest(xid, hdr->nsubxacts, children);
 
@@ -1518,6 +1545,13 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	 * TransactionIdIsInProgress will stop saying the prepared xact is in
 	 * progress), then run the post-commit or post-abort callbacks. The
 	 * callbacks will release the locks the transaction held.
+	 *
+	 * XXX Note that, unlike non-prepared transactions, we don't skip
+	 * releasing the locks when we have to perform the undo actions.  The
+	 * reason is that here the locks are not directly associated with current
+	 * transaction, rather it has to acquire those locks to apply undo actions.
+	 * So, if we don't release the locks for prepared transaction, the undo
+	 * applying transaction will wait forever.
 	 */
 	if (isCommit)
 		RecordTransactionCommitPrepared(xid,
@@ -1526,10 +1560,36 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 										hdr->ninvalmsgs, invalmsgs,
 										hdr->initfileinval, gid);
 	else
+	{
+		/*
+		 * We don't allow XIDs with an age of more than 2 billion in undo, so
+		 * we can infer the epoch here. (XXX We can add full transaction id in
+		 * TwoPhaseFileHeader instead.)
+		 */
+		epoch = GetEpochForXid(hdr->xid);
+		full_xid = FullTransactionIdFromEpochAndXid(epoch, hdr->xid);
+
+		/*
+		 * Register the rollback request to apply undo actions.  It is
+		 * important to do this before marking it aborted in clog, see
+		 * comments atop PushUndoRequest for further details.
+		 */
+		for (i = 0; i < UndoLogCategories; i++)
+		{
+			if (end_urec_ptr[i] != InvalidUndoRecPtr && i != UNDO_TEMP)
+			{
+				undo_action_pushed[i] = RegisterRollbackReq(end_urec_ptr[i],
+															start_urec_ptr[i],
+															hdr->database,
+															full_xid);
+			}
+		}
+
 		RecordTransactionAbortPrepared(xid,
 									   hdr->nsubxacts, children,
 									   hdr->nabortrels, abortrels,
 									   gid);
+	}
 
 	ProcArrayRemove(proc, latestXid);
 
@@ -1611,6 +1671,25 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 		RemoveTwoPhaseFile(xid, true);
 
 	MyLockedGxact = NULL;
+
+	if (!isCommit)
+	{
+		/*
+		 * Perform undo actions, if there are undologs for this transaction.
+		 * We need to perform undo actions while we are still in a transaction.
+		 */
+		if (!PerformUndoActions(full_xid, hdr->database, end_urec_ptr,
+								start_urec_ptr, undo_action_pushed,
+								false))
+		{
+			/* Abort the failed transaction. */
+			AbortOutOfAnyTransaction();
+			FlushErrorState();
+
+			/* Restart our transaction. */
+			StartTransactionCommand();
+		}
+	}
 
 	RESUME_INTERRUPTS();
 

@@ -14,6 +14,7 @@
 #ifndef XACT_H
 #define XACT_H
 
+#include "access/undolog.h"
 #include "access/transam.h"
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
@@ -427,6 +428,15 @@ extern XLogRecPtr XactLogAbortRecord(TimestampTz abort_time,
 									 int xactflags, TransactionId twophase_xid,
 									 const char *twophase_gid);
 extern void xact_redo(XLogReaderState *record);
+extern void ApplyUndoActions(void);
+extern void UndoActionsRequired(void);
+extern void ResetUndoActionsInfo(void);
+extern bool CanPerformUndoActions(void);
+extern bool PerformUndoActions(FullTransactionId fxid, Oid dbid,
+				UndoRecPtr *end_urec_ptr, UndoRecPtr *start_urec_ptr,
+				bool *undo_req_pushed, bool isSubTrans);
+extern void SetCurrentUndoLocation(UndoRecPtr urec_ptr,
+				UndoLogCategory category);
 
 /* xactdesc.c */
 extern void xact_desc(StringInfo buf, XLogReaderState *record);

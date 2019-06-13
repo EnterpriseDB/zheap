@@ -195,6 +195,8 @@ extern int	errposition(int cursorpos);
 extern int	internalerrposition(int cursorpos);
 extern int	internalerrquery(const char *query);
 
+extern int	err_out_to_client(bool out_to_client);
+
 extern int	err_generic_string(int field, const char *str);
 
 extern int	geterrcode(void);
@@ -384,6 +386,7 @@ extern void FlushErrorState(void);
 extern void ReThrowError(ErrorData *edata) pg_attribute_noreturn();
 extern void ThrowErrorData(ErrorData *edata);
 extern void pg_re_throw(void) pg_attribute_noreturn();
+extern void pg_rethrow_as_fatal(void);
 
 extern char *GetErrorContextStack(void);
 

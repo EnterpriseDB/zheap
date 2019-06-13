@@ -123,6 +123,12 @@ int			maintenance_work_mem = 16384;
 int			max_parallel_maintenance_workers = 2;
 
 /*
+ * We need this variable primarily to promote the error level to FATAL if we
+ * get any error while performing undo actions for a subtransaction.
+ */
+bool		applying_subxact_undo = false;
+
+/*
  * Primary determinants of sizes of shared-memory structures.
  *
  * MaxBackends is computed by PostmasterMain after modules have had a chance to
