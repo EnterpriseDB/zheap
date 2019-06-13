@@ -449,10 +449,28 @@ execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 					 UndoRecPtr to_urecptr, bool complete_xact)
 {
 	UndoRecPtr last_log_start_urec_ptr = to_urecptr;
+	UndoLogCategory		logcat = UndoRecPtrGetCategory(to_urecptr);
 
 	/* 'from' and 'to' pointers must be valid. */
 	Assert(UndoRecPtrIsValid(from_urecptr));
 	Assert(UndoRecPtrIsValid(to_urecptr));
+
+	/*
+	 * We need to execute the undo actions in a semi-critical section for
+	 *
+	 * (a) Subtransactions.  We can't proceed without applying
+	 * subtransaction's undo as the modifications made in that case must not
+	 * be visible even if the main transaction commits.  The reason why that
+	 * can happen is because for undo-based AM's we don't need to have a
+	 * separate transaction id for subtransactions and once the main
+	 * transaction commits the tuples modified by subtransactions will become
+	 * visible.
+	 *
+	 * (b) Temp tables.  We don't expect background workers to process undo of
+	 * temporary tables as the same won't be accessible.
+	 */
+	if (!complete_xact || logcat == UNDO_TEMP)
+		START_SEMI_CRIT_SECTION();
 
 	/*
 	 * Here we compute the last log start urp which is used for fetching the
@@ -464,7 +482,7 @@ execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 	 */
 	if (complete_xact)
 	{
-		if (UndoRecPtrGetCategory(to_urecptr) == UNDO_TEMP)
+		if (logcat == UNDO_TEMP)
 		{
 			UndoRecPtr end_urec_ptr = from_urecptr;
 
@@ -513,4 +531,7 @@ execute_undo_actions(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 	 * Undo actions are applied so delete the hash table entry.
 	 */
 	RollbackHTRemoveEntry(full_xid, to_urecptr, false);
+
+	if (!complete_xact || logcat == UNDO_TEMP)
+		END_SEMI_CRIT_SECTION();
 }

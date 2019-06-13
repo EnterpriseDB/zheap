@@ -948,6 +948,13 @@ InsertPreparedUndo(UndoRecordInsertContext *context)
 		/* Insert the undo record. */
 		InsertUndoRecord(context, prepared_undo);
 
+		/*
+		 * Set the current undo location for a transaction.  This is required
+		 * to perform rollback during abort of transaction.
+		 */
+		SetCurrentUndoLocation(prepared_undo->urp,
+							   context->alloc_context.category);
+
 		/* Advance the insert pointer past this record. */
 		UndoLogAdvanceFinal(prepared_undo->urp, prepared_undo->size);
 	}

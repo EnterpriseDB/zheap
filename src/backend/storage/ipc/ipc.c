@@ -193,6 +193,13 @@ proc_exit_prepare(int code)
 	/* do our shared memory exits first */
 	shmem_exit(code);
 
+	/*
+	 * We need to clear semi-critical-section after exiting from shmem as we
+	 * can again use it for executing undo actions via
+	 * AbortOutOfAnyTransaction which is called during shmem exit.
+	 */
+	SemiCritSectionCount = 0;
+
 	elog(DEBUG3, "proc_exit(%d): %d callbacks to make",
 		 code, on_proc_exit_index);
 
