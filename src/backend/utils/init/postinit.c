@@ -1086,6 +1086,20 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 }
 
 /*
+ * Check whether the dbid exist or not.
+ */
+bool
+dbid_exists(Oid dboid)
+{
+	bool		result = false;
+
+	Assert(IsTransactionState());
+	result = (GetDatabaseTupleByOid(dboid) != NULL);
+
+	return result;
+}
+
+/*
  * Process any command-line switches and any additional GUC variable
  * settings passed in the startup packet.
  */
