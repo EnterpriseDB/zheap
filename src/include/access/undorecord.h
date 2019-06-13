@@ -254,6 +254,8 @@ typedef struct UnpackedUndoRecord
 										 * during a transaction. */
 } UnpackedUndoRecord;
 
+#define IsUndoLogSwitched(uur) (uur->uur_logswitch != NULL)
+
 extern size_t UndoRecordExpectedSize(UnpackedUndoRecord *uur);
 extern size_t UndoRecordPayloadSize(UnpackedUndoRecord *uur);
 extern void BeginInsertUndo(UndoPackContext *ucontext, UnpackedUndoRecord *uur,

@@ -272,13 +272,53 @@ PrepareUndoRecordUpdateNext(UndoRecordInsertContext *context,
 }
 
 /*
+ * Prepare to update the undo apply progress in the group header.
+ */
+void
+PrepareUndoRecordApplyProgress(UndoRecordInsertContext *context,
+							   UndoRecPtr urecptr, BlockNumber progress)
+{
+	int		index = 0;
+	int		offset;
+
+	Assert(UndoRecPtrIsValid(urecptr));
+
+	/*
+	 * Temporary undo logs are discarded on transaction commit so we don't need
+	 * to do anything.
+	 */
+	if (UndoRecPtrGetCategory(urecptr) == UNDO_TEMP)
+		return;
+
+	/*
+	 * Here, we are preparing to update the undo apply progress of a
+	 * transaction being rolled back.  The undo must not be discarded
+	 * till the transaction is completely rolled back.
+	 */
+	Assert(!UndoRecPtrIsDiscarded(urecptr));
+
+	/* Compute the offset of the urec_progress in the undo record. */
+	offset = SizeOfUndoRecordHeader +
+			 offsetof(UndoRecordGroup, urec_progress);
+
+	index = PrepareUndoRecordUpdate(context, urecptr, sizeof(UndoRecPtr),
+									offset);
+
+	/*
+	 * Set the undo action progress in xact_urec_info, this will be overwritten
+	 * in actual undo record during update phase.
+	 */
+	context->urec_update_info[index].progress = progress;
+}
+
+/*
  * Update the undo record
  *
  * This will overwrite uur_next_group or uur_progress fields in the undo record.
  * Exact offset to be updated is already computed and necessary buffers are
  * locked during the prepare phase.
  */
-static void
+void
 UndoRecordUpdate(UndoRecordInsertContext *context, int idx)
 {
 	Page		page = NULL;
