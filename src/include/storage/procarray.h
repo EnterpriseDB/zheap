@@ -27,6 +27,8 @@
  * to avoid forcing to include proc.h when including procarray.h. So if you modify
  * PROC_XXX flags, you need to modify these flags.
  */
+#define		PROCARRAY_AUTOVACUUM_FLAG		0x01	/* currently running
+													 * autovacuum */
 #define		PROCARRAY_VACUUM_FLAG			0x02	/* currently running lazy
 													 * vacuum */
 #define		PROCARRAY_ANALYZE_FLAG			0x04	/* currently running
@@ -41,7 +43,8 @@
  * PGXACT->vacuumFlags. Other flags are used for different purposes and
  * have no corresponding PROC flag equivalent.
  */
-#define		PROCARRAY_PROC_FLAGS_MASK	(PROCARRAY_VACUUM_FLAG | \
+#define		PROCARRAY_PROC_FLAGS_MASK	(PROCARRAY_AUTOVACUUM_FLAG | \
+										 PROCARRAY_VACUUM_FLAG | \
 										 PROCARRAY_ANALYZE_FLAG | \
 										 PROCARRAY_LOGICAL_DECODING_FLAG)
 
@@ -50,6 +53,8 @@
 #define		PROCARRAY_FLAGS_DEFAULT			PROCARRAY_LOGICAL_DECODING_FLAG
 /* Ignore vacuum backends */
 #define		PROCARRAY_FLAGS_VACUUM			PROCARRAY_FLAGS_DEFAULT | PROCARRAY_VACUUM_FLAG
+/* Ignore autovacuum worker and backends running vacuum */
+#define		PROCARRAY_FLAGS_AUTOVACUUM		PROCARRAY_FLAGS_DEFAULT | PROCARRAY_AUTOVACUUM_FLAG
 /* Ignore analyze backends */
 #define		PROCARRAY_FLAGS_ANALYZE			PROCARRAY_FLAGS_DEFAULT | PROCARRAY_ANALYZE_FLAG
 /* Ignore both vacuum and analyze backends */

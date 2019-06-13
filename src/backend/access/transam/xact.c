@@ -26,6 +26,7 @@
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undodiscard.h"
 #include "access/undorequest.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -2272,6 +2273,10 @@ CommitTransaction(void)
 	AtEOXact_Snapshot(true, false);
 	AtEOXact_ApplyLauncher(true);
 	pgstat_report_xact_timestamp(0);
+
+	/* In single user mode, discard all the undo logs, once committed. */
+	if (!IsUnderPostmaster)
+		UndoLogDiscardAll();
 
 	CurrentResourceOwner = NULL;
 	ResourceOwnerDelete(TopTransactionResourceOwner);

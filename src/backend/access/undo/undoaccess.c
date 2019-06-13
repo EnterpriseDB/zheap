@@ -66,6 +66,7 @@
 #include "storage/buf.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "storage/proc.h"
 
 /*
  * Structure to hold the prepared undo information.  PreparedUndoInsert will
@@ -102,6 +103,13 @@ static UnpackedUndoRecord *UndoGetOneRecord(UnpackedUndoRecord *urec,
 static int	UndoGetBufferSlot(UndoRecordInsertContext *context,
 							  RelFileNode rnode, BlockNumber blk,
 							  ReadBufferMode rbm);
+
+/*
+ * Defines the number of times we try to wait for rollback hash table to get
+ * initialized.  After these many attempts it will return error and the user
+ * can retry the operation.
+ */
+#define ROLLBACK_HT_INIT_WAIT_TRY      60
 
 /*
  * Prepare undo record update
@@ -656,6 +664,50 @@ PrepareUndoInsert(UndoRecordInsertContext *context,
 	UndoRecPtr	last_xact_start;
 	UndoRecPtr	prevlog_xact_start = InvalidUndoRecPtr;
 	PreparedUndoSpace *prepared_undo;
+
+	if (!InRecovery && IsUnderPostmaster)
+	{
+		int try_count = 0;
+
+		/*
+		 * If we are not in a recovery and not in a single-user-mode, then undo
+		 * generation should not be allowed until we have scanned all the undo
+		 * logs and initialized the hash table with all the aborted
+		 * transaction entries.  See detailed comments in UndoLogProcess.
+		 */
+		while (!ProcGlobal->rollbackHTInitialized)
+		{
+			/* Error out after trying for one minute. */
+			if (try_count > ROLLBACK_HT_INIT_WAIT_TRY)
+				ereport(ERROR,
+						(errcode(ERRCODE_E_R_E_MODIFYING_SQL_DATA_NOT_PERMITTED),
+						 errmsg("rollback hash table is not yet initialized, wait for sometime and try again")));
+
+			/*
+			 * Rollback hash table is not yet intialized, sleep for 1 second
+			 * and try again.
+			 */
+			pg_usleep(1000000L);
+			try_count++;
+		}
+	}
+
+	/*
+	 * If the rollback hash table is already full (excluding one additional
+	 * space for each backend) then don't allow to generate any new undo until
+	 * we apply some of the pending requests and create some space in the hash
+	 * table to accept new rollback requests.  Leave the enough slots in the
+	 * hash table so that there is space for all the backends to register at
+	 * least one request.  This is to protect the situation where one backend
+	 * keep consuming slots reserve for the other backends and suddenly there
+	 * is concurrent undo request from all the backends.  So we always keep
+	 * the space reserve for MaxBackends.
+	 */
+	if (ProcGlobal->xactsHavingPendingUndo >
+		(UndoRollbackHashTableSize() - MaxBackends))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
+				 errmsg("max limit for pending rollback request has reached, wait for sometime and try again")));
 
 	/* Already reached maximum prepared limit. */
 	if (context->nprepared_undo == context->max_prepared_undo)

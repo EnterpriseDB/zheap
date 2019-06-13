@@ -272,8 +272,12 @@ typedef struct PROC_HDR
 	int			startupProcPid;
 	/* Buffer id of the buffer that Startup process waits for pin on, or -1 */
 	int			startupBufferPinWaitBufId;
+	/* Oldest transaction id which is having undo. */
+	pg_atomic_uint64 oldestFullXidHavingUnappliedUndo;
 	/* Number of aborted transactions with pending undo actions. */
 	int			xactsHavingPendingUndo;
+	/* Whether the rollback hash table is initialized after the startup? */
+	bool		rollbackHTInitialized;
 } PROC_HDR;
 
 extern PGDLLIMPORT PROC_HDR *ProcGlobal;
