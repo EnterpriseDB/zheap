@@ -32,6 +32,7 @@
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undorequest.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "catalog/namespace.h"
@@ -3038,6 +3039,27 @@ static struct config_int ConfigureNamesInt[] =
 		&autovacuum_work_mem,
 		-1, -1, MAX_KILOBYTES,
 		check_autovacuum_work_mem, NULL, NULL
+	},
+
+	{
+		{"rollback_overflow_size", PGC_USERSET, RESOURCES_MEM,
+			gettext_noop("Rollbacks greater than this size are done lazily"),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&rollback_overflow_size,
+		64, 0, MAX_KILOBYTES,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"pending_undo_queue_size", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the size of queue used to register undo requests"),
+			NULL,
+		},
+		&pending_undo_queue_size,
+		1024, 0, INT_MAX,
+		NULL, NULL, NULL
 	},
 
 	{
