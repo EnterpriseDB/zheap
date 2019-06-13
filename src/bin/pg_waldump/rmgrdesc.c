@@ -20,6 +20,7 @@
 #include "access/nbtxlog.h"
 #include "access/rmgr.h"
 #include "access/spgxlog.h"
+#include "access/undoaction_xlog.h"
 #include "access/undolog_xlog.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
@@ -33,7 +34,7 @@
 #include "storage/standbydefs.h"
 #include "utils/relmapper.h"
 
-#define PG_RMGR(symname,name,redo,desc,identify,startup,cleanup,mask) \
+#define PG_RMGR(symname,name,redo,desc,identify,startup,cleanup,mask,undo,undo_status,undo_desc) \
 	{ name, desc, identify},
 
 const RmgrDescData RmgrDescTable[RM_MAX_ID + 1] = {

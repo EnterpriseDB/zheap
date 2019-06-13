@@ -19,10 +19,14 @@
 #ifndef XLOG_INTERNAL_H
 #define XLOG_INTERNAL_H
 
+#include "access/transam.h"
+#include "access/undoaccess.h"
+#include "access/undorecord.h"
 #include "access/xlogdefs.h"
 #include "access/xlogreader.h"
 #include "datatype/timestamp.h"
 #include "lib/stringinfo.h"
+#include "nodes/pg_list.h"
 #include "pgtime.h"
 #include "storage/block.h"
 #include "storage/relfilenode.h"
@@ -271,6 +275,15 @@ typedef enum
 }			RecoveryTargetAction;
 
 /*
+ * Return values for undo status callback functions.
+ */
+typedef enum UndoStatus
+{
+	UNDO_STATUS_WAIT_XMIN,		/* wait until the xmin passes an xid */
+	UNDO_STATUS_DISCARD			/* the record set should be discarded */
+} UndoStatus;
+
+/*
  * Method table for resource managers.
  *
  * This struct must be kept in sync with the PG_RMGR definition in
@@ -295,9 +308,12 @@ typedef struct RmgrData
 	void		(*rm_startup) (void);
 	void		(*rm_cleanup) (void);
 	void		(*rm_mask) (char *pagedata, BlockNumber blkno);
+	void		(*rm_undo) (int nrecords, UndoRecInfo *records);
+	UndoStatus	(*rm_undo_status) (UnpackedUndoRecord *record, TransactionId *xid);
+	void		(*rm_undo_desc) (StringInfo buf, UnpackedUndoRecord *record);
 } RmgrData;
 
-extern const RmgrData RmgrTable[];
+extern PGDLLIMPORT const RmgrData RmgrTable[];
 
 /*
  * Exported to support xlog switching from checkpointer
