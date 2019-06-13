@@ -13,20 +13,20 @@ teardown
 
 session "s1"
 setup		{ BEGIN; }
-step "r1"	{ SELECT * FROM animals; }
+step "r1"	{ SELECT * FROM animals ORDER BY 1,2; }
 step "c1"	{ COMMIT; }
 
 session "s2"
 setup       { BEGIN; }
 step "w2"	{ UPDATE animals SET counter = counter + 1 WHERE name = 'cat'; }
-step "r2"	{ SELECT * FROM animals; }
+step "r2"	{ SELECT * FROM animals ORDER BY 1,2; }
 step "d2"	{ DELETE FROM animals WHERE name = 'dog'; }
 step "c2"	{ COMMIT; }
 
 session "s3"
 setup       { BEGIN; }
 step "w3"	{ UPDATE animals SET counter = counter + 1 WHERE name = 'cat'; }
-step "r3"	{ SELECT * FROM animals; }
+step "r3"	{ SELECT * FROM animals ORDER BY 1,2; }
 step "i3"	{ INSERT INTO animals VALUES ('kangaroo', 1); }
 step "c3"	{ COMMIT; }
 
