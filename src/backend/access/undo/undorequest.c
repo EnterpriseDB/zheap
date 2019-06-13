@@ -54,10 +54,12 @@
 #include "postgres.h"
 #include "miscadmin.h"
 
+#include "access/discardworker.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/transam.h"
 #include "access/undorequest.h"
+#include "access/undoworker.h"
 #include "access/xact.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_database.h"
@@ -880,9 +882,6 @@ FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 		 */
 		if (UndoRecPtrIsDiscarded(next_urecptr))
 		{
-			UndoLogOffset next_insert;
-
-			next_insert = UndoLogGetNextInsertPtr(slot->logno);
 			Assert(UndoRecPtrIsValid(next_insert));
 
 			last_log_start_urecptr = urecptr;
@@ -898,9 +897,6 @@ FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 		 * this log for request size computation.
 		 */
 		{
-			UndoLogOffset next_insert;
-
-			next_insert = UndoLogGetNextInsertPtr(slot->logno);
 			Assert(UndoRecPtrIsValid(next_insert));
 
 			last_log_start_urecptr = urecptr;
@@ -928,6 +924,138 @@ FindUndoEndLocationAndSize(UndoRecPtr start_urecptr,
 }
 
 /*
+ * Fetch the start urec pointer for the transaction and the undo request size.
+ *
+ * start_urecptr_inout - This is an INOUT parameter.  If a transaction has
+ * overflowed to multiple undo logs, the caller can set start_urecptr_inout
+ * to a location of any of the undo logs where the transaction has written its
+ * first record for that particular log.  Given that, this function calculates
+ * the undo location where the transaction has inserted its first undo record.
+ * If a transaction hasn't overflowed to multiple undo logs, the value of this
+ * parameter remains unchanged.
+ *
+ * The first record of a transaction in each undo log contains a reference to
+ * the first record of this transaction in the previous log.  It finds the
+ * initial location by moving backward in the undo chain of this transaction
+ * across undo logs.  While doing the same, it also calculates the undo size
+ * between the input and output start undo record pointer value.
+ */
+static uint64
+FindUndoStartLocationAndSize(UndoRecPtr *start_urecptr_inout,
+							 FullTransactionId full_xid)
+{
+	UnpackedUndoRecord *uur = NULL;
+	UndoLogSlot *slot = NULL;
+	UndoRecPtr	urecptr = InvalidUndoRecPtr;
+	uint64		sz = 0;
+
+	Assert(start_urecptr_inout);
+
+	urecptr = *start_urecptr_inout;
+	Assert(urecptr != InvalidUndoRecPtr);
+
+	/*
+	 * A backend always set the start undo record pointer to the first undo
+	 * record inserted by this transaction.  Hence, we don't have to proceed
+	 * further.
+	 */
+	if (!IsDiscardProcess())
+		return sz;
+
+	/*
+	 * Since the discard worker processes the undo logs sequentially, it's
+	 * possible that start undo record pointer doesn't refer to the actual
+	 * start of the transaction.  Instead, it may refer to the start location
+	 * of the transaction in any of the subsequent logs.  In that case, we've
+	 * to find the actual start location of the transaction by going backwards
+	 * in the chain.
+	 */
+	while (true)
+	{
+		UndoLogOffset next_insert;
+		UndoRecordFetchContext	context;
+
+		/*
+		 * Fetch the log and undo record corresponding to the current undo
+		 * pointer.
+		 */
+		if ((slot == NULL) || (UndoRecPtrGetLogNo(urecptr) != slot->logno))
+			slot = UndoLogGetSlot(UndoRecPtrGetLogNo(urecptr), false);
+
+		Assert(slot != NULL);
+
+		/* The corresponding log must be ahead urecptr. */
+		Assert(MakeUndoRecPtr(slot->logno, slot->meta.unlogged.insert) >= urecptr);
+
+		/* Fetch the undo record. */
+		BeginUndoFetch(&context);
+		uur = UndoFetchRecord(&context, urecptr);
+		FinishUndoFetch(&context);
+
+		/*
+		 * Since the rollback isn't completed for this transaction, this undo
+		 * record can't be discarded.
+		 */
+		Assert (uur != NULL);
+
+		/* The undo must belongs to a same transaction. */
+		Assert(FullTransactionIdEquals(full_xid, uur->uur_fxid));
+
+		/*
+		 * Since this is the first undo record of this transaction in this
+		 * log, this must include the transaction header.
+		 */
+		Assert(uur->uur_group != NULL);
+
+		/*
+		 * If this is the first undo record of this transaction, return from
+		 * here.
+		 */
+		if ((uur->uur_info & UREC_INFO_LOGSWITCH) == 0)
+		{
+			UndoRecordRelease(uur);
+			break;
+		}
+
+		/*
+		 * This is a start of a overflowed transaction header, so it must have
+		 * a valid pointer to previous log's start transaction header.
+		 */
+		Assert(UndoRecPtrIsValid(uur->uur_logswitch->urec_prevlogstart));
+
+
+		/*
+		 * Find the previous log from which the transaction is overflowed
+		 * to current log.
+		 */
+		urecptr = uur->uur_logswitch->urec_prevlogstart;
+		slot = UndoLogGetSlot(UndoRecPtrGetLogNo(urecptr), false);
+
+		/*
+		 * When a transaction overflows to a new undo log, it's guaranteed
+		 * that this transaction will be the last transaction in the previous
+		 * log and we mark that log as full so that no other transaction can
+		 * write in that log further.  Check UndoLogAllocate for details.
+		 *
+		 * So, to find the undo size in the previous log, we've to find the
+		 * next insert location of the previous log and subtract current
+		 * transaction's start location in the previous log from it.
+		 */
+		next_insert = UndoLogGetNextInsertPtr(slot->logno);
+		Assert(UndoRecPtrIsValid(next_insert));
+
+		sz += (next_insert - urecptr);
+
+		UndoRecordRelease(uur);
+		uur = NULL;
+	}
+
+	*start_urecptr_inout = urecptr;
+
+	return sz;
+}
+
+/*
  * Returns true, if we can push the rollback request to undo wrokers, false,
  * otherwise.
  */
@@ -943,9 +1071,24 @@ CanPushReqToUndoWorker(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr,
 
 	/*
 	 * We normally push the rollback request to undo workers if the size of
-	 * same is above a certain threshold.
+	 * same is above a certain threshold.  However, discard worker is allowed
+	 * to push any size request provided there is a space in rollback request
+	 * queue.  This is mainly because discard worker can be processing the
+	 * rollback requests after crash recovery when no backend is alive.
+	 *
+	 * We have a race condition where discard worker can process the request
+	 * before the backend which has aborted the transaction in which case
+	 * backend won't do anything.  Normally, this won't happen because
+	 * backends try to apply the undo actions immediately after marking the
+	 * transaction as aborted in the clog.  One way to avoid this race
+	 * condition is that we register the request by backend in hash table but
+	 * not in rollback queues before marking abort in clog and then later add
+	 * them in rollback queues.  However, we are not sure how important it is
+	 * avoid such a race as this won't lead to any problem and OTOH, we might
+	 * need some more trickery in the code to avoid such a race condition.
 	 */
-	if (req_size >= rollback_overflow_size * 1024 * 1024)
+	if (req_size >= rollback_overflow_size * 1024 * 1024 ||
+		IsDiscardProcess())
 	{
 		if (GetXidQueueSize() >= pending_undo_queue_size ||
 			GetSizeQueueSize() >= pending_undo_queue_size)
@@ -971,12 +1114,7 @@ CanPushReqToUndoWorker(UndoRecPtr start_urec_ptr, UndoRecPtr end_urec_ptr,
 		if ((GetXidQueueSize() < pending_undo_queue_size))
 		{
 			Assert(GetSizeQueueSize() < pending_undo_queue_size);
-
-			/*
-			 * XXX - Here, we should return true once we have background
-			 * worker facility.
-			 */
-			return false;
+			return true;
 		}
 	}
 
@@ -1417,6 +1555,12 @@ RegisterUndoRequest(UndoRecPtr end_urec_ptr, UndoRecPtr start_urec_ptr,
 	Assert(dbid != InvalidOid);
 
 	/*
+	 * The discard worker can only send the start undo record pointer of a
+	 * transaction.  It doesn't set the end_urec_ptr.
+	 */
+	Assert(IsDiscardProcess() || UndoRecPtrIsValid(end_urec_ptr));
+
+	/*
 	 * Find the rollback request size and the end_urec_ptr (in case of discard
 	 * worker only).
 	 */
@@ -1430,6 +1574,14 @@ RegisterUndoRequest(UndoRecPtr end_urec_ptr, UndoRecPtr start_urec_ptr,
 	/* The transaction got rolled back. */
 	if (!UndoRecPtrIsValid(end_urec_ptr))
 		return false;
+
+	/*
+	 * For registering a rollback request, we always store the full transaction
+	 * ID and the first undo record pointer inserted by this transaction.  This
+	 * ensures that backends and discard worker don't register the same request
+	 * twice.
+	 */
+	req_size += FindUndoStartLocationAndSize(&start_urec_ptr, full_xid);
 
 	LWLockAcquire(RollbackRequestLock, LW_EXCLUSIVE);
 
@@ -1446,7 +1598,13 @@ RegisterUndoRequest(UndoRecPtr end_urec_ptr, UndoRecPtr start_urec_ptr,
 										   HASH_ENTER_NULL, &found);
 
 	/*
-	 * It can only fail, if the value of pending_undo_queue_size or
+	 * Except the first pass over the undo logs by discard worker, the hash
+	 * table can never be full.
+	 */
+	Assert(!ProcGlobal->rollbackHTInitialized || (rh != NULL));
+
+	/*
+	 * It can only fail, if  the value of pending_undo_queue_size or
 	 * max_connections guc is reduced after restart of the server.
 	 */
 	if (rh == NULL)
@@ -1494,10 +1652,16 @@ RegisterUndoRequest(UndoRecPtr end_urec_ptr, UndoRecPtr start_urec_ptr,
 		}
 		/*
 		 * The request can't be pushed into the undo worker queue.  The
-		 * backends will try executing by itself.
+		 * backends will try executing by itself.  The discard worker will
+		 * keep the entry into the rollback hash table with
+		 * UNDO_REQUEST_INVALID status.  Such requests will be added in the
+		 * undo worker queues in the subsequent passes over undo logs by
+		 * discard worker.
 		 */
-		else
+		else if (!IsDiscardProcess())
 			rh->status = UNDO_REQUEST_INPROGRESS;
+		else
+			rh->status = UNDO_REQUEST_INVALID;
 	}
 	else if (!UndoRequestIsValid(rh) && can_push)
 	{
@@ -1524,6 +1688,13 @@ RegisterUndoRequest(UndoRecPtr end_urec_ptr, UndoRecPtr start_urec_ptr,
 	}
 
 	LWLockRelease(RollbackRequestLock);
+
+	/*
+	 * If we are able to successfully push the request, wakeup the undo worker
+	 * so that it can be processed in a timely fashion.
+	 */
+	if (pushed)
+		WakeupUndoWorker(dbid);
 
 	return pushed;
 }

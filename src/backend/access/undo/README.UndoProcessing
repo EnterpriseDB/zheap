@@ -37,3 +37,80 @@ tables are only accessible in the backend that has created them.  We can't
 postpone applying undo actions for subtransactions as the modifications
 made by aborted subtransaction must not be visible even if the main transaction
 commits.
+
+Undo Requests and Undo workers
+-------------------------------
+To improve the efficiency of the rollbacks, we create three queues and a hash
+table for the rollback requests.  A Xid based priority queue will allow us to
+process the requests of older transactions and help us to move
+oldesdXidHavingUnappliedUndo (this is a xid-horizon below which all the
+transactions are visible) forward.  A size-based queue which will help us to
+perform the rollbacks of larger aborts in a timely fashion, so that we don't get
+stuck while processing them during discard of the logs.  An error queue to hold
+the requests for transactions that failed to apply its undo.  The rollback hash
+table is used to avoid duplicate undo requests by backends and discard worker.
+The table must be able to accommodate all active undo requests.  The undo
+requests must appear in both xid and size requests queues or neither.  As of now,
+we process the requests from these queues in a round-robin fashion to give equal
+priority to all three types of requests.
+
+Note that, if the request queues are full, then we put backpressure on backends
+to complete the requests by themselves.  There is an exception to it where when
+error queue becomes full, we just mark the request as 'invalid' and continue to
+process other requests if any.  The discard worker will find this errored
+transaction at later point of time and again add it to the request queues.
+
+We have the hard limit (proportional to the size of the rollback hash table)
+for the number of transactions that can have pending undo.  This can help us
+in computing the value of oldestXidHavingUnappliedUndo and allowing us not to
+accumulate pending undo for a long time which will eventually block the
+discard of undo.
+
+In a running system, scanning the rollback hash table will give us the value of
+oldestXidHavingUnappliedUndo, however, after startup, we need to once scan all
+the undo logs and populate the rollback hash table.  After startup, we allow
+connections, but don't allow transactions that want to write undo till the
+rollback hash table is initialized.
+
+To process the request, we get the request from one of the queues, search it in
+hash table and mark it as in-progress and then remove from the respective queue.
+After that, we perform the request which means apply the undo actions and
+remove it from the hash table.
+
+To apply the undo actions, we collect the undo records in bulk and try to
+process them together.  We ensure to update the transaction's progress at
+regular intervals so that after a crash we can skip already applied undo.  The
+undo apply progress is updated in terms of the number of blocks processed.
+Undo apply progress value XACT_APPLY_PROGRESS_COMPLETED indicates that all the
+undo is applied, XACT_APPLY_PROGRESS_NOT_STARTED indicates that no undo action
+has been applied yet and any other value indicates that we have applied undo
+partially and after crash recovery, we need to start processing the undo from
+the same location.
+
+Undo launcher is responsible for launching the workers iff there is some work
+available in one of the work queues and there are more workers available.  The
+worker is launched to handle requests for a particular database.  Each undo
+worker then starts reading from one of the queues the requests for that
+particular database.  A worker would peek into each queue for the requests from
+a particular database, if it needs to switch a database in less than
+undo_worker_quantum ms after starting.  Also, if there is no work, it lingers
+for UNDO_WORKER_LINGER_MS.  This avoids restarting the workers too frequently.
+
+Discard Worker
+---------------
+The discard worker is responsible for discarding the undo log of transactions
+that are committed and all-visible or are rolled-back.  It also registers the
+request for aborted transactions in the work queues.  It iterates through all
+the active logs one-by-one and try to discard the transactions that are old
+enough to matter.
+
+For transactions that span across multiple logs, the log for committed and
+all-visible transactions are discarded separately for each log.  This is
+possible as the transactions that span across logs have separate transaction
+header for each log.  For aborted transactions, we try to process the actions
+of the entire transaction at one-shot as we need to perform the actions
+starting from end location to start location.  However, it is possible that the
+later portion of the transaction that is overflowed into a separate log can be
+processed separately if we encounter the corresponding log first.  If we want
+we can combine the log for processing in that case as well, but there is no
+clear advantage of the same.

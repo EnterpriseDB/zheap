@@ -22,6 +22,8 @@
 #include "access/subtrans.h"
 #include "access/twophase.h"
 #include "access/undolog.h"
+#include "access/undorequest.h"
+#include "access/undoworker.h"
 #include "commands/async.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -149,6 +151,8 @@ CreateSharedMemoryAndSemaphores(int port)
 		size = add_size(size, BTreeShmemSize());
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
+		size = add_size(size, PendingUndoShmemSize());
+		size = add_size(size, UndoLauncherShmemSize());
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif
@@ -220,6 +224,7 @@ CreateSharedMemoryAndSemaphores(int port)
 	SUBTRANSShmemInit();
 	MultiXactShmemInit();
 	InitBufferPool();
+	PendingUndoShmemInit();
 
 	/*
 	 * Set up lock manager
@@ -258,6 +263,7 @@ CreateSharedMemoryAndSemaphores(int port)
 	WalSndShmemInit();
 	WalRcvShmemInit();
 	ApplyLauncherShmemInit();
+	UndoLauncherShmemInit();
 
 	/*
 	 * Set up other modules that need some shared memory space

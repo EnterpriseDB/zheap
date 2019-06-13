@@ -61,6 +61,15 @@ typedef struct CheckPoint
 	 * set to InvalidTransactionId.
 	 */
 	TransactionId oldestActiveXid;
+
+	/*
+	 * Oldest full transaction id which is having unapplied undo.  We include
+	 * this value in the checkpoint record so that whenever server re-starts
+	 * we can use this to initialize the server-wide value for same variable.
+	 * Any Xid prior to this should be all-visible, so if this is not set,
+	 * then the scans might try to fetch undo which can suck the performance.
+	 */
+	FullTransactionId		oldestFullXidHavingUnappliedUndo;
 } CheckPoint;
 
 /* XLOG info values for XLOG rmgr */
