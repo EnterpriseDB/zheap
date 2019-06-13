@@ -74,6 +74,12 @@
  * *critical* code should be marked as a critical section!	Currently, this
  * mechanism is only used for XLOG-related code.
  *
+ * Similar to the "critical section", we have another mechanism known as
+ * "semi critical section".  It generally has similar behaviour as
+ * "critical section" with the difference that it causes any ereport(ERROR) to
+ * become ereport(FATAL).  Currently this is used by undo-machinery, but it
+ * can be used in other places too.
+ *
  *****************************************************************************/
 
 /* in globals.c */
@@ -90,6 +96,7 @@ extern PGDLLIMPORT volatile sig_atomic_t ClientConnectionLost;
 extern PGDLLIMPORT volatile uint32 InterruptHoldoffCount;
 extern PGDLLIMPORT volatile uint32 QueryCancelHoldoffCount;
 extern PGDLLIMPORT volatile uint32 CritSectionCount;
+extern PGDLLIMPORT volatile uint32 SemiCritSectionCount;
 
 /* in tcop/postgres.c */
 extern void ProcessInterrupts(void);
@@ -135,6 +142,14 @@ do { \
 do { \
 	Assert(CritSectionCount > 0); \
 	CritSectionCount--; \
+} while(0)
+
+#define START_SEMI_CRIT_SECTION()  (SemiCritSectionCount++)
+
+#define END_SEMI_CRIT_SECTION() \
+do { \
+	Assert(SemiCritSectionCount > 0); \
+	SemiCritSectionCount--; \
 } while(0)
 
 

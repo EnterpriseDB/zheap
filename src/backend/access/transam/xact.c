@@ -26,6 +26,7 @@
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undorequest.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -128,7 +129,8 @@ typedef enum TransState
 	TRANS_INPROGRESS,			/* inside a valid transaction */
 	TRANS_COMMIT,				/* commit in progress */
 	TRANS_ABORT,				/* abort in progress */
-	TRANS_PREPARE				/* prepare in progress */
+	TRANS_PREPARE,				/* prepare in progress */
+	TRANS_UNDO					/* undo apply in progress */
 } TransState;
 
 /*
@@ -153,6 +155,7 @@ typedef enum TBlockState
 	TBLOCK_ABORT_END,			/* failed xact, ROLLBACK received */
 	TBLOCK_ABORT_PENDING,		/* live xact, ROLLBACK received */
 	TBLOCK_PREPARE,				/* live xact, PREPARE received */
+	TBLOCK_UNDO,				/* failed xact, awaiting undo to be applied */
 
 	/* subtransaction states */
 	TBLOCK_SUBBEGIN,			/* starting a subtransaction */
@@ -163,7 +166,8 @@ typedef enum TBlockState
 	TBLOCK_SUBABORT_END,		/* failed subxact, ROLLBACK received */
 	TBLOCK_SUBABORT_PENDING,	/* live subxact, ROLLBACK received */
 	TBLOCK_SUBRESTART,			/* live subxact, ROLLBACK TO received */
-	TBLOCK_SUBABORT_RESTART		/* failed subxact, ROLLBACK TO received */
+	TBLOCK_SUBABORT_RESTART,	/* failed subxact, ROLLBACK TO received */
+	TBLOCK_SUBUNDO				/* failed subxact, awaiting undo to be applied */
 } TBlockState;
 
 /*
@@ -191,6 +195,16 @@ typedef struct TransactionStateData
 	bool		didLogXid;		/* has xid been included in WAL record? */
 	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
 	bool		chain;			/* start a new block after this one */
+	XactUndoInfo *undo_info;        /* Transaction's undo related undo. */
+
+	/* start and end undo record location for each log category */
+	UndoRecPtr      startUrecPtr[UndoLogCategories]; /* this is 'to' location */
+	UndoRecPtr      latestUrecPtr[UndoLogCategories]; /* this is 'from'
+													   * location */
+	/*
+	 * whether the undo request is registered to be processed by worker later?
+	 */
+	bool            undoRequestResgistered[UndoLogCategories];
 	struct TransactionStateData *parent;	/* back link to parent */
 } TransactionStateData;
 
@@ -339,6 +353,7 @@ static void ShowTransactionState(const char *str);
 static void ShowTransactionStateRec(const char *str, TransactionState state);
 static const char *BlockStateAsString(TBlockState blockState);
 static const char *TransStateAsString(TransState state);
+static void CheckAndRegisterUndoRequest(void);
 
 
 /* ----------------------------------------------------------------
@@ -362,9 +377,9 @@ IsTransactionState(void)
 	 * also reject the startup/shutdown states TRANS_START, TRANS_COMMIT,
 	 * TRANS_PREPARE since it might be too soon or too late within those
 	 * transition states to do anything interesting.  Hence, the only "valid"
-	 * state is TRANS_INPROGRESS.
+	 * state is TRANS_INPROGRESS or TRANS_UNDO.
 	 */
-	return (s->state == TRANS_INPROGRESS);
+	return (s->state == TRANS_INPROGRESS || s->state == TRANS_UNDO);
 }
 
 /*
@@ -723,9 +738,14 @@ SubTransactionIsActive(SubTransactionId subxid)
 {
 	TransactionState s;
 
+	/*
+	 * The subtransaction is not considered active if it is being aborted or
+	 * in undo apply state, even though it may still have an entry on the
+	 * state stack.
+	 */
 	for (s = CurrentTransactionState; s != NULL; s = s->parent)
 	{
-		if (s->state == TRANS_ABORT)
+		if (s->state == TRANS_ABORT || s->state == TRANS_UNDO)
 			continue;
 		if (s->subTransactionId == subxid)
 			return true;
@@ -905,15 +925,15 @@ TransactionIdIsCurrentTransactionId(TransactionId xid)
 	 * We will return true for the Xid of the current subtransaction, any of
 	 * its subcommitted children, any of its parents, or any of their
 	 * previously subcommitted children.  However, a transaction being aborted
-	 * is no longer "current", even though it may still have an entry on the
-	 * state stack.
+	 * or in undo apply state is no longer "current", even though it may still
+	 * have an entry on the state stack.
 	 */
 	for (s = CurrentTransactionState; s != NULL; s = s->parent)
 	{
 		int			low,
 					high;
 
-		if (s->state == TRANS_ABORT)
+		if (s->state == TRANS_ABORT || s->state == TRANS_UNDO)
 			continue;
 		if (!FullTransactionIdIsValid(s->fullTransactionId))
 			continue;			/* it can't have any child XIDs either */
@@ -1968,6 +1988,14 @@ StartTransaction(void)
 	nUnreportedXids = 0;
 	s->didLogXid = false;
 
+	/* initialize undo information for the transaction */
+	memset(s->startUrecPtr, InvalidUndoRecPtr,
+		   sizeof(UndoRecPtr) * UndoLogCategories);
+	memset(s->latestUrecPtr, InvalidUndoRecPtr,
+		   sizeof(UndoRecPtr) * UndoLogCategories);
+	memset(s->undoRequestResgistered, false,
+		   sizeof(bool) * UndoLogCategories);
+
 	/*
 	 * must initialize resource-management stuff first
 	 */
@@ -2264,6 +2292,8 @@ CommitTransaction(void)
 	XactTopFullTransactionId = InvalidFullTransactionId;
 	nParallelCurrentXids = 0;
 
+	ResetUndoActionsInfo();
+
 	/*
 	 * done with commit processing, set current transaction state back to
 	 * default
@@ -2433,7 +2463,7 @@ PrepareTransaction(void)
 	 * PREPARED; in particular, pay attention to whether things should happen
 	 * before or after releasing the transaction's locks.
 	 */
-	StartPrepare(gxact);
+	StartPrepare(gxact, s->startUrecPtr, s->latestUrecPtr);
 
 	AtPrepare_Notify();
 	AtPrepare_Locks();
@@ -2566,6 +2596,7 @@ AbortTransaction(void)
 	TransactionState s = CurrentTransactionState;
 	TransactionId latestXid;
 	bool		is_parallel_worker;
+	bool		undo_apply_in_progress;
 
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
@@ -2622,7 +2653,10 @@ AbortTransaction(void)
 	 * check the current transaction state
 	 */
 	is_parallel_worker = (s->blockState == TBLOCK_PARALLEL_INPROGRESS);
-	if (s->state != TRANS_INPROGRESS && s->state != TRANS_PREPARE)
+	undo_apply_in_progress = (s->blockState == TBLOCK_UNDO);
+	if (s->state != TRANS_INPROGRESS &&
+		s->state != TRANS_PREPARE &&
+		s->state != TRANS_UNDO)
 		elog(WARNING, "AbortTransaction while in %s state",
 			 TransStateAsString(s->state));
 	Assert(s->parent == NULL);
@@ -2666,11 +2700,12 @@ AbortTransaction(void)
 	 * Advertise the fact that we aborted in pg_xact (assuming that we got as
 	 * far as assigning an XID to advertise).  But if we're inside a parallel
 	 * worker, skip this; the user backend must be the one to write the abort
-	 * record.
+	 * record.  Also, skip this if undo apply is in progress as in that case
+	 * we would have already written abort record.
 	 */
-	if (!is_parallel_worker)
+	if (!is_parallel_worker && !undo_apply_in_progress)
 		latestXid = RecordTransactionAbort(false);
-	else
+	else if (is_parallel_worker)
 	{
 		latestXid = InvalidTransactionId;
 
@@ -2780,6 +2815,8 @@ CleanupTransaction(void)
 	XactTopFullTransactionId = InvalidFullTransactionId;
 	nParallelCurrentXids = 0;
 
+	ResetUndoActionsInfo();
+
 	/*
 	 * done with abort processing, set current transaction state back to
 	 * default
@@ -2845,6 +2882,8 @@ StartTransactionCommand(void)
 		case TBLOCK_SUBRESTART:
 		case TBLOCK_SUBABORT_RESTART:
 		case TBLOCK_PREPARE:
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
 			elog(ERROR, "StartTransactionCommand: unexpected state %s",
 				 BlockStateAsString(s->blockState));
 			break;
@@ -2906,9 +2945,18 @@ CommitTransactionCommand(void)
 			 * StartTransactionCommand didn't set the STARTED state
 			 * appropriately, while TBLOCK_PARALLEL_INPROGRESS should be ended
 			 * by EndParallelWorkerTransaction(), not this function.
+			 *
+			 * TBLOCK_(SUB)UNDO means the error has occurred while applying
+			 * undo for a (sub)transaction.  We can't reach here as while
+			 * applying undo via top-level transaction, if we get an error,
+			 * then it is handled by ReleaseResourcesAndProcessUndo and for
+			 * subtransaction, we promote the error to fatal in such a
+			 * situation.
 			 */
 		case TBLOCK_DEFAULT:
 		case TBLOCK_PARALLEL_INPROGRESS:
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
 			elog(FATAL, "CommitTransactionCommand: unexpected state %s",
 				 BlockStateAsString(s->blockState));
 			break;
@@ -2987,11 +3035,13 @@ CommitTransactionCommand(void)
 
 			/*
 			 * Here we were in a perfectly good transaction block but the user
-			 * told us to ROLLBACK anyway.  We have to abort the transaction
-			 * and then clean up.
+			 * told us to ROLLBACK anyway.  We have to abort the transaction,
+			 * apply the undo actions if any and then clean up.
 			 */
 		case TBLOCK_ABORT_PENDING:
+			CheckAndRegisterUndoRequest();
 			AbortTransaction();
+			ReleaseResourcesAndProcessUndo();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
 			if (s->chain)
@@ -3087,7 +3137,9 @@ CommitTransactionCommand(void)
 			 * As above, but it's not dead yet, so abort first.
 			 */
 		case TBLOCK_SUBABORT_PENDING:
+			CheckAndRegisterUndoRequest();
 			AbortSubTransaction();
+			ReleaseResourcesAndProcessUndo();
 			CleanupSubTransaction();
 			CommitTransactionCommand();
 			break;
@@ -3107,7 +3159,9 @@ CommitTransactionCommand(void)
 				s->name = NULL;
 				savepointLevel = s->savepointLevel;
 
+				CheckAndRegisterUndoRequest();
 				AbortSubTransaction();
+				ReleaseResourcesAndProcessUndo();
 				CleanupSubTransaction();
 
 				DefineSavepoint(NULL);
@@ -3175,7 +3229,11 @@ AbortCurrentTransaction(void)
 				 * incompletely started transaction.  First, adjust the
 				 * low-level state to suppress warning message from
 				 * AbortTransaction.
+				 *
+				 * In this state, we must not have performed any operation
+				 * which can generate undo.
 				 */
+				Assert(!NeedToPerformUndoActions());
 				if (s->state == TRANS_START)
 					s->state = TRANS_INPROGRESS;
 				AbortTransaction();
@@ -3190,7 +3248,9 @@ AbortCurrentTransaction(void)
 			 */
 		case TBLOCK_STARTED:
 		case TBLOCK_IMPLICIT_INPROGRESS:
+			CheckAndRegisterUndoRequest();
 			AbortTransaction();
+			ReleaseResourcesAndProcessUndo();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
 			break;
@@ -3201,8 +3261,12 @@ AbortCurrentTransaction(void)
 			 * will interpret the error as meaning the BEGIN failed to get him
 			 * into a transaction block, so we should abort and return to idle
 			 * state.
+			 *
+			 * In this state, we must not have performed any operation which
+			 * which can generate undo.
 			 */
 		case TBLOCK_BEGIN:
+			Assert(!NeedToPerformUndoActions());
 			AbortTransaction();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
@@ -3215,7 +3279,9 @@ AbortCurrentTransaction(void)
 			 */
 		case TBLOCK_INPROGRESS:
 		case TBLOCK_PARALLEL_INPROGRESS:
+			CheckAndRegisterUndoRequest();
 			AbortTransaction();
+			ReleaseResourcesAndProcessUndo();
 			s->blockState = TBLOCK_ABORT;
 			/* CleanupTransaction happens when we exit TBLOCK_ABORT_END */
 			break;
@@ -3226,7 +3292,9 @@ AbortCurrentTransaction(void)
 			 * the transaction).
 			 */
 		case TBLOCK_END:
+			CheckAndRegisterUndoRequest();
 			AbortTransaction();
+			ReleaseResourcesAndProcessUndo();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
 			break;
@@ -3255,7 +3323,9 @@ AbortCurrentTransaction(void)
 			 * Abort, cleanup, go to idle state.
 			 */
 		case TBLOCK_ABORT_PENDING:
+			CheckAndRegisterUndoRequest();
 			AbortTransaction();
+			ReleaseResourcesAndProcessUndo();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
 			break;
@@ -3266,7 +3336,9 @@ AbortCurrentTransaction(void)
 			 * the transaction).
 			 */
 		case TBLOCK_PREPARE:
+			CheckAndRegisterUndoRequest();
 			AbortTransaction();
+			ReleaseResourcesAndProcessUndo();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
 			break;
@@ -3277,7 +3349,9 @@ AbortCurrentTransaction(void)
 			 * we get ROLLBACK.
 			 */
 		case TBLOCK_SUBINPROGRESS:
+			CheckAndRegisterUndoRequest();
 			AbortSubTransaction();
+			ReleaseResourcesAndProcessUndo();
 			s->blockState = TBLOCK_SUBABORT;
 			break;
 
@@ -3291,7 +3365,9 @@ AbortCurrentTransaction(void)
 		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_SUBABORT_PENDING:
 		case TBLOCK_SUBRESTART:
+			CheckAndRegisterUndoRequest();
 			AbortSubTransaction();
+			ReleaseResourcesAndProcessUndo();
 			CleanupSubTransaction();
 			AbortCurrentTransaction();
 			break;
@@ -3303,6 +3379,19 @@ AbortCurrentTransaction(void)
 		case TBLOCK_SUBABORT_RESTART:
 			CleanupSubTransaction();
 			AbortCurrentTransaction();
+			break;
+
+			/*
+			 * The error occurred while applying undo for a (sub)transaction.
+			 * We can't reach here as while applying undo via top-level
+			 * transaction, if we get an error, then it is handled by
+			 * ReleaseResourcesAndProcessUndo and for subtransaction, we
+			 * promote the error to fatal in such a situation.
+			 */
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
+			elog(FATAL, "AbortCurrentTransaction: unexpected state %s",
+				 BlockStateAsString(s->blockState));
 			break;
 	}
 }
@@ -3633,6 +3722,8 @@ BeginTransactionBlock(void)
 		case TBLOCK_SUBRESTART:
 		case TBLOCK_SUBABORT_RESTART:
 		case TBLOCK_PREPARE:
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
 			elog(FATAL, "BeginTransactionBlock: unexpected state %s",
 				 BlockStateAsString(s->blockState));
 			break;
@@ -3842,6 +3933,8 @@ EndTransactionBlock(bool chain)
 		case TBLOCK_SUBRESTART:
 		case TBLOCK_SUBABORT_RESTART:
 		case TBLOCK_PREPARE:
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
 			elog(FATAL, "EndTransactionBlock: unexpected state %s",
 				 BlockStateAsString(s->blockState));
 			break;
@@ -3965,6 +4058,8 @@ UserAbortTransactionBlock(bool chain)
 		case TBLOCK_SUBRESTART:
 		case TBLOCK_SUBABORT_RESTART:
 		case TBLOCK_PREPARE:
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
 			elog(FATAL, "UserAbortTransactionBlock: unexpected state %s",
 				 BlockStateAsString(s->blockState));
 			break;
@@ -4105,6 +4200,8 @@ DefineSavepoint(const char *name)
 		case TBLOCK_SUBRESTART:
 		case TBLOCK_SUBABORT_RESTART:
 		case TBLOCK_PREPARE:
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
 			elog(FATAL, "DefineSavepoint: unexpected state %s",
 				 BlockStateAsString(s->blockState));
 			break;
@@ -4181,6 +4278,8 @@ ReleaseSavepoint(const char *name)
 		case TBLOCK_SUBRESTART:
 		case TBLOCK_SUBABORT_RESTART:
 		case TBLOCK_PREPARE:
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
 			elog(FATAL, "ReleaseSavepoint: unexpected state %s",
 				 BlockStateAsString(s->blockState));
 			break;
@@ -4290,6 +4389,8 @@ RollbackToSavepoint(const char *name)
 		case TBLOCK_SUBRESTART:
 		case TBLOCK_SUBABORT_RESTART:
 		case TBLOCK_PREPARE:
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
 			elog(FATAL, "RollbackToSavepoint: unexpected state %s",
 				 BlockStateAsString(s->blockState));
 			break;
@@ -4408,6 +4509,8 @@ BeginInternalSubTransaction(const char *name)
 		case TBLOCK_SUBABORT_PENDING:
 		case TBLOCK_SUBRESTART:
 		case TBLOCK_SUBABORT_RESTART:
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
 			elog(FATAL, "BeginInternalSubTransaction: unexpected state %s",
 				 BlockStateAsString(s->blockState));
 			break;
@@ -4497,16 +4600,24 @@ RollbackAndReleaseCurrentSubTransaction(void)
 		case TBLOCK_SUBRESTART:
 		case TBLOCK_SUBABORT_RESTART:
 		case TBLOCK_PREPARE:
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
 			elog(FATAL, "RollbackAndReleaseCurrentSubTransaction: unexpected state %s",
 				 BlockStateAsString(s->blockState));
 			break;
 	}
+
+	/* Try to push rollback request to worker if possible. */
+	CheckAndRegisterUndoRequest();
 
 	/*
 	 * Abort the current subtransaction, if needed.
 	 */
 	if (s->blockState == TBLOCK_SUBINPROGRESS)
 		AbortSubTransaction();
+
+	/* Execute undo actions */
+	ReleaseResourcesAndProcessUndo();
 
 	/* And clean it up, too */
 	CleanupSubTransaction();
@@ -4553,7 +4664,11 @@ AbortOutOfAnyTransaction(void)
 					 * incompletely started transaction.  First, adjust the
 					 * low-level state to suppress warning message from
 					 * AbortTransaction.
+					 *
+					 * In this state, we must not have performed any operation
+					 * which can generate undo.
 					 */
+					Assert(!NeedToPerformUndoActions());
 					if (s->state == TRANS_START)
 						s->state = TRANS_INPROGRESS;
 					AbortTransaction();
@@ -4569,6 +4684,19 @@ AbortOutOfAnyTransaction(void)
 			case TBLOCK_ABORT_PENDING:
 			case TBLOCK_PREPARE:
 				/* In a transaction, so clean up */
+				CheckAndRegisterUndoRequest();
+				AbortTransaction();
+				ReleaseResourcesAndProcessUndo();
+				CleanupTransaction();
+				s->blockState = TBLOCK_DEFAULT;
+				break;
+			case TBLOCK_UNDO:
+				/*
+				 * We reach here when we got error while applying undo
+				 * actions, so we don't want to again start applying it. Undo
+				 * workers can take care of it.
+				 */
+				ResetUndoActionsInfo();
 				AbortTransaction();
 				CleanupTransaction();
 				s->blockState = TBLOCK_DEFAULT;
@@ -4596,7 +4724,9 @@ AbortOutOfAnyTransaction(void)
 			case TBLOCK_SUBCOMMIT:
 			case TBLOCK_SUBABORT_PENDING:
 			case TBLOCK_SUBRESTART:
+				CheckAndRegisterUndoRequest();
 				AbortSubTransaction();
+				ReleaseResourcesAndProcessUndo();
 				CleanupSubTransaction();
 				s = CurrentTransactionState;	/* changed by pop */
 				break;
@@ -4613,6 +4743,17 @@ AbortOutOfAnyTransaction(void)
 									   s->curTransactionOwner,
 									   s->parent->curTransactionOwner);
 				}
+				CleanupSubTransaction();
+				s = CurrentTransactionState;	/* changed by pop */
+				break;
+			case TBLOCK_SUBUNDO:
+				/*
+				 * We reach here when we got error while applying undo
+				 * actions, so we don't want to again start applying it. Undo
+				 * workers can take care of it.
+				 */
+				ResetUndoActionsInfo();
+				AbortSubTransaction();
 				CleanupSubTransaction();
 				s = CurrentTransactionState;	/* changed by pop */
 				break;
@@ -4690,6 +4831,8 @@ TransactionBlockStatusCode(void)
 		case TBLOCK_SUBABORT_PENDING:
 		case TBLOCK_SUBRESTART:
 		case TBLOCK_SUBABORT_RESTART:
+		case TBLOCK_UNDO:
+		case TBLOCK_SUBUNDO:
 			return 'E';			/* in failed transaction */
 	}
 
@@ -4746,6 +4889,14 @@ StartSubTransaction(void)
 	AtSubStart_Notify();
 	AfterTriggerBeginSubXact();
 
+	/* initialize undo information for the transaction */
+	memset(s->startUrecPtr, InvalidUndoRecPtr,
+		   sizeof(UndoRecPtr) * UndoLogCategories);
+	memset(s->latestUrecPtr, InvalidUndoRecPtr,
+		   sizeof(UndoRecPtr) * UndoLogCategories);
+	memset(s->undoRequestResgistered, false,
+		   sizeof(bool) * UndoLogCategories);
+
 	s->state = TRANS_INPROGRESS;
 
 	/*
@@ -4767,6 +4918,7 @@ static void
 CommitSubTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
+	int		i;
 
 	ShowTransactionState("CommitSubTransaction");
 
@@ -4788,6 +4940,19 @@ CommitSubTransaction(void)
 
 	/* Do the actual "commit", such as it is */
 	s->state = TRANS_COMMIT;
+
+	/*
+	 * Propagate the undo pointers from current transaction to parent so that
+	 * if parent transaction get aborted we must not skip performing undo for
+	 * this transaction.
+	 */
+	for (i = 0; i < UndoLogCategories; i++)
+	{
+		if (UndoRecPtrIsValid(s->latestUrecPtr[i]))
+			s->parent->latestUrecPtr[i] = s->latestUrecPtr[i];
+		if (!UndoRecPtrIsValid(s->parent->startUrecPtr[i]))
+			s->parent->startUrecPtr[i] = s->startUrecPtr[i];
+	}
 
 	/* Must CCI to ensure commands of subtransaction are seen as done */
 	CommandCounterIncrement();
@@ -4876,6 +5041,7 @@ static void
 AbortSubTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
+	bool	undo_apply_in_progress;
 
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
@@ -4933,7 +5099,10 @@ AbortSubTransaction(void)
 	 */
 	ShowTransactionState("AbortSubTransaction");
 
-	if (s->state != TRANS_INPROGRESS)
+	undo_apply_in_progress = (s->blockState == TBLOCK_SUBUNDO);
+
+	if (s->state != TRANS_INPROGRESS &&
+		s->state != TRANS_UNDO)
 		elog(WARNING, "AbortSubTransaction while in %s state",
 			 TransStateAsString(s->state));
 
@@ -4967,8 +5136,13 @@ AbortSubTransaction(void)
 								s->parent->subTransactionId);
 		AtSubAbort_Notify();
 
-		/* Advertise the fact that we aborted in pg_xact. */
-		(void) RecordTransactionAbort(true);
+		/*
+		 * Advertise the fact that we aborted in pg_xact.  But if undo apply
+		 * is in progress then skip this as in that case we would have already
+		 * written abort record.
+		 */
+		if (!undo_apply_in_progress)
+			(void) RecordTransactionAbort(true);
 
 		/* Post-abort cleanup */
 		if (FullTransactionIdIsValid(s->fullTransactionId))
@@ -5360,6 +5534,8 @@ BlockStateAsString(TBlockState blockState)
 			return "ABORT_PENDING";
 		case TBLOCK_PREPARE:
 			return "PREPARE";
+		case TBLOCK_UNDO:
+			return "UNDO";
 		case TBLOCK_SUBBEGIN:
 			return "SUBBEGIN";
 		case TBLOCK_SUBINPROGRESS:
@@ -5378,6 +5554,8 @@ BlockStateAsString(TBlockState blockState)
 			return "SUBRESTART";
 		case TBLOCK_SUBABORT_RESTART:
 			return "SUBABORT_RESTART";
+		case TBLOCK_SUBUNDO:
+			return "SUBUNDO";
 	}
 	return "UNRECOGNIZED";
 }
@@ -5403,6 +5581,8 @@ TransStateAsString(TransState state)
 			return "ABORT";
 		case TRANS_PREPARE:
 			return "PREPARE";
+		case TRANS_UNDO:
+			return "UNDO";
 	}
 	return "UNRECOGNIZED";
 }
@@ -6000,4 +6180,285 @@ xact_redo(XLogReaderState *record)
 	}
 	else
 		elog(PANIC, "xact_redo: unknown op code %u", info);
+}
+
+/*
+ * SetCurrentUndoLocation
+ *
+ * Sets the 'from' and 'to' location for the current transaction.
+ */
+void
+SetCurrentUndoLocation(UndoRecPtr urec_ptr, UndoLogCategory category)
+{
+	/*
+	 * Set the start undo record pointer for first undo record in a
+	 * subtransaction.
+	 */
+	if (!UndoRecPtrIsValid(CurrentTransactionState->startUrecPtr[category]))
+		CurrentTransactionState->startUrecPtr[category] = urec_ptr;
+	CurrentTransactionState->latestUrecPtr[category] = urec_ptr;
+}
+
+/*
+ * ResetUndoActionsInfo - reset the start and end undo record pointers.
+ */
+void
+ResetUndoActionsInfo(void)
+{
+	TransactionState s = CurrentTransactionState;
+
+	/* initialize undo information for the transaction */
+	memset(s->startUrecPtr, InvalidUndoRecPtr,
+		   sizeof(UndoRecPtr) * UndoLogCategories);
+	memset(s->latestUrecPtr, InvalidUndoRecPtr,
+		   sizeof(UndoRecPtr) * UndoLogCategories);
+	memset(s->undoRequestResgistered, false,
+		   sizeof(bool) * UndoLogCategories);
+}
+
+/*
+ * NeedToPerformUndoActions - Returns true, if the current transaction needs
+ * to perform undo actions, false otherwise.
+ *
+ * This function needs to be called before we release the locks during abort
+ * so that we can skip releasing them if required.  We don't release the locks
+ * till we execute undo actions otherwise, there is a risk of deadlock.
+ */
+bool
+NeedToPerformUndoActions(void)
+{
+	TransactionState s = CurrentTransactionState;
+	int			i;
+
+	for (i = 0; i < UndoLogCategories; i++)
+	{
+		if (UndoRecPtrIsValid(s->latestUrecPtr[i]))
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * CheckAndRegisterUndoRequest - Register the request for applying undo
+ *	actions.
+ *
+ * It sets the transaction state to indicate whether the request is pushed to
+ * the background worker which is used later to decide whether to apply the
+ * actions.
+ *
+ * It is important to do this before marking the transaction as aborted in
+ * clog otherwise, it is quite possible that discard worker miss this rollback
+ * request from the computation of oldestXidHavingUnappliedUndo.  This is
+ * because it might do that computation before backend can register it in the
+ * rollback hash table.  So, neither oldestXmin computation will consider it
+ * nor the hash table pass would have that value.
+ */
+static void
+CheckAndRegisterUndoRequest()
+{
+	TransactionState s = CurrentTransactionState;
+	bool	result;
+	int		i;
+
+	/*
+	 * We don't want to apply the undo actions when we are already cleaning up
+	 * for FATAL error.  See ReleaseResourcesAndProcessUndo.
+	 */
+	if (SemiCritSectionCount > 0)
+	{
+		ResetUndoActionsInfo();
+		return;
+	}
+
+	if (!NeedToPerformUndoActions())
+		return;
+	/*
+	 * We can't postpone applying undo actions for subtransactions as the
+	 * modifications made by aborted subtransaction must not be visible even if
+	 * the main transaction commits.  See execute_undo_actions for detailed
+	 * explanation.
+	 */
+	if (IsSubTransaction())
+		return;
+
+	for (i = 0; i < UndoLogCategories; i++)
+	{
+		/*
+		 * We can't push the undo actions for temp table to background
+		 * workers as the the temp tables are only accessible in the
+		 * backend that has created them.
+		 */
+		if (i != UNDO_TEMP && UndoRecPtrIsValid(s->latestUrecPtr[i]))
+		{
+			result = RegisterUndoRequest(s->latestUrecPtr[i],
+										 s->startUrecPtr[i],
+										 MyDatabaseId,
+										 GetTopFullTransactionId());
+			s->undoRequestResgistered[i] = result;
+		}
+	}
+}
+
+/*
+ * ReleaseResourcesAndProcessUndo - Release resources and process undo request.
+ *
+ * To execute undo actions during abort, we bring the transaction to a clean
+ * state by releasing the required resources and put it in a new state
+ * TRANS_UNDO.
+ *
+ * Note that we release locks after applying undo actions.  We skip them
+ * during Abort(Sub)Transaction as otherwise there is always a risk of
+ * deadlock when we need to re-take them during processing of undo actions.
+ */
+void
+ReleaseResourcesAndProcessUndo(void)
+{
+	TransactionState s = CurrentTransactionState;
+
+	/*
+	 * We don't want to apply the undo actions when we are already cleaning up
+	 * for FATAL error.  One of the main reasons is that we might be already
+	 * processing undo actions for a (sub)transaction when we reach here
+	 * (for ex. error happens while processing undo actions for a
+	 * subtransaction).
+	 */
+	if (SemiCritSectionCount > 0)
+	{
+		ResetUndoActionsInfo();
+		return;
+	}
+
+	if (!NeedToPerformUndoActions())
+		return;
+
+	/*
+	 * State should still be TRANS_ABORT from AbortTransaction().
+	 */
+	if (s->state != TRANS_ABORT)
+		elog(FATAL, "ReleaseResourcesAndProcessUndo: unexpected state %s",
+			TransStateAsString(s->state));
+
+	/*
+	 * Do abort cleanup processing before applying the undo actions.  We must
+	 * do this before applying the undo actions to remove the effects of
+	 * failed transaction.
+	 */
+	if (IsSubTransaction())
+	{
+		AtSubCleanup_Portals(s->subTransactionId);
+		s->blockState = TBLOCK_SUBUNDO;
+	}
+	else
+	{
+		AtCleanup_Portals();	/* now safe to release portal memory */
+		AtEOXact_Snapshot(false, true); /* and release the transaction's
+										 * snapshots */
+		s->fullTransactionId = InvalidFullTransactionId;
+		s->subTransactionId = TopSubTransactionId;
+		s->blockState = TBLOCK_UNDO;
+	}
+
+	s->state = TRANS_UNDO;
+
+	/*
+	 * We ignore the return value here as in either case we need to release
+	 * the resources and allow caller to proceed with further cleanup.
+	 */
+	(void) ProcessUndoRequestForEachLogCat(GetTopFullTransactionId(),
+										   MyDatabaseId,
+										   s->latestUrecPtr, s->startUrecPtr,
+										   s->undoRequestResgistered,
+										   IsSubTransaction());
+
+	/* Reset undo information */
+	ResetUndoActionsInfo();
+
+	/* Release the locks after processing undo request. */
+	ResourceOwnerRelease(s->curTransactionOwner,
+						 RESOURCE_RELEASE_LOCKS,
+						 false,
+						 !IsSubTransaction());
+
+	/*
+	 * Here we again put back the transaction in abort state so that callers
+	 * can proceed with the cleanup work.
+	 */
+	s->state = TRANS_ABORT;
+}
+
+/*
+ * ProcessUndoRequestForEachLogCat - Perform undo actions for all the undo logs.
+ *
+ * Returns true, if we are able to successfully perform the actions,
+ * false, otherwise.
+ *
+ * If we get any error while performing undo actions, we just insert the
+ * request into an error queue for later processing by undo launcher and allow
+ * the main transaction to continue.  In such a case the callers are
+ * responsible to release the resources.
+ */
+bool
+ProcessUndoRequestForEachLogCat(FullTransactionId fxid, Oid dbid,
+								UndoRecPtr *end_urec_ptr, UndoRecPtr *start_urec_ptr,
+								bool *undoRequestResgistered, bool isSubTrans)
+{
+	UndoRequestInfo urinfo;
+	int			i;
+	uint32		save_holdoff;
+	bool		success = true;
+
+	for (i = 0; i < UndoLogCategories; i++)
+	{
+		if (end_urec_ptr[i] && !undoRequestResgistered[i])
+		{
+			save_holdoff = InterruptHoldoffCount;
+
+			PG_TRY();
+			{
+				/* for subtransactions, we do partial rollback. */
+				execute_undo_actions(fxid,
+									 end_urec_ptr[i],
+									 start_urec_ptr[i],
+									 !isSubTrans);
+			}
+			PG_CATCH();
+			{
+				/*
+				 * Add the request into an error queue so that it can be
+				 * processed in a timely fashion.
+				 *
+				 * If we fail to add the request in an error queue, then mark
+				 * the entry status as invalid and continue to process the
+				 * remaining undo requests if any.  This request will be later
+				 * added back to the queue by discard worker.
+				 */
+				ResetUndoRequestInfo(&urinfo);
+				urinfo.dbid = dbid;
+				urinfo.full_xid = fxid;
+				urinfo.start_urec_ptr = start_urec_ptr[i];
+				if (!InsertRequestIntoErrorUndoQueue(&urinfo))
+					RollbackHTMarkEntryInvalid(urinfo.full_xid,
+											   urinfo.start_urec_ptr);
+				/*
+				 * Errors can reset holdoff count, so restore back.  This is
+				 * required because this function can be called after holding
+				 * interrupts.
+				 */
+				InterruptHoldoffCount = save_holdoff;
+
+				/* Send the error only to server log. */
+				err_out_to_client(false);
+				EmitErrorReport();
+
+				success = false;
+
+				/* We should never reach here when we are in a semi-critical-section. */
+				Assert(SemiCritSectionCount == 0);
+			}
+			PG_END_TRY();
+		}
+	}
+
+	return success;
 }

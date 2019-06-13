@@ -259,12 +259,16 @@ errstart(int elevel, const char *filename, int lineno,
 		 * 3. the error occurred after proc_exit has begun to run.  (It's
 		 * proc_exit's responsibility to see that this doesn't turn into
 		 * infinite recursion!)
+		 *
+		 * 4. If we are inside a semi-critical section, all errors become FATAL
+		 * errors.  See miscadmin.h.
 		 */
 		if (elevel == ERROR)
 		{
 			if (PG_exception_stack == NULL ||
 				ExitOnAnyError ||
-				proc_exit_inprogress)
+				proc_exit_inprogress ||
+				SemiCritSectionCount > 0)
 				elevel = FATAL;
 		}
 
@@ -454,6 +458,7 @@ errfinish(int dummy,...)
 		QueryCancelHoldoffCount = 0;
 
 		CritSectionCount = 0;	/* should be unnecessary, but... */
+		SemiCritSectionCount = 0;
 
 		/*
 		 * Note that we leave CurrentMemoryContext set to ErrorContext. The
@@ -1160,6 +1165,22 @@ internalerrquery(const char *query)
 
 	if (query)
 		edata->internalquery = MemoryContextStrdup(edata->assoc_context, query);
+
+	return 0;					/* return value does not matter */
+}
+
+/*
+ * err_out_to_client --- sets whether to send error output to client or not.
+ */
+int
+err_out_to_client(bool out_to_client)
+{
+	ErrorData  *edata = &errordata[errordata_stack_depth];
+
+	/* we don't bother incrementing recursion_depth */
+	CHECK_STACK_DEPTH();
+
+	edata->output_to_client = out_to_client;
 
 	return 0;					/* return value does not matter */
 }

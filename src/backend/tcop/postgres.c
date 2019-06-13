@@ -594,7 +594,9 @@ ProcessClientWriteInterrupt(bool blocked)
 			 * Don't mess with whereToSendOutput if ProcessInterrupts wouldn't
 			 * do anything.
 			 */
-			if (InterruptHoldoffCount == 0 && CritSectionCount == 0)
+			if (InterruptHoldoffCount == 0 &&
+				CritSectionCount == 0 &&
+				SemiCritSectionCount == 0)
 			{
 				/*
 				 * We don't want to send the client the error message, as a)
@@ -2972,7 +2974,9 @@ void
 ProcessInterrupts(void)
 {
 	/* OK to accept any interrupts now? */
-	if (InterruptHoldoffCount != 0 || CritSectionCount != 0)
+	if (InterruptHoldoffCount != 0 ||
+		CritSectionCount != 0 ||
+		SemiCritSectionCount != 0)
 		return;
 	InterruptPending = false;
 

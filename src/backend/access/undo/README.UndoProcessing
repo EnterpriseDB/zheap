@@ -1,0 +1,39 @@
+src/backend/access/undo/README.UndoProcessing
+
+Transaction Rollbacks and Undo Processing
+------------------------------------------
+We always perform rollback actions after cleaning up the current
+(sub)transaction.  This will ensure that we perform the actions immediately
+after error rather than when user issues Rollback command at some later point
+of time.  We are releasing the locks after the undo actions are applied.  The
+reason to delay lock release is that if we release locks before applying undo
+actions, then the parallel session can acquire the lock before us which can
+lead to deadlock.  To execute undo actions during abort, we bring the
+transaction to a clean state by releasing the required resources and put it in
+a new state TRANS_UNDO which indicates that undo apply is in progress.  This
+state is considered as a valid state which means that it is safe to initiate a
+database access, acquire heavyweight locks, etc. in this state.  We have also
+introduced new block states TBLOCK_UNDO and TBLOCK_SUBUNDO, so that if we get
+an error while applying undo, we don't restart applying it again and rather
+just perform Abort/Cleanup of transaction.
+
+We promote the error to FATAL error if it occurred while applying undo for a
+subtransaction.  The reason we can't proceed without applying subtransaction's
+undo is that the modifications made in that case must not be visible even if
+the main transaction commits.  Normally, the backends that receive the request
+to perform Rollback (To Savepoint) applies the undo actions, but there are
+cases where it is preferable to push the requests to background workers.  The
+main reasons to push the requests to background workers are (a) The rollback
+request is very large, pushing such a request to background workers will allow
+us to return control to users quickly.  There is a guc rollback_overflow_size
+which indicates that rollbacks greater than the configured size are performed
+lazily by background workers. (b) We got an error while applying the undo
+actions.
+
+We do have some restrictions on which requests can be pushed to the background
+workers.  In single user mode, all the requests are performed in foreground.
+We can't push the undo actions for temp table to background workers as the temp
+tables are only accessible in the backend that has created them.  We can't
+postpone applying undo actions for subtransactions as the modifications
+made by aborted subtransaction must not be visible even if the main transaction
+commits.
