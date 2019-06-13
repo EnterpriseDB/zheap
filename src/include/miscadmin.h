@@ -426,6 +426,7 @@ extern void pg_split_opts(char **argv, int *argcp, const char *optstr);
 extern void InitializeMaxBackends(void);
 extern void InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 						 Oid useroid, char *out_dbname, bool override_allow_connections);
+extern bool dbid_exists(Oid dboid);
 extern void BaseInit(void);
 
 /* in utils/init/miscinit.c */

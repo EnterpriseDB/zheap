@@ -296,6 +296,8 @@ InitProcGlobal(void)
 	/* Create ProcStructLock spinlock, too */
 	ProcStructLock = (slock_t *) ShmemAlloc(sizeof(slock_t));
 	SpinLockInit(ProcStructLock);
+
+	ProcGlobal->xactsHavingPendingUndo = 0;
 }
 
 /*

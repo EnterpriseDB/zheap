@@ -600,6 +600,14 @@
 					# autovacuum, -1 means use
 					# vacuum_cost_limit
 
+#------------------------------------------------------------------------------
+# UNDO options
+#------------------------------------------------------------------------------
+
+#rollback_overflow_size = 64	# default size above which the undo
+					# requests are pushed to undo workers
+#pending_undo_queue_size = 1024	# size of queue used to register undo
+					# requests
 
 #------------------------------------------------------------------------------
 # CLIENT CONNECTION DEFAULTS

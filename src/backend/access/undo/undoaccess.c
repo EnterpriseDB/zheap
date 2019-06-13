@@ -55,6 +55,7 @@
 #include "access/undolog.h"
 #include "access/undolog_xlog.h"
 #include "access/undorecord.h"
+#include "access/undorequest.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
@@ -672,7 +673,7 @@ PrepareUndoInsert(UndoRecordInsertContext *context,
 	{
 		urec->uur_group = palloc(sizeof(UndoRecordGroup));
 		urec->uur_group->urec_dbid = dbid;
-		urec->uur_group->urec_progress = InvalidBlockNumber;
+		urec->uur_group->urec_progress = XACT_APPLY_PROGRESS_NOT_STARTED;
 		urec->uur_group->urec_next_group = InvalidUndoRecPtr;
 	}
 	else
@@ -1649,4 +1650,49 @@ UndoGetPrevUrp(UnpackedUndoRecord *uur, UndoRecPtr urp, Buffer buffer,
 
 	/* calculate the previous undo record pointer */
 	return MakeUndoRecPtr(UndoRecPtrGetLogNo(urp), offset - prevlen);
+}
+
+/*
+ * Returns the undo record pointer corresponding to first record in the given
+ * block.
+ */
+UndoRecPtr
+UndoBlockGetFirstUndoRecord(BlockNumber blkno, UndoRecPtr urec_ptr,
+							UndoLogCategory category)
+{
+	Buffer buffer;
+	Page page;
+	UndoPageHeader	phdr;
+	RelFileNode		rnode;
+	UndoLogOffset	log_cur_off;
+	Size			partial_rec_size;
+	int				offset_cur_page;
+
+	if (!BlockNumberIsValid(blkno))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid undo block number")));
+
+	UndoRecPtrAssignRelFileNode(rnode, urec_ptr);
+
+	buffer = ReadBufferWithoutRelcache(rnode, UndoLogForkNum, blkno,
+									   RBM_NORMAL, NULL,
+									   RelPersistenceForUndoLogCategory(category));
+
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
+	page = BufferGetPage(buffer);
+	phdr = (UndoPageHeader)page;
+
+	/* Calculate the size of the partial record. */
+	partial_rec_size = phdr->undo_len - phdr->record_offset;
+
+	/* calculate the offset in current log. */
+	offset_cur_page = SizeOfUndoPageHeaderData + partial_rec_size;
+	log_cur_off = (blkno * BLCKSZ) + offset_cur_page;
+
+	UnlockReleaseBuffer(buffer);
+
+	/* calculate the undo record pointer based on current offset in log. */
+	return MakeUndoRecPtr(UndoRecPtrGetLogNo(urec_ptr), log_cur_off);
 }

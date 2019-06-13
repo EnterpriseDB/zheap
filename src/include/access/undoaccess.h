@@ -114,5 +114,9 @@ extern void UndoLogBuffersSetLSN(UndoRecordInsertContext *context,
 								 XLogRecPtr recptr);
 extern UndoRecPtr UndoGetPrevUrp(UnpackedUndoRecord *uur, UndoRecPtr urp,
 								 Buffer buffer, UndoLogCategory category);
+extern UndoRecPtr UndoBlockGetFirstUndoRecord(BlockNumber blkno,
+											  UndoRecPtr urec_ptr,
+											  UndoLogCategory category);
+
 
 #endif							/* UNDOINSERT_H */
