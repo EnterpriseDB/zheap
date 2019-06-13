@@ -279,6 +279,19 @@ typedef struct UndoLogAllocContext
 /*
  * The in-memory control object for an undo log.  We have a fixed-sized array
  * of these.
+ *
+ * The following two locks are used to manage the discard process
+ * discard_lock - should be acquired for undo read to protect it from discard and
+ * discard worker will acquire this lock to update oldest_data.
+ *
+ * discard_update_lock - This lock will be acquired in exclusive mode by discard
+ * worker during the discard process and in shared mode to update the
+ * next_urp in previous transaction's start header.
+ *
+ * Two different locks are used so that the readers are not blocked during the
+ * actual discard but only during the update of shared memory variable which
+ * influences the visibility decision but the updaters need to be blocked for
+ * the entire discard process to ensure proper ordering of WAL records.
  */
 typedef struct UndoLogSlot
 {

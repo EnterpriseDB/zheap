@@ -127,14 +127,16 @@ GetNewTransactionId(bool isSubXact)
 						 errmsg("database is not accepting commands to avoid wraparound data loss in database \"%s\"",
 								oldest_datname),
 						 errhint("Stop the postmaster and vacuum that database in single-user mode.\n"
-								 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots.")));
+								 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots or\n"
+								 "increase max_undo_workers to allow execution of pending undo.")));
 			else
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						 errmsg("database is not accepting commands to avoid wraparound data loss in database with OID %u",
 								oldest_datoid),
 						 errhint("Stop the postmaster and vacuum that database in single-user mode.\n"
-								 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots.")));
+								 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots or\n"
+								 "increase max_undo_workers to allow execution of pending undo.")));
 		}
 		else if (TransactionIdFollowsOrEquals(xid, xidWarnLimit))
 		{
@@ -147,14 +149,16 @@ GetNewTransactionId(bool isSubXact)
 								oldest_datname,
 								xidWrapLimit - xid),
 						 errhint("To avoid a database shutdown, execute a database-wide VACUUM in that database.\n"
-								 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots.")));
+								 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots or\n"
+								 "increase max_undo_workers to allow execution of pending undo.")));
 			else
 				ereport(WARNING,
 						(errmsg("database with OID %u must be vacuumed within %u transactions",
 								oldest_datoid,
 								xidWrapLimit - xid),
 						 errhint("To avoid a database shutdown, execute a database-wide VACUUM in that database.\n"
-								 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots.")));
+								 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots or\n"
+								 "increase max_undo_workers to allow execution of pending undo.")));
 		}
 
 		/* Re-acquire lock and start over */
@@ -334,8 +338,22 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 	TransactionId xidStopLimit;
 	TransactionId xidWrapLimit;
 	TransactionId curXid;
+	TransactionId oldestXidHavingUndo;
+	FullTransactionId oldestFullXidHavingUndo;
 
 	Assert(TransactionIdIsNormal(oldest_datfrozenxid));
+
+	/*
+	 * To determine the last safe xid that can be allocated, we need to
+	 * consider oldestXidHavingUnapplied Undo because this is the oldest xid
+	 * whose undo is not yet discarded so this is still a valid xid in the
+	 * system.
+	 */
+	oldestFullXidHavingUndo =
+		FullTransactionIdFromU64(pg_atomic_read_u64(&ProcGlobal->oldestFullXidHavingUnappliedUndo));
+	oldestXidHavingUndo = XidFromFullTransactionId(oldestFullXidHavingUndo);
+	if (TransactionIdIsValid(oldestXidHavingUndo))
+		oldest_datfrozenxid = Min(oldest_datfrozenxid, oldestXidHavingUndo);
 
 	/*
 	 * The place where we actually get into deep trouble is halfway around
@@ -433,6 +451,9 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 		 * Note: it's also possible that get_database_name fails and returns
 		 * NULL, for example because the database just got dropped.  We'll
 		 * still warn, even though the warning might now be unnecessary.
+		 *
+		 * XXX Can we easily distinguish that the problem is due to unapplied
+		 * undo or some old open transactions?
 		 */
 		if (IsTransactionState())
 			oldest_datname = get_database_name(oldest_datoid);
@@ -445,14 +466,16 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 							oldest_datname,
 							xidWrapLimit - curXid),
 					 errhint("To avoid a database shutdown, execute a database-wide VACUUM in that database.\n"
-							 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots.")));
+							 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots, or\n"
+							 "increase max_undo_workers to allow execution of pending undo.")));
 		else
 			ereport(WARNING,
 					(errmsg("database with OID %u must be vacuumed within %u transactions",
 							oldest_datoid,
 							xidWrapLimit - curXid),
 					 errhint("To avoid a database shutdown, execute a database-wide VACUUM in that database.\n"
-							 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots.")));
+							 "You might also need to commit or roll back old prepared transactions, or drop stale replication slots, or\n"
+							 "increase max_undo_workers to allow execution of pending undo.")));
 	}
 }
 

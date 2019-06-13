@@ -145,6 +145,8 @@ UndoLogShmemInit(void)
 							 LWTRANCHE_UNDOLOG);
 			LWLockInitialize(&UndoLogShared->slots[i].discard_lock,
 							 LWTRANCHE_UNDODISCARD);
+			LWLockInitialize(&UndoLogShared->slots[i].discard_update_lock,
+							 LWTRANCHE_DISCARD_UPDATE);
 		}
 	}
 	else

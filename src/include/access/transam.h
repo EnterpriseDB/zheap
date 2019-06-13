@@ -73,6 +73,16 @@ FullTransactionIdFromEpochAndXid(uint32 epoch, TransactionId xid)
 	return result;
 }
 
+static inline FullTransactionId
+FullTransactionIdFromU64(uint64 fxid)
+{
+	FullTransactionId result;
+
+	result.value = fxid;
+
+	return result;
+}
+
 /* advance a transaction ID variable, handling wraparound correctly */
 #define TransactionIdAdvance(dest)	\
 	do { \

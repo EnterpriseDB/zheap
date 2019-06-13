@@ -33,6 +33,7 @@
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/undorequest.h"
+#include "access/undoworker.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "catalog/namespace.h"
@@ -1955,6 +1956,17 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"enable_undo_launcher", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Decides whether to launch an undo worker."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		 },
+		 &enable_undo_launcher,
+		 true,
+		 NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -3027,6 +3039,16 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&max_parallel_workers,
 		8, 0, MAX_PARALLEL_WORKER_LIMIT,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"max_undo_workers", PGC_POSTMASTER, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Maximum number of undo worker processes."),
+			NULL,
+		},
+		&max_undo_workers,
+		4, 0, MAX_BACKENDS,
 		NULL, NULL, NULL
 	},
 

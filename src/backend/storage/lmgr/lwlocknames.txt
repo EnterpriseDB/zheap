@@ -51,3 +51,4 @@ LogicalRepWorkerLock				43
 CLogTruncationLock					44
 UndoLogLock                                      45
 RollbackRequestLock					46
+UndoWorkerLock						47

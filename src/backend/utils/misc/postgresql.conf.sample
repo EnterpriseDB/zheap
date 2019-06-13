@@ -612,6 +612,7 @@
 					# requests are pushed to undo workers
 #pending_undo_queue_size = 1024	# size of queue used to register undo
 					# requests
+#max_undo_workers = 4	# maximum undo workers
 
 #------------------------------------------------------------------------------
 # CLIENT CONNECTION DEFAULTS
