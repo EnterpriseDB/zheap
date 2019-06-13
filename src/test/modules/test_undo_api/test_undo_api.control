@@ -1,0 +1,4 @@
+comment = 'test_undo_api'
+default_version = '1.0'
+module_pathname = '$libdir/test_undo_api'
+relocatable = true
