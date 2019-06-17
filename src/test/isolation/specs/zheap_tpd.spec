@@ -49,7 +49,7 @@ session "s5"
 setup       { BEGIN; }
 step "i5"	{ INSERT INTO ANIMALS VALUES('tiger', 55); }
 step "w5"	{ UPDATE animals SET counter = counter + 5 WHERE name = 'cat'; }
-step "r5"	{ SELECT * FROM animals; }
+step "r5"	{ SELECT * FROM animals ORDER BY 1,2; }
 step "t5"	{ DELETE FROM ANIMALS WHERE name = 'dog'; }
 step "c5"	{ COMMIT; }
 
