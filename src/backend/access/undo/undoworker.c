@@ -393,8 +393,6 @@ UndoWorkerLaunch(UndoRequestInfo urinfo)
 		UndoWorkerCleanup(worker);
 		LWLockRelease(UndoWorkerLock);
 
-		CommitTransactionCommand();
-
 		return false;
 	}
 
