@@ -2742,6 +2742,11 @@ check_tup_satisfies_update:
 			tuple->t_data = palloc0(tuple->t_len);
 			memcpy(tuple->t_data, zhtup.t_data, zhtup.t_len);
 
+			/*
+			 * We reach here when the tuple is inserted/inplace updated
+			 * by current transaction and there are no other concurrent
+			 * locker on the tuple.
+			 */
 			switch (mode)
 			{
 				case LockTupleKeyShare:
@@ -2952,6 +2957,11 @@ zheap_tuple_already_locked(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
 	}
 	else if (TransactionIdIsCurrentTransactionId(xid))
 	{
+		/*
+		 * We reach here when the current transaction is the sole locker
+		 * on the tuple.  In that case, ZHeapTupleSatisfiesUpdate returns
+		 * TM_BeingModified and eventually we come here.
+		 */
 		switch (mode)
 		{
 			case LockTupleKeyShare:
