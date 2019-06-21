@@ -4508,8 +4508,17 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 	/*
 	 * We store the reserved transaction slot only when we update the tuple.
 	 * For lock only, we keep the old transaction slot in the tuple.
+	 *
+	 * For lock only, if tuple is updated by current transaction and has
+	 * multilocker, then it is possible that tuple slot is moved into TPD
+	 * because before calling PageReserveTransactionSlot, we are releasing
+	 * buffer lock so in such case we should get previous slot_no + 1.
 	 */
-	Assert(is_update || new_trans_slot == tup_trans_slot);
+	Assert(is_update || new_trans_slot == tup_trans_slot ||
+		   (tup_xid == add_to_xid &&
+			ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(buf)) &&
+			tup_trans_slot == ZHEAP_PAGE_TRANS_SLOTS &&
+			new_trans_slot == tup_trans_slot + 1));
 }
 
 /*
