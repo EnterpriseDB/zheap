@@ -72,10 +72,14 @@ undo_record_comparator(const void *left, const void *right)
 		return -1;
 	else if (luur->uur_block > ruur->uur_block)
 		return 1;
+	/*
+	 * If we're sorting by offset, the logic of skipping already applied
+	 * undo in zheap_undo_actions_page.
 	else if (luur->uur_offset < ruur->uur_offset)
 		return -1;
 	else if (luur->uur_offset > ruur->uur_offset)
 		return 1;
+		*/
 	else if (((UndoRecInfo *) left)->index < ((UndoRecInfo *) right)->index)
 	{
 		/*
