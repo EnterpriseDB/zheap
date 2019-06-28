@@ -5471,7 +5471,8 @@ prepare_xlog:
 						walinfo->ztuple->t_len - SizeofZHeapTupleHeader);
 	if (xlrec.flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
 		(void) RegisterTPDBuffer(page, 1);
-	RegisterUndoLogBuffers(walinfo->context, 2);
+	if (!skip_undo)
+		RegisterUndoLogBuffers(walinfo->context, 2);
 
 	/* filtering by origin on a row level is much more efficient */
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
@@ -5486,7 +5487,8 @@ prepare_xlog:
 	PageSetLSN(page, recptr);
 	if (xlrec.flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
 		TPDPageSetLSN(page, recptr);
-	UndoLogBuffersSetLSN(walinfo->context, recptr);
+	if (!skip_undo)
+		UndoLogBuffersSetLSN(walinfo->context, recptr);
 }
 
 /*
@@ -6076,7 +6078,8 @@ prepare_xlog:
 	if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
 		(void) RegisterTPDBuffer(page, 1);
 
-	RegisterUndoLogBuffers(multi_walinfo->gen_walinfo->context, 2);
+	if (!skip_undo)
+		RegisterUndoLogBuffers(multi_walinfo->gen_walinfo->context, 2);
 
 	/* filtering by origin on a row level is much more efficient */
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
@@ -6092,7 +6095,8 @@ prepare_xlog:
 	PageSetLSN(page, recptr);
 	if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
 		TPDPageSetLSN(page, recptr);
-	UndoLogBuffersSetLSN(multi_walinfo->gen_walinfo->context, recptr);
+	if (!skip_undo)
+		UndoLogBuffersSetLSN(multi_walinfo->gen_walinfo->context, recptr);
 }
 
 /*
@@ -7843,6 +7847,7 @@ reacquire_buffer:
 													  zfree_offset_ranges->nranges,
 													  &undorecord, NULL);
 		}
+
 		/*
 		 * Get the page visibility status from visibility map.  If the page is
 		 * all-visible, we need to clear it after inserting the tuple.  Note
@@ -8035,7 +8040,8 @@ reacquire_buffer:
 		UnlockReleaseBuffer(buffer);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
-		FinishUndoRecordInsert(&zh_undo_info.context);
+		if (!skip_undo)
+			FinishUndoRecordInsert(&zh_undo_info.context);
 		UnlockReleaseTPDBuffers();
 
 		ndone += nthispage;
