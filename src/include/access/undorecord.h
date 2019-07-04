@@ -276,4 +276,5 @@ extern void FinishUnpackUndo(UndoPackContext *ucontext,
 							 UnpackedUndoRecord *uur);
 extern void UndoRecordSetInfo(UnpackedUndoRecord *uur);
 
+extern void mask_undo_page(char *pagedata);
 #endif							/* UNDORECORD_H */

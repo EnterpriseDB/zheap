@@ -1049,3 +1049,113 @@ UndoRecordSetInfo(UnpackedUndoRecord *uur)
 	if (uur->uur_payload.len || uur->uur_tuple.len)
 		uur->uur_info |= UREC_INFO_PAYLOAD;
 }
+
+/*
+ * Get the offset of cid information in undo record.
+ */
+static Size
+get_undo_rec_cid_offset(uint16 urec_info)
+{
+	Size		offset_size = SizeOfUndoRecordHeader;
+
+	if ((urec_info & UREC_INFO_TRANSACTION) != 0)
+		offset_size += SizeOfUndoRecordTransaction;
+
+	if ((urec_info & UREC_INFO_RMID) != 0)
+		offset_size += sizeof(RmgrId);
+
+	if ((urec_info & UREC_INFO_RELOID) != 0)
+		offset_size += sizeof(Oid);
+
+	if ((urec_info & UREC_INFO_XID) != 0)
+		offset_size += sizeof(FullTransactionId);
+
+	return offset_size;
+}
+
+/*
+ * Mask a undo page before performing consistency checks on it.
+ */
+void
+mask_undo_page(char *pagedata)
+{
+	Page		page = (Page) pagedata;
+	char	   *page_end = pagedata + PageGetPageSize(page);
+	char	   *next_record;
+	int			cid_offset;
+	UndoPageHeader phdr = (UndoPageHeader) page;
+
+	next_record = (char *) page + SizeOfUndoPageHeaderData;
+
+	/*
+	 * If record_offset is non-zero value in the page header that means page
+	 * has a partial record.
+	 */
+	if (phdr->record_offset != 0)
+	{
+		Size		partial_rec_size;
+
+		/* Calculate the size of the partial record. */
+		partial_rec_size = UndoRecordHeaderSize(phdr->uur_info) +
+			phdr->tuple_len + phdr->payload_len -
+			phdr->record_offset;
+		if ((phdr->uur_info & UREC_INFO_CID) != 0)
+		{
+			cid_offset = get_undo_rec_cid_offset(phdr->uur_info);
+
+			/*
+			 * We just want to mask the cid in the undo record header.  So
+			 * only if the partial record in the current page include the undo
+			 * record header then we need to mask the cid bytes in this page.
+			 * Otherwise, directly jump to the next record.
+			 */
+			if (phdr->record_offset < (cid_offset + sizeof(CommandId)))
+			{
+				char	   *cid_data;
+				Size		mask_size;
+
+				mask_size = Min(cid_offset - phdr->record_offset,
+								sizeof(CommandId));
+
+				cid_data = next_record + cid_offset - phdr->record_offset;
+				memset(&cid_data, MASK_MARKER, mask_size);
+			}
+		}
+
+		next_record += partial_rec_size;
+	}
+
+	/*
+	 * Process the undo record of the page and mask their cid filed.
+	 */
+	while (next_record < page_end)
+	{
+		UndoRecordHeader *header = (UndoRecordHeader *) next_record;
+
+		/* If this undo record has cid present, then mask it */
+		if ((header->urec_info & UREC_INFO_CID) != 0)
+		{
+			cid_offset = get_undo_rec_cid_offset(header->urec_info);
+
+			/*
+			 * If this is not complete record then check whether cid is on
+			 * this page or not.  If not then we are done with this page.
+			 */
+			if ((next_record + cid_offset + sizeof(CommandId)) > page_end)
+			{
+				int			mask_size = page_end - next_record - cid_offset;
+
+				if (mask_size > 0)
+					memset(next_record + cid_offset, MASK_MARKER, mask_size);
+				break;
+			}
+			else
+			{
+				/* Mask cid */
+				memset(next_record + cid_offset, MASK_MARKER, sizeof(CommandId));
+			}
+		}
+		/* Go to next record. */
+		next_record += UndoRecordSizeOnPage(next_record);
+	}
+}
