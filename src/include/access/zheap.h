@@ -331,7 +331,7 @@ extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
 										int slot_no, TransactionId xwait, BlockNumber *tpd_blkno);
 extern void process_and_execute_undo_actions_page(UndoRecPtr from_urecptr,
 												  Relation rel, Buffer buffer,
-												  FullTransactionId fxid, int slot_no);
+												  FullTransactionId fxid);
 
 /* in zheap/zvacuumlazy.c */
 struct VacuumParams;

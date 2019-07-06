@@ -7386,7 +7386,6 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 	else if (nAbortedXactSlots)
 	{
 		int			i;
-		int			slot_no;
 		UndoRecPtr *urecptr = palloc(nAbortedXactSlots * sizeof(UndoRecPtr));
 		FullTransactionId *fxid = palloc(nAbortedXactSlots * sizeof(FullTransactionId));
 
@@ -7445,14 +7444,10 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		UnlockReleaseTPDBuffers();
 
 		for (i = 0; i < nAbortedXactSlots; i++)
-		{
-			slot_no = aborted_xact_slots[i] + 1;
 			process_and_execute_undo_actions_page(urecptr[i],
 												  relation,
 												  buf,
-												  fxid[i],
-												  slot_no);
-		}
+												  fxid[i]);
 
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 		*lock_reacquired = true;

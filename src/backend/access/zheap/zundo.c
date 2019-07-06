@@ -438,8 +438,7 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
 				BlockNumberIsValid(*tpd_blkno))
 				any_tpd_slot_rolled_back = true;
 
-			process_and_execute_undo_actions_page(urec_ptr, rel, buf,
-												  fxid, slot_no);
+			process_and_execute_undo_actions_page(urec_ptr, rel, buf, fxid);
 		}
 	}
 
@@ -469,14 +468,13 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
  * from_urecptr - undo record pointer from where to start applying the undo.
  * rel			- relation descriptor for which undo to be applied.
  * buffer		- buffer for which unto to be processed.
- * epoch		- epoch of the xid passed.
- * xid			- aborted transaction id whose effects needs to be reverted.
- * slot_no		- transaction slot number of xid.
+ * fxid			- aborted full transaction id whose effects needs to be
+ * 				  reverted.
  */
 void
 process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 									  Buffer buffer,
-									  FullTransactionId fxid, int slot_no)
+									  FullTransactionId fxid)
 {
 	UndoRecPtr	urec_ptr = from_urecptr;
 	UndoRecInfo *urp_array;
