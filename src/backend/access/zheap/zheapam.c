@@ -1103,7 +1103,7 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 			}
 
 			*any_multi_locker_member_alive =
-				ZIsAnyMultiLockMemberRunning(relation, xwait_trans_slot,
+				ZIsAnyMultiLockMemberRunning(relation,
 											 new_mlmembers, zheaptup,
 											 buffer, &pending_actions_applied);
 			list_free_deep(mlmembers);
@@ -2403,7 +2403,7 @@ zheap_update_wait_helper(Relation relation,
 				}
 
 				*any_multi_locker_member_alive =
-					ZIsAnyMultiLockMemberRunning(relation, xwait_trans_slot,
+					ZIsAnyMultiLockMemberRunning(relation,
 												 new_mlmembers, zheaptup,
 												 buffer,
 												 &pending_actions_applied);
@@ -3439,7 +3439,7 @@ zheap_lock_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zhtup,
 			}
 
 			*any_multi_locker_member_alive =
-				ZIsAnyMultiLockMemberRunning(relation, xwait_trans_slot,
+				ZIsAnyMultiLockMemberRunning(relation,
 											 new_mlmembers, zhtup,
 											 buffer,
 											 &pending_actions_applied);

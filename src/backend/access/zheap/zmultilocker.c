@@ -452,7 +452,7 @@ ConditionalZMultiLockMembersWait(Relation rel, List *mlmembers,
  * transaction.
  */
 bool
-ZIsAnyMultiLockMemberRunning(Relation rel, int xwait_trans_slot,
+ZIsAnyMultiLockMemberRunning(Relation rel,
 							 List *mlmembers, ZHeapTuple zhtup, Buffer buf,
 							 bool *pending_actions_applied)
 {
@@ -490,10 +490,14 @@ ZIsAnyMultiLockMemberRunning(Relation rel, int xwait_trans_slot,
 		{
 			bool		action_applied;
 
+			/* Slot must be valid. */
+			Assert(mlmember->trans_slot_id != InvalidXactSlotId);
+
+			/* Apply the actions. */
 			action_applied = zheap_exec_pending_rollback(rel, buf,
-														 xwait_trans_slot,
-														 memxid,
-														 NULL);
+													mlmember->trans_slot_id,
+													memxid,
+													NULL);
 
 			/*
 			 * If actions are applied, then set pending_actions_applied flag
