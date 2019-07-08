@@ -1698,7 +1698,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 
 			if (preabort_tuple)
 				*preabort_tuple = undo_tuple;
-			else if (undo_tuple != zhtup)
+			else if (undo_tuple != NULL && undo_tuple != zhtup)
 				pfree(undo_tuple);
 
 			if (undo_tuple != NULL)
@@ -1776,7 +1776,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 
 			if (preabort_tuple)
 				*preabort_tuple = undo_tuple;
-			else if (undo_tuple != zhtup)
+			else if (undo_tuple != NULL && undo_tuple != zhtup)
 				pfree(undo_tuple);
 
 			if (undo_tuple != NULL)
