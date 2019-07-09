@@ -275,7 +275,7 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
 		 * oldest xid with undo.
 		 */
 		if ((!FullTransactionIdIsValid(slot_fxid) &&
-			 (!UndoRecPtrIsValid(urec_ptr) || UndoLogIsDiscarded(urec_ptr))) ||
+			 (!UndoRecPtrIsValid(urec_ptr) || UndoRecPtrIsDiscarded(urec_ptr))) ||
 			(FullTransactionIdIsValid(slot_fxid) &&
 			 FullTransactionIdPrecedes(slot_fxid, oldestXidWithEpochHavingUndo)))
 			continue;

@@ -367,7 +367,7 @@ reacquire_buffer:
 		zh_undo_info.prev_urecptr = prev_urecptr;
 		zh_undo_info.fxid = fxid;
 		zh_undo_info.cid = cid;
-		zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
+		zh_undo_info.undo_category = UndoLogCategoryForRelation(relation);
 
 		urecptr = zheap_prepare_undoinsert(&zh_undo_info, specToken,
 										   (options & ZHEAP_INSERT_SPECULATIVE) ? true : false,
@@ -801,7 +801,7 @@ check_tup_satisfies_update:
 	zh_undo_info.prev_urecptr = prev_urecptr;
 	zh_undo_info.fxid = fxid;
 	zh_undo_info.cid = cid;
-	zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
+	zh_undo_info.undo_category = UndoLogCategoryForRelation(relation);
 	urecptr = zheap_prepare_undodelete(&zh_undo_info,
 									   &zheaptup,
 									   zinfo.xid,
@@ -1655,7 +1655,7 @@ check_tup_satisfies_update:
 		zh_undo_info.prev_urecptr = prev_urecptr;
 		zh_undo_info.fxid = fxid;
 		zh_undo_info.cid = cid;
-		zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
+		zh_undo_info.undo_category = UndoLogCategoryForRelation(relation);
 
 		latest_urecptr = zheap_lock_tuple_guts(buffer, &oldtup, &zinfo,
 											   single_locker_xid, fxid, oldtup_new_trans_slot,
@@ -1876,7 +1876,7 @@ reacquire_buffer:
 	gen_undo_info.prev_urecptr = prev_urecptr;
 	gen_undo_info.fxid = fxid;
 	gen_undo_info.cid = cid;
-	gen_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
+	gen_undo_info.undo_category = UndoLogCategoryForRelation(relation);
 
 	zh_up_undo_info.gen_info = &gen_undo_info;
 	zh_up_undo_info.inplace_update = use_inplace_update;
@@ -2886,7 +2886,7 @@ failed:
 	zh_undo_info.prev_urecptr = prev_urecptr;
 	zh_undo_info.fxid = fxid;
 	zh_undo_info.cid = FirstCommandId;
-	zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
+	zh_undo_info.undo_category = UndoLogCategoryForRelation(relation);
 
 	/*
 	 * If all the members were lockers and are all gone, we can do away with
@@ -4005,7 +4005,7 @@ lock_tuple:
 		zh_undo_info.prev_urecptr = prev_urecptr;
 		zh_undo_info.fxid = fxid;
 		zh_undo_info.cid = FirstCommandId;
-		zh_undo_info.undo_persistence = UndoPersistenceForRelation(rel);
+		zh_undo_info.undo_category = UndoLogCategoryForRelation(rel);
 
 		(void) zheap_lock_tuple_guts(buf, &zhtup, &zinfo,
 									 InvalidTransactionId, fxid, trans_slot_id,
@@ -4752,7 +4752,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 			urec->uur_type == UNDO_MULTI_INSERT ||
 			urec->uur_type == UNDO_INPLACE_UPDATE)
 		{
-			result = urec->uur_xid;
+			result = XidFromFullTransactionId(urec->uur_fxid);
 			UndoRecordRelease(urec);
 			break;
 		}
@@ -4761,7 +4761,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 			UpdateTupleHeaderFromUndoRecord(urec, &hdr, BufferGetPage(buffer));
 
 		zinfo.xid = urec->uur_prevxid;
-		zinfo.urec_ptr = urec->uur_blkprev;
+		zinfo.urec_ptr = urec->uur_prevundo;
 		UndoRecordRelease(urec);
 		if (!UndoRecPtrIsValid(zinfo.urec_ptr))
 		{
@@ -4812,10 +4812,10 @@ zheap_prepare_undoinsert(ZHeapPrepareUndoInfo *zh_undo_info,
 	undorecord->uur_prevlen = 0;
 	undorecord->uur_reloid = zh_undo_info->reloid;
 	undorecord->uur_prevxid = FrozenTransactionId;
-	undorecord->uur_xid = XidFromFullTransactionId(zh_undo_info->fxid);
+	undorecord->uur_fxid = zh_undo_info->fxid;
 	undorecord->uur_cid = zh_undo_info->cid;
 	undorecord->uur_fork = MAIN_FORKNUM;
-	undorecord->uur_blkprev = zh_undo_info->prev_urecptr;
+	undorecord->uur_prevundo = zh_undo_info->prev_urecptr;
 	undorecord->uur_block = zh_undo_info->blkno;
 	undorecord->uur_offset = zh_undo_info->offnum;
 	undorecord->uur_tuple.len = 0;
@@ -4840,11 +4840,11 @@ zheap_prepare_undoinsert(ZHeapPrepareUndoInfo *zh_undo_info,
 		undorecord->uur_payload.len = 0;
 
 	BeginUndoRecordInsert(&zh_undo_info->context,
-						  zh_undo_info->undo_persistence,
+						  zh_undo_info->undo_category,
 						  1,
 						  xlog_record);
 	urecptr = PrepareUndoInsert(&zh_undo_info->context, undorecord,
-								zh_undo_info->fxid);
+								!InRecovery ? MyDatabaseId : InvalidOid);
 
 	return urecptr;
 }
@@ -4876,10 +4876,10 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
 	zh_undoinfo->old_undorec->uur_info = 0;
 	zh_undoinfo->old_undorec->uur_reloid = zh_undoinfo->gen_info->reloid;
 	zh_undoinfo->old_undorec->uur_prevxid = zh_undoinfo->prevxid;
-	zh_undoinfo->old_undorec->uur_xid = xid;
+	zh_undoinfo->old_undorec->uur_fxid = zh_undoinfo->gen_info->fxid;
 	zh_undoinfo->old_undorec->uur_cid = zh_undoinfo->gen_info->cid;
 	zh_undoinfo->old_undorec->uur_fork = MAIN_FORKNUM;
-	zh_undoinfo->old_undorec->uur_blkprev = zh_undoinfo->gen_info->prev_urecptr;
+	zh_undoinfo->old_undorec->uur_prevundo = zh_undoinfo->gen_info->prev_urecptr;
 	zh_undoinfo->old_undorec->uur_block = zh_undoinfo->gen_info->blkno;
 	zh_undoinfo->old_undorec->uur_offset = zh_undoinfo->gen_info->offnum;
 	zh_undoinfo->old_undorec->uur_payload.len = 0;
@@ -4951,16 +4951,16 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
 /* ZDFIXME
  * 		urecptr = PrepareUndoInsert(zh_undoinfo->old_undorec,
 									zh_undoinfo->gen_info->fxid,
-									zh_undoinfo->gen_info->undo_persistence,
+									zh_undoinfo->gen_info->undo_category,
 									xlrec);
  */
 		BeginUndoRecordInsert(&zh_undoinfo->gen_info->context,
-							  zh_undoinfo->gen_info->undo_persistence,
+							  zh_undoinfo->gen_info->undo_category,
 							  1,
 							  xlrec);
 		urecptr = PrepareUndoInsert(&zh_undoinfo->gen_info->context,
 									zh_undoinfo->old_undorec,
-									zh_undoinfo->gen_info->fxid);
+									!InRecovery ? MyDatabaseId : InvalidOid);
 	}
 	else
 	{
@@ -5045,7 +5045,7 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
 		zh_undoinfo->new_undorec->uur_info = 0;
 		zh_undoinfo->new_undorec->uur_reloid = zh_undoinfo->gen_info->reloid;
 		zh_undoinfo->new_undorec->uur_prevxid = xid;
-		zh_undoinfo->new_undorec->uur_xid = xid;
+		zh_undoinfo->new_undorec->uur_fxid = zh_undoinfo->gen_info->fxid;
 		zh_undoinfo->new_undorec->uur_cid = zh_undoinfo->gen_info->cid;
 		zh_undoinfo->new_undorec->uur_fork = MAIN_FORKNUM;
 		zh_undoinfo->new_undorec->uur_block = zh_undoinfo->new_block;
@@ -5069,10 +5069,10 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
 /*
  * ZDFIXME
  * 		UndoSetPrepareSize(undorec, 2, zh_undoinfo->gen_info->fxid,
-						   zh_undoinfo->gen_info->undo_persistence, xlrec);
+						   zh_undoinfo->gen_info->undo_category, xlrec);
 */		
 		BeginUndoRecordInsert(&zh_undoinfo->gen_info->context,
-							  zh_undoinfo->gen_info->undo_persistence,
+							  zh_undoinfo->gen_info->undo_category,
 							  2,
 							  xlrec);
 
@@ -5082,7 +5082,7 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
 
 		urecptr = PrepareUndoInsert(&zh_undoinfo->gen_info->context,
 									zh_undoinfo->old_undorec,
-									zh_undoinfo->gen_info->fxid);
+									!InRecovery ? MyDatabaseId : InvalidOid);
 
 		/* During recovery, make more room for tuple location if needed. */
 		if (!InRecovery)
@@ -5092,13 +5092,13 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
 		}
 
 		if (zh_undoinfo->same_buf)
-			zh_undoinfo->new_undorec->uur_blkprev = urecptr;
+			zh_undoinfo->new_undorec->uur_prevundo = urecptr;
 		else
-			zh_undoinfo->new_undorec->uur_blkprev = zh_undoinfo->new_prev_urecptr;
+			zh_undoinfo->new_undorec->uur_prevundo = zh_undoinfo->new_prev_urecptr;
 
 		*new_urecptr = PrepareUndoInsert(&zh_undoinfo->gen_info->context,
 										 zh_undoinfo->new_undorec,
-										 zh_undoinfo->gen_info->fxid);
+										 !InRecovery ? MyDatabaseId : InvalidOid);
 	}
 	return urecptr;
 }
@@ -5131,10 +5131,10 @@ zheap_prepare_undodelete(ZHeapPrepareUndoInfo *zhUndoInfo, ZHeapTuple zhtup,
 	undorecord->uur_info = 0;
 	undorecord->uur_reloid = zhUndoInfo->reloid;
 	undorecord->uur_prevxid = tup_xid;
-	undorecord->uur_xid = XidFromFullTransactionId(zhUndoInfo->fxid);
+	undorecord->uur_fxid = zhUndoInfo->fxid;
 	undorecord->uur_cid = zhUndoInfo->cid;
 	undorecord->uur_fork = MAIN_FORKNUM;
-	undorecord->uur_blkprev = zhUndoInfo->prev_urecptr;
+	undorecord->uur_prevundo = zhUndoInfo->prev_urecptr;
 	undorecord->uur_block = zhUndoInfo->blkno;
 	undorecord->uur_offset = zhUndoInfo->offnum;
 
@@ -5189,12 +5189,12 @@ zheap_prepare_undodelete(ZHeapPrepareUndoInfo *zhUndoInfo, ZHeapTuple zhtup,
 		undorecord->uur_payload.len = 0;
 
 	BeginUndoRecordInsert(&zhUndoInfo->context,
-						  zhUndoInfo->undo_persistence,
+						  zhUndoInfo->undo_category,
 						  1,
 						  xlog_record);
 	urecptr = PrepareUndoInsert(&zhUndoInfo->context,
 								undorecord,
-								zhUndoInfo->fxid);
+								!InRecovery ? MyDatabaseId : InvalidOid);
 
 	return urecptr;
 }
@@ -5228,10 +5228,10 @@ zheap_prepare_undolock(ZHeapPrepareLockUndoInfo *zh_undo_info,
 	undorecord->uur_info = 0;
 	undorecord->uur_reloid = zh_undo_info->gen_info->reloid;
 	undorecord->uur_prevxid = zh_undo_info->tup_xid;
-	undorecord->uur_xid = XidFromFullTransactionId(zh_undo_info->gen_info->fxid);
+	undorecord->uur_fxid = zh_undo_info->gen_info->fxid;
 	undorecord->uur_cid = zh_undo_info->gen_info->cid;
 	undorecord->uur_fork = MAIN_FORKNUM;
-	undorecord->uur_blkprev = zh_undo_info->gen_info->prev_urecptr;
+	undorecord->uur_prevundo = zh_undo_info->gen_info->prev_urecptr;
 	undorecord->uur_block = zh_undo_info->gen_info->blkno;
 	undorecord->uur_offset = zh_undo_info->gen_info->offnum;
 
@@ -5283,12 +5283,12 @@ zheap_prepare_undolock(ZHeapPrepareLockUndoInfo *zh_undo_info,
 	}
 
 	BeginUndoRecordInsert(&zh_undo_info->gen_info->context,
-						  zh_undo_info->gen_info->undo_persistence,
+						  zh_undo_info->gen_info->undo_category,
 						  1,
 						  xlog_record);	
 	urecptr = PrepareUndoInsert(&zh_undo_info->gen_info->context,
 								undorecord,
-								InRecovery ? zh_undo_info->gen_info->fxid : InvalidFullTransactionId);
+								!InRecovery ? MyDatabaseId : InvalidOid);
 
 	return urecptr;
 }
@@ -5326,10 +5326,10 @@ zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
 		undorecord[i].uur_info = 0;
 		undorecord[i].uur_reloid = zh_undo_info->reloid;
 		undorecord[i].uur_prevxid = FrozenTransactionId;
-		undorecord[i].uur_xid = XidFromFullTransactionId(zh_undo_info->fxid);
+		undorecord[i].uur_fxid = zh_undo_info->fxid;
 		undorecord[i].uur_cid = zh_undo_info->cid;
 		undorecord[i].uur_fork = MAIN_FORKNUM;
-		undorecord[i].uur_blkprev = zh_undo_info->prev_urecptr;
+		undorecord[i].uur_prevundo = zh_undo_info->prev_urecptr;
 		undorecord[i].uur_block = zh_undo_info->blkno;
 		undorecord[i].uur_tuple.len = 0;
 		undorecord[i].uur_offset = 0;
@@ -5337,16 +5337,16 @@ zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
 	}
 
 	BeginUndoRecordInsert(&zh_undo_info->context,
-						  zh_undo_info->undo_persistence,
+						  zh_undo_info->undo_category,
 						  nranges,
 						  NULL);
 
 	for (i = 0; i < nranges; i++)
 	{
-		undorecord[i].uur_blkprev = urecptr;
+		undorecord[i].uur_prevundo = urecptr;
 		urecptr = PrepareUndoInsert(&zh_undo_info->context,
 									&undorecord[i],
-									InRecovery ? zh_undo_info->fxid : InvalidFullTransactionId);
+									!InRecovery ? MyDatabaseId : InvalidOid);
 
 		initStringInfo(&undorecord[i].uur_payload);
 	}	
@@ -5593,7 +5593,7 @@ log_zheap_update(ZHeapWALInfo *old_walinfo, ZHeapWALInfo *new_walinfo,
 	 */
 	xlundohdr.reloid = old_walinfo->undorecord->uur_reloid;
 	xlundohdr.urec_ptr = old_walinfo->urecptr;
-	xlundohdr.blkprev = old_walinfo->undorecord->uur_blkprev;
+	xlundohdr.blkprev = old_walinfo->undorecord->uur_prevundo;
 
 	xlrec.prevxid = old_walinfo->undorecord->uur_prevxid;
 	xlrec.old_offnum = ItemPointerGetOffsetNumber(&old_walinfo->ztuple->t_self);
@@ -5620,7 +5620,7 @@ log_zheap_update(ZHeapWALInfo *old_walinfo, ZHeapWALInfo *new_walinfo,
 
 		xlnewundohdr.reloid = new_walinfo->undorecord->uur_reloid;
 		xlnewundohdr.urec_ptr = new_walinfo->urecptr;
-		xlnewundohdr.blkprev = new_walinfo->undorecord->uur_blkprev;
+		xlnewundohdr.blkprev = new_walinfo->undorecord->uur_prevundo;
 
 		Assert(new_walinfo->ztuple);
 		/* If new tuple is the single and first tuple on page... */
@@ -6339,7 +6339,7 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
 	elog(DEBUG1, "undo record: TransSlot: %d, Epoch: %d, TransactionId: %d, urec: " UndoRecPtrFormat ", prev_urec: " UndoRecPtrFormat ", block: %d, offset: %d, undo_op: %d, xid_tup: %d, reloid: %d",
 		 trans_slot_id, EpochFromFullTransactionId(fxid),
 		 XidFromFullTransactionId(fxid),
-		 urecptr, undorecord.uur_blkprev, undorecord.uur_block, undorecord.uur_offset, undorecord.uur_type,
+		 urecptr, undorecord.uur_prevundo, undorecord.uur_block, undorecord.uur_offset, undorecord.uur_type,
 		 undorecord.uur_prevxid, undorecord.uur_reloid);
 }
 
@@ -7837,7 +7837,7 @@ reacquire_buffer:
 			zh_undo_info.prev_urecptr = prev_urecptr;
 			zh_undo_info.fxid = fxid;
 			zh_undo_info.cid = cid;
-			zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
+			zh_undo_info.undo_category = UndoLogCategoryForRelation(relation);
 
 			urecptr = zheap_prepare_undo_multi_insert(&zh_undo_info,
 													  zfree_offset_ranges->nranges,

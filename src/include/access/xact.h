@@ -456,7 +456,6 @@ extern bool ProcessUndoRequestForEachLogCat(FullTransactionId fxid, Oid dbid,
 				bool *undoRequestResgistered, bool isSubTrans);
 
 extern void ApplyUndoActions(void);
-extern void SetUndoActionsInfo(void);
 extern void ResetUndoActionsInfo(void);
 extern bool CanPerformUndoActions(void);
 

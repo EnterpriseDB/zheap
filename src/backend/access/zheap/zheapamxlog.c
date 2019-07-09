@@ -111,7 +111,7 @@ zheap_xlog_insert(XLogReaderState *record)
 		zh_undo_info.prev_urecptr = xlundohdr->blkprev;
 		zh_undo_info.fxid = fxid;
 		zh_undo_info.cid = FirstCommandId;
-		zh_undo_info.undo_persistence = UNDO_PERMANENT;
+		zh_undo_info.undo_category = UNDO_PERMANENT;
 
 		/* prepare an undo record */
 		urecptr = zheap_prepare_undoinsert(&zh_undo_info,
@@ -356,7 +356,7 @@ zheap_xlog_delete(XLogReaderState *record)
 	zh_undo_info.prev_urecptr = xlundohdr->blkprev;
 	zh_undo_info.fxid = fxid;
 	zh_undo_info.cid = FirstCommandId;
-	zh_undo_info.undo_persistence = UNDO_PERMANENT;
+	zh_undo_info.undo_category = UNDO_PERMANENT;
 	urecptr = zheap_prepare_undodelete(&zh_undo_info,
 									   &zheaptup,
 									   xlrec->prevxid,
@@ -608,7 +608,7 @@ zheap_xlog_update(XLogReaderState *record)
 	gen_undo_info.prev_urecptr = xlundohdr->blkprev;
 	gen_undo_info.fxid = fxid;
 	gen_undo_info.cid = FirstCommandId;
-	gen_undo_info.undo_persistence = UNDO_PERMANENT;
+	gen_undo_info.undo_category = UNDO_PERMANENT;
 
 	zh_up_undo_info.gen_info = &gen_undo_info;
 	zh_up_undo_info.inplace_update = inplace_update;
@@ -1174,7 +1174,7 @@ zheap_xlog_lock(XLogReaderState *record)
 	zh_gen_undo_info.prev_urecptr = xlundohdr->blkprev;
 	zh_gen_undo_info.fxid = fxid;
 	zh_gen_undo_info.cid = FirstCommandId;
-	zh_gen_undo_info.undo_persistence = UNDO_PERMANENT;
+	zh_gen_undo_info.undo_category = UNDO_PERMANENT;
 
 	/* Get the trans slot number */
 	if (xlrec->flags & XLZ_LOCK_TRANS_SLOT_FOR_UREC)
@@ -1359,7 +1359,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		zh_undo_info.prev_urecptr = prev_urecptr;
 		zh_undo_info.fxid = fxid;
 		zh_undo_info.cid = FirstCommandId;
-		zh_undo_info.undo_persistence = UNDO_PERMANENT;
+		zh_undo_info.undo_category = UNDO_PERMANENT;
 
 		urecptr = zheap_prepare_undo_multi_insert(&zh_undo_info, nranges,
                                                   &undorecord, record);
@@ -1763,10 +1763,10 @@ zheap_xlog_unused(XLogReaderState *record)
 	undorecord.uur_info = 0;
 	undorecord.uur_reloid = xlundohdr->reloid;
 	undorecord.uur_prevxid = xid;
-	undorecord.uur_xid = xid;
+	undorecord.uur_fxid = fxid;
 	undorecord.uur_cid = FirstCommandId;
 	undorecord.uur_fork = MAIN_FORKNUM;
-	undorecord.uur_blkprev = xlundohdr->blkprev;
+	undorecord.uur_prevundo = xlundohdr->blkprev;
 	undorecord.uur_block = blkno;
 	undorecord.uur_offset = 0;
 	undorecord.uur_tuple.len = 0;
@@ -1778,7 +1778,7 @@ zheap_xlog_unused(XLogReaderState *record)
 		   undorecord.uur_payload.len);
 
 	BeginUndoRecordInsert(&context, UNDO_PERMANENT, 1, record);
-	urecptr = PrepareUndoInsert(&context, &undorecord, fxid);
+	urecptr = PrepareUndoInsert(&context, &undorecord, InvalidOid);
 	InsertPreparedUndo(&context);
 
 	/*

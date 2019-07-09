@@ -141,14 +141,12 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
 
 		/* We'll need to look further back into the undo log. */
 		xid = InvalidTransactionId;
-		zinfo->urec_ptr = urec->uur_blkprev;
+		zinfo->urec_ptr = urec->uur_prevundo;
 		UndoRecordRelease(urec);
 	}
 
-	epoch = urec->uur_xidepoch;
-	zinfo->xid = urec->uur_xid;
-	zinfo->epoch_xid =
-		FullTransactionIdFromEpochAndXid(epoch, zinfo->xid);
+	zinfo->xid = XidFromFullTransactionId(urec->uur_fxid);
+	zinfo->epoch_xid = urec->uur_fxid;
 	zinfo->cid = urec->uur_cid;
 
 	/* If this is a non-in-place update, update ctid if requested. */
@@ -422,7 +420,7 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid, Buffer buffer,
 		*free_ztuple = true;
 	}
 
-	zinfo->urec_ptr = urec->uur_blkprev;
+	zinfo->urec_ptr = urec->uur_prevundo;
 	zinfo->xid = urec->uur_prevxid;
 	zinfo->cid = InvalidCommandId;
 

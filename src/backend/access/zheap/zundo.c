@@ -54,7 +54,8 @@ ZHeapSatisfyUndoRecord(UnpackedUndoRecord *urec, BlockNumber blkno,
 	Assert(blkno != InvalidBlockNumber);
 
 	if ((urec->uur_block != blkno ||
-		 (TransactionIdIsValid(xid) && !TransactionIdEquals(xid, urec->uur_xid))))
+		 (TransactionIdIsValid(xid) &&
+		  !TransactionIdEquals(xid, XidFromFullTransactionId(urec->uur_fxid)))))
 		return false;
 
 	switch (urec->uur_type)
@@ -297,7 +298,7 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
 		 */
 		Assert(urec != NULL);
 
-		if (TransactionIdEquals(urec->uur_xid, priorXmax))
+		if (TransactionIdEquals(XidFromFullTransactionId(urec->uur_fxid), priorXmax))
 		{
 			valid = true;
 			UndoRecordRelease(urec);
@@ -310,7 +311,7 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
 		Assert(!TransactionIdPrecedes(urec->uur_prevxid, RecentGlobalXmin));
 
 		zinfo.xid = urec->uur_prevxid;
-		zinfo.urec_ptr = urec->uur_blkprev;
+		zinfo.urec_ptr = urec->uur_prevundo;
 		UndoRecordRelease(urec);
 
 		/*
@@ -725,7 +726,7 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	 * The logno of slot's undo record pointer must be same as the logno of
 	 * undo record to be applied.
 	 */
-	prev_urec_ptr = urp_array[last_idx].uur->uur_blkprev;
+	prev_urec_ptr = urp_array[last_idx].uur->uur_prevundo;
 	first_urp = urp_array[first_idx].urp;
 
 	if (slot_no == InvalidXactSlotId ||
@@ -777,14 +778,14 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 			continue;
 
 		Assert(block_prev_urp == urec_info->urp);
-		block_prev_urp = uur->uur_blkprev;
+		block_prev_urp = uur->uur_prevundo;
 
 		elog(DEBUG1, "Rollback undo record: "
 			 "TransSlot: %d, Epoch: %d, TransactionId: %d, urec: " UndoRecPtrFormat ", "
 			 "prev_urec: " UndoRecPtrFormat ", block: %d, offset: %d, undo_op: %d, "
 			 "xid_tup: %d, reloid: %d",
 			 slot_no, epoch, xid, slot_urec_ptr,
-			 uur->uur_blkprev, uur->uur_block,
+			 uur->uur_prevundo, uur->uur_block,
 			 uur->uur_offset, uur->uur_type,
 			 uur->uur_prevxid, uur->uur_reloid);
 

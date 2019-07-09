@@ -59,7 +59,7 @@ ZCurrentXactHasTupleLockMode(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
 			break;
 
 		/* If we encounter a different transaction, we shouldn't go ahead. */
-		if (!TransactionIdIsCurrentTransactionId(urec->uur_xid))
+		if (!TransactionIdIsCurrentTransactionId(XidFromFullTransactionId(urec->uur_fxid)))
 			break;
 
 		uur_type = urec->uur_type;
@@ -113,7 +113,7 @@ ZCurrentXactHasTupleLockMode(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
 			 */
 			break;
 		}
-		urec_ptr = urec->uur_blkprev;
+		urec_ptr = urec->uur_prevundo;
 
 		UndoRecordRelease(urec);
 		urec = NULL;
@@ -231,9 +231,9 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			 * neither need to check conflicts with them nor need to wait for
 			 * them.
 			 */
-			if (TransactionIdEquals(urec->uur_xid, GetTopTransactionIdIfAny()))
+			if (TransactionIdEquals(XidFromFullTransactionId(urec->uur_fxid), GetTopTransactionIdIfAny()))
 			{
-				urec_ptr = urec->uur_blkprev;
+				urec_ptr = urec->uur_prevundo;
 				UndoRecordRelease(urec);
 				urec = NULL;
 				continue;
@@ -259,7 +259,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 				uur_type == UNDO_XID_MULTI_LOCK_ONLY)
 			{
 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
-				mlmember->xid = urec->uur_xid;
+				mlmember->xid = XidFromFullTransactionId(urec->uur_fxid);
 				mlmember->subxid = subxid;
 				mlmember->trans_slot_id = prev_trans_slot_id;
 				mlmember->mode = *((LockTupleMode *) urec->uur_payload.data);
@@ -269,7 +269,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 					 uur_type == UNDO_INPLACE_UPDATE)
 			{
 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
-				mlmember->xid = urec->uur_xid;
+				mlmember->xid = XidFromFullTransactionId(urec->uur_fxid);
 				mlmember->subxid = subxid;
 				mlmember->trans_slot_id = prev_trans_slot_id;
 
@@ -283,7 +283,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			else if (uur_type == UNDO_DELETE)
 			{
 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
-				mlmember->xid = urec->uur_xid;
+				mlmember->xid = XidFromFullTransactionId(urec->uur_fxid);
 				mlmember->subxid = subxid;
 				mlmember->trans_slot_id = prev_trans_slot_id;
 				mlmember->mode = LockTupleExclusive;
@@ -311,7 +311,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 			 * encountered undo record of committed transaction
 			 * (ZHeapTupleHasInvalidXact(undo_tup->t_data)).
 			 */
-			urec_ptr = urec->uur_blkprev;
+			urec_ptr = urec->uur_prevundo;
 
 			UndoRecordRelease(urec);
 			urec = NULL;
@@ -699,7 +699,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 			 * If the current transaction has locked the tuple, then we don't
 			 * need to process the undo records.
 			 */
-			if (TransactionIdEquals(urec->uur_xid, GetTopTransactionIdIfAny()))
+			if (TransactionIdEquals(XidFromFullTransactionId(urec->uur_fxid), GetTopTransactionIdIfAny()))
 			{
 				found = true;
 				break;
@@ -723,7 +723,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 				break;
 			}
 
-			if (xid != urec->uur_xid)
+			if (xid != XidFromFullTransactionId(urec->uur_fxid))
 			{
 				/*
 				 * We are done, once the undo record suggests that prior tuple
@@ -732,7 +732,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 				break;
 			}
 
-			urec_ptr = urec->uur_blkprev;
+			urec_ptr = urec->uur_prevundo;
 
 			UndoRecordRelease(urec);
 			urec = NULL;

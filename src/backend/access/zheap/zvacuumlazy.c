@@ -282,10 +282,10 @@ reacquire_slot:
 	undorecord.uur_info = 0;
 	undorecord.uur_reloid = onerel->rd_id;
 	undorecord.uur_prevxid = xid;
-	undorecord.uur_xid = xid;
+	undorecord.uur_fxid = fxid;
 	undorecord.uur_cid = InvalidCommandId;
 	undorecord.uur_fork = MAIN_FORKNUM;
-	undorecord.uur_blkprev = prev_urecptr;
+	undorecord.uur_prevundo = prev_urecptr;
 	undorecord.uur_block = blkno;
 	undorecord.uur_offset = 0;
 	undorecord.uur_tuple.len = 0;
@@ -298,7 +298,7 @@ reacquire_slot:
 	 */
 	BeginUndoRecordInsert(&context, UNDO_PERMANENT, 1, NULL);
 	urecptr = PrepareUndoInsert(&context, &undorecord,
-								InvalidFullTransactionId);
+								!InRecovery ? MyDatabaseId : InvalidOid);
 
 	/*
 	 * Lock the TPD page before starting critical section.  We might need to

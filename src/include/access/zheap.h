@@ -113,7 +113,7 @@ typedef struct ZHeapPrepareUndoInfo
 	UndoRecPtr	prev_urecptr;
 	FullTransactionId fxid;
 	CommandId	cid;
-	UndoPersistence undo_persistence;
+	UndoLogCategory undo_category;
 	UndoRecordInsertContext	context;
 } ZHeapPrepareUndoInfo;
 

@@ -1073,26 +1073,6 @@ IsInParallelMode(void)
 }
 
 /*
- * SetUndoActionsInfo - set the start and end undo record pointers before
- * performing the undo actions.
- */
-void
-SetUndoActionsInfo(void)
-{
-	TransactionState s = CurrentTransactionState;
-	int			i;
-
-	for (i = 0; i < UndoPersistenceLevels; i++)
-	{
-		if (s->latest_urec_ptr[i])
-		{
-			s->performUndoActions = true;
-			break;
-		}
-	}
-}
-
-/*
  *	CommandCounterIncrement
  */
 void
@@ -2057,16 +2037,8 @@ StartTransaction(void)
 	currentSubTransactionId = TopSubTransactionId;
 	currentCommandId = FirstCommandId;
 	currentCommandIdUsed = false;
-
-	/* initialize undo record locations for the transaction */
-	for (i = 0; i < UndoPersistenceLevels; i++)
-	{
-		s->start_urec_ptr[i] = InvalidUndoRecPtr;
-		s->latest_urec_ptr[i] = InvalidUndoRecPtr;
-	}
-	s->performUndoActions = false;
 	s->subXactLock = false;
-
+	
 	/*
 	 * initialize reported xid accounting
 	 */
@@ -3193,7 +3165,7 @@ CommitTransactionCommand(void)
 				 * for this transaction.  Also set the start_urec_ptr if
 				 * parent start_urec_ptr is not valid.
 				 */
-				for (i = 0; i < UndoPersistenceLevels; i++)
+				for (i = 0; i < UndoLogCategories; i++)
 				{
 					if (UndoRecPtrIsValid(s->latest_urec_ptr[i]))
 						s->parent->latest_urec_ptr[i] = s->latest_urec_ptr[i];
