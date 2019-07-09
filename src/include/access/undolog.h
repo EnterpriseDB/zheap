@@ -394,7 +394,9 @@ UndoRecPtrGetTablespace(UndoRecPtr urp)
 static inline UndoLogCategory
 UndoLogNumberGetCategory(UndoLogNumber logno)
 {
-	return UndoLogGetTableEntry(logno)->category;
+	//ZDFIXME : persistence stored in cache is not correct.
+	//return UndoLogGetTableEntry(logno)->category;
+	return UndoLogGetTableEntry(logno)->slot->meta.category;
 }
 
 static inline UndoLogCategory
