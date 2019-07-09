@@ -4874,14 +4874,6 @@ TransactionBlockStatusCode(void)
 {
 	TransactionState s = CurrentTransactionState;
 
-	/*
-	 * Here, we just detect whether there are any pending undo actions so that
-	 * we can skip releasing the locks during abort transaction.  We don't
-	 * release the locks till we execute undo actions otherwise, there is a
-	 * risk of deadlock.
-	 */
-	SetUndoActionsInfo();
-
 	switch (s->blockState)
 	{
 		case TBLOCK_DEFAULT:

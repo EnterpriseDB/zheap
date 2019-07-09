@@ -122,6 +122,8 @@ BeginInsertUndo(UndoPackContext *ucontext, UnpackedUndoRecord *uur,
 	/* Copy undo record header. */
 	ucontext->urec_hd.urec_type = uur->uur_type;
 	ucontext->urec_hd.urec_info = uur->uur_info;
+	ucontext->urec_hd.urec_prevxid = uur->uur_prevxid;
+	ucontext->urec_hd.urec_prevlen = uur->uur_prevlen;
 
 	/* Copy optional headers into the context. */
 	if ((uur->uur_info & UREC_INFO_GROUP) != 0)
@@ -868,6 +870,8 @@ FinishUnpackUndo(UndoPackContext *ucontext, UnpackedUndoRecord *uur)
 	uur->uur_reloid = ucontext->urec_reloid;
 	uur->uur_fxid = ucontext->urec_fxid;
 	uur->uur_cid = ucontext->urec_cid;
+	uur->uur_prevxid = ucontext->urec_hd.urec_prevxid;
+	uur->uur_prevlen = ucontext->urec_hd.urec_prevlen;
 
 	/* Copy undo record optional headers. */
 	if ((uur->uur_info & UREC_INFO_FORK) != 0)

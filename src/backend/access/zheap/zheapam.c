@@ -5339,7 +5339,7 @@ zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
 	BeginUndoRecordInsert(&zh_undo_info->context,
 						  zh_undo_info->undo_category,
 						  nranges,
-						  NULL);
+						  xlog_record);
 
 	for (i = 0; i < nranges; i++)
 	{

@@ -89,10 +89,12 @@ typedef struct UndoRecordHeader
 {
 	uint8		urec_type;		/* record type code */
 	uint16		urec_info;		/* flag bits */
+	TransactionId urec_prevxid;	/* ZFXIME, remove this */
+	uint16		urec_prevlen;	/* ZFXIME, remove this */
 } UndoRecordHeader;
 
 #define SizeOfUndoRecordHeader	\
-	(offsetof(UndoRecordHeader, urec_info) + sizeof(uint16))
+	(offsetof(UndoRecordHeader, urec_prevxid) + sizeof(uint16))
 
 /*
  * Undo group header keep the information per undo group which can be discarded
@@ -248,6 +250,8 @@ typedef struct UnpackedUndoRecord
 	uint8		uur_type;		/* record type code */
 	uint16		uur_info;		/* flag bits */
 	Oid			uur_reloid;		/* relation OID */
+	TransactionId uur_prevxid;	/* ZFXIME, remove this */
+	uint16		uur_prevlen;	/* ZFXIME, remove this */
 	CommandId	uur_cid;		/* command id */
 	ForkNumber	uur_fork;		/* fork number */
 	UndoRecPtr	uur_prevundo;	/* byte offset of previous undo for block */

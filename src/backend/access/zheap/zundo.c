@@ -500,10 +500,10 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 		if (nrecords == 0)
 			break;
 
-		/* Apply the last set of the actions. */
-		execute_undo_actions_page(urp_array, 0, nrecords - 1, rel->rd_id,
-								  fxid, BufferGetBlockNumber(buffer),
-								  UndoRecPtrIsValid(urec_ptr) ? false : true);
+		/* Apply the undo actions. */
+		zheap_undo_actions(urp_array, 0, nrecords - 1, rel->rd_id, fxid,
+						   BufferGetBlockNumber(buffer),
+						   UndoRecPtrIsValid(urec_ptr) ? false : true);
 
 		/* Free all undo records. */
 		for (i = 0; i < nrecords; i++)
