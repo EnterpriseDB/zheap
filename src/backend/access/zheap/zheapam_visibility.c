@@ -1374,6 +1374,15 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ItemPointer tid, ZHeapTuple zhtup,
 			{
 				if (ZHEAP_XID_IS_LOCKED_ONLY(tuple->t_infomask))
 				{
+					FullTransactionId	single_locker_fxid = InvalidFullTransactionId;
+
+					if (!ZHeapTupleHasMultiLockers(tuple->t_infomask))
+						GetLockerTransInfo(rel, &zhtup->t_self, buffer,
+										   single_locker_trans_slot,
+										   &single_locker_fxid);
+					*single_locker_xid =
+						XidFromFullTransactionId(single_locker_fxid);
+
 					/*
 					 * Locked before scan;  caller can check if it is locked
 					 * in lock mode higher or equal to the required mode, then
@@ -1689,7 +1698,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 
 			if (preabort_tuple)
 				*preabort_tuple = undo_tuple;
-			else if (undo_tuple != zhtup)
+			else if (undo_tuple != NULL && undo_tuple != zhtup)
 				pfree(undo_tuple);
 
 			if (undo_tuple != NULL)
@@ -1767,7 +1776,7 @@ ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup, TransactionId OldestXmin,
 
 			if (preabort_tuple)
 				*preabort_tuple = undo_tuple;
-			else if (undo_tuple != zhtup)
+			else if (undo_tuple != NULL && undo_tuple != zhtup)
 				pfree(undo_tuple);
 
 			if (undo_tuple != NULL)

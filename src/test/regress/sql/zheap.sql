@@ -356,7 +356,7 @@ COPY test_multi_insert FROM STDIN;
 14
 15
 \.
-SELECT * FROM test_multi_insert;
+SELECT * FROM test_multi_insert ORDER BY 1;
 ROLLBACK;
-SELECT * FROM test_multi_insert;
+SELECT * FROM test_multi_insert ORDER BY 1;
 DROP TABLE test_multi_insert;

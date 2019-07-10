@@ -997,13 +997,16 @@ create rule r1 as on update to rules_src do also
   insert into rules_log values(old.*, 'old'), (new.*, 'new');
 update rules_src set f2 = f2 + 1;
 update rules_src set f2 = f2 * 10;
-select * from rules_src;
-select * from rules_log;
+select * from rules_src ORDER BY 1,2;
+select * from rules_log ORDER BY 1,2,3;
 create rule r2 as on update to rules_src do also
   values(old.*, 'old'), (new.*, 'new');
-update rules_src set f2 = f2 / 10;
-select * from rules_src;
-select * from rules_log;
+-- To make output consistancey, we will update one row at a time because in
+-- zheap, some time due to non in-place updates, rows order will be differnt.
+update rules_src set f2 = f2 / 10 WHERE f2 = 30;
+update rules_src set f2 = f2 / 10 WHERE f2 = 130;
+select * from rules_src ORDER BY 1,2;
+select * from rules_log ORDER BY 1,2,3;
 create rule r3 as on delete to rules_src do notify rules_src_deletion;
 \d+ rules_src
 

@@ -30,7 +30,7 @@ static void
 zheap_xlog_insert(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
-	xl_undo_header *xlundohdr;
+	xl_undo_header *xlundohdr = NULL;
 	xl_zheap_insert *xlrec = (xl_zheap_insert *) XLogRecGetData(record);
 	Buffer		buffer;
 	Page		page;
@@ -1973,7 +1973,7 @@ zheap_undo_xlog_page(XLogReaderState *record)
 		if (*flags & XLU_PAGE_CONTAINS_TPD_SLOT)
 		{
 			xlrec = (xl_zundo_page *) data;
-			data += sizeof(xl_zundo_page);
+			data += SizeOfZUndoPage;
 		}
 		if (*flags & XLU_CONTAINS_TPD_OFFSET_MAP)
 			offsetmap = data;

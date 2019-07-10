@@ -12,7 +12,7 @@ teardown
 
 session "s1"
 setup		{ BEGIN; }
-step "r1"	{ SELECT * FROM animals; }
+step "r1"	{ SELECT * FROM animals ORDER BY 1,2; }
 step "i1"	{ INSERT INTO ANIMALS VALUES ('cow', 11); }
 step "t1"	{ DELETE FROM ANIMALS WHERE name = 'dog'; }
 step "c1"	{ COMMIT; }
@@ -22,7 +22,7 @@ session "s2"
 setup       { BEGIN; }
 step "w2"	{ UPDATE animals SET counter = counter + 2 WHERE name = 'cat'; }
 step "i2"	{ INSERT INTO ANIMALS VALUES ('lion', 22); }
-step "r2"	{ SELECT * FROM animals; }
+step "r2"	{ SELECT * FROM animals ORDER BY 1,2; }
 step "t2"	{ DELETE FROM ANIMALS WHERE name = 'lion'; }
 step "c2"	{ COMMIT; }
 step "d2"	{ ROLLBACK; }
@@ -33,7 +33,7 @@ setup       { BEGIN; }
 step "i3"	{ INSERT INTO ANIMALS VALUES ('panther', 33); }
 step "w3"	{ UPDATE animals SET counter = counter + 3 WHERE name = 'cat'; }
 step "t3"	{ DELETE FROM ANIMALS WHERE counter < 3; }
-step "r3"	{ SELECT * FROM animals; }
+step "r3"	{ SELECT * FROM animals ORDER BY 1,2; }
 step "c3"	{ COMMIT; }
 
 # index key update
@@ -41,7 +41,7 @@ session "s4"
 setup       { BEGIN; }
 step "i4"	{ INSERT INTO ANIMALS VALUES ('giraffe', 44); }
 step "w4"	{ UPDATE animals SET counter = counter + 4 WHERE name = 'cat'; }
-step "r4"	{ SELECT * FROM animals; }
+step "r4"	{ SELECT * FROM animals ORDER BY 1,2; }
 step "c4"	{ COMMIT; }
 
 # insert and index key update
@@ -49,7 +49,7 @@ session "s5"
 setup       { BEGIN; }
 step "i5"	{ INSERT INTO ANIMALS VALUES('tiger', 55); }
 step "w5"	{ UPDATE animals SET counter = counter + 5 WHERE name = 'cat'; }
-step "r5"	{ SELECT * FROM animals; }
+step "r5"	{ SELECT * FROM animals ORDER BY 1,2; }
 step "t5"	{ DELETE FROM ANIMALS WHERE name = 'dog'; }
 step "c5"	{ COMMIT; }
 

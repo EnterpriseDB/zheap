@@ -118,7 +118,12 @@ RelationGetBufferForZTuple(Relation relation, Size len,
 		{
 			BlockNumber nblocks = RelationGetNumberOfBlocks(relation);
 
-			if (nblocks > 0)
+			/*
+			 * In zheap, first page is always a meta page, so we need to skip
+			 * it for tuple insertions.
+			 */
+			Assert(nblocks > 0);
+			if (nblocks > ZHEAP_METAPAGE + 1)
 				targetBlock = nblocks - 1;
 		}
 	}
@@ -127,6 +132,16 @@ loop:
 	while (targetBlock != InvalidBlockNumber)
 	{
 		bool		other_buffer_locked = false;
+
+		/*
+		 * targetBlock can't be same as ZHEAP_METAPAGE because we never
+		 * insert/update free-space of meta page in FSM, so we will not get
+		 * meta page from FSM.
+		 *
+		 * Above we already skipped meta page in case of only 1 block in
+		 * relation.
+		 */
+		Assert(targetBlock != ZHEAP_METAPAGE);
 
 		/*
 		 * Read and exclusive-lock the target block, as well as the other
@@ -173,18 +188,6 @@ loop:
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
 			/*
-			 * ZBORKED: This is my (Andres') adaption of the previously (in
-			 * code) undocumented workaround around lock-ordering issue in tpd
-			 * pages that was originally added in
-			 * https://github.com/EnterpriseDB/zheap/commit/e4d3f718991b673ca3f6b02f5562366f7bc67b6d
-			 *
-			 * Whenever we need two buffers for updating a tuple
-			 * (non-inplace), we use the rule "lock lower numbered buffer
-			 * first" to avoid deadlocks. But, in zheap this is not the
-			 * sufficient condition.  It's possible that the new buffer is a
-			 * pruned TPD buffer and some other backend is trying to use it
-			 * while holding lock on a zheap buffer with higher block number.
-			 *
 			 * To avoid deadlocking, we simply don't lock otherBuffer.  First
 			 * we will check that target block is TPD block or not, if TPD
 			 * block then we will not lock otherBuffer.
@@ -211,15 +214,26 @@ loop:
 			}
 		}
 
-		if (targetBlock == ZHEAP_METAPAGE || IsTPDPage(BufferGetPage(buffer)))
+		if (IsTPDPage(BufferGetPage(buffer)))
 		{
 			/*
-			 * ZBORKED: I (Andres) had to implement this because the previous
-			 * code was plainly broken, and caused problems due to the newer
-			 * fsm_local_map() logic.  We could handle the ZHEAP_METAPAGE case
-			 * before locking (but be careful, it needs to be in the loop),
-			 * but I'm doubtful it's worth it, because we still need to update
-			 * the FSM etc.
+			 * XXX: This is a TPD page, so we have to skip it.
+			 *
+			 * If this TPD page is an empty then we can use it after removing
+			 * from meta list but removal is costly and we will rarely get an
+			 * empty TPD page here(only when we will not get any page from FSM
+			 * and trying with last block of relation, that can be empty TPD
+			 * page (See ExtendTPDEntry)).  So we are skipping empty TPD page
+			 * also.
+			 *
+			 * Ideally, we don't need to update free-space for TPD page in FSM
+			 * because at the time of making the page as TPD page, we always
+			 * update free-space for that page as zero in FSM so we will never
+			 * get same TPD page from FSM. (See TPDAllocatePageAndAddEntry).
+			 * So we can directly call GetPageWithFreeSpace to get a new page.
+			 * However, doing so need some additional checks in the code which
+			 * don't seem necessary as this is not a common scenario for which
+			 * we need to optimize.
 			 */
 			pageFreeSpace = 0;
 		}

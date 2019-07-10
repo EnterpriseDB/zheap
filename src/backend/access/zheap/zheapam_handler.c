@@ -1509,7 +1509,7 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 	TsmRoutine *tsm = scanstate->tsmroutine;
 	BlockNumber blockno = scan->rs_cblock;
 	bool		pagemode = (sscan->rs_flags & SO_ALLOW_PAGEMODE) != 0;
-	Page		page;
+	Page		page = NULL;
 	bool		all_visible = false;
 	OffsetNumber maxoffset;
 	uint8		vmstatus;

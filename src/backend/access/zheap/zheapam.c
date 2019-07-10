@@ -1100,7 +1100,7 @@ zheap_delete_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zheaptup,
 			}
 
 			*any_multi_locker_member_alive =
-				ZIsAnyMultiLockMemberRunning(relation, xwait_trans_slot,
+				ZIsAnyMultiLockMemberRunning(relation,
 											 new_mlmembers, zheaptup,
 											 buffer, &pending_actions_applied);
 			list_free_deep(mlmembers);
@@ -1236,8 +1236,8 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 				newbuf,
 				vmbuffer = InvalidBuffer,
 				vmbuffer_new = InvalidBuffer;
-	Size		newtupsize,
-				oldtupsize,
+	Size		newtupsize = 0,
+				oldtupsize = 0,
 				pagefree;
 	int			oldtup_new_trans_slot,
 				newtup_trans_slot,
@@ -1261,7 +1261,7 @@ zheap_update(Relation relation, ItemPointer otid, ZHeapTuple newtup,
 	bool		locker_remains = false;
 	bool		any_multi_locker_member_alive = false;
 	bool		lock_reacquired;
-	bool		need_toast;
+	bool		need_toast = false;
 	bool		hasSubXactLock = false;
 	uint8		vm_status;
 	uint8		vm_status_new = 0;
@@ -1330,19 +1330,34 @@ check_tup_satisfies_update:
 									   &single_locker_trans_slot, false,
 									   snapshot, &in_place_updated_or_locked);
 	/* Determine columns modified by the update, if not yet done. */
-	if (!computed_modified_attrs && oldtup.t_data != NULL)
+	if (!computed_modified_attrs)
 	{
-		computed_modified_attrs = true;
-		modified_attrs =
-			ZHeapDetermineModifiedColumns(relation, interesting_attrs,
-										  &oldtup, newtup);
+		if (oldtup.t_data != NULL)
+		{
+			computed_modified_attrs = true;
+			modified_attrs =
+				ZHeapDetermineModifiedColumns(relation, interesting_attrs,
+											  &oldtup, newtup);
 
-		/*
-		 * Similar to heap, if we're not updating any "key" column, we can
-		 * grab weaker lock type.  See heap_update.
-		 */
-		key_intact = !bms_overlap(modified_attrs, key_attrs);
-		*lockmode = key_intact ? LockTupleNoKeyExclusive : LockTupleExclusive;
+			/*
+			 * Similar to heap, if we're not updating any "key" column, we can
+			 * grab weaker lock type.  See heap_update.
+			 */
+			key_intact = !bms_overlap(modified_attrs, key_attrs);
+			*lockmode = key_intact ? LockTupleNoKeyExclusive :
+				LockTupleExclusive;
+		}
+		else
+		{
+			/*
+			 * Since tuple data is gone let's be conservative about lock mode.
+			 *
+			 * XXX We could optimize here by checking whether the key column is
+			 * not updated and if so, then use lower lock level, but this case
+			 * should be rare enough that it won't matter.
+			 */
+			*lockmode = LockTupleExclusive;
+		}
 	}
 
 	if (result == TM_Invisible)
@@ -2383,7 +2398,7 @@ zheap_update_wait_helper(Relation relation,
 				}
 
 				*any_multi_locker_member_alive =
-					ZIsAnyMultiLockMemberRunning(relation, xwait_trans_slot,
+					ZIsAnyMultiLockMemberRunning(relation,
 												 new_mlmembers, zheaptup,
 												 buffer,
 												 &pending_actions_applied);
@@ -2722,6 +2737,11 @@ check_tup_satisfies_update:
 			tuple->t_data = palloc0(tuple->t_len);
 			memcpy(tuple->t_data, zhtup.t_data, zhtup.t_len);
 
+			/*
+			 * We reach here when the tuple is inserted/inplace updated
+			 * by current transaction and there are no other concurrent
+			 * locker on the tuple.
+			 */
 			switch (mode)
 			{
 				case LockTupleKeyShare:
@@ -2932,6 +2952,11 @@ zheap_tuple_already_locked(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
 	}
 	else if (TransactionIdIsCurrentTransactionId(xid))
 	{
+		/*
+		 * We reach here when the current transaction is the sole locker
+		 * on the tuple.  In that case, ZHeapTupleSatisfiesUpdate returns
+		 * TM_BeingModified and eventually we come here.
+		 */
 		switch (mode)
 		{
 			case LockTupleKeyShare:
@@ -3409,7 +3434,7 @@ zheap_lock_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zhtup,
 			}
 
 			*any_multi_locker_member_alive =
-				ZIsAnyMultiLockMemberRunning(relation, xwait_trans_slot,
+				ZIsAnyMultiLockMemberRunning(relation,
 											 new_mlmembers, zhtup,
 											 buffer,
 											 &pending_actions_applied);
@@ -4477,8 +4502,17 @@ compute_new_xid_infomask(ZHeapTuple zhtup, Buffer buf, TransactionId tup_xid,
 	/*
 	 * We store the reserved transaction slot only when we update the tuple.
 	 * For lock only, we keep the old transaction slot in the tuple.
+	 *
+	 * For lock only, if tuple is updated by current transaction and has
+	 * multilocker, then it is possible that tuple slot is moved into TPD
+	 * because before calling PageReserveTransactionSlot, we are releasing
+	 * buffer lock so in such case we should get previous slot_no + 1.
 	 */
-	Assert(is_update || new_trans_slot == tup_trans_slot);
+	Assert(is_update || new_trans_slot == tup_trans_slot ||
+		   (tup_xid == add_to_xid &&
+			ZHeapPageHasTPDSlot((PageHeader) BufferGetPage(buf)) &&
+			tup_trans_slot == ZHEAP_PAGE_TRANS_SLOTS &&
+			new_trans_slot == tup_trans_slot + 1));
 }
 
 /*
@@ -6189,7 +6223,6 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 	ZHeapPageOpaque opaque;
 	Page		page;
 	PageHeader	phdr PG_USED_FOR_ASSERTS_ONLY;
-	uint32		epoch = 0;
 
 	zinfo->trans_slot = trans_slot_id;
 	zinfo->cid = InvalidCommandId;
@@ -6204,7 +6237,7 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 	 */
 	if (trans_slot_id == ZHTUP_SLOT_FROZEN)
 	{
-		zinfo->xid = InvalidTransactionId;
+		zinfo->epoch_xid = InvalidFullTransactionId;
 		zinfo->urec_ptr = InvalidUndoRecPtr;
 	}
 	else if (trans_slot_id < ZHEAP_PAGE_TRANS_SLOTS ||
@@ -6213,8 +6246,7 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 	{
 		TransInfo  *thistrans = &opaque->transinfo[trans_slot_id - 1];
 
-		epoch = EpochFromFullTransactionId(thistrans->fxid);
-		zinfo->xid = XidFromFullTransactionId(thistrans->fxid);
+		zinfo->epoch_xid = thistrans->fxid;
 		zinfo->urec_ptr = thistrans->urec_ptr;
 	}
 	else
@@ -6233,8 +6265,7 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 				TPDPageGetTransactionSlotInfo(buf,
 											  trans_slot_id,
 											  InvalidOffsetNumber,
-											  &epoch,
-											  &zinfo->xid,
+											  &zinfo->epoch_xid,
 											  &zinfo->urec_ptr,
 											  NoTPDBufLock,
 											  false);
@@ -6246,15 +6277,14 @@ GetTransactionSlotInfo(Buffer buf, OffsetNumber offset, int trans_slot_id,
 				TPDPageGetTransactionSlotInfo(buf,
 											  trans_slot_id,
 											  offset,
-											  &epoch,
-											  &zinfo->xid,
+											  &zinfo->epoch_xid,
 											  &zinfo->urec_ptr,
 											  NoTPDBufLock,
 											  false);
 		}
 	}
 
-	zinfo->epoch_xid = FullTransactionIdFromEpochAndXid(epoch, zinfo->xid);
+	zinfo->xid = XidFromFullTransactionId(zinfo->epoch_xid);
 }
 
 /*
@@ -6436,54 +6466,6 @@ PageGetTransactionSlotId(Relation rel, Buffer buf, FullTransactionId fxid,
 	}
 
 	return InvalidXactSlotId;
-}
-
-/*
- * PageGetTransactionSlotInfo - Get the transaction slot info for the given
- *	slot no.
- */
-void
-PageGetTransactionSlotInfo(Buffer buf, int slot_no, uint32 *epoch,
-						   TransactionId *xid, UndoRecPtr *urec_ptr,
-						   bool keepTPDBufLock)
-{
-	ZHeapPageOpaque opaque;
-	Page		page;
-	PageHeader	phdr;
-
-	page = BufferGetPage(buf);
-	phdr = (PageHeader) page;
-	opaque = (ZHeapPageOpaque) PageGetSpecialPointer(page);
-
-	/*
-	 * Fetch the required information from the transaction slot. The
-	 * transaction slot can either be on the heap page or TPD page.
-	 */
-	if (slot_no < ZHEAP_PAGE_TRANS_SLOTS ||
-		(slot_no == ZHEAP_PAGE_TRANS_SLOTS &&
-		 !ZHeapPageHasTPDSlot(phdr)))
-	{
-		TransInfo  *thistrans = &opaque->transinfo[slot_no - 1];
-
-		if (epoch)
-			*epoch = EpochFromFullTransactionId(thistrans->fxid);
-		if (xid)
-			*xid = XidFromFullTransactionId(thistrans->fxid);
-		if (urec_ptr)
-			*urec_ptr = thistrans->urec_ptr;
-	}
-	else
-	{
-		Assert((ZHeapPageHasTPDSlot(phdr)));
-		(void) TPDPageGetTransactionSlotInfo(buf,
-											 slot_no,
-											 InvalidOffsetNumber,
-											 epoch,
-											 xid,
-											 urec_ptr,
-											 false,
-											 true);
-	}
 }
 
 /*
@@ -6951,7 +6933,7 @@ zheap_freeze_or_invalidate_tuples(Buffer buf, int nSlots, int *slots,
 			 * info from the TPD.
 			 */
 			trans_slot = TPDPageGetTransactionSlotInfo(buf, trans_slot, offnum,
-													   NULL, NULL, NULL, false,
+													   NULL, NULL, false,
 													   false);
 
 			/*
@@ -7392,7 +7374,6 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 	else if (nAbortedXactSlots)
 	{
 		int			i;
-		int			slot_no;
 		UndoRecPtr *urecptr = palloc(nAbortedXactSlots * sizeof(UndoRecPtr));
 		FullTransactionId *fxid = palloc(nAbortedXactSlots * sizeof(FullTransactionId));
 
@@ -7451,14 +7432,10 @@ PageFreezeTransSlots(Relation relation, Buffer buf, bool *lock_reacquired,
 		UnlockReleaseTPDBuffers();
 
 		for (i = 0; i < nAbortedXactSlots; i++)
-		{
-			slot_no = aborted_xact_slots[i] + 1;
 			process_and_execute_undo_actions_page(urecptr[i],
 												  relation,
 												  buf,
-												  fxid[i],
-												  slot_no);
-		}
+												  fxid[i]);
 
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 		*lock_reacquired = true;
@@ -8567,7 +8544,7 @@ zheap_compute_xid_horizon_for_tuples(Relation rel,
 	TransactionId latestRemovedXid = InvalidTransactionId;
 	BlockNumber hblkno;
 	Buffer		buf = InvalidBuffer;
-	Page		hpage;
+	Page		hpage = NULL;
 
 	/*
 	 * Sort to avoid repeated lookups for the same page, and to make it more

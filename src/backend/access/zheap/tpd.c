@@ -61,6 +61,15 @@ typedef struct TPDBuffers
 	Buffer		buf;			/* buffer allocated for the block */
 } TPDBuffers;
 
+/* Used to allocate/update TPD entry. */
+typedef struct TPDEntryInfo
+{
+	char			*new_tpd_entry;
+	Buffer			old_tpd_buf;
+	OffsetNumber	old_tpd_item_off;
+	Size			new_size_tpd_entry;
+}TPDEntryInfo;
+
 /*
  * GetTPDBuffer operations
  *
@@ -86,14 +95,13 @@ static int	tpd_buf_idx;
 static int	registered_tpd_buf_idx;
 static int	GetTPDBuffer(Relation rel, BlockNumber blk, Buffer tpd_buf,
 						 TPDACTION tpd_action, bool *already_exists);
-static void TPDEntryUpdate(Relation relation, Buffer tpd_buf,
-						   uint16 tpd_e_offset, OffsetNumber tpd_item_off,
-						   char *tpd_entry, Size size_tpd_entry);
+static void TPDEntryUpdate(Relation relation, TPDEntryInfo *tpd_info,
+						   uint16 tpd_e_offset);
 static void TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf,
-									   Buffer pagebuf, Buffer old_tpd_buf,
-									   OffsetNumber old_off_num, char *tpd_entry,
-									   Size size_tpd_entry, bool add_new_tpd_page,
-									   bool delete_old_entry, bool always_extend);
+									   Buffer pagebuf, TPDEntryInfo *tpd_info,
+									   bool add_new_tpd_page,
+									   bool delete_old_entry,
+									   bool always_extend);
 static bool TPDBufferAlreadyRegistered(Buffer tpd_buf);
 static void ReleaseLastTPDBuffer(Buffer buf, bool locked);
 static void LogAndClearTPDLocation(Relation relation, Buffer heapbuf,
@@ -423,6 +431,7 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 	bool		allocate_new_tpd_page = false;
 	bool		update_tpd_inplace,
 				tpd_pruned;
+	TPDEntryInfo	tpd_info;
 
 	heappage = BufferGetPage(heapbuf);
 	max_page_offnum = PageGetMaxOffsetNumber(heappage);
@@ -682,19 +691,21 @@ ExtendTPDEntry(Relation relation, Buffer heapbuf, TransInfo *trans_slots,
 		Assert(false);
 	}
 
+	/* Copy required info here to add new TPD entry. */
+	tpd_info.new_tpd_entry = tpd_entry;
+	tpd_info.new_size_tpd_entry = new_size_tpd_entry;
+	tpd_info.old_tpd_buf = old_tpd_buf;
+	tpd_info.old_tpd_item_off = tpdItemOff;
+
 	if (update_tpd_inplace)
-	{
-		TPDEntryUpdate(relation, old_tpd_buf, tpd_e_offset, tpdItemOff,
-					   tpd_entry, new_size_tpd_entry);
-	}
+		TPDEntryUpdate(relation, &tpd_info, tpd_e_offset);
 	else
 	{
 		/*
 		 * Note that if we have to allocate a new page, we must delete the old
 		 * tpd entry in old tpd buffer.
 		 */
-		TPDAllocatePageAndAddEntry(relation, metabuf, heapbuf, old_tpd_buf,
-								   tpdItemOff, tpd_entry, new_size_tpd_entry,
+		TPDAllocatePageAndAddEntry(relation, metabuf, heapbuf, &tpd_info,
 								   allocate_new_tpd_page,
 								   allocate_new_tpd_page, always_extend);
 	}
@@ -1252,30 +1263,30 @@ TPDFreePage(Relation rel, Buffer buf, BufferAccessStrategy bstrategy)
  *					the same.
  */
 static void
-TPDEntryUpdate(Relation relation, Buffer tpd_buf, uint16 tpd_e_offset,
-			   OffsetNumber tpd_item_off, char *tpd_entry,
-			   Size size_tpd_entry)
+TPDEntryUpdate(Relation relation, TPDEntryInfo *tpd_info, uint16 tpd_e_offset)
 {
-	Page		tpd_page = BufferGetPage(tpd_buf);
-	ItemId		itemId = PageGetItemId(tpd_page, tpd_item_off);
+	Page		tpd_page = BufferGetPage(tpd_info->old_tpd_buf);
+	ItemId		itemId = PageGetItemId(tpd_page, tpd_info->old_tpd_item_off);
 
 	START_CRIT_SECTION();
 
 	memcpy((char *) (tpd_page + tpd_e_offset),
-		   tpd_entry,
-		   size_tpd_entry);
-	ItemIdChangeLen(itemId, size_tpd_entry);
+		   tpd_info->new_tpd_entry,
+		   tpd_info->new_size_tpd_entry);
+	ItemIdChangeLen(itemId, tpd_info->new_size_tpd_entry);
 
-	MarkBufferDirty(tpd_buf);
+	MarkBufferDirty(tpd_info->old_tpd_buf);
 
 	if (RelationNeedsWAL(relation))
 	{
 		XLogRecPtr	recptr;
 
 		XLogBeginInsert();
-		XLogRegisterBuffer(0, tpd_buf, REGBUF_STANDARD);
-		XLogRegisterBufData(0, (char *) &tpd_item_off, sizeof(OffsetNumber));
-		XLogRegisterBufData(0, (char *) tpd_entry, size_tpd_entry);
+		XLogRegisterBuffer(0, tpd_info->old_tpd_buf, REGBUF_STANDARD);
+		XLogRegisterBufData(0, (char *) &tpd_info->old_tpd_item_off,
+							sizeof(OffsetNumber));
+		XLogRegisterBufData(0, (char *) tpd_info->new_tpd_entry,
+							tpd_info->new_size_tpd_entry);
 
 		recptr = XLogInsert(RM_TPD_ID, XLOG_INPLACE_UPDATE_TPD_ENTRY);
 
@@ -1316,8 +1327,7 @@ TPDEntryUpdate(Relation relation, Buffer tpd_buf, uint16 tpd_e_offset,
  */
 static void
 TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
-						   Buffer old_tpd_buf, OffsetNumber old_off_num,
-						   char *tpd_entry, Size size_tpd_entry,
+						   TPDEntryInfo *tpd_info,
 						   bool add_new_tpd_page, bool delete_old_entry,
 						   bool always_extend)
 {
@@ -1326,7 +1336,7 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 				last_tpdopaque;
 	TPDEntryHeader old_tpd_entry;
 	Buffer		last_used_tpd_buf = InvalidBuffer;
-	Buffer		tpd_buf;
+	Buffer		tpd_buf = InvalidBuffer;
 	Page		tpdpage;
 	BlockNumber prevblk = InvalidBlockNumber;
 	BlockNumber nextblk = InvalidBlockNumber;
@@ -1346,8 +1356,8 @@ TPDAllocatePageAndAddEntry(Relation relation, Buffer metabuf, Buffer pagebuf,
 		 * While adding a new page, if we've to delete the old entry, the old
 		 * buffer must be valid. Else, it should be invalid.
 		 */
-		Assert(!delete_old_entry || BufferIsValid(old_tpd_buf));
-		Assert(delete_old_entry || !BufferIsValid(old_tpd_buf));
+		Assert(!delete_old_entry || BufferIsValid(tpd_info->old_tpd_buf));
+		Assert(delete_old_entry || !BufferIsValid(tpd_info->old_tpd_buf));
 
 		/*
 		 * FIXME: We can allow the free pages to be used from FSM once we fix
@@ -1495,8 +1505,8 @@ recheck_meta:
 	else
 	{
 		/* old buffer must be valid */
-		Assert(BufferIsValid(old_tpd_buf));
-		tpd_buf = old_tpd_buf;
+		Assert(BufferIsValid(tpd_info->old_tpd_buf));
+		tpd_buf = tpd_info->old_tpd_buf;
 	}
 
 	/* No ereport(ERROR) from here till changes are logged */
@@ -1553,17 +1563,18 @@ recheck_meta:
 
 		/* We must be adding new TPD entry into a new page. */
 		Assert(add_new_tpd_page);
-		Assert(old_tpd_buf != tpd_buf);
+		Assert(tpd_info->old_tpd_buf != tpd_buf);
 
-		otpdpage = BufferGetPage(old_tpd_buf);
-		old_item_id = PageGetItemId(otpdpage, old_off_num);
+		otpdpage = BufferGetPage(tpd_info->old_tpd_buf);
+		old_item_id = PageGetItemId(otpdpage, tpd_info->old_tpd_item_off);
 		old_tpd_entry = (TPDEntryHeader) PageGetItem(otpdpage, old_item_id);
 		old_tpd_entry->tpe_flags |= TPE_DELETED;
-		MarkBufferDirty(old_tpd_buf);
+		MarkBufferDirty(tpd_info->old_tpd_buf);
 	}
 
 	/* Add tpd entry to page */
-	offset_num = TPDPageAddEntry(tpdpage, tpd_entry, size_tpd_entry,
+	offset_num = TPDPageAddEntry(tpdpage, tpd_info->new_tpd_entry,
+								 tpd_info->new_size_tpd_entry,
 								 InvalidOffsetNumber);
 	if (offset_num == InvalidOffsetNumber)
 		elog(PANIC, "failed to add TPD entry");
@@ -1604,7 +1615,8 @@ recheck_meta:
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, SizeOfTPDAllocateEntry);
 		XLogRegisterBuffer(0, tpd_buf, REGBUF_STANDARD | bufflags);
-		XLogRegisterBufData(0, (char *) tpd_entry, size_tpd_entry);
+		XLogRegisterBufData(0, (char *) tpd_info->new_tpd_entry,
+							tpd_info->new_size_tpd_entry);
 		XLogRegisterBuffer(1, pagebuf, REGBUF_STANDARD);
 		if (add_new_tpd_page)
 		{
@@ -1623,15 +1635,17 @@ recheck_meta:
 				 * If the last tpd buffer and the old tpd buffer are same, we
 				 * don't need to register old_tpd_buf.
 				 */
-				if (last_used_tpd_buf == old_tpd_buf)
+				if (last_used_tpd_buf == tpd_info->old_tpd_buf)
 				{
 					xlrec.flags = XLOG_OLD_TPD_BUF_EQ_LAST_TPD_BUF;
-					XLogRegisterBufData(3, (char *) &old_off_num, sizeof(OffsetNumber));
+					XLogRegisterBufData(3, (char *) &tpd_info->old_tpd_item_off,
+										sizeof(OffsetNumber));
 				}
 				else
 				{
-					XLogRegisterBuffer(4, old_tpd_buf, REGBUF_STANDARD);
-					XLogRegisterBufData(4, (char *) &old_off_num, sizeof(OffsetNumber));
+					XLogRegisterBuffer(4, tpd_info->old_tpd_buf, REGBUF_STANDARD);
+					XLogRegisterBufData(4, (char *) &tpd_info->old_tpd_item_off,
+										sizeof(OffsetNumber));
 				}
 			}
 		}
@@ -1646,7 +1660,7 @@ recheck_meta:
 			if (BufferIsValid(last_used_tpd_buf))
 				PageSetLSN(BufferGetPage(last_used_tpd_buf), recptr);
 			if (delete_old_entry)
-				PageSetLSN(BufferGetPage(old_tpd_buf), recptr);
+				PageSetLSN(BufferGetPage(tpd_info->old_tpd_buf), recptr);
 		}
 	}
 
@@ -1684,17 +1698,15 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 {
 	ZHeapMetaPage metapage;
 	Buffer		metabuf;
-	Buffer		tpd_buf = InvalidBuffer;
 	Page		heappage;
 	uint32		first_used_tpd_page;
 	uint32		last_used_tpd_page;
-	char	   *tpd_entry;
-	Size		size_tpd_entry;
 	int			reserved_slot = InvalidXactSlotId;
 	int			buf_idx;
 	bool		allocate_new_tpd_page = false;
 	bool		update_meta = false;
 	bool		already_exists;
+	TPDEntryInfo	tpd_info;
 
 	metabuf = ReadBuffer(relation, ZHEAP_METAPAGE);
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
@@ -1731,15 +1743,15 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 
 		buf_idx = GetTPDBuffer(relation, last_used_tpd_page, InvalidBuffer,
 							   TPD_BUF_FIND_OR_ENTER, &already_exists);
-		tpd_buf = tpd_buffers[buf_idx].buf;
+		tpd_info.old_tpd_buf = tpd_buffers[buf_idx].buf;
 		/* We don't need to lock the buffer, if it is already locked */
 		if (!already_exists)
-			LockBuffer(tpd_buf, BUFFER_LOCK_EXCLUSIVE);
+			LockBuffer(tpd_info.old_tpd_buf, BUFFER_LOCK_EXCLUSIVE);
 
 		/* Page should be a TPD page. */
-		Assert(IsTPDPage(BufferGetPage(tpd_buf)));
+		Assert(IsTPDPage(BufferGetPage(tpd_info.old_tpd_buf)));
 
-		tpdpageFreeSpace = PageGetTPDFreeSpace(BufferGetPage(tpd_buf));
+		tpdpageFreeSpace = PageGetTPDFreeSpace(BufferGetPage(tpd_info.old_tpd_buf));
 
 		if (tpdpageFreeSpace < size_tpd_entry)
 		{
@@ -1751,12 +1763,12 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 			 * accommodated on the page. We can't afford to free the page
 			 * while pruning as we need to use it to insert the TPD entry.
 			 */
-			entries_removed = TPDPagePrune(relation, tpd_buf, NULL,
-										   InvalidOffsetNumber, 0, false, NULL,
-										   NULL);
+			entries_removed = TPDPagePrune(relation, tpd_info.old_tpd_buf,
+										   NULL, InvalidOffsetNumber, 0, false,
+										   NULL, NULL);
 
 			if (entries_removed > 0)
-				tpdpageFreeSpace = PageGetTPDFreeSpace(BufferGetPage(tpd_buf));
+				tpdpageFreeSpace = PageGetTPDFreeSpace(BufferGetPage(tpd_info.old_tpd_buf));
 
 			if (tpdpageFreeSpace < size_tpd_entry)
 			{
@@ -1769,7 +1781,7 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 				 * isn't free either.
 				 */
 				if (!already_exists)
-					ReleaseLastTPDBuffer(tpd_buf, true);
+					ReleaseLastTPDBuffer(tpd_info.old_tpd_buf, true);
 				allocate_new_tpd_page = true;
 			}
 		}
@@ -1779,17 +1791,20 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 		(last_used_tpd_page == InvalidBlockNumber &&
 		 first_used_tpd_page == InvalidBlockNumber))
 	{
-		tpd_buf = InvalidBuffer;
+		tpd_info.old_tpd_buf = InvalidBuffer;
 		update_meta = true;
 	}
 
 	/* Allocate a new TPD entry */
-	tpd_entry = AllocateAndFormTPDEntry(pagebuf, offnum, &size_tpd_entry,
+	tpd_info.new_tpd_entry = AllocateAndFormTPDEntry(pagebuf, offnum,
+										&tpd_info.new_size_tpd_entry,
 										&reserved_slot);
-	Assert(tpd_entry != NULL);
+	Assert(tpd_info.new_tpd_entry != NULL);
 
-	TPDAllocatePageAndAddEntry(relation, metabuf, pagebuf, tpd_buf,
-							   InvalidOffsetNumber, tpd_entry, size_tpd_entry,
+	tpd_info.old_tpd_item_off = InvalidOffsetNumber;
+
+	/* Now add TPD entry into TPD page. */
+	TPDAllocatePageAndAddEntry(relation, metabuf, pagebuf, &tpd_info,
 							   update_meta, false, always_extend);
 
 	ReleaseBuffer(metabuf);
@@ -1801,7 +1816,7 @@ TPDAllocateAndReserveTransSlot(Relation relation, Buffer pagebuf,
 	 * TPDPageSetUndo to update the required information.
 	 */
 
-	pfree(tpd_entry);
+	pfree(tpd_info.new_tpd_entry);
 
 	/*
 	 * As this is always a fresh transaction slot, so we can assume that there
@@ -2337,9 +2352,9 @@ TPDPageGetSlotIfExists(Relation relation, Buffer heapbuf, OffsetNumber offnum,
  */
 int
 TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
-							  OffsetNumber offset, uint32 *epoch,
-							  TransactionId *xid, UndoRecPtr *urec_ptr,
-							  bool NoTPDBufLock, bool keepTPDBufLock)
+							  OffsetNumber offset, FullTransactionId *fxid,
+							  UndoRecPtr *urec_ptr, bool NoTPDBufLock,
+							  bool keepTPDBufLock)
 {
 	TransInfo	trans_slot_info;
 	RelFileNode rnode;
@@ -2517,10 +2532,8 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 		   sizeof(TransInfo));
 
 	/* Update the required output */
-	if (epoch)
-		*epoch = EpochFromFullTransactionId(trans_slot_info.fxid);
-	if (xid)
-		*xid = XidFromFullTransactionId(trans_slot_info.fxid);
+	if (fxid)
+		*fxid = trans_slot_info.fxid;
 	if (urec_ptr)
 		*urec_ptr = trans_slot_info.urec_ptr;
 
@@ -2535,10 +2548,8 @@ slot_is_frozen:
 
 slot_is_frozen_and_buf_not_locked:
 	trans_slot_id = ZHTUP_SLOT_FROZEN;
-	if (epoch)
-		*epoch = 0;
-	if (xid)
-		*xid = InvalidTransactionId;
+	if (fxid)
+		*fxid = InvalidFullTransactionId;
 	if (urec_ptr)
 		*urec_ptr = InvalidUndoRecPtr;
 

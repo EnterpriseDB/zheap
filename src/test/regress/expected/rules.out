@@ -2880,59 +2880,66 @@ create rule r1 as on update to rules_src do also
   insert into rules_log values(old.*, 'old'), (new.*, 'new');
 update rules_src set f2 = f2 + 1;
 update rules_src set f2 = f2 * 10;
-select * from rules_src;
+select * from rules_src ORDER BY 1,2;
  f1 | f2  
 ----+-----
   1 |  30
  11 | 130
 (2 rows)
 
-select * from rules_log;
+select * from rules_log ORDER BY 1,2,3;
  f1 | f2  | tag 
 ----+-----+-----
   1 |   2 | old
   1 |   3 | new
- 11 |  12 | old
- 11 |  13 | new
   1 |   3 | old
   1 |  30 | new
+ 11 |  12 | old
+ 11 |  13 | new
  11 |  13 | old
  11 | 130 | new
 (8 rows)
 
 create rule r2 as on update to rules_src do also
   values(old.*, 'old'), (new.*, 'new');
-update rules_src set f2 = f2 / 10;
+-- To make output consistancey, we will update one row at a time because in
+-- zheap, some time due to non in-place updates, rows order will be differnt.
+update rules_src set f2 = f2 / 10 WHERE f2 = 30;
  column1 | column2 | column3 
 ---------+---------+---------
        1 |      30 | old
        1 |       3 | new
+(2 rows)
+
+update rules_src set f2 = f2 / 10 WHERE f2 = 130;
+ column1 | column2 | column3 
+---------+---------+---------
       11 |     130 | old
       11 |      13 | new
-(4 rows)
+(2 rows)
 
-select * from rules_src;
+select * from rules_src ORDER BY 1,2;
  f1 | f2 
 ----+----
   1 |  3
  11 | 13
 (2 rows)
 
-select * from rules_log;
+select * from rules_log ORDER BY 1,2,3;
  f1 | f2  | tag 
 ----+-----+-----
   1 |   2 | old
   1 |   3 | new
- 11 |  12 | old
- 11 |  13 | new
+  1 |   3 | new
   1 |   3 | old
   1 |  30 | new
+  1 |  30 | old
+ 11 |  12 | old
+ 11 |  13 | new
+ 11 |  13 | new
  11 |  13 | old
  11 | 130 | new
-  1 |  30 | old
-  1 |   3 | new
  11 | 130 | old
- 11 |  13 | new
 (12 rows)
 
 create rule r3 as on delete to rules_src do notify rules_src_deletion;
