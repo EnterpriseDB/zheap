@@ -8028,20 +8028,17 @@ reacquire_buffer:
 
 		END_CRIT_SECTION();
 
-		/* be tidy */
-		if (!skip_undo)
-		{
-			for (i = 0; i < zfree_offset_ranges->nranges; i++)
-				pfree(undorecord[i].uur_payload.data);
-			pfree(undorecord);
-		}
-		pfree(zfree_offset_ranges);
-
 		UnlockReleaseBuffer(buffer);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
 		if (!skip_undo)
+		{
+			/* be tidy */
+			for (i = 0; i < zfree_offset_ranges->nranges; i++)
+				pfree(undorecord[i].uur_payload.data);
 			FinishUndoRecordInsert(&zh_undo_info.context);
+		}
+		pfree(zfree_offset_ranges);
 		UnlockReleaseTPDBuffers();
 
 		ndone += nthispage;
