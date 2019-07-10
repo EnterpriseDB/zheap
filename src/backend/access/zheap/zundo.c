@@ -615,7 +615,7 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
 }
 
 void
-zheap_undo_actions(int nrecords, UndoRecInfo *urp_array)
+zheap_undo_actions(int nrecords, UndoRecInfo *urp_array, FullTransactionId fxid)
 {
 	bool	prev_initialized = false;
 	Oid		prev_reloid = InvalidOid;
@@ -626,7 +626,6 @@ zheap_undo_actions(int nrecords, UndoRecInfo *urp_array)
 	 * we've plans to store this information in undo records.
 	 */
 	bool	blk_chain_complete = false;
-	FullTransactionId	full_xid;
 	ForkNumber	prev_fork = InvalidForkNumber;
 	BlockNumber prev_block = InvalidBlockNumber;
 
@@ -645,7 +644,7 @@ zheap_undo_actions(int nrecords, UndoRecInfo *urp_array)
 				 prev_block != uur->uur_block)
 			{
 				zheap_undo_actions_page(urp_array, last_index, i - 1,
-										  prev_reloid, full_xid, prev_block,
+										  prev_reloid, fxid, prev_block,
 										  blk_chain_complete);
 				last_index = i;
 			}
@@ -656,12 +655,11 @@ zheap_undo_actions(int nrecords, UndoRecInfo *urp_array)
 		prev_reloid = uur->uur_reloid;
 		prev_fork = uur->uur_fork;
 		prev_block = uur->uur_block;
-		full_xid = uur->uur_fxid;
 	}
 
 	/* Apply the last set of the actions. */
 	zheap_undo_actions_page(urp_array, last_index, i - 1,
-							  prev_reloid, full_xid, prev_block,
+							  prev_reloid, fxid, prev_block,
 							  blk_chain_complete);
 }
 

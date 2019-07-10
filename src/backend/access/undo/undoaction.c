@@ -43,7 +43,8 @@ static void UpdateUndoApplyProgress(UndoRecPtr last_log_start_urec_ptr,
 						  BlockNumber block_num);
 static bool UndoAlreadyApplied(FullTransactionId full_xid,
 						UndoRecPtr to_urecptr);
-static void ApplyUndo(UndoRecInfo *urecinfo, int nrecords);
+static void ApplyUndo(UndoRecInfo *urecinfo, int nrecords,
+					  FullTransactionId fxid);
 static void ProcessAndApplyUndo(FullTransactionId full_xid,
 				UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 				UndoRecPtr last_log_start_urec_ptr, bool complete_xact);
@@ -201,7 +202,7 @@ UndoAlreadyApplied(FullTransactionId full_xid, UndoRecPtr to_urecptr)
  * nrecords - number of records in this array.
  */
 static void
-ApplyUndo(UndoRecInfo *urecinfo, int nrecords)
+ApplyUndo(UndoRecInfo *urecinfo, int nrecords, FullTransactionId fxid)
 {
 	int			rmgr_start_idx = 0;
 	int			rmgr_nrecords = 0;
@@ -224,7 +225,8 @@ ApplyUndo(UndoRecInfo *urecinfo, int nrecords)
 		{
 			Assert(urecinfo[rmgr_start_idx].uur->uur_rmid == prev_rmid);
 			RmgrTable[prev_rmid].rm_undo(rmgr_nrecords,
-										 &urecinfo[rmgr_start_idx]);
+										 &urecinfo[rmgr_start_idx],
+										 fxid);
 
 			rmgr_start_idx = i;
 			rmgr_nrecords = 0;
@@ -236,7 +238,7 @@ ApplyUndo(UndoRecInfo *urecinfo, int nrecords)
 
 	/* Apply the last set of the actions. */
 	Assert(urecinfo[rmgr_start_idx].uur->uur_rmid == prev_rmid);
-	RmgrTable[prev_rmid].rm_undo(rmgr_nrecords, &urecinfo[rmgr_start_idx]);
+	RmgrTable[prev_rmid].rm_undo(rmgr_nrecords, &urecinfo[rmgr_start_idx], fxid);
 }
 
 /*
@@ -391,7 +393,7 @@ ProcessAndApplyUndo(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 			  undo_record_comparator);
 
 		/* Call resource manager specific callbacks to apply actions. */
-		ApplyUndo(urecinfo, nrecords);
+		ApplyUndo(urecinfo, nrecords, full_xid);
 
 		/* Set undo action apply progress if required. */
 		if (update_progress)
