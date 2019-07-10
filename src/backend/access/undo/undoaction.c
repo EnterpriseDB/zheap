@@ -44,7 +44,7 @@ static void UpdateUndoApplyProgress(UndoRecPtr last_log_start_urec_ptr,
 static bool UndoAlreadyApplied(FullTransactionId full_xid,
 						UndoRecPtr to_urecptr);
 static void ApplyUndo(UndoRecInfo *urecinfo, int nrecords,
-					  FullTransactionId fxid);
+					  FullTransactionId fxid, bool blk_chain_complete);
 static void ProcessAndApplyUndo(FullTransactionId full_xid,
 				UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
 				UndoRecPtr last_log_start_urec_ptr, bool complete_xact);
@@ -202,7 +202,8 @@ UndoAlreadyApplied(FullTransactionId full_xid, UndoRecPtr to_urecptr)
  * nrecords - number of records in this array.
  */
 static void
-ApplyUndo(UndoRecInfo *urecinfo, int nrecords, FullTransactionId fxid)
+ApplyUndo(UndoRecInfo *urecinfo, int nrecords, FullTransactionId fxid,
+		  bool blk_chain_complete)
 {
 	int			rmgr_start_idx = 0;
 	int			rmgr_nrecords = 0;
@@ -226,7 +227,7 @@ ApplyUndo(UndoRecInfo *urecinfo, int nrecords, FullTransactionId fxid)
 			Assert(urecinfo[rmgr_start_idx].uur->uur_rmid == prev_rmid);
 			RmgrTable[prev_rmid].rm_undo(rmgr_nrecords,
 										 &urecinfo[rmgr_start_idx],
-										 fxid);
+										 fxid, blk_chain_complete);
 
 			rmgr_start_idx = i;
 			rmgr_nrecords = 0;
@@ -238,7 +239,8 @@ ApplyUndo(UndoRecInfo *urecinfo, int nrecords, FullTransactionId fxid)
 
 	/* Apply the last set of the actions. */
 	Assert(urecinfo[rmgr_start_idx].uur->uur_rmid == prev_rmid);
-	RmgrTable[prev_rmid].rm_undo(rmgr_nrecords, &urecinfo[rmgr_start_idx], fxid);
+	RmgrTable[prev_rmid].rm_undo(rmgr_nrecords, &urecinfo[rmgr_start_idx], fxid,
+								 blk_chain_complete);
 }
 
 /*
@@ -393,7 +395,20 @@ ProcessAndApplyUndo(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 			  undo_record_comparator);
 
 		/* Call resource manager specific callbacks to apply actions. */
-		ApplyUndo(urecinfo, nrecords, full_xid);
+
+		/*
+		 * FIXME: We need to fix how to set slot xid as invalid transaction
+		 * once the rollback for the transaction has benn completed for this
+		 * block.  Else, the previous transaction might be rolled back wrongly
+		 * when the rollback for the current transaction has been performed.
+		 * Currently, we don't have the block chain complete info here.  We
+		 * should store it the undo payload for the first undo record of
+		 * this block by the current transaction.
+		 * This is also important for rollback to savepoint.  In that case, we
+		 * should not set full_xid as invalid.
+		 */
+		ApplyUndo(urecinfo, nrecords, full_xid,
+				  (complete_xact && !UndoRecPtrIsValid(urec_ptr)));
 
 		/* Set undo action apply progress if required. */
 		if (update_progress)

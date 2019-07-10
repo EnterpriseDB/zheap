@@ -615,17 +615,13 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
 }
 
 void
-zheap_undo_actions(int nrecords, UndoRecInfo *urp_array, FullTransactionId fxid)
+zheap_undo_actions(int nrecords, UndoRecInfo *urp_array, FullTransactionId fxid,
+				   bool blk_chain_complete)
 {
 	bool	prev_initialized = false;
 	Oid		prev_reloid = InvalidOid;
 	int		last_index = 0;
 	int 	i;
-	/*
-	 * FIXME: We always set the blk_chain_complete as false for now. Later,
-	 * we've plans to store this information in undo records.
-	 */
-	bool	blk_chain_complete = false;
 	ForkNumber	prev_fork = InvalidForkNumber;
 	BlockNumber prev_block = InvalidBlockNumber;
 

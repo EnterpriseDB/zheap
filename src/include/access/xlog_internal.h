@@ -309,7 +309,7 @@ typedef struct RmgrData
 	void		(*rm_cleanup) (void);
 	void		(*rm_mask) (char *pagedata, BlockNumber blkno);
 	void		(*rm_undo) (int nrecords, UndoRecInfo *records,
-							FullTransactionId fxid);
+							FullTransactionId fxid, bool blk_chain_complete);
 	UndoStatus	(*rm_undo_status) (UnpackedUndoRecord *record, TransactionId *xid);
 	void		(*rm_undo_desc) (StringInfo buf, UnpackedUndoRecord *record);
 } RmgrData;

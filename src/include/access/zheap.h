@@ -339,7 +339,7 @@ extern void lazy_vacuum_zheap_rel(Relation onerel, struct VacuumParams *params,
 
 /* in zheap/zundo.c */
 extern void zheap_undo_actions(int nrecords, UndoRecInfo *urp_array,
-							   FullTransactionId fxid);
+							   FullTransactionId fxid, bool blk_chain_complete);
 
 /* in zheap/ztuptoaster.c */
 extern ZHeapTuple ztoast_insert_or_update(Relation rel,
