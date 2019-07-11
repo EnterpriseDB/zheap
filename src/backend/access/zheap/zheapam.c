@@ -5329,7 +5329,6 @@ zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
 		undorecord[i].uur_fxid = zh_undo_info->fxid;
 		undorecord[i].uur_cid = zh_undo_info->cid;
 		undorecord[i].uur_fork = MAIN_FORKNUM;
-		undorecord[i].uur_prevundo = zh_undo_info->prev_urecptr;
 		undorecord[i].uur_block = zh_undo_info->blkno;
 		undorecord[i].uur_tuple.len = 0;
 		undorecord[i].uur_offset = 0;
@@ -5340,6 +5339,9 @@ zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
 						  zh_undo_info->undo_category,
 						  nranges,
 						  xlog_record);
+
+	/* Set previous undo record ptr. */
+	urecptr = zh_undo_info->prev_urecptr;
 
 	for (i = 0; i < nranges; i++)
 	{
