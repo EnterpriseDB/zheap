@@ -5005,7 +5005,7 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
 
 			/* update new tuple location in undo record */
 			appendBinaryStringInfo(&zh_undoinfo->old_undorec->uur_payload,
-								   (char *) &zh_undoinfo->recovery_tid,
+								   (char *) zh_undoinfo->recovery_tid,
 								   sizeof(ItemPointerData));
 
 			/* add the TPD slot id */
