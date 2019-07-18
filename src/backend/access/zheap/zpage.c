@@ -505,7 +505,7 @@ ZheapInitMetaPage(RelFileNode rnode, ForkNumber forkNum,
 	Buffer		buf;
 	bool		use_wal;
 
-	buf = ReadBufferWithoutRelcache(SMGR_MD, rnode, forkNum,
+	buf = ReadBufferWithoutRelcache(rnode, forkNum,
 									already_exists ? ZHEAP_METAPAGE : P_NEW,
 									RBM_NORMAL, NULL, persistence);
 	if (BufferGetBlockNumber(buf) != ZHEAP_METAPAGE)

@@ -4729,8 +4729,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 
 	while (true)
 	{
-		urec = ZHeapUndoFetchRecord(zinfo.urec_ptr, blk, offnum, zinfo.xid, NULL,
-							   ZHeapSatisfyUndoRecord);
+		urec = ZHeapUndoFetchRecord(zinfo.urec_ptr, blk, offnum, zinfo.xid, NULL);
 		if (urec == NULL)
 		{
 			/*
@@ -7524,8 +7523,7 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
 						   InvalidTransactionId,
-						   NULL,
-						   ZHeapSatisfyUndoRecord);
+						   NULL);
 	if (urec == NULL)
 		return InvalidCommandId;
 
@@ -7558,8 +7556,7 @@ ZHeapTupleGetSubXid(Buffer buf, OffsetNumber offnum, UndoRecPtr urec_ptr,
 						   BufferGetBlockNumber(buf),
 						   offnum,
 						   InvalidTransactionId,
-						   NULL,
-						   ZHeapSatisfyUndoRecord);
+						   NULL);
 
 	/*
 	 * We mostly expect urec here to be valid as it try to fetch
@@ -7633,8 +7630,7 @@ ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
 						   InvalidTransactionId,
-						   NULL,
-						   ZHeapSatisfyUndoRecord);
+						   NULL);
 
 	/*
 	 * We always expect urec to be valid as it try to fetch speculative token
@@ -8480,7 +8476,7 @@ copy_buffer:
 		 * space.
 		 */
 		if (use_wal)
-			log_newpage(SMGR_MD, &dst->smgr_rnode.node, MAIN_FORKNUM, target_blkno, page, false);
+			log_newpage(&dst->smgr_rnode.node, MAIN_FORKNUM, target_blkno, page, false);
 
 		PageSetChecksumInplace(page, target_blkno);
 
@@ -8789,8 +8785,7 @@ RefetchAndCheckTupleStatus(Relation relation,
 
 UnpackedUndoRecord*
 ZHeapUndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
-					 TransactionId xid, UndoRecPtr *urec_ptr_out,
-					 SatisfyUndoRecordCallback callback)
+					 TransactionId xid, UndoRecPtr *urec_ptr_out)
 {
 	UnpackedUndoRecord *urec;
 	UndoRecordFetchContext	context;
@@ -8801,7 +8796,7 @@ ZHeapUndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
 		urec = UndoFetchRecord(&context, urp);
 		if (urec == NULL)
 			break;
-		if (callback(urec, blkno, offset, xid))
+		if (ZHeapSatisfyUndoRecord(urec, blkno, offset, xid))
 			break;
 
 		urp = urec->uur_prevundo;

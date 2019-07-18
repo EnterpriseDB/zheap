@@ -69,7 +69,7 @@ zheap_xlog_insert(XLogReaderState *record)
 	else if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
 		tpd_trans_slot_id = (int *) ((char *) xlrec + SizeOfZHeapInsert);
 
-	XLogRecGetBlockTag(record, 0, NULL, &target_node, NULL, &blkno);
+	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
 	ItemPointerSetBlockNumber(&target_tid, blkno);
 	ItemPointerSetOffsetNumber(&target_tid, xlrec->offnum);
 
@@ -257,7 +257,7 @@ zheap_xlog_delete(XLogReaderState *record)
 	if (xlrec->flags & XLZ_DELETE_CONTAINS_TPD_SLOT)
 		tpd_trans_slot_id = (int *) ((char *) xlrec + SizeOfZHeapDelete);
 
-	XLogRecGetBlockTag(record, 0, NULL, &target_node, NULL, &blkno);
+	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
 	ItemPointerSetBlockNumber(&target_tid, blkno);
 	ItemPointerSetOffsetNumber(&target_tid, xlrec->offnum);
 
@@ -487,8 +487,8 @@ zheap_xlog_update(XLogReaderState *record)
 		inplace_update = true;
 	}
 
-	XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, &newblk);
-	if (XLogRecGetBlockTag(record, 1, NULL, NULL, NULL, &oldblk))
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &newblk);
+	if (XLogRecGetBlockTag(record, 1, NULL, NULL, &oldblk))
 	{
 		/* inplace updates are never done across pages */
 		Assert(!inplace_update);
@@ -947,7 +947,7 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
 		 */
 		TransactionId lastestFrozenXid = xlrec->lastestFrozenXid;
 
-		XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, NULL);
+		XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
 		ResolveRecoveryConflictWithSnapshot(lastestFrozenXid, rnode);
 	}
 
@@ -1143,7 +1143,7 @@ zheap_xlog_lock(XLogReaderState *record)
 
 	xlrec = (xl_zheap_lock *) ((char *) xlundohdr + SizeOfUndoHeader);
 
-	XLogRecGetBlockTag(record, 0, NULL, &target_node, NULL, &blkno);
+	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
 	ItemPointerSet(&target_tid, blkno, xlrec->offnum);
 
 	reln = CreateFakeRelcacheEntry(target_node);
@@ -1297,7 +1297,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	xlundohdr = (xl_undo_header *) XLogRecGetData(record);
 	xlrec = (xl_zheap_multi_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
 
-	XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, &blkno);
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
 
 	/*
 	 * The visibility map may need to be fixed even if the heap page is
@@ -1558,7 +1558,7 @@ zheap_xlog_clean(XLogReaderState *record)
 	OffsetNumber *target_offnum;
 	Size	   *space_required;
 
-	XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, &blkno);
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
 
 	/*
 	 * We're about to remove tuples. In Hot Standby mode, ensure that there's
@@ -1744,7 +1744,7 @@ zheap_xlog_unused(XLogReaderState *record)
 	unused = (OffsetNumber *) ((char *) xlrec + SizeOfZHeapUnused);
 	uncnt = xlrec->nunused;
 
-	XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, &blkno);
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
 
 	/*
 	 * We're about to remove tuples. In Hot Standby mode, ensure that there's
@@ -1895,7 +1895,7 @@ zheap_xlog_visible(XLogReaderState *record)
 	Buffer		vmbuffer = InvalidBuffer;
 	RelFileNode rnode;
 
-	XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, NULL);
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
 
 	/*
 	 * If there are any Hot Standby transactions running that have an xmin
@@ -2012,7 +2012,7 @@ zheap_undo_xlog_page(XLogReaderState *record)
 		RelFileNode target_node;
 		BlockNumber blkno;
 
-		XLogRecGetBlockTag(record, 0, NULL, &target_node, NULL, &blkno);
+		XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
 		reln = CreateFakeRelcacheEntry(target_node);
 		visibilitymap_pin(reln, blkno, &vmbuffer);
 		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);

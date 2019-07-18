@@ -399,7 +399,7 @@ tpd_xlog_free_page(XLogReaderState *record)
 		}
 	}
 
-	XLogRecGetBlockTag(record, 1, NULL, &rnode, NULL, &blkno);
+	XLogRecGetBlockTag(record, 1, &rnode, NULL, &blkno);
 	action = XLogReadBufferForRedo(record, 1, &buffer);
 	page = (Page) BufferGetPage(buffer);
 

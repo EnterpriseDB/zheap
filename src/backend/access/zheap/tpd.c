@@ -2382,11 +2382,10 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 
 	if (NoTPDBufLock)
 	{
-		SmgrId		smgrid;
 		SMgrRelation smgr;
 		BlockNumber lastblock;
 
-		BufferGetTag(heapbuf, &smgrid, &rnode, &forknum, &heapblk);
+		BufferGetTag(heapbuf, &rnode, &forknum, &heapblk);
 
 		if (InRecovery)
 			relpersistence = RELPERSISTENCE_PERMANENT;
@@ -2398,7 +2397,7 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 			relpersistence = get_rel_persistence(reloid);
 		}
 
-		smgr = smgropen(smgrid, rnode,
+		smgr = smgropen(rnode,
 						relpersistence == RELPERSISTENCE_TEMP ?
 						MyBackendId : InvalidBackendId);
 
@@ -2407,7 +2406,7 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
 		/* required block exists? */
 		if (tpdblk < lastblock)
 		{
-			tpdbuffer = ReadBufferWithoutRelcache(smgrid, rnode, forknum, tpdblk, RBM_NORMAL,
+			tpdbuffer = ReadBufferWithoutRelcache(rnode, forknum, tpdblk, RBM_NORMAL,
 												  NULL, relpersistence);
 
 			/* Check whether TPD entry can exist on page? */

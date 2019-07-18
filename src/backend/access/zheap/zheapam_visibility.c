@@ -88,7 +88,6 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
 					   ItemPointer new_ctid)
 {
 	UnpackedUndoRecord *urec;
-	uint32		epoch;
 
 	/*
 	 * If caller wants the CTID of the latest version of the tuple, set it to
@@ -112,8 +111,7 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
 		 */
 		urec = ZHeapUndoFetchRecord(zinfo->urec_ptr, blocknum, offnum,
 							   xid,
-							   &zinfo->urec_ptr,
-							   ZHeapSatisfyUndoRecord);
+							   &zinfo->urec_ptr);
 
 		/*
 		 * If the undo record containing the information about the last
@@ -388,8 +386,7 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid, Buffer buffer,
 						   BufferGetBlockNumber(buffer),
 						   offnum,
 						   xid,
-						   NULL,
-						   ZHeapSatisfyUndoRecord);
+						   NULL);
 	if (urec == NULL)
 		return false;
 

@@ -37,7 +37,6 @@ extern XLogRedoAction XLogReadBufferForRedo(XLogReaderState *record,
 											uint8 buffer_id, Buffer *buf);
 extern Buffer XLogInitBufferForRedo(XLogReaderState *record, uint8 block_id);
 extern XLogRedoAction XLogReadBufferForRedoBlock(XLogReaderState *record,
-												 SmgrId smgrid,
 												 RelFileNode rnode,
 												 ForkNumber forknum,
 												 BlockNumber blockno,

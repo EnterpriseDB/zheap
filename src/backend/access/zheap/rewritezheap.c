@@ -162,8 +162,7 @@ end_zheap_rewrite(RewriteZheapState state)
 	if (state->rs_buffer_valid)
 	{
 		if (state->rs_use_wal)
-			log_newpage(SMGR_MD,
-						&state->rs_new_rel->rd_node,
+			log_newpage(&state->rs_new_rel->rd_node,
 						MAIN_FORKNUM,
 						state->rs_blockno,
 						state->rs_buffer,
@@ -326,8 +325,7 @@ raw_zheap_insert(RewriteZheapState state, ZHeapTuple tup)
 
 			/* XLOG stuff */
 			if (state->rs_use_wal)
-				log_newpage(SMGR_MD,
-							&state->rs_new_rel->rd_node,
+				log_newpage(&state->rs_new_rel->rd_node,
 							MAIN_FORKNUM,
 							state->rs_blockno,
 							page,

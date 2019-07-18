@@ -303,7 +303,7 @@ AdvanceNextFullTransactionIdPastXid(TransactionId xid)
 	ShmemVariableCache->nextFullXid = newNextFullXid;
 	LWLockRelease(XidGenLock);
 }
-
+#if 0
 /*
  * ZBORKED: Document, test, and move to a better place?
  *
@@ -337,7 +337,7 @@ XLogRecGetFullXid(XLogReaderState *record)
 
 	return FullTransactionIdFromEpochAndXid(epoch, xid);
 }
-
+#endif
 /*
  * ZBORKED: Blindly written - and should be removed ASAP
  */

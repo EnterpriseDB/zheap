@@ -51,8 +51,7 @@ ZCurrentXactHasTupleLockMode(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
 							   ItemPointerGetBlockNumber(&zhtup->t_self),
 							   ItemPointerGetOffsetNumber(&zhtup->t_self),
 							   InvalidTransactionId,
-							   NULL,
-							   ZHeapSatisfyUndoRecord);
+							   NULL);
 
 		/* If undo is discarded, we can't proceed further. */
 		if (!urec)
@@ -217,8 +216,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 								   blkno,
 								   offnum,
 								   InvalidTransactionId,
-								   NULL,
-								   ZHeapSatisfyUndoRecord);
+								   NULL);
 
 			/* If undo is discarded, we can't proceed further. */
 			if (!urec)
@@ -681,8 +679,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 								   ItemPointerGetBlockNumber(tid),
 								   ItemPointerGetOffsetNumber(tid),
 								   InvalidTransactionId,
-								   &out_urec_ptr,
-								   ZHeapSatisfyUndoRecord);
+								   &out_urec_ptr);
 
 			/*
 			 * We couldn't find any undo record for the tuple corresponding to

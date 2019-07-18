@@ -347,7 +347,6 @@ extern ZHeapTuple ztoast_insert_or_update(Relation rel,
 										  int options, uint32 specToken);
 extern void ztoast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative);
 extern UnpackedUndoRecord* ZHeapUndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
-					 TransactionId xid, UndoRecPtr *urec_ptr_out,
-					 SatisfyUndoRecordCallback callback);
+					 TransactionId xid, UndoRecPtr *urec_ptr_out);
 
 #endif							/* ZHEAP_H */

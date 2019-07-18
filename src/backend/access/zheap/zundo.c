@@ -291,8 +291,7 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
 							   ItemPointerGetBlockNumber(tid),
 							   ItemPointerGetOffsetNumber(tid),
 							   zinfo.xid,
-							   NULL,
-							   ZHeapSatisfyUndoRecord);
+							   NULL);
 
 		/*
 		 * As we still hold a snapshot to which priorXmax is not visible,
