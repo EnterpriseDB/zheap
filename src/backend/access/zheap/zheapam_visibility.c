@@ -110,7 +110,7 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
 		 * for the latest version of the tuple in the undo rather than some
 		 * earlier one.)
 		 */
-		urec = UndoFetchRecord(zinfo->urec_ptr, blocknum, offnum,
+		urec = ZHeapUndoFetchRecord(zinfo->urec_ptr, blocknum, offnum,
 							   xid,
 							   &zinfo->urec_ptr,
 							   ZHeapSatisfyUndoRecord);
@@ -384,7 +384,7 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid, Buffer buffer,
 	UnpackedUndoRecord *urec;
 	uint32		epoch;
 
-	urec = UndoFetchRecord(urec_ptr,
+	urec = ZHeapUndoFetchRecord(urec_ptr,
 						   BufferGetBlockNumber(buffer),
 						   offnum,
 						   xid,

@@ -4729,7 +4729,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
 
 	while (true)
 	{
-		urec = UndoFetchRecord(zinfo.urec_ptr, blk, offnum, zinfo.xid, NULL,
+		urec = ZHeapUndoFetchRecord(zinfo.urec_ptr, blk, offnum, zinfo.xid, NULL,
 							   ZHeapSatisfyUndoRecord);
 		if (urec == NULL)
 		{
@@ -7520,7 +7520,7 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 		return InvalidCommandId;
 
 	Assert(UndoRecPtrIsValid(zinfo.urec_ptr));
-	urec = UndoFetchRecord(zinfo.urec_ptr,
+	urec = ZHeapUndoFetchRecord(zinfo.urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
 						   InvalidTransactionId,
@@ -7554,7 +7554,7 @@ ZHeapTupleGetSubXid(Buffer buf, OffsetNumber offnum, UndoRecPtr urec_ptr,
 	*subxid = InvalidSubTransactionId;
 
 	Assert(UndoRecPtrIsValid(urec_ptr));
-	urec = UndoFetchRecord(urec_ptr,
+	urec = ZHeapUndoFetchRecord(urec_ptr,
 						   BufferGetBlockNumber(buf),
 						   offnum,
 						   InvalidTransactionId,
@@ -7629,7 +7629,7 @@ ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
 {
 	UnpackedUndoRecord *urec;
 
-	urec = UndoFetchRecord(urec_ptr,
+	urec = ZHeapUndoFetchRecord(urec_ptr,
 						   ItemPointerGetBlockNumber(&zhtup->t_self),
 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
 						   InvalidTransactionId,
@@ -8785,4 +8785,29 @@ RefetchAndCheckTupleStatus(Relation relation,
 	}
 
 	return true;
+}
+
+UnpackedUndoRecord*
+ZHeapUndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
+					 TransactionId xid, UndoRecPtr *urec_ptr_out,
+					 SatisfyUndoRecordCallback callback)
+{
+	UnpackedUndoRecord *urec;
+	UndoRecordFetchContext	context;
+
+	BeginUndoFetch(&context);
+	while(1)
+	{
+		urec = UndoFetchRecord(&context, urp);
+		if (urec == NULL)
+			break;
+		if (callback(urec, blkno, offset, xid))
+			break;
+
+		urp = urec->uur_prevundo;
+		UndoRecordRelease(urec);
+	}
+	FinishUndoFetch(&context);
+
+	return urec;
 }

@@ -287,7 +287,7 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
 
 		Assert(prev_trans_slot_id != ZHTUP_SLOT_FROZEN);
 
-		urec = UndoFetchRecord(zinfo.urec_ptr,
+		urec = ZHeapUndoFetchRecord(zinfo.urec_ptr,
 							   ItemPointerGetBlockNumber(tid),
 							   ItemPointerGetOffsetNumber(tid),
 							   zinfo.xid,

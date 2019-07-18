@@ -47,7 +47,7 @@ ZCurrentXactHasTupleLockMode(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
 	memcpy(&hdr, zhtup->t_data, SizeofZHeapTupleHeader);
 	do
 	{
-		urec = UndoFetchRecord(urec_ptr,
+		urec = ZHeapUndoFetchRecord(urec_ptr,
 							   ItemPointerGetBlockNumber(&zhtup->t_self),
 							   ItemPointerGetOffsetNumber(&zhtup->t_self),
 							   InvalidTransactionId,
@@ -213,7 +213,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
 		do
 		{
 			prev_trans_slot_id = trans_slot_id;
-			urec = UndoFetchRecord(urec_ptr,
+			urec = ZHeapUndoFetchRecord(urec_ptr,
 								   blkno,
 								   offnum,
 								   InvalidTransactionId,
@@ -677,7 +677,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 			UndoRecPtr	out_urec_ptr PG_USED_FOR_ASSERTS_ONLY;
 
 			out_urec_ptr = InvalidUndoRecPtr;
-			urec = UndoFetchRecord(urec_ptr,
+			urec = ZHeapUndoFetchRecord(urec_ptr,
 								   ItemPointerGetBlockNumber(tid),
 								   ItemPointerGetOffsetNumber(tid),
 								   InvalidTransactionId,
