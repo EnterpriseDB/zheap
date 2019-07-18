@@ -197,6 +197,10 @@ extern int	internalerrquery(const char *query);
 
 extern int	err_out_to_client(bool out_to_client);
 
+extern int	err_out_to_client(bool out_to_client);
+
+extern int	err_out_to_client(bool out_to_client);
+
 extern int	err_generic_string(int field, const char *str);
 
 extern int	geterrcode(void);

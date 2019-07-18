@@ -1,0 +1,29 @@
+From 2a141850a3552991ca1d9b06751ef1c82bb41da1 Mon Sep 17 00:00:00 2001
+From: Kuntal Ghosh <kuntal.ghosh@enterprisedb.com>
+Date: Tue, 9 Jul 2019 13:49:23 +0530
+Subject: [PATCH 08/18] undo persistence from cache entry was not correct
+
+however it was correct in slot of the cache entry this need to be checked
+whether it's a bug in caching the persistence level.
+---
+ src/include/access/undolog.h | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/include/access/undolog.h b/src/include/access/undolog.h
+index b19b931..da1bcbd 100644
+--- a/src/include/access/undolog.h
++++ b/src/include/access/undolog.h
+@@ -404,7 +404,9 @@ UndoRecPtrGetTablespace(UndoRecPtr urp)
+ static inline UndoLogCategory
+ UndoLogNumberGetCategory(UndoLogNumber logno)
+ {
+-	return UndoLogGetTableEntry(logno)->category;
++	//ZDFIXME : persistence stored in cache is not correct.
++	//return UndoLogGetTableEntry(logno)->category;
++	return UndoLogGetTableEntry(logno)->slot->meta.category;
+ }
+ 
+ static inline UndoLogCategory
+-- 
+1.8.3.1
+

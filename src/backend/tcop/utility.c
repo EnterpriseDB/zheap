@@ -1027,7 +1027,7 @@ ProcessUtilitySlow(ParseState *pstate,
 
 							/*
 							 * parse and validate reloptions for the toast
-							 * table
+							 * table.
 							 */
 							toast_options = transformRelOptions((Datum) 0,
 																((CreateStmt *) stmt)->options,

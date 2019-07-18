@@ -305,6 +305,64 @@ AdvanceNextFullTransactionIdPastXid(TransactionId xid)
 }
 
 /*
+ * ZBORKED: Document, test, and move to a better place?
+ *
+ * Should always be safe due to protections against too old transactions
+ * running on the master.
+ */
+FullTransactionId
+XLogRecGetFullXid(XLogReaderState *record)
+{
+	TransactionId xid = XLogRecGetXid(record);
+	uint32		epoch;
+	TransactionId next_xid;
+
+	/*
+	 * this function isn't safe otherwise, as it depends on the current replay
+	 * state
+	 */
+	Assert(AmStartupProcess() || !IsUnderPostmaster);
+
+	/* see AdvanceNextFullTransactionIdPastXid() as to why this is safe */
+
+	next_xid = XidFromFullTransactionId(ShmemVariableCache->nextFullXid);
+	epoch = EpochFromFullTransactionId(ShmemVariableCache->nextFullXid);
+
+	/*
+	 * If xid is numerically bigger than next_xid, it has to be from the last
+	 * epoch.
+	 */
+	if (unlikely(xid > next_xid))
+		epoch--;
+
+	return FullTransactionIdFromEpochAndXid(epoch, xid);
+}
+
+/*
+ * ZBORKED: Blindly written - and should be removed ASAP
+ */
+uint32
+GetEpochForXid(TransactionId xid)
+{
+	FullTransactionId next_fxid;
+	TransactionId next_xid;
+	uint32		epoch;
+
+	next_fxid = ReadNextFullTransactionId();
+	next_xid = XidFromFullTransactionId(next_fxid);
+	epoch = EpochFromFullTransactionId(next_fxid);
+
+	/*
+	 * If xid is numerically bigger than next_xid, it has to be from the last
+	 * epoch.
+	 */
+	if (unlikely(xid > next_xid))
+		epoch--;
+
+	return epoch;
+}
+
+/*
  * Advance the cluster-wide value for the oldest valid clog entry.
  *
  * We must acquire CLogTruncationLock to advance the oldestClogXid. It's not
@@ -421,6 +479,13 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 	ShmemVariableCache->oldestXidDB = oldest_datoid;
 	curXid = XidFromFullTransactionId(ShmemVariableCache->nextFullXid);
 	LWLockRelease(XidGenLock);
+
+	/*
+	 * Fixme - The messages in below code need some adjustment for zheap. They
+	 * should reflect that the system needs to discard the undo.  We can add
+	 * it once we have a pluggable storage API which might provide us some way
+	 * to distinguish among differnt storage engines.
+	 */
 
 	/* Log the info */
 	ereport(DEBUG1,
@@ -590,26 +655,3 @@ GetNewObjectId(void)
 	return result;
 }
 
-/*
- * Get epoch for the given xid.
- */
-uint32
-GetEpochForXid(TransactionId xid)
-{
-	FullTransactionId next_fxid;
-	TransactionId next_xid;
-	uint32		epoch;
-
-	next_fxid = ReadNextFullTransactionId();
-	next_xid = XidFromFullTransactionId(next_fxid);
-	epoch = EpochFromFullTransactionId(next_fxid);
-
-	/*
-	 * If xid is numerically bigger than next_xid, it has to be from the last
-	 * epoch.
-	 */
-	if (unlikely(xid > next_xid))
-		epoch--;
-
-	return epoch;
-}

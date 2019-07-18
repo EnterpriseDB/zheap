@@ -1,0 +1,116 @@
+From 668992c9ebf3a2268130b01251ba439da1b6fc9f Mon Sep 17 00:00:00 2001
+From: Kuntal Ghosh <kuntal.ghosh@enterprisedb.com>
+Date: Tue, 9 Jul 2019 17:56:36 +0530
+Subject: [PATCH 07/18] Prevxid and prevlen changes for zheap
+
+---
+ src/backend/access/transam/xact.c    | 8 --------
+ src/backend/access/undo/undorecord.c | 4 ++++
+ src/backend/access/zheap/zheapam.c   | 2 +-
+ src/backend/access/zheap/zundo.c     | 8 ++++----
+ src/include/access/undorecord.h      | 6 +++++-
+ 5 files changed, 14 insertions(+), 14 deletions(-)
+
+diff --git a/src/backend/access/transam/xact.c b/src/backend/access/transam/xact.c
+index 5e7ab3f..fc2c5ed 100644
+--- a/src/backend/access/transam/xact.c
++++ b/src/backend/access/transam/xact.c
+@@ -5111,14 +5111,6 @@ TransactionBlockStatusCode(void)
+ {
+ 	TransactionState s = CurrentTransactionState;
+ 
+-	/*
+-	 * Here, we just detect whether there are any pending undo actions so that
+-	 * we can skip releasing the locks during abort transaction.  We don't
+-	 * release the locks till we execute undo actions otherwise, there is a
+-	 * risk of deadlock.
+-	 */
+-	SetUndoActionsInfo();
+-
+ 	switch (s->blockState)
+ 	{
+ 		case TBLOCK_DEFAULT:
+diff --git a/src/backend/access/undo/undorecord.c b/src/backend/access/undo/undorecord.c
+index 5699153..dd12fb7 100755
+--- a/src/backend/access/undo/undorecord.c
++++ b/src/backend/access/undo/undorecord.c
+@@ -164,6 +164,8 @@ BeginInsertUndo(UndoPackContext *ucontext, UnpackedUndoRecord *uur)
+ 	/* Copy undo record header. */
+ 	ucontext->urec_hd.urec_type = uur->uur_type;
+ 	ucontext->urec_hd.urec_info = uur->uur_info;
++	ucontext->urec_hd.urec_prevxid = uur->uur_prevxid;
++	ucontext->urec_hd.urec_prevlen = uur->uur_prevlen;
+ 
+ 	/* Copy undo record transaction header if it is present. */
+ 	if ((uur->uur_info & UREC_INFO_TRANSACTION) != 0)
+@@ -921,6 +923,8 @@ FinishUnpackUndo(UndoPackContext *ucontext, UnpackedUndoRecord *uur)
+ 	uur->uur_reloid = ucontext->urec_reloid;
+ 	uur->uur_fxid = ucontext->urec_fxid;
+ 	uur->uur_cid = ucontext->urec_cid;
++	uur->uur_prevxid = ucontext->urec_hd.urec_prevxid;
++	uur->uur_prevlen = ucontext->urec_hd.urec_prevlen;
+ 
+ 	/* Copy undo record relation header if it is present. */
+ 	if ((uur->uur_info & UREC_INFO_FORK) != 0)
+diff --git a/src/backend/access/zheap/zheapam.c b/src/backend/access/zheap/zheapam.c
+index 708a57b..c3456e0 100644
+--- a/src/backend/access/zheap/zheapam.c
++++ b/src/backend/access/zheap/zheapam.c
+@@ -5339,7 +5339,7 @@ zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
+ 	BeginUndoRecordInsert(&zh_undo_info->context,
+ 						  zh_undo_info->undo_category,
+ 						  nranges,
+-						  NULL);
++						  xlog_record);
+ 
+ 	for (i = 0; i < nranges; i++)
+ 	{
+diff --git a/src/backend/access/zheap/zundo.c b/src/backend/access/zheap/zundo.c
+index 75aac0c..dc67d99 100644
+--- a/src/backend/access/zheap/zundo.c
++++ b/src/backend/access/zheap/zundo.c
+@@ -500,10 +500,10 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
+ 		if (nrecords == 0)
+ 			break;
+ 
+-		/* Apply the last set of the actions. */
+-		execute_undo_actions_page(urp_array, 0, nrecords - 1, rel->rd_id,
+-								  fxid, BufferGetBlockNumber(buffer),
+-								  UndoRecPtrIsValid(urec_ptr) ? false : true);
++		/* Apply the undo actions. */
++		zheap_undo_actions(urp_array, 0, nrecords - 1, rel->rd_id, fxid,
++						   BufferGetBlockNumber(buffer),
++						   UndoRecPtrIsValid(urec_ptr) ? false : true);
+ 
+ 		/* Free all undo records. */
+ 		for (i = 0; i < nrecords; i++)
+diff --git a/src/include/access/undorecord.h b/src/include/access/undorecord.h
+index 3c78f74..a0e92ab 100644
+--- a/src/include/access/undorecord.h
++++ b/src/include/access/undorecord.h
+@@ -92,10 +92,12 @@ typedef struct UndoRecordHeader
+ {
+ 	uint8		urec_type;		/* record type code */
+ 	uint16		urec_info;		/* flag bits */
++	TransactionId urec_prevxid;	/* ZFXIME, remove this */
++	uint16		urec_prevlen;	/* ZFXIME, remove this */
+ } UndoRecordHeader;
+ 
+ #define SizeOfUndoRecordHeader	\
+-	(offsetof(UndoRecordHeader, urec_info) + sizeof(uint16))
++	(offsetof(UndoRecordHeader, urec_prevxid) + sizeof(uint16))
+ 
+ /*
+  * Information for a transaction to which this undo belongs.  This
+@@ -253,6 +255,8 @@ typedef struct UnpackedUndoRecord
+ 	uint8		uur_type;		/* record type code */
+ 	uint16		uur_info;		/* flag bits */
+ 	Oid			uur_reloid;		/* relation OID */
++	TransactionId uur_prevxid;	/* ZFXIME, remove this */
++	uint16		uur_prevlen;	/* ZFXIME, remove this */
+ 	CommandId	uur_cid;		/* command id */
+ 	ForkNumber	uur_fork;		/* fork number */
+ 	UndoRecPtr	uur_prevundo;	/* byte offset of previous undo for block */
+-- 
+1.8.3.1
+

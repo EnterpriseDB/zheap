@@ -972,6 +972,7 @@ static void WALInsertLockUpdateInsertingAt(XLogRecPtr insertingAt);
 XLogRecPtr
 XLogInsertRecord(XLogRecData *rdata,
 				 XLogRecPtr fpw_lsn,
+				 XLogRecPtr OldRedoRecPtr,
 				 uint8 flags)
 {
 	XLogCtlInsert *Insert = &XLogCtl->Insert;
@@ -1061,6 +1062,20 @@ XLogInsertRecord(XLogRecData *rdata,
 		 * Oops, some buffer now needs to be backed up that the caller didn't
 		 * back up.  Start over.
 		 */
+		WALInsertLockRelease();
+		END_CRIT_SECTION();
+		return InvalidXLogRecPtr;
+	}
+
+	/*
+	 * If the redo point is changed and wal need to include the undo attach
+	 * information i.e. (this is the first WAL which after the checkpoint).
+	 * then return from here so that the caller can restart.
+	 */
+	if (rechdr->xl_rmid == RM_ZHEAP_ID &&
+		OldRedoRecPtr != InvalidXLogRecPtr &&
+		OldRedoRecPtr != RedoRecPtr)
+	{
 		WALInsertLockRelease();
 		END_CRIT_SECTION();
 		return InvalidXLogRecPtr;
@@ -4520,6 +4535,8 @@ WriteControlFile(void)
 	ControlFile->float4ByVal = FLOAT4PASSBYVAL;
 	ControlFile->float8ByVal = FLOAT8PASSBYVAL;
 
+	ControlFile->zheap_page_trans_slots = ZHEAP_PAGE_TRANS_SLOTS;
+
 	/* Contents are protected with a CRC */
 	INIT_CRC32C(ControlFile->crc);
 	COMP_CRC32C(ControlFile->crc,
@@ -4752,6 +4769,13 @@ ReadControlFile(void)
 						   " but the server was compiled without USE_FLOAT8_BYVAL."),
 				 errhint("It looks like you need to recompile or initdb.")));
 #endif
+	if (ControlFile->zheap_page_trans_slots != ZHEAP_PAGE_TRANS_SLOTS)
+		ereport(FATAL,
+				(errmsg("database files are incompatible with server"),
+				 errdetail("The database cluster was initialized with ZHEAP_PAGE_TRANS_SLOTS %d,"
+						   " but the server was compiled with ZHEAP_PAGE_TRANS_SLOTS %d.",
+						   ControlFile->zheap_page_trans_slots, (int) ZHEAP_PAGE_TRANS_SLOTS),
+				 errhint("It looks like you need to recompile or initdb.")));
 
 	wal_segment_size = ControlFile->xlog_seg_size;
 
@@ -6718,6 +6742,9 @@ StartupXLOG(void)
 	 * of the on-disk two-phase data.
 	 */
 	restoreTwoPhaseData();
+
+	/* Recover undo log meta data corresponding to this checkpoint. */
+	StartupUndoLogs(ControlFile->checkPointCopy.redo);
 
 	/* Recover undo log meta data corresponding to this checkpoint. */
 	StartupUndoLogs(ControlFile->checkPointCopy.redo);
@@ -8740,7 +8767,6 @@ CreateCheckPoint(int flags)
 	checkPoint.oldestFullXidHavingUnappliedUndo =
 		FullTransactionIdFromU64(pg_atomic_read_u64(&ProcGlobal->oldestFullXidHavingUnappliedUndo));
 
-
 	MultiXactGetCheckptMulti(shutdown,
 							 &checkPoint.nextMulti,
 							 &checkPoint.nextMultiOffset,
@@ -9009,6 +9035,7 @@ CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 	CheckPointSnapBuild();
 	CheckPointLogicalRewriteHeap();
 	CheckPointBuffers(flags);	/* performs all required fsyncs */
+	CheckPointUndoLogs(checkPointRedo, ControlFile->checkPointCopy.redo);
 	CheckPointReplicationOrigin();
 	/* We deliberately delay 2PC checkpointing as long as possible */
 	CheckPointTwoPhase(checkPointRedo);
@@ -9783,6 +9810,9 @@ xlog_redo(XLogReaderState *record)
 		SpinLockAcquire(&XLogCtl->info_lck);
 		XLogCtl->ckptFullXid = checkPoint.nextFullXid;
 		SpinLockRelease(&XLogCtl->info_lck);
+
+		/* Write an undo log metadata snapshot. */
+		CheckPointUndoLogs(checkPoint.redo, ControlFile->checkPointCopy.redo);
 
 		/* TLI should not change in an on-line checkpoint */
 		if (checkPoint.ThisTimeLineID != ThisTimeLineID)

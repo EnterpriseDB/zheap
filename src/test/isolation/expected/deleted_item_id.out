@@ -1,0 +1,10 @@
+Parsed test spec with 3 sessions
+
+starting permutation: w1 w2 t3 v3 c1 c2
+step w1: UPDATE a SET i = 5 WHERE i = 1;
+step w2: UPDATE a SET i = 5 WHERE i >= 1; <waiting ...>
+step t3: DELETE FROM a WHERE i = 2;
+step v3: VACUUM;
+step c1: COMMIT;
+step w2: <... completed>
+step c2: COMMIT;

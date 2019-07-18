@@ -1,0 +1,141 @@
+From 8bd35c01e081099ad6a096c11e27dc801f905e8f Mon Sep 17 00:00:00 2001
+From: Kuntal Ghosh <kuntal.ghosh@enterprisedb.com>
+Date: Wed, 10 Jul 2019 11:56:23 +0530
+Subject: [PATCH 11/18] Initialize fxid for undo
+
+fxid is included only in undo transaction header. So, we've to pass
+the fxid to zheap_undo_actions as an argument. We can't extract it from
+the undo records.
+---
+ src/backend/access/undo/undoaction.c | 12 +++++++-----
+ src/backend/access/zheap/zundo.c     |  8 +++-----
+ src/include/access/xlog_internal.h   |  3 ++-
+ src/include/access/zheap.h           |  3 ++-
+ 4 files changed, 14 insertions(+), 12 deletions(-)
+
+diff --git a/src/backend/access/undo/undoaction.c b/src/backend/access/undo/undoaction.c
+index 3d83bd8..3240750 100644
+--- a/src/backend/access/undo/undoaction.c
++++ b/src/backend/access/undo/undoaction.c
+@@ -43,7 +43,8 @@ static void UpdateUndoApplyProgress(UndoRecPtr last_log_start_urec_ptr,
+ 						  BlockNumber block_num);
+ static bool UndoAlreadyApplied(FullTransactionId full_xid,
+ 						UndoRecPtr to_urecptr);
+-static void ApplyUndo(UndoRecInfo *urecinfo, int nrecords);
++static void ApplyUndo(UndoRecInfo *urecinfo, int nrecords,
++					  FullTransactionId fxid);
+ static void ProcessAndApplyUndo(FullTransactionId full_xid,
+ 				UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
+ 				UndoRecPtr last_log_start_urec_ptr, bool complete_xact);
+@@ -201,7 +202,7 @@ UndoAlreadyApplied(FullTransactionId full_xid, UndoRecPtr to_urecptr)
+  * nrecords - number of records in this array.
+  */
+ static void
+-ApplyUndo(UndoRecInfo *urecinfo, int nrecords)
++ApplyUndo(UndoRecInfo *urecinfo, int nrecords, FullTransactionId fxid)
+ {
+ 	int			rmgr_start_idx = 0;
+ 	int			rmgr_nrecords = 0;
+@@ -224,7 +225,8 @@ ApplyUndo(UndoRecInfo *urecinfo, int nrecords)
+ 		{
+ 			Assert(urecinfo[rmgr_start_idx].uur->uur_rmid == prev_rmid);
+ 			RmgrTable[prev_rmid].rm_undo(rmgr_nrecords,
+-										 &urecinfo[rmgr_start_idx]);
++										 &urecinfo[rmgr_start_idx],
++										 fxid);
+ 
+ 			rmgr_start_idx = i;
+ 			rmgr_nrecords = 0;
+@@ -236,7 +238,7 @@ ApplyUndo(UndoRecInfo *urecinfo, int nrecords)
+ 
+ 	/* Apply the last set of the actions. */
+ 	Assert(urecinfo[rmgr_start_idx].uur->uur_rmid == prev_rmid);
+-	RmgrTable[prev_rmid].rm_undo(rmgr_nrecords, &urecinfo[rmgr_start_idx]);
++	RmgrTable[prev_rmid].rm_undo(rmgr_nrecords, &urecinfo[rmgr_start_idx], fxid);
+ }
+ 
+ /*
+@@ -397,7 +399,7 @@ ProcessAndApplyUndo(FullTransactionId full_xid, UndoRecPtr from_urecptr,
+ 			  undo_record_comparator);
+ 
+ 		/* Call resource manager specific callbacks to apply actions. */
+-		ApplyUndo(urecinfo, nrecords);
++		ApplyUndo(urecinfo, nrecords, full_xid);
+ 
+ 		/* Set undo action apply progress if required. */
+ 		if (update_progress)
+diff --git a/src/backend/access/zheap/zundo.c b/src/backend/access/zheap/zundo.c
+index c19b262..3609b6c 100644
+--- a/src/backend/access/zheap/zundo.c
++++ b/src/backend/access/zheap/zundo.c
+@@ -615,7 +615,7 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
+ }
+ 
+ void
+-zheap_undo_actions(int nrecords, UndoRecInfo *urp_array)
++zheap_undo_actions(int nrecords, UndoRecInfo *urp_array, FullTransactionId fxid)
+ {
+ 	bool	prev_initialized = false;
+ 	Oid		prev_reloid = InvalidOid;
+@@ -626,7 +626,6 @@ zheap_undo_actions(int nrecords, UndoRecInfo *urp_array)
+ 	 * we've plans to store this information in undo records.
+ 	 */
+ 	bool	blk_chain_complete = false;
+-	FullTransactionId	full_xid;
+ 	ForkNumber	prev_fork = InvalidForkNumber;
+ 	BlockNumber prev_block = InvalidBlockNumber;
+ 
+@@ -645,7 +644,7 @@ zheap_undo_actions(int nrecords, UndoRecInfo *urp_array)
+ 				 prev_block != uur->uur_block)
+ 			{
+ 				zheap_undo_actions_page(urp_array, last_index, i - 1,
+-										  prev_reloid, full_xid, prev_block,
++										  prev_reloid, fxid, prev_block,
+ 										  blk_chain_complete);
+ 				last_index = i;
+ 			}
+@@ -656,12 +655,11 @@ zheap_undo_actions(int nrecords, UndoRecInfo *urp_array)
+ 		prev_reloid = uur->uur_reloid;
+ 		prev_fork = uur->uur_fork;
+ 		prev_block = uur->uur_block;
+-		full_xid = uur->uur_fxid;
+ 	}
+ 
+ 	/* Apply the last set of the actions. */
+ 	zheap_undo_actions_page(urp_array, last_index, i - 1,
+-							  prev_reloid, full_xid, prev_block,
++							  prev_reloid, fxid, prev_block,
+ 							  blk_chain_complete);
+ }
+ 
+diff --git a/src/include/access/xlog_internal.h b/src/include/access/xlog_internal.h
+index 35aff69..f7dddcb 100644
+--- a/src/include/access/xlog_internal.h
++++ b/src/include/access/xlog_internal.h
+@@ -308,7 +308,8 @@ typedef struct RmgrData
+ 	void		(*rm_startup) (void);
+ 	void		(*rm_cleanup) (void);
+ 	void		(*rm_mask) (char *pagedata, BlockNumber blkno);
+-	void		(*rm_undo) (int nrecords, UndoRecInfo *records);
++	void		(*rm_undo) (int nrecords, UndoRecInfo *records,
++							FullTransactionId fxid);
+ 	UndoStatus	(*rm_undo_status) (UnpackedUndoRecord *record, TransactionId *xid);
+ 	void		(*rm_undo_desc) (StringInfo buf, UnpackedUndoRecord *record);
+ } RmgrData;
+diff --git a/src/include/access/zheap.h b/src/include/access/zheap.h
+index 8e68623..053d53f 100644
+--- a/src/include/access/zheap.h
++++ b/src/include/access/zheap.h
+@@ -338,7 +338,8 @@ extern void lazy_vacuum_zheap_rel(Relation onerel, struct VacuumParams *params,
+ 								  BufferAccessStrategy bstrategy);
+ 
+ /* in zheap/zundo.c */
+-extern void zheap_undo_actions(int nrecords, UndoRecInfo *urp_array);
++extern void zheap_undo_actions(int nrecords, UndoRecInfo *urp_array,
++							   FullTransactionId fxid);
+ 
+ /* in zheap/ztuptoaster.c */
+ extern ZHeapTuple ztoast_insert_or_update(Relation rel,
+-- 
+1.8.3.1
+

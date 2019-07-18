@@ -455,6 +455,20 @@ InitCommunication(void)
 	}
 }
 
+/*
+ * Check whether the dbid exist or not.
+ */
+bool
+dbid_exists(Oid dboid)
+{
+	bool		result = false;
+
+	Assert(IsTransactionState());
+	result = (GetDatabaseTupleByOid(dboid) != NULL);
+
+	return result;
+}
+
 
 /*
  * pg_split_opts -- split a string of options and append it to an argv array
@@ -1083,20 +1097,6 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	/* close the transaction we started above */
 	if (!bootstrap)
 		CommitTransactionCommand();
-}
-
-/*
- * Check whether the dbid exist or not.
- */
-bool
-dbid_exists(Oid dboid)
-{
-	bool		result = false;
-
-	Assert(IsTransactionState());
-	result = (GetDatabaseTupleByOid(dboid) != NULL);
-
-	return result;
 }
 
 /*

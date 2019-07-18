@@ -1,0 +1,31 @@
+From 6edc1c31e4b25b0f6806d898e42f3579b452fb37 Mon Sep 17 00:00:00 2001
+From: Vigneshwaran c <vignesh21@gmail.com>
+Date: Wed, 24 Jul 2019 13:08:09 +0530
+Subject: [PATCH 18/18]     Updating frozen tuple crashes.
+
+    No need to read information in case of frozen tuple.
+
+    Patch by Vigneshwaran C, reviewed by Dilip Kumar.
+---
+ src/backend/access/zheap/zheapam_visibility.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/backend/access/zheap/zheapam_visibility.c b/src/backend/access/zheap/zheapam_visibility.c
+index 366b6dd..98004c5 100644
+--- a/src/backend/access/zheap/zheapam_visibility.c
++++ b/src/backend/access/zheap/zheapam_visibility.c
+@@ -1244,8 +1244,9 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ItemPointer tid, ZHeapTuple zhtup,
+ 		 * the slot's current xid is all-visible, then the xid prior to it
+ 		 * must be all-visible.
+ 		 */
+-		if (FullTransactionIdIsValid(zinfo->epoch_xid) &&
+-			FullTransactionIdOlderThanAllUndo(zinfo->epoch_xid))
++		if (trans_slot == ZHTUP_SLOT_FROZEN ||
++			(FullTransactionIdIsValid(zinfo->epoch_xid) &&
++			FullTransactionIdOlderThanAllUndo(zinfo->epoch_xid)))
+ 		{
+ 			zinfo->trans_slot = ZHTUP_SLOT_FROZEN;
+ 			zinfo->epoch_xid = InvalidFullTransactionId;
+-- 
+1.8.3.1
+

@@ -1,0 +1,873 @@
+From 6d093d012a6b008b70d0ff739b47767a85a055ec Mon Sep 17 00:00:00 2001
+From: Kuntal Ghosh <kuntal.ghosh@enterprisedb.com>
+Date: Tue, 9 Jul 2019 17:55:16 +0530
+Subject: [PATCH 05/18] rebase fixes
+
+1. Add NULL for undo_desc in zheap rmgrs
+2. Change undo_persistence to und log category
+3. Remove few duplicate codes
+4. change uur_xid to uur_fxid
+5. change uur_blkprev to uur_prevundo
+6. change PrepareUndoInsert argument to dbid.  For recovery, we've to
+fetch the dbid from rnode. This is not done yet.
+7. use UndoRecPtrIsDiscarded instead of UndoLogIsDiscarded
+---
+ src/backend/access/transam/twophase.c         | 84 ---------------------------
+ src/backend/access/transam/xact.c             | 32 +---------
+ src/backend/access/undo/undoworker.c          | 11 ----
+ src/backend/access/zheap/prunetpd.c           |  2 +-
+ src/backend/access/zheap/zheapam.c            | 82 +++++++++++++-------------
+ src/backend/access/zheap/zheapam_visibility.c | 10 ++--
+ src/backend/access/zheap/zheapamxlog.c        | 16 ++---
+ src/backend/access/zheap/zmultilocker.c       | 22 +++----
+ src/backend/access/zheap/zundo.c              | 13 +++--
+ src/backend/access/zheap/zvacuumlazy.c        |  6 +-
+ src/include/access/rmgrlist.h                 |  8 +--
+ src/include/access/xact.h                     |  1 -
+ src/include/access/zheap.h                    |  2 +-
+ 13 files changed, 82 insertions(+), 207 deletions(-)
+
+diff --git a/src/backend/access/transam/twophase.c b/src/backend/access/transam/twophase.c
+index fc26d30..c401885 100644
+--- a/src/backend/access/transam/twophase.c
++++ b/src/backend/access/transam/twophase.c
+@@ -1532,10 +1532,6 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
+ 	memcpy(start_urec_ptr, hdr->start_urec_ptr, sizeof(start_urec_ptr));
+ 	memcpy(end_urec_ptr, hdr->end_urec_ptr, sizeof(end_urec_ptr));
+ 
+-	/* save the start and end undo record pointers */
+-	memcpy(start_urec_ptr, hdr->start_urec_ptr, sizeof(start_urec_ptr));
+-	memcpy(end_urec_ptr, hdr->end_urec_ptr, sizeof(end_urec_ptr));
+-
+ 	/* compute latestXid among all children */
+ 	latestXid = TransactionIdLatest(xid, hdr->nsubxacts, children);
+ 
+@@ -1695,86 +1691,6 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
+ 		}
+ 	}
+ 
+-	/*
+-	 * Perform undo actions, if there are undologs for this transaction. We
+-	 * need to perform undo actions while we are still in transaction. Never
+-	 * push rollbacks of temp tables to undo worker.
+-	 */
+-	for (i = 0; i < UndoPersistenceLevels; i++)
+-	{
+-		volatile UndoRequestInfo urinfo;
+-		uint32		epoch;
+-		FullTransactionId full_xid;
+-
+-		/*
+-		 * We don't allow XIDs with an age of more than 2 billion in undo, so
+-		 * we can infer the epoch here. (XXX We can add full transaction id in
+-		 * TwoPhaseFileHeader instead. )
+-		 */
+-		epoch = GetEpochForXid(hdr->xid);
+-		full_xid = FullTransactionIdFromEpochAndXid(epoch, hdr->xid);
+-
+-		if (end_urec_ptr[i] != InvalidUndoRecPtr && !isCommit)
+-		{
+-			uint32		save_holdoff;
+-
+-			save_holdoff = InterruptHoldoffCount;
+-			PG_TRY();
+-			{
+-				bool		result = false;
+-
+-				/*
+-				 * Prepare required undo request info so that it can be used
+-				 * in exception.
+-				 */
+-				ResetUndoRequestInfo(&urinfo);
+-				urinfo.dbid = MyDatabaseId;
+-				urinfo.full_xid = full_xid;
+-
+-				if (i != UNDO_TEMP)
+-					result = RegisterRollbackReq(end_urec_ptr[i],
+-												 start_urec_ptr[i],
+-												 hdr->database,
+-												 full_xid);
+-
+-				if (!result)
+-					execute_undo_actions(full_xid, end_urec_ptr[i],
+-										 start_urec_ptr[i], true);
+-			}
+-			PG_CATCH();
+-			{
+-				if (i == UNDO_TEMP)
+-					pg_rethrow_as_fatal();
+-
+-				/*
+-				 * Add the request into an error queue so that it can be
+-				 * processed in a timely fashion.
+-				 *
+-				 * If we fail to add the request in an error queue, then
+-				 * remove the entry from the hash table and continue to
+-				 * process the remaining undo requests if any.  This request
+-				 * will be later processed by discard worker.
+-				 */
+-				if (!InsertRequestIntoErrorUndoQueue(&urinfo))
+-					RollbackHTRemoveEntry(urinfo.full_xid, urinfo.start_urec_ptr);
+-
+-				/*
+-				 * Errors can reset holdoff count, so restore back.  This is
+-				 * required because this function can be called after holding
+-				 * interrupts.
+-				 */
+-				InterruptHoldoffCount = save_holdoff;
+-
+-				/* Send the error only to server log. */
+-				err_out_to_client(false);
+-				EmitErrorReport();
+-
+-				FlushErrorState();
+-			}
+-			PG_END_TRY();
+-		}
+-	}
+-
+ 	RESUME_INTERRUPTS();
+ 
+ 	pfree(buf);
+diff --git a/src/backend/access/transam/xact.c b/src/backend/access/transam/xact.c
+index 286199e..5e7ab3f 100644
+--- a/src/backend/access/transam/xact.c
++++ b/src/backend/access/transam/xact.c
+@@ -1061,26 +1061,6 @@ IsInParallelMode(void)
+ }
+ 
+ /*
+- * SetUndoActionsInfo - set the start and end undo record pointers before
+- * performing the undo actions.
+- */
+-void
+-SetUndoActionsInfo(void)
+-{
+-	TransactionState s = CurrentTransactionState;
+-	int			i;
+-
+-	for (i = 0; i < UndoPersistenceLevels; i++)
+-	{
+-		if (s->latest_urec_ptr[i])
+-		{
+-			s->performUndoActions = true;
+-			break;
+-		}
+-	}
+-}
+-
+-/*
+  *	CommandCounterIncrement
+  */
+ void
+@@ -2047,15 +2027,6 @@ StartTransaction(void)
+ 	currentCommandId = FirstCommandId;
+ 	currentCommandIdUsed = false;
+ 
+-	/* initialize undo record locations for the transaction */
+-	for (i = 0; i < UndoPersistenceLevels; i++)
+-	{
+-		s->start_urec_ptr[i] = InvalidUndoRecPtr;
+-		s->latest_urec_ptr[i] = InvalidUndoRecPtr;
+-	}
+-	s->performUndoActions = false;
+-	s->subXactLock = false;
+-
+ 	/*
+ 	 * initialize reported xid accounting
+ 	 */
+@@ -2070,6 +2041,7 @@ StartTransaction(void)
+ 		s->undo_req_pushed[i] = false;
+ 	}
+ 	s->performUndoActions = false;
++	s->subXactLock = false;
+ 
+ 	/*
+ 	 * must initialize resource-management stuff first
+@@ -3177,7 +3149,7 @@ CommitTransactionCommand(void)
+ 				 * for this transaction.  Also set the start_urec_ptr if
+ 				 * parent start_urec_ptr is not valid.
+ 				 */
+-				for (i = 0; i < UndoPersistenceLevels; i++)
++				for (i = 0; i < UndoLogCategories; i++)
+ 				{
+ 					if (UndoRecPtrIsValid(s->latest_urec_ptr[i]))
+ 						s->parent->latest_urec_ptr[i] = s->latest_urec_ptr[i];
+diff --git a/src/backend/access/undo/undoworker.c b/src/backend/access/undo/undoworker.c
+index ecefe31..3a30256 100644
+--- a/src/backend/access/undo/undoworker.c
++++ b/src/backend/access/undo/undoworker.c
+@@ -82,7 +82,6 @@ int			undo_worker_quantum_ms = 10000;
+ /* Flags set by signal handlers */
+ static volatile sig_atomic_t got_SIGHUP = false;
+ static volatile sig_atomic_t got_SIGTERM = false;
+-static volatile sig_atomic_t got_SIGTERM = false;
+ static TimestampTz last_xact_processed_at;
+ 
+ typedef struct UndoApplyWorker
+@@ -153,16 +152,6 @@ UndoworkerSigtermHandler(SIGNAL_ARGS)
+ 	SetLatch(MyLatch);
+ }
+ 
+-/* SIGTERM: set flag to exit at next convenient time */
+-static void
+-UndoworkerSigtermHandler(SIGNAL_ARGS)
+-{
+-	got_SIGTERM = true;
+-
+-	/* Waken anything waiting on the process latch */
+-	SetLatch(MyLatch);
+-}
+-
+ /* SIGHUP: set flag to reload configuration at next convenient time */
+ static void
+ UndoLauncherSighup(SIGNAL_ARGS)
+diff --git a/src/backend/access/zheap/prunetpd.c b/src/backend/access/zheap/prunetpd.c
+index 2936c9a..5a69992 100644
+--- a/src/backend/access/zheap/prunetpd.c
++++ b/src/backend/access/zheap/prunetpd.c
+@@ -275,7 +275,7 @@ TPDEntryPrune(Buffer tpdbuf, OffsetNumber offnum, TPDPruneState *prstate,
+ 		 * oldest xid with undo.
+ 		 */
+ 		if ((!FullTransactionIdIsValid(slot_fxid) &&
+-			 (!UndoRecPtrIsValid(urec_ptr) || UndoLogIsDiscarded(urec_ptr))) ||
++			 (!UndoRecPtrIsValid(urec_ptr) || UndoRecPtrIsDiscarded(urec_ptr))) ||
+ 			(FullTransactionIdIsValid(slot_fxid) &&
+ 			 FullTransactionIdPrecedes(slot_fxid, oldestXidWithEpochHavingUndo)))
+ 			continue;
+diff --git a/src/backend/access/zheap/zheapam.c b/src/backend/access/zheap/zheapam.c
+index 561b1ce..708a57b 100644
+--- a/src/backend/access/zheap/zheapam.c
++++ b/src/backend/access/zheap/zheapam.c
+@@ -367,7 +367,7 @@ reacquire_buffer:
+ 		zh_undo_info.prev_urecptr = prev_urecptr;
+ 		zh_undo_info.fxid = fxid;
+ 		zh_undo_info.cid = cid;
+-		zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
++		zh_undo_info.undo_category = UndoLogCategoryForRelation(relation);
+ 
+ 		urecptr = zheap_prepare_undoinsert(&zh_undo_info, specToken,
+ 										   (options & ZHEAP_INSERT_SPECULATIVE) ? true : false,
+@@ -801,7 +801,7 @@ check_tup_satisfies_update:
+ 	zh_undo_info.prev_urecptr = prev_urecptr;
+ 	zh_undo_info.fxid = fxid;
+ 	zh_undo_info.cid = cid;
+-	zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
++	zh_undo_info.undo_category = UndoLogCategoryForRelation(relation);
+ 	urecptr = zheap_prepare_undodelete(&zh_undo_info,
+ 									   &zheaptup,
+ 									   zinfo.xid,
+@@ -1655,7 +1655,7 @@ check_tup_satisfies_update:
+ 		zh_undo_info.prev_urecptr = prev_urecptr;
+ 		zh_undo_info.fxid = fxid;
+ 		zh_undo_info.cid = cid;
+-		zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
++		zh_undo_info.undo_category = UndoLogCategoryForRelation(relation);
+ 
+ 		latest_urecptr = zheap_lock_tuple_guts(buffer, &oldtup, &zinfo,
+ 											   single_locker_xid, fxid, oldtup_new_trans_slot,
+@@ -1876,7 +1876,7 @@ reacquire_buffer:
+ 	gen_undo_info.prev_urecptr = prev_urecptr;
+ 	gen_undo_info.fxid = fxid;
+ 	gen_undo_info.cid = cid;
+-	gen_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
++	gen_undo_info.undo_category = UndoLogCategoryForRelation(relation);
+ 
+ 	zh_up_undo_info.gen_info = &gen_undo_info;
+ 	zh_up_undo_info.inplace_update = use_inplace_update;
+@@ -2886,7 +2886,7 @@ failed:
+ 	zh_undo_info.prev_urecptr = prev_urecptr;
+ 	zh_undo_info.fxid = fxid;
+ 	zh_undo_info.cid = FirstCommandId;
+-	zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
++	zh_undo_info.undo_category = UndoLogCategoryForRelation(relation);
+ 
+ 	/*
+ 	 * If all the members were lockers and are all gone, we can do away with
+@@ -4005,7 +4005,7 @@ lock_tuple:
+ 		zh_undo_info.prev_urecptr = prev_urecptr;
+ 		zh_undo_info.fxid = fxid;
+ 		zh_undo_info.cid = FirstCommandId;
+-		zh_undo_info.undo_persistence = UndoPersistenceForRelation(rel);
++		zh_undo_info.undo_category = UndoLogCategoryForRelation(rel);
+ 
+ 		(void) zheap_lock_tuple_guts(buf, &zhtup, &zinfo,
+ 									 InvalidTransactionId, fxid, trans_slot_id,
+@@ -4752,7 +4752,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
+ 			urec->uur_type == UNDO_MULTI_INSERT ||
+ 			urec->uur_type == UNDO_INPLACE_UPDATE)
+ 		{
+-			result = urec->uur_xid;
++			result = XidFromFullTransactionId(urec->uur_fxid);
+ 			UndoRecordRelease(urec);
+ 			break;
+ 		}
+@@ -4761,7 +4761,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
+ 			UpdateTupleHeaderFromUndoRecord(urec, &hdr, BufferGetPage(buffer));
+ 
+ 		zinfo.xid = urec->uur_prevxid;
+-		zinfo.urec_ptr = urec->uur_blkprev;
++		zinfo.urec_ptr = urec->uur_prevundo;
+ 		UndoRecordRelease(urec);
+ 		if (!UndoRecPtrIsValid(zinfo.urec_ptr))
+ 		{
+@@ -4812,10 +4812,10 @@ zheap_prepare_undoinsert(ZHeapPrepareUndoInfo *zh_undo_info,
+ 	undorecord->uur_prevlen = 0;
+ 	undorecord->uur_reloid = zh_undo_info->reloid;
+ 	undorecord->uur_prevxid = FrozenTransactionId;
+-	undorecord->uur_xid = XidFromFullTransactionId(zh_undo_info->fxid);
++	undorecord->uur_fxid = zh_undo_info->fxid;
+ 	undorecord->uur_cid = zh_undo_info->cid;
+ 	undorecord->uur_fork = MAIN_FORKNUM;
+-	undorecord->uur_blkprev = zh_undo_info->prev_urecptr;
++	undorecord->uur_prevundo = zh_undo_info->prev_urecptr;
+ 	undorecord->uur_block = zh_undo_info->blkno;
+ 	undorecord->uur_offset = zh_undo_info->offnum;
+ 	undorecord->uur_tuple.len = 0;
+@@ -4840,11 +4840,11 @@ zheap_prepare_undoinsert(ZHeapPrepareUndoInfo *zh_undo_info,
+ 		undorecord->uur_payload.len = 0;
+ 
+ 	BeginUndoRecordInsert(&zh_undo_info->context,
+-						  zh_undo_info->undo_persistence,
++						  zh_undo_info->undo_category,
+ 						  1,
+ 						  xlog_record);
+ 	urecptr = PrepareUndoInsert(&zh_undo_info->context, undorecord,
+-								zh_undo_info->fxid);
++								!InRecovery ? MyDatabaseId : InvalidOid);
+ 
+ 	return urecptr;
+ }
+@@ -4876,10 +4876,10 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
+ 	zh_undoinfo->old_undorec->uur_info = 0;
+ 	zh_undoinfo->old_undorec->uur_reloid = zh_undoinfo->gen_info->reloid;
+ 	zh_undoinfo->old_undorec->uur_prevxid = zh_undoinfo->prevxid;
+-	zh_undoinfo->old_undorec->uur_xid = xid;
++	zh_undoinfo->old_undorec->uur_fxid = zh_undoinfo->gen_info->fxid;
+ 	zh_undoinfo->old_undorec->uur_cid = zh_undoinfo->gen_info->cid;
+ 	zh_undoinfo->old_undorec->uur_fork = MAIN_FORKNUM;
+-	zh_undoinfo->old_undorec->uur_blkprev = zh_undoinfo->gen_info->prev_urecptr;
++	zh_undoinfo->old_undorec->uur_prevundo = zh_undoinfo->gen_info->prev_urecptr;
+ 	zh_undoinfo->old_undorec->uur_block = zh_undoinfo->gen_info->blkno;
+ 	zh_undoinfo->old_undorec->uur_offset = zh_undoinfo->gen_info->offnum;
+ 	zh_undoinfo->old_undorec->uur_payload.len = 0;
+@@ -4951,16 +4951,16 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
+ /* ZDFIXME
+  * 		urecptr = PrepareUndoInsert(zh_undoinfo->old_undorec,
+ 									zh_undoinfo->gen_info->fxid,
+-									zh_undoinfo->gen_info->undo_persistence,
++									zh_undoinfo->gen_info->undo_category,
+ 									xlrec);
+  */
+ 		BeginUndoRecordInsert(&zh_undoinfo->gen_info->context,
+-							  zh_undoinfo->gen_info->undo_persistence,
++							  zh_undoinfo->gen_info->undo_category,
+ 							  1,
+ 							  xlrec);
+ 		urecptr = PrepareUndoInsert(&zh_undoinfo->gen_info->context,
+ 									zh_undoinfo->old_undorec,
+-									zh_undoinfo->gen_info->fxid);
++									!InRecovery ? MyDatabaseId : InvalidOid);
+ 	}
+ 	else
+ 	{
+@@ -5045,7 +5045,7 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
+ 		zh_undoinfo->new_undorec->uur_info = 0;
+ 		zh_undoinfo->new_undorec->uur_reloid = zh_undoinfo->gen_info->reloid;
+ 		zh_undoinfo->new_undorec->uur_prevxid = xid;
+-		zh_undoinfo->new_undorec->uur_xid = xid;
++		zh_undoinfo->new_undorec->uur_fxid = zh_undoinfo->gen_info->fxid;
+ 		zh_undoinfo->new_undorec->uur_cid = zh_undoinfo->gen_info->cid;
+ 		zh_undoinfo->new_undorec->uur_fork = MAIN_FORKNUM;
+ 		zh_undoinfo->new_undorec->uur_block = zh_undoinfo->new_block;
+@@ -5069,10 +5069,10 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
+ /*
+  * ZDFIXME
+  * 		UndoSetPrepareSize(undorec, 2, zh_undoinfo->gen_info->fxid,
+-						   zh_undoinfo->gen_info->undo_persistence, xlrec);
++						   zh_undoinfo->gen_info->undo_category, xlrec);
+ */		
+ 		BeginUndoRecordInsert(&zh_undoinfo->gen_info->context,
+-							  zh_undoinfo->gen_info->undo_persistence,
++							  zh_undoinfo->gen_info->undo_category,
+ 							  2,
+ 							  xlrec);
+ 
+@@ -5082,7 +5082,7 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
+ 
+ 		urecptr = PrepareUndoInsert(&zh_undoinfo->gen_info->context,
+ 									zh_undoinfo->old_undorec,
+-									zh_undoinfo->gen_info->fxid);
++									!InRecovery ? MyDatabaseId : InvalidOid);
+ 
+ 		/* During recovery, make more room for tuple location if needed. */
+ 		if (!InRecovery)
+@@ -5092,13 +5092,13 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
+ 		}
+ 
+ 		if (zh_undoinfo->same_buf)
+-			zh_undoinfo->new_undorec->uur_blkprev = urecptr;
++			zh_undoinfo->new_undorec->uur_prevundo = urecptr;
+ 		else
+-			zh_undoinfo->new_undorec->uur_blkprev = zh_undoinfo->new_prev_urecptr;
++			zh_undoinfo->new_undorec->uur_prevundo = zh_undoinfo->new_prev_urecptr;
+ 
+ 		*new_urecptr = PrepareUndoInsert(&zh_undoinfo->gen_info->context,
+ 										 zh_undoinfo->new_undorec,
+-										 zh_undoinfo->gen_info->fxid);
++										 !InRecovery ? MyDatabaseId : InvalidOid);
+ 	}
+ 	return urecptr;
+ }
+@@ -5131,10 +5131,10 @@ zheap_prepare_undodelete(ZHeapPrepareUndoInfo *zhUndoInfo, ZHeapTuple zhtup,
+ 	undorecord->uur_info = 0;
+ 	undorecord->uur_reloid = zhUndoInfo->reloid;
+ 	undorecord->uur_prevxid = tup_xid;
+-	undorecord->uur_xid = XidFromFullTransactionId(zhUndoInfo->fxid);
++	undorecord->uur_fxid = zhUndoInfo->fxid;
+ 	undorecord->uur_cid = zhUndoInfo->cid;
+ 	undorecord->uur_fork = MAIN_FORKNUM;
+-	undorecord->uur_blkprev = zhUndoInfo->prev_urecptr;
++	undorecord->uur_prevundo = zhUndoInfo->prev_urecptr;
+ 	undorecord->uur_block = zhUndoInfo->blkno;
+ 	undorecord->uur_offset = zhUndoInfo->offnum;
+ 
+@@ -5189,12 +5189,12 @@ zheap_prepare_undodelete(ZHeapPrepareUndoInfo *zhUndoInfo, ZHeapTuple zhtup,
+ 		undorecord->uur_payload.len = 0;
+ 
+ 	BeginUndoRecordInsert(&zhUndoInfo->context,
+-						  zhUndoInfo->undo_persistence,
++						  zhUndoInfo->undo_category,
+ 						  1,
+ 						  xlog_record);
+ 	urecptr = PrepareUndoInsert(&zhUndoInfo->context,
+ 								undorecord,
+-								zhUndoInfo->fxid);
++								!InRecovery ? MyDatabaseId : InvalidOid);
+ 
+ 	return urecptr;
+ }
+@@ -5228,10 +5228,10 @@ zheap_prepare_undolock(ZHeapPrepareLockUndoInfo *zh_undo_info,
+ 	undorecord->uur_info = 0;
+ 	undorecord->uur_reloid = zh_undo_info->gen_info->reloid;
+ 	undorecord->uur_prevxid = zh_undo_info->tup_xid;
+-	undorecord->uur_xid = XidFromFullTransactionId(zh_undo_info->gen_info->fxid);
++	undorecord->uur_fxid = zh_undo_info->gen_info->fxid;
+ 	undorecord->uur_cid = zh_undo_info->gen_info->cid;
+ 	undorecord->uur_fork = MAIN_FORKNUM;
+-	undorecord->uur_blkprev = zh_undo_info->gen_info->prev_urecptr;
++	undorecord->uur_prevundo = zh_undo_info->gen_info->prev_urecptr;
+ 	undorecord->uur_block = zh_undo_info->gen_info->blkno;
+ 	undorecord->uur_offset = zh_undo_info->gen_info->offnum;
+ 
+@@ -5283,12 +5283,12 @@ zheap_prepare_undolock(ZHeapPrepareLockUndoInfo *zh_undo_info,
+ 	}
+ 
+ 	BeginUndoRecordInsert(&zh_undo_info->gen_info->context,
+-						  zh_undo_info->gen_info->undo_persistence,
++						  zh_undo_info->gen_info->undo_category,
+ 						  1,
+ 						  xlog_record);	
+ 	urecptr = PrepareUndoInsert(&zh_undo_info->gen_info->context,
+ 								undorecord,
+-								InRecovery ? zh_undo_info->gen_info->fxid : InvalidFullTransactionId);
++								!InRecovery ? MyDatabaseId : InvalidOid);
+ 
+ 	return urecptr;
+ }
+@@ -5326,10 +5326,10 @@ zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
+ 		undorecord[i].uur_info = 0;
+ 		undorecord[i].uur_reloid = zh_undo_info->reloid;
+ 		undorecord[i].uur_prevxid = FrozenTransactionId;
+-		undorecord[i].uur_xid = XidFromFullTransactionId(zh_undo_info->fxid);
++		undorecord[i].uur_fxid = zh_undo_info->fxid;
+ 		undorecord[i].uur_cid = zh_undo_info->cid;
+ 		undorecord[i].uur_fork = MAIN_FORKNUM;
+-		undorecord[i].uur_blkprev = zh_undo_info->prev_urecptr;
++		undorecord[i].uur_prevundo = zh_undo_info->prev_urecptr;
+ 		undorecord[i].uur_block = zh_undo_info->blkno;
+ 		undorecord[i].uur_tuple.len = 0;
+ 		undorecord[i].uur_offset = 0;
+@@ -5337,16 +5337,16 @@ zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
+ 	}
+ 
+ 	BeginUndoRecordInsert(&zh_undo_info->context,
+-						  zh_undo_info->undo_persistence,
++						  zh_undo_info->undo_category,
+ 						  nranges,
+ 						  NULL);
+ 
+ 	for (i = 0; i < nranges; i++)
+ 	{
+-		undorecord[i].uur_blkprev = urecptr;
++		undorecord[i].uur_prevundo = urecptr;
+ 		urecptr = PrepareUndoInsert(&zh_undo_info->context,
+ 									&undorecord[i],
+-									InRecovery ? zh_undo_info->fxid : InvalidFullTransactionId);
++									!InRecovery ? MyDatabaseId : InvalidOid);
+ 
+ 		initStringInfo(&undorecord[i].uur_payload);
+ 	}	
+@@ -5593,7 +5593,7 @@ log_zheap_update(ZHeapWALInfo *old_walinfo, ZHeapWALInfo *new_walinfo,
+ 	 */
+ 	xlundohdr.reloid = old_walinfo->undorecord->uur_reloid;
+ 	xlundohdr.urec_ptr = old_walinfo->urecptr;
+-	xlundohdr.blkprev = old_walinfo->undorecord->uur_blkprev;
++	xlundohdr.blkprev = old_walinfo->undorecord->uur_prevundo;
+ 
+ 	xlrec.prevxid = old_walinfo->undorecord->uur_prevxid;
+ 	xlrec.old_offnum = ItemPointerGetOffsetNumber(&old_walinfo->ztuple->t_self);
+@@ -5620,7 +5620,7 @@ log_zheap_update(ZHeapWALInfo *old_walinfo, ZHeapWALInfo *new_walinfo,
+ 
+ 		xlnewundohdr.reloid = new_walinfo->undorecord->uur_reloid;
+ 		xlnewundohdr.urec_ptr = new_walinfo->urecptr;
+-		xlnewundohdr.blkprev = new_walinfo->undorecord->uur_blkprev;
++		xlnewundohdr.blkprev = new_walinfo->undorecord->uur_prevundo;
+ 
+ 		Assert(new_walinfo->ztuple);
+ 		/* If new tuple is the single and first tuple on page... */
+@@ -6339,7 +6339,7 @@ PageSetUNDO(UnpackedUndoRecord undorecord, Buffer buffer, int trans_slot_id,
+ 	elog(DEBUG1, "undo record: TransSlot: %d, Epoch: %d, TransactionId: %d, urec: " UndoRecPtrFormat ", prev_urec: " UndoRecPtrFormat ", block: %d, offset: %d, undo_op: %d, xid_tup: %d, reloid: %d",
+ 		 trans_slot_id, EpochFromFullTransactionId(fxid),
+ 		 XidFromFullTransactionId(fxid),
+-		 urecptr, undorecord.uur_blkprev, undorecord.uur_block, undorecord.uur_offset, undorecord.uur_type,
++		 urecptr, undorecord.uur_prevundo, undorecord.uur_block, undorecord.uur_offset, undorecord.uur_type,
+ 		 undorecord.uur_prevxid, undorecord.uur_reloid);
+ }
+ 
+@@ -7837,7 +7837,7 @@ reacquire_buffer:
+ 			zh_undo_info.prev_urecptr = prev_urecptr;
+ 			zh_undo_info.fxid = fxid;
+ 			zh_undo_info.cid = cid;
+-			zh_undo_info.undo_persistence = UndoPersistenceForRelation(relation);
++			zh_undo_info.undo_category = UndoLogCategoryForRelation(relation);
+ 
+ 			urecptr = zheap_prepare_undo_multi_insert(&zh_undo_info,
+ 													  zfree_offset_ranges->nranges,
+diff --git a/src/backend/access/zheap/zheapam_visibility.c b/src/backend/access/zheap/zheapam_visibility.c
+index cdbfab3..9bfe3ed 100644
+--- a/src/backend/access/zheap/zheapam_visibility.c
++++ b/src/backend/access/zheap/zheapam_visibility.c
+@@ -141,14 +141,12 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
+ 
+ 		/* We'll need to look further back into the undo log. */
+ 		xid = InvalidTransactionId;
+-		zinfo->urec_ptr = urec->uur_blkprev;
++		zinfo->urec_ptr = urec->uur_prevundo;
+ 		UndoRecordRelease(urec);
+ 	}
+ 
+-	epoch = urec->uur_xidepoch;
+-	zinfo->xid = urec->uur_xid;
+-	zinfo->epoch_xid =
+-		FullTransactionIdFromEpochAndXid(epoch, zinfo->xid);
++	zinfo->xid = XidFromFullTransactionId(urec->uur_fxid);
++	zinfo->epoch_xid = urec->uur_fxid;
+ 	zinfo->cid = urec->uur_cid;
+ 
+ 	/* If this is a non-in-place update, update ctid if requested. */
+@@ -422,7 +420,7 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid, Buffer buffer,
+ 		*free_ztuple = true;
+ 	}
+ 
+-	zinfo->urec_ptr = urec->uur_blkprev;
++	zinfo->urec_ptr = urec->uur_prevundo;
+ 	zinfo->xid = urec->uur_prevxid;
+ 	zinfo->cid = InvalidCommandId;
+ 
+diff --git a/src/backend/access/zheap/zheapamxlog.c b/src/backend/access/zheap/zheapamxlog.c
+index 6e15eaf..8865e32 100644
+--- a/src/backend/access/zheap/zheapamxlog.c
++++ b/src/backend/access/zheap/zheapamxlog.c
+@@ -111,7 +111,7 @@ zheap_xlog_insert(XLogReaderState *record)
+ 		zh_undo_info.prev_urecptr = xlundohdr->blkprev;
+ 		zh_undo_info.fxid = fxid;
+ 		zh_undo_info.cid = FirstCommandId;
+-		zh_undo_info.undo_persistence = UNDO_PERMANENT;
++		zh_undo_info.undo_category = UNDO_PERMANENT;
+ 
+ 		/* prepare an undo record */
+ 		urecptr = zheap_prepare_undoinsert(&zh_undo_info,
+@@ -356,7 +356,7 @@ zheap_xlog_delete(XLogReaderState *record)
+ 	zh_undo_info.prev_urecptr = xlundohdr->blkprev;
+ 	zh_undo_info.fxid = fxid;
+ 	zh_undo_info.cid = FirstCommandId;
+-	zh_undo_info.undo_persistence = UNDO_PERMANENT;
++	zh_undo_info.undo_category = UNDO_PERMANENT;
+ 	urecptr = zheap_prepare_undodelete(&zh_undo_info,
+ 									   &zheaptup,
+ 									   xlrec->prevxid,
+@@ -608,7 +608,7 @@ zheap_xlog_update(XLogReaderState *record)
+ 	gen_undo_info.prev_urecptr = xlundohdr->blkprev;
+ 	gen_undo_info.fxid = fxid;
+ 	gen_undo_info.cid = FirstCommandId;
+-	gen_undo_info.undo_persistence = UNDO_PERMANENT;
++	gen_undo_info.undo_category = UNDO_PERMANENT;
+ 
+ 	zh_up_undo_info.gen_info = &gen_undo_info;
+ 	zh_up_undo_info.inplace_update = inplace_update;
+@@ -1174,7 +1174,7 @@ zheap_xlog_lock(XLogReaderState *record)
+ 	zh_gen_undo_info.prev_urecptr = xlundohdr->blkprev;
+ 	zh_gen_undo_info.fxid = fxid;
+ 	zh_gen_undo_info.cid = FirstCommandId;
+-	zh_gen_undo_info.undo_persistence = UNDO_PERMANENT;
++	zh_gen_undo_info.undo_category = UNDO_PERMANENT;
+ 
+ 	/* Get the trans slot number */
+ 	if (xlrec->flags & XLZ_LOCK_TRANS_SLOT_FOR_UREC)
+@@ -1359,7 +1359,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
+ 		zh_undo_info.prev_urecptr = prev_urecptr;
+ 		zh_undo_info.fxid = fxid;
+ 		zh_undo_info.cid = FirstCommandId;
+-		zh_undo_info.undo_persistence = UNDO_PERMANENT;
++		zh_undo_info.undo_category = UNDO_PERMANENT;
+ 
+ 		urecptr = zheap_prepare_undo_multi_insert(&zh_undo_info, nranges,
+                                                   &undorecord, record);
+@@ -1763,10 +1763,10 @@ zheap_xlog_unused(XLogReaderState *record)
+ 	undorecord.uur_info = 0;
+ 	undorecord.uur_reloid = xlundohdr->reloid;
+ 	undorecord.uur_prevxid = xid;
+-	undorecord.uur_xid = xid;
++	undorecord.uur_fxid = fxid;
+ 	undorecord.uur_cid = FirstCommandId;
+ 	undorecord.uur_fork = MAIN_FORKNUM;
+-	undorecord.uur_blkprev = xlundohdr->blkprev;
++	undorecord.uur_prevundo = xlundohdr->blkprev;
+ 	undorecord.uur_block = blkno;
+ 	undorecord.uur_offset = 0;
+ 	undorecord.uur_tuple.len = 0;
+@@ -1778,7 +1778,7 @@ zheap_xlog_unused(XLogReaderState *record)
+ 		   undorecord.uur_payload.len);
+ 
+ 	BeginUndoRecordInsert(&context, UNDO_PERMANENT, 1, record);
+-	urecptr = PrepareUndoInsert(&context, &undorecord, fxid);
++	urecptr = PrepareUndoInsert(&context, &undorecord, InvalidOid);
+ 	InsertPreparedUndo(&context);
+ 
+ 	/*
+diff --git a/src/backend/access/zheap/zmultilocker.c b/src/backend/access/zheap/zmultilocker.c
+index cdddc38..0b143c7 100644
+--- a/src/backend/access/zheap/zmultilocker.c
++++ b/src/backend/access/zheap/zmultilocker.c
+@@ -59,7 +59,7 @@ ZCurrentXactHasTupleLockMode(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
+ 			break;
+ 
+ 		/* If we encounter a different transaction, we shouldn't go ahead. */
+-		if (!TransactionIdIsCurrentTransactionId(urec->uur_xid))
++		if (!TransactionIdIsCurrentTransactionId(XidFromFullTransactionId(urec->uur_fxid)))
+ 			break;
+ 
+ 		uur_type = urec->uur_type;
+@@ -113,7 +113,7 @@ ZCurrentXactHasTupleLockMode(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
+ 			 */
+ 			break;
+ 		}
+-		urec_ptr = urec->uur_blkprev;
++		urec_ptr = urec->uur_prevundo;
+ 
+ 		UndoRecordRelease(urec);
+ 		urec = NULL;
+@@ -231,9 +231,9 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
+ 			 * neither need to check conflicts with them nor need to wait for
+ 			 * them.
+ 			 */
+-			if (TransactionIdEquals(urec->uur_xid, GetTopTransactionIdIfAny()))
++			if (TransactionIdEquals(XidFromFullTransactionId(urec->uur_fxid), GetTopTransactionIdIfAny()))
+ 			{
+-				urec_ptr = urec->uur_blkprev;
++				urec_ptr = urec->uur_prevundo;
+ 				UndoRecordRelease(urec);
+ 				urec = NULL;
+ 				continue;
+@@ -259,7 +259,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
+ 				uur_type == UNDO_XID_MULTI_LOCK_ONLY)
+ 			{
+ 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
+-				mlmember->xid = urec->uur_xid;
++				mlmember->xid = XidFromFullTransactionId(urec->uur_fxid);
+ 				mlmember->subxid = subxid;
+ 				mlmember->trans_slot_id = prev_trans_slot_id;
+ 				mlmember->mode = *((LockTupleMode *) urec->uur_payload.data);
+@@ -269,7 +269,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
+ 					 uur_type == UNDO_INPLACE_UPDATE)
+ 			{
+ 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
+-				mlmember->xid = urec->uur_xid;
++				mlmember->xid = XidFromFullTransactionId(urec->uur_fxid);
+ 				mlmember->subxid = subxid;
+ 				mlmember->trans_slot_id = prev_trans_slot_id;
+ 
+@@ -283,7 +283,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
+ 			else if (uur_type == UNDO_DELETE)
+ 			{
+ 				mlmember = (ZMultiLockMember *) palloc(sizeof(ZMultiLockMember));
+-				mlmember->xid = urec->uur_xid;
++				mlmember->xid = XidFromFullTransactionId(urec->uur_fxid);
+ 				mlmember->subxid = subxid;
+ 				mlmember->trans_slot_id = prev_trans_slot_id;
+ 				mlmember->mode = LockTupleExclusive;
+@@ -311,7 +311,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
+ 			 * encountered undo record of committed transaction
+ 			 * (ZHeapTupleHasInvalidXact(undo_tup->t_data)).
+ 			 */
+-			urec_ptr = urec->uur_blkprev;
++			urec_ptr = urec->uur_prevundo;
+ 
+ 			UndoRecordRelease(urec);
+ 			urec = NULL;
+@@ -699,7 +699,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
+ 			 * If the current transaction has locked the tuple, then we don't
+ 			 * need to process the undo records.
+ 			 */
+-			if (TransactionIdEquals(urec->uur_xid, GetTopTransactionIdIfAny()))
++			if (TransactionIdEquals(XidFromFullTransactionId(urec->uur_fxid), GetTopTransactionIdIfAny()))
+ 			{
+ 				found = true;
+ 				break;
+@@ -723,7 +723,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
+ 				break;
+ 			}
+ 
+-			if (xid != urec->uur_xid)
++			if (xid != XidFromFullTransactionId(urec->uur_fxid))
+ 			{
+ 				/*
+ 				 * We are done, once the undo record suggests that prior tuple
+@@ -732,7 +732,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
+ 				break;
+ 			}
+ 
+-			urec_ptr = urec->uur_blkprev;
++			urec_ptr = urec->uur_prevundo;
+ 
+ 			UndoRecordRelease(urec);
+ 			urec = NULL;
+diff --git a/src/backend/access/zheap/zundo.c b/src/backend/access/zheap/zundo.c
+index 5f71d6f..75aac0c 100644
+--- a/src/backend/access/zheap/zundo.c
++++ b/src/backend/access/zheap/zundo.c
+@@ -54,7 +54,8 @@ ZHeapSatisfyUndoRecord(UnpackedUndoRecord *urec, BlockNumber blkno,
+ 	Assert(blkno != InvalidBlockNumber);
+ 
+ 	if ((urec->uur_block != blkno ||
+-		 (TransactionIdIsValid(xid) && !TransactionIdEquals(xid, urec->uur_xid))))
++		 (TransactionIdIsValid(xid) &&
++		  !TransactionIdEquals(xid, XidFromFullTransactionId(urec->uur_fxid)))))
+ 		return false;
+ 
+ 	switch (urec->uur_type)
+@@ -297,7 +298,7 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
+ 		 */
+ 		Assert(urec != NULL);
+ 
+-		if (TransactionIdEquals(urec->uur_xid, priorXmax))
++		if (TransactionIdEquals(XidFromFullTransactionId(urec->uur_fxid), priorXmax))
+ 		{
+ 			valid = true;
+ 			UndoRecordRelease(urec);
+@@ -310,7 +311,7 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
+ 		Assert(!TransactionIdPrecedes(urec->uur_prevxid, RecentGlobalXmin));
+ 
+ 		zinfo.xid = urec->uur_prevxid;
+-		zinfo.urec_ptr = urec->uur_blkprev;
++		zinfo.urec_ptr = urec->uur_prevundo;
+ 		UndoRecordRelease(urec);
+ 
+ 		/*
+@@ -725,7 +726,7 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
+ 	 * The logno of slot's undo record pointer must be same as the logno of
+ 	 * undo record to be applied.
+ 	 */
+-	prev_urec_ptr = urp_array[last_idx].uur->uur_blkprev;
++	prev_urec_ptr = urp_array[last_idx].uur->uur_prevundo;
+ 	first_urp = urp_array[first_idx].urp;
+ 
+ 	if (slot_no == InvalidXactSlotId ||
+@@ -777,14 +778,14 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
+ 			continue;
+ 
+ 		Assert(block_prev_urp == urec_info->urp);
+-		block_prev_urp = uur->uur_blkprev;
++		block_prev_urp = uur->uur_prevundo;
+ 
+ 		elog(DEBUG1, "Rollback undo record: "
+ 			 "TransSlot: %d, Epoch: %d, TransactionId: %d, urec: " UndoRecPtrFormat ", "
+ 			 "prev_urec: " UndoRecPtrFormat ", block: %d, offset: %d, undo_op: %d, "
+ 			 "xid_tup: %d, reloid: %d",
+ 			 slot_no, epoch, xid, slot_urec_ptr,
+-			 uur->uur_blkprev, uur->uur_block,
++			 uur->uur_prevundo, uur->uur_block,
+ 			 uur->uur_offset, uur->uur_type,
+ 			 uur->uur_prevxid, uur->uur_reloid);
+ 
+diff --git a/src/backend/access/zheap/zvacuumlazy.c b/src/backend/access/zheap/zvacuumlazy.c
+index ec5baad..25294ba 100644
+--- a/src/backend/access/zheap/zvacuumlazy.c
++++ b/src/backend/access/zheap/zvacuumlazy.c
+@@ -282,10 +282,10 @@ reacquire_slot:
+ 	undorecord.uur_info = 0;
+ 	undorecord.uur_reloid = onerel->rd_id;
+ 	undorecord.uur_prevxid = xid;
+-	undorecord.uur_xid = xid;
++	undorecord.uur_fxid = fxid;
+ 	undorecord.uur_cid = InvalidCommandId;
+ 	undorecord.uur_fork = MAIN_FORKNUM;
+-	undorecord.uur_blkprev = prev_urecptr;
++	undorecord.uur_prevundo = prev_urecptr;
+ 	undorecord.uur_block = blkno;
+ 	undorecord.uur_offset = 0;
+ 	undorecord.uur_tuple.len = 0;
+@@ -298,7 +298,7 @@ reacquire_slot:
+ 	 */
+ 	BeginUndoRecordInsert(&context, UNDO_PERMANENT, 1, NULL);
+ 	urecptr = PrepareUndoInsert(&context, &undorecord,
+-								InvalidFullTransactionId);
++								!InRecovery ? MyDatabaseId : InvalidOid);
+ 
+ 	/*
+ 	 * Lock the TPD page before starting critical section.  We might need to
+diff --git a/src/include/access/rmgrlist.h b/src/include/access/rmgrlist.h
+index 173afa0..612dfdd 100644
+--- a/src/include/access/rmgrlist.h
++++ b/src/include/access/rmgrlist.h
+@@ -49,7 +49,7 @@ PG_RMGR(RM_GENERIC_ID, "Generic", generic_redo, generic_desc, generic_identify,
+ PG_RMGR(RM_LOGICALMSG_ID, "LogicalMessage", logicalmsg_redo, logicalmsg_desc, logicalmsg_identify, NULL, NULL, NULL, NULL, NULL, NULL)
+ PG_RMGR(RM_UNDOLOG_ID, "UndoLog", undolog_redo, undolog_desc, undolog_identify, NULL, NULL, NULL, NULL, NULL, NULL)
+ PG_RMGR(RM_UNDOACTION_ID, "UndoAction", undoaction_redo, undoaction_desc, undoaction_identify, NULL, NULL, NULL, NULL, NULL, NULL)
+-PG_RMGR(RM_ZHEAP_ID, "Zheap", zheap_redo, zheap_desc, zheap_identify, NULL, NULL, zheap_mask, zheap_undo_actions, NULL)
+-PG_RMGR(RM_ZHEAP2_ID, "Zheap2", zheap2_redo, zheap2_desc, zheap2_identify, NULL, NULL, zheap_mask, NULL, NULL)
+-PG_RMGR(RM_ZUNDO_ID, "ZUndo", zundo_redo, zundo_desc, zundo_identify, NULL, NULL, NULL, NULL, NULL)
+-PG_RMGR(RM_TPD_ID, "TPD", tpd_redo, tpd_desc, tpd_identify, NULL, NULL, zheap_mask, NULL, NULL)
++PG_RMGR(RM_ZHEAP_ID, "Zheap", zheap_redo, zheap_desc, zheap_identify, NULL, NULL, zheap_mask, zheap_undo_actions, NULL, NULL)
++PG_RMGR(RM_ZHEAP2_ID, "Zheap2", zheap2_redo, zheap2_desc, zheap2_identify, NULL, NULL, zheap_mask, NULL, NULL, NULL)
++PG_RMGR(RM_ZUNDO_ID, "ZUndo", zundo_redo, zundo_desc, zundo_identify, NULL, NULL, NULL, NULL, NULL, NULL)
++PG_RMGR(RM_TPD_ID, "TPD", tpd_redo, tpd_desc, tpd_identify, NULL, NULL, zheap_mask, NULL, NULL, NULL)
+diff --git a/src/include/access/xact.h b/src/include/access/xact.h
+index 45640a4..63635aa 100644
+--- a/src/include/access/xact.h
++++ b/src/include/access/xact.h
+@@ -445,7 +445,6 @@ extern void SetCurrentUndoLocation(UndoRecPtr urec_ptr,
+ 				UndoLogCategory category);
+ 
+ extern void ApplyUndoActions(void);
+-extern void SetUndoActionsInfo(void);
+ extern void ResetUndoActionsInfo(void);
+ extern bool CanPerformUndoActions(void);
+ 
+diff --git a/src/include/access/zheap.h b/src/include/access/zheap.h
+index 70986d5..cf7f0ce 100644
+--- a/src/include/access/zheap.h
++++ b/src/include/access/zheap.h
+@@ -113,7 +113,7 @@ typedef struct ZHeapPrepareUndoInfo
+ 	UndoRecPtr	prev_urecptr;
+ 	FullTransactionId fxid;
+ 	CommandId	cid;
+-	UndoPersistence undo_persistence;
++	UndoLogCategory undo_category;
+ 	UndoRecordInsertContext	context;
+ } ZHeapPrepareUndoInfo;
+ 
+-- 
+1.8.3.1
+

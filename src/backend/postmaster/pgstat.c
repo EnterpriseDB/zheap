@@ -228,9 +228,12 @@ typedef struct TwoPhasePgStatRecord
 {
 	PgStat_Counter tuples_inserted; /* tuples inserted in xact */
 	PgStat_Counter tuples_updated;	/* tuples updated in xact */
+	PgStat_Counter tuples_inplace_updated;	/* tuples inplace updated in xact */
 	PgStat_Counter tuples_deleted;	/* tuples deleted in xact */
 	PgStat_Counter inserted_pre_trunc;	/* tuples inserted prior to truncate */
 	PgStat_Counter updated_pre_trunc;	/* tuples updated prior to truncate */
+	PgStat_Counter inplace_pre_trunc;	/* tuples inplace updated prior to
+										 * truncate */
 	PgStat_Counter deleted_pre_trunc;	/* tuples deleted prior to truncate */
 	Oid			t_id;			/* table's OID */
 	bool		t_shared;		/* is it a shared catalog? */
@@ -1461,7 +1464,8 @@ pgstat_report_analyze(Relation rel,
 		for (trans = rel->pgstat_info->trans; trans; trans = trans->upper)
 		{
 			livetuples -= trans->tuples_inserted - trans->tuples_deleted;
-			deadtuples -= trans->tuples_updated + trans->tuples_deleted;
+			deadtuples -= (trans->tuples_updated - trans->tuples_inplace_updated)
+				+ trans->tuples_deleted;
 		}
 		/* count stuff inserted by already-aborted subxacts, too */
 		deadtuples -= rel->pgstat_info->t_counts.t_delta_dead_tuples;
@@ -1963,6 +1967,30 @@ pgstat_count_heap_insert(Relation rel, PgStat_Counter n)
 }
 
 /*
+ * pgstat_count_zheap_update - count a inplace ztuple update
+ */
+void
+pgstat_count_zheap_update(Relation rel)
+{
+	PgStat_TableStatus *pgstat_info = rel->pgstat_info;
+
+	if (pgstat_info != NULL)
+	{
+		/* We have to log the effect at the proper transactional level */
+		int			nest_level = GetCurrentTransactionNestLevel();
+
+		if (pgstat_info->trans == NULL ||
+			pgstat_info->trans->nest_level != nest_level)
+			add_tabstat_xact_level(pgstat_info, nest_level);
+
+		/* increase, similar to pgstat_count_heap_update */
+		pgstat_info->trans->tuples_updated++;
+
+		pgstat_info->trans->tuples_inplace_updated++;
+	}
+}
+
+/*
  * pgstat_count_heap_update - count a tuple update
  */
 void
@@ -2023,6 +2051,7 @@ pgstat_truncate_save_counters(PgStat_TableXactStatus *trans)
 	{
 		trans->inserted_pre_trunc = trans->tuples_inserted;
 		trans->updated_pre_trunc = trans->tuples_updated;
+		trans->inplace_pre_trunc = trans->tuples_inplace_updated;
 		trans->deleted_pre_trunc = trans->tuples_deleted;
 		trans->truncated = true;
 	}
@@ -2038,6 +2067,7 @@ pgstat_truncate_restore_counters(PgStat_TableXactStatus *trans)
 	{
 		trans->tuples_inserted = trans->inserted_pre_trunc;
 		trans->tuples_updated = trans->updated_pre_trunc;
+		trans->tuples_inplace_updated = trans->inplace_pre_trunc;
 		trans->tuples_deleted = trans->deleted_pre_trunc;
 	}
 }
@@ -2062,6 +2092,7 @@ pgstat_count_truncate(Relation rel)
 		pgstat_truncate_save_counters(pgstat_info->trans);
 		pgstat_info->trans->tuples_inserted = 0;
 		pgstat_info->trans->tuples_updated = 0;
+		pgstat_info->trans->tuples_inplace_updated = 0;
 		pgstat_info->trans->tuples_deleted = 0;
 	}
 }
@@ -2134,6 +2165,7 @@ AtEOXact_PgStat(bool isCommit, bool parallel)
 			/* count attempted actions regardless of commit/abort */
 			tabstat->t_counts.t_tuples_inserted += trans->tuples_inserted;
 			tabstat->t_counts.t_tuples_updated += trans->tuples_updated;
+			tabstat->t_counts.t_tuples_inplace_updated += trans->tuples_inplace_updated;
 			tabstat->t_counts.t_tuples_deleted += trans->tuples_deleted;
 			if (isCommit)
 			{
@@ -2149,7 +2181,7 @@ AtEOXact_PgStat(bool isCommit, bool parallel)
 					trans->tuples_inserted - trans->tuples_deleted;
 				/* update and delete each create a dead tuple */
 				tabstat->t_counts.t_delta_dead_tuples +=
-					trans->tuples_updated + trans->tuples_deleted;
+					(trans->tuples_updated - trans->tuples_inplace_updated) + trans->tuples_deleted;
 				/* insert, update, delete each count as one change event */
 				tabstat->t_counts.t_changed_tuples +=
 					trans->tuples_inserted + trans->tuples_updated +
@@ -2159,7 +2191,7 @@ AtEOXact_PgStat(bool isCommit, bool parallel)
 			{
 				/* inserted tuples are dead, deleted tuples are unaffected */
 				tabstat->t_counts.t_delta_dead_tuples +=
-					trans->tuples_inserted + trans->tuples_updated;
+					trans->tuples_inserted + (trans->tuples_updated - trans->tuples_inplace_updated);
 				/* an aborted xact generates no changed_tuple events */
 			}
 			tabstat->trans = NULL;
@@ -2215,12 +2247,14 @@ AtEOSubXact_PgStat(bool isCommit, int nestDepth)
 						/* replace upper xact stats with ours */
 						trans->upper->tuples_inserted = trans->tuples_inserted;
 						trans->upper->tuples_updated = trans->tuples_updated;
+						trans->upper->tuples_inplace_updated = trans->tuples_inplace_updated;
 						trans->upper->tuples_deleted = trans->tuples_deleted;
 					}
 					else
 					{
 						trans->upper->tuples_inserted += trans->tuples_inserted;
 						trans->upper->tuples_updated += trans->tuples_updated;
+						trans->upper->tuples_inplace_updated += trans->tuples_inplace_updated;
 						trans->upper->tuples_deleted += trans->tuples_deleted;
 					}
 					tabstat->trans = trans->upper;
@@ -2256,10 +2290,11 @@ AtEOSubXact_PgStat(bool isCommit, int nestDepth)
 				/* count attempted actions regardless of commit/abort */
 				tabstat->t_counts.t_tuples_inserted += trans->tuples_inserted;
 				tabstat->t_counts.t_tuples_updated += trans->tuples_updated;
+				tabstat->t_counts.t_tuples_inplace_updated += trans->tuples_inplace_updated;
 				tabstat->t_counts.t_tuples_deleted += trans->tuples_deleted;
 				/* inserted tuples are dead, deleted tuples are unaffected */
 				tabstat->t_counts.t_delta_dead_tuples +=
-					trans->tuples_inserted + trans->tuples_updated;
+					trans->tuples_inserted + (trans->tuples_updated - trans->tuples_inplace_updated);
 				tabstat->trans = trans->upper;
 				pfree(trans);
 			}
@@ -2304,6 +2339,7 @@ AtPrepare_PgStat(void)
 			record.inserted_pre_trunc = trans->inserted_pre_trunc;
 			record.updated_pre_trunc = trans->updated_pre_trunc;
 			record.deleted_pre_trunc = trans->deleted_pre_trunc;
+			record.inplace_pre_trunc = trans->inplace_pre_trunc;
 			record.t_id = tabstat->t_id;
 			record.t_shared = tabstat->t_shared;
 			record.t_truncated = trans->truncated;
@@ -2371,6 +2407,7 @@ pgstat_twophase_postcommit(TransactionId xid, uint16 info,
 	/* Same math as in AtEOXact_PgStat, commit case */
 	pgstat_info->t_counts.t_tuples_inserted += rec->tuples_inserted;
 	pgstat_info->t_counts.t_tuples_updated += rec->tuples_updated;
+	pgstat_info->t_counts.t_tuples_inplace_updated += rec->tuples_inplace_updated;
 	pgstat_info->t_counts.t_tuples_deleted += rec->tuples_deleted;
 	pgstat_info->t_counts.t_truncated = rec->t_truncated;
 	if (rec->t_truncated)
@@ -2382,7 +2419,7 @@ pgstat_twophase_postcommit(TransactionId xid, uint16 info,
 	pgstat_info->t_counts.t_delta_live_tuples +=
 		rec->tuples_inserted - rec->tuples_deleted;
 	pgstat_info->t_counts.t_delta_dead_tuples +=
-		rec->tuples_updated + rec->tuples_deleted;
+		(rec->tuples_updated - rec->tuples_inplace_updated) + rec->tuples_deleted;
 	pgstat_info->t_counts.t_changed_tuples +=
 		rec->tuples_inserted + rec->tuples_updated +
 		rec->tuples_deleted;
@@ -2409,13 +2446,14 @@ pgstat_twophase_postabort(TransactionId xid, uint16 info,
 	{
 		rec->tuples_inserted = rec->inserted_pre_trunc;
 		rec->tuples_updated = rec->updated_pre_trunc;
+		rec->tuples_inplace_updated = rec->inplace_pre_trunc;
 		rec->tuples_deleted = rec->deleted_pre_trunc;
 	}
 	pgstat_info->t_counts.t_tuples_inserted += rec->tuples_inserted;
 	pgstat_info->t_counts.t_tuples_updated += rec->tuples_updated;
 	pgstat_info->t_counts.t_tuples_deleted += rec->tuples_deleted;
 	pgstat_info->t_counts.t_delta_dead_tuples +=
-		rec->tuples_inserted + rec->tuples_updated;
+		rec->tuples_inserted + (rec->tuples_updated - rec->tuples_inplace_updated);
 }
 
 
@@ -3539,6 +3577,9 @@ pgstat_get_wait_event_type(uint32 wait_event_info)
 		case PG_WAIT_IO:
 			event_type = "IO";
 			break;
+		case PG_WAIT_PAGE_TRANS_SLOT:
+			event_type = "TransSlot";
+			break;
 		default:
 			event_type = "???";
 			break;
@@ -3616,6 +3657,9 @@ pgstat_get_wait_event(uint32 wait_event_info)
 				event_name = pgstat_get_wait_io(w);
 				break;
 			}
+		case PG_WAIT_PAGE_TRANS_SLOT:
+			event_name = "TransSlot";
+			break;
 		default:
 			event_name = "unknown wait event";
 			break;
@@ -5981,6 +6025,7 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			tabentry->tuples_updated = tabmsg->t_counts.t_tuples_updated;
 			tabentry->tuples_deleted = tabmsg->t_counts.t_tuples_deleted;
 			tabentry->tuples_hot_updated = tabmsg->t_counts.t_tuples_hot_updated;
+			tabentry->tuples_inplace_updated = tabmsg->t_counts.t_tuples_inplace_updated;
 			tabentry->n_live_tuples = tabmsg->t_counts.t_delta_live_tuples;
 			tabentry->n_dead_tuples = tabmsg->t_counts.t_delta_dead_tuples;
 			tabentry->changes_since_analyze = tabmsg->t_counts.t_changed_tuples;
@@ -6008,6 +6053,7 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			tabentry->tuples_updated += tabmsg->t_counts.t_tuples_updated;
 			tabentry->tuples_deleted += tabmsg->t_counts.t_tuples_deleted;
 			tabentry->tuples_hot_updated += tabmsg->t_counts.t_tuples_hot_updated;
+			tabentry->tuples_inplace_updated += tabmsg->t_counts.t_tuples_inplace_updated;
 			/* If table was truncated, first reset the live/dead counters */
 			if (tabmsg->t_counts.t_truncated)
 			{

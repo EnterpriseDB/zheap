@@ -1,0 +1,156 @@
+From 79e1a06ada5f098cd67f83e2dd3e8999874073dc Mon Sep 17 00:00:00 2001
+From: Andres Freund <andres@anarazel.de>
+Date: Thu, 11 Apr 2019 19:56:58 -0700
+Subject: [PATCH 02/18] Don't reset memory context across
+ table_scan_getnextslot calls.
+
+This is needed due to bugs in zheap.
+
+Author:
+Reviewed-By:
+Discussion: https://postgr.es/m/
+Backpatch:
+---
+ src/backend/commands/tablecmds.c      | 34 ++++++++++++++++++----------------
+ src/backend/partitioning/partbounds.c | 14 +++++++-------
+ 2 files changed, 25 insertions(+), 23 deletions(-)
+
+diff --git a/src/backend/commands/tablecmds.c b/src/backend/commands/tablecmds.c
+index e774c55..c610be2 100644
+--- a/src/backend/commands/tablecmds.c
++++ b/src/backend/commands/tablecmds.c
+@@ -4915,16 +4915,16 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
+ 		snapshot = RegisterSnapshot(GetLatestSnapshot());
+ 		scan = table_beginscan(oldrel, snapshot, 0, NULL);
+ 
+-		/*
+-		 * Switch to per-tuple memory context and reset it for each tuple
+-		 * produced, so we don't leak memory.
+-		 */
+-		oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+-
+ 		while (table_scan_getnextslot(scan, ForwardScanDirection, oldslot))
+ 		{
+ 			TupleTableSlot *insertslot;
+ 
++			/*
++			 * Switch to per-tuple memory context and reset it for each tuple
++			 * produced, so we don't leak memory.
++			 */
++			oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
++
+ 			if (tab->rewrite > 0)
+ 			{
+ 				/* Extract data from old tuple */
+@@ -5036,11 +5036,11 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
+ 								   ti_options, bistate);
+ 
+ 			ResetExprContext(econtext);
++			MemoryContextSwitchTo(oldCxt);
+ 
+ 			CHECK_FOR_INTERRUPTS();
+ 		}
+ 
+-		MemoryContextSwitchTo(oldCxt);
+ 		table_endscan(scan);
+ 		UnregisterSnapshot(snapshot);
+ 
+@@ -9648,14 +9648,15 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
+ 	snapshot = RegisterSnapshot(GetLatestSnapshot());
+ 	scan = table_beginscan(rel, snapshot, 0, NULL);
+ 
+-	/*
+-	 * Switch to per-tuple memory context and reset it for each tuple
+-	 * produced, so we don't leak memory.
+-	 */
+-	oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+-
+ 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+ 	{
++
++		/*
++		 * Switch to per-tuple memory context and reset it for each tuple
++		 * produced, so we don't leak memory.
++		 */
++		oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
++
+ 		if (!ExecCheck(exprstate, econtext))
+ 			ereport(ERROR,
+ 					(errcode(ERRCODE_CHECK_VIOLATION),
+@@ -9664,9 +9665,9 @@ validateCheckConstraint(Relation rel, HeapTuple constrtup)
+ 					 errtableconstraint(rel, NameStr(constrForm->conname))));
+ 
+ 		ResetExprContext(econtext);
++		MemoryContextSwitchTo(oldcxt);
+ 	}
+ 
+-	MemoryContextSwitchTo(oldcxt);
+ 	table_endscan(scan);
+ 	UnregisterSnapshot(snapshot);
+ 	ExecDropSingleTupleTableSlot(slot);
+@@ -9730,13 +9731,14 @@ validateForeignKeyConstraint(char *conname,
+ 	perTupCxt = AllocSetContextCreate(CurrentMemoryContext,
+ 									  "validateForeignKeyConstraint",
+ 									  ALLOCSET_SMALL_SIZES);
+-	oldcxt = MemoryContextSwitchTo(perTupCxt);
+ 
+ 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+ 	{
+ 		LOCAL_FCINFO(fcinfo, 0);
+ 		TriggerData trigdata;
+ 
++		oldcxt = MemoryContextSwitchTo(perTupCxt);
++
+ 		CHECK_FOR_INTERRUPTS();
+ 
+ 		/*
+@@ -9763,9 +9765,9 @@ validateForeignKeyConstraint(char *conname,
+ 		RI_FKey_check_ins(fcinfo);
+ 
+ 		MemoryContextReset(perTupCxt);
++		MemoryContextSwitchTo(oldcxt);
+ 	}
+ 
+-	MemoryContextSwitchTo(oldcxt);
+ 	MemoryContextDelete(perTupCxt);
+ 	table_endscan(scan);
+ 	UnregisterSnapshot(snapshot);
+diff --git a/src/backend/partitioning/partbounds.c b/src/backend/partitioning/partbounds.c
+index 7d8907b..da0048f 100644
+--- a/src/backend/partitioning/partbounds.c
++++ b/src/backend/partitioning/partbounds.c
+@@ -1347,14 +1347,14 @@ check_default_partition_contents(Relation parent, Relation default_rel,
+ 		tupslot = table_slot_create(part_rel, &estate->es_tupleTable);
+ 		scan = table_beginscan(part_rel, snapshot, 0, NULL);
+ 
+-		/*
+-		 * Switch to per-tuple memory context and reset it for each tuple
+-		 * produced, so we don't leak memory.
+-		 */
+-		oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+-
+ 		while (table_scan_getnextslot(scan, ForwardScanDirection, tupslot))
+ 		{
++			/*
++			 * Switch to per-tuple memory context and reset it for each tuple
++			 * produced, so we don't leak memory.
++			 */
++			oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
++
+ 			econtext->ecxt_scantuple = tupslot;
+ 
+ 			if (!ExecCheck(partqualstate, econtext))
+@@ -1365,9 +1365,9 @@ check_default_partition_contents(Relation parent, Relation default_rel,
+ 
+ 			ResetExprContext(econtext);
+ 			CHECK_FOR_INTERRUPTS();
++			MemoryContextSwitchTo(oldCxt);
+ 		}
+ 
+-		MemoryContextSwitchTo(oldCxt);
+ 		table_endscan(scan);
+ 		UnregisterSnapshot(snapshot);
+ 		ExecDropSingleTupleTableSlot(tupslot);
+-- 
+1.8.3.1
+

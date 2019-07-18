@@ -250,29 +250,29 @@ select * from rtest_v1;
 
 -- now updates with constant expression
 update rtest_v1 set b = 42 where a = 2;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
  a | b  
 ---+----
  1 | 21
- 3 | 23
  2 | 42
+ 3 | 23
 (3 rows)
 
 update rtest_v1 set b = 99 where b = 42;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
  a | b  
 ---+----
  1 | 21
- 3 | 23
  2 | 99
+ 3 | 23
 (3 rows)
 
 update rtest_v1 set b = 88 where b < 50;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
  a | b  
 ---+----
- 2 | 99
  1 | 88
+ 2 | 99
  3 | 88
 (3 rows)
 
@@ -290,7 +290,7 @@ select * from rtest_v1;
 
 -- updates in a mergejoin
 update rtest_v1 set b = rtest_t2.b from rtest_t2 where rtest_v1.a = rtest_t2.a;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
  a | b  
 ---+----
  1 | 21
@@ -299,21 +299,21 @@ select * from rtest_v1;
 (3 rows)
 
 insert into rtest_v1 select * from rtest_t3;
-select * from rtest_v1;
+select * from rtest_v1 order by a, b;
  a | b  
 ---+----
  1 | 21
- 2 | 22
- 3 | 23
  1 | 31
+ 2 | 22
  2 | 32
+ 3 | 23
  3 | 33
  4 | 34
  5 | 35
 (8 rows)
 
 update rtest_t1 set a = a + 10 where b > 30;
-select * from rtest_v1;
+select * from rtest_v1 order by a;
  a  | b  
 ----+----
   1 | 21
@@ -327,7 +327,7 @@ select * from rtest_v1;
 (8 rows)
 
 update rtest_v1 set a = rtest_t3.a + 20 from rtest_t3 where rtest_v1.b = rtest_t3.b;
-select * from rtest_v1;
+select * from rtest_v1 order by a, b;
  a  | b  
 ----+----
   1 | 21
@@ -393,7 +393,7 @@ select * from rtest_interface;
  pluto   | eth0
 (2 rows)
 
-select * from rtest_admin;
+select * from rtest_admin order by pname, sysname;
  pname  | sysname 
 --------+---------
  bm     | pluto
@@ -2795,17 +2795,17 @@ select * from only t1;
 ---
 (0 rows)
 
-select * from only t1_1;
+select * from only t1_1 order by a;
  a 
 ---
+ 4
  6
  7
  8
  9
- 4
 (5 rows)
 
-select * from only t1_2;
+select * from only t1_2 order by a;
  a  
 ----
  10

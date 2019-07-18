@@ -1,0 +1,135 @@
+From bae5b6991bb4ade9230d1a58292ecc666157677a Mon Sep 17 00:00:00 2001
+From: Kuntal Ghosh <kuntal.ghosh@enterprisedb.com>
+Date: Wed, 10 Jul 2019 12:00:55 +0530
+Subject: [PATCH 12/18] Fix bug in zheap_undo_actions
+
+We need to fix the full_xid as invalid transaxtion once the
+rollback for the transaction has benn completed for this block.  Else,
+the previous transaction might be rolled back wrongly when the rollback for
+the current transaction has been performed.  Currently, we don't have the
+block chain complete info here.  We should store it the undo payload for
+the first undo record of this block by the current transaction.
+---
+ src/backend/access/undo/undoaction.c | 25 ++++++++++++++++++++-----
+ src/backend/access/zheap/zundo.c     |  8 ++------
+ src/include/access/xlog_internal.h   |  2 +-
+ src/include/access/zheap.h           |  2 +-
+ 4 files changed, 24 insertions(+), 13 deletions(-)
+
+diff --git a/src/backend/access/undo/undoaction.c b/src/backend/access/undo/undoaction.c
+index 3240750..54deca8 100644
+--- a/src/backend/access/undo/undoaction.c
++++ b/src/backend/access/undo/undoaction.c
+@@ -44,7 +44,7 @@ static void UpdateUndoApplyProgress(UndoRecPtr last_log_start_urec_ptr,
+ static bool UndoAlreadyApplied(FullTransactionId full_xid,
+ 						UndoRecPtr to_urecptr);
+ static void ApplyUndo(UndoRecInfo *urecinfo, int nrecords,
+-					  FullTransactionId fxid);
++					  FullTransactionId fxid, bool blk_chain_complete);
+ static void ProcessAndApplyUndo(FullTransactionId full_xid,
+ 				UndoRecPtr from_urecptr, UndoRecPtr to_urecptr,
+ 				UndoRecPtr last_log_start_urec_ptr, bool complete_xact);
+@@ -202,7 +202,8 @@ UndoAlreadyApplied(FullTransactionId full_xid, UndoRecPtr to_urecptr)
+  * nrecords - number of records in this array.
+  */
+ static void
+-ApplyUndo(UndoRecInfo *urecinfo, int nrecords, FullTransactionId fxid)
++ApplyUndo(UndoRecInfo *urecinfo, int nrecords, FullTransactionId fxid,
++		  bool blk_chain_complete)
+ {
+ 	int			rmgr_start_idx = 0;
+ 	int			rmgr_nrecords = 0;
+@@ -226,7 +227,7 @@ ApplyUndo(UndoRecInfo *urecinfo, int nrecords, FullTransactionId fxid)
+ 			Assert(urecinfo[rmgr_start_idx].uur->uur_rmid == prev_rmid);
+ 			RmgrTable[prev_rmid].rm_undo(rmgr_nrecords,
+ 										 &urecinfo[rmgr_start_idx],
+-										 fxid);
++										 fxid, blk_chain_complete);
+ 
+ 			rmgr_start_idx = i;
+ 			rmgr_nrecords = 0;
+@@ -238,7 +239,8 @@ ApplyUndo(UndoRecInfo *urecinfo, int nrecords, FullTransactionId fxid)
+ 
+ 	/* Apply the last set of the actions. */
+ 	Assert(urecinfo[rmgr_start_idx].uur->uur_rmid == prev_rmid);
+-	RmgrTable[prev_rmid].rm_undo(rmgr_nrecords, &urecinfo[rmgr_start_idx], fxid);
++	RmgrTable[prev_rmid].rm_undo(rmgr_nrecords, &urecinfo[rmgr_start_idx], fxid,
++								 blk_chain_complete);
+ }
+ 
+ /*
+@@ -399,7 +401,20 @@ ProcessAndApplyUndo(FullTransactionId full_xid, UndoRecPtr from_urecptr,
+ 			  undo_record_comparator);
+ 
+ 		/* Call resource manager specific callbacks to apply actions. */
+-		ApplyUndo(urecinfo, nrecords, full_xid);
++
++		/*
++		 * FIXME: We need to fix how to set slot xid as invalid transaction
++		 * once the rollback for the transaction has benn completed for this
++		 * block.  Else, the previous transaction might be rolled back wrongly
++		 * when the rollback for the current transaction has been performed.
++		 * Currently, we don't have the block chain complete info here.  We
++		 * should store it the undo payload for the first undo record of
++		 * this block by the current transaction.
++		 * This is also important for rollback to savepoint.  In that case, we
++		 * should not set full_xid as invalid.
++		 */
++		ApplyUndo(urecinfo, nrecords, full_xid,
++				  (complete_xact && !UndoRecPtrIsValid(urec_ptr)));
+ 
+ 		/* Set undo action apply progress if required. */
+ 		if (update_progress)
+diff --git a/src/backend/access/zheap/zundo.c b/src/backend/access/zheap/zundo.c
+index 3609b6c..8f4572c 100644
+--- a/src/backend/access/zheap/zundo.c
++++ b/src/backend/access/zheap/zundo.c
+@@ -615,17 +615,13 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
+ }
+ 
+ void
+-zheap_undo_actions(int nrecords, UndoRecInfo *urp_array, FullTransactionId fxid)
++zheap_undo_actions(int nrecords, UndoRecInfo *urp_array, FullTransactionId fxid,
++				   bool blk_chain_complete)
+ {
+ 	bool	prev_initialized = false;
+ 	Oid		prev_reloid = InvalidOid;
+ 	int		last_index = 0;
+ 	int 	i;
+-	/*
+-	 * FIXME: We always set the blk_chain_complete as false for now. Later,
+-	 * we've plans to store this information in undo records.
+-	 */
+-	bool	blk_chain_complete = false;
+ 	ForkNumber	prev_fork = InvalidForkNumber;
+ 	BlockNumber prev_block = InvalidBlockNumber;
+ 
+diff --git a/src/include/access/xlog_internal.h b/src/include/access/xlog_internal.h
+index f7dddcb..ba9a353 100644
+--- a/src/include/access/xlog_internal.h
++++ b/src/include/access/xlog_internal.h
+@@ -309,7 +309,7 @@ typedef struct RmgrData
+ 	void		(*rm_cleanup) (void);
+ 	void		(*rm_mask) (char *pagedata, BlockNumber blkno);
+ 	void		(*rm_undo) (int nrecords, UndoRecInfo *records,
+-							FullTransactionId fxid);
++							FullTransactionId fxid, bool blk_chain_complete);
+ 	UndoStatus	(*rm_undo_status) (UnpackedUndoRecord *record, TransactionId *xid);
+ 	void		(*rm_undo_desc) (StringInfo buf, UnpackedUndoRecord *record);
+ } RmgrData;
+diff --git a/src/include/access/zheap.h b/src/include/access/zheap.h
+index 053d53f..e38919f 100644
+--- a/src/include/access/zheap.h
++++ b/src/include/access/zheap.h
+@@ -339,7 +339,7 @@ extern void lazy_vacuum_zheap_rel(Relation onerel, struct VacuumParams *params,
+ 
+ /* in zheap/zundo.c */
+ extern void zheap_undo_actions(int nrecords, UndoRecInfo *urp_array,
+-							   FullTransactionId fxid);
++							   FullTransactionId fxid, bool blk_chain_complete);
+ 
+ /* in zheap/ztuptoaster.c */
+ extern ZHeapTuple ztoast_insert_or_update(Relation rel,
+-- 
+1.8.3.1
+

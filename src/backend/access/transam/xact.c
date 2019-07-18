@@ -24,6 +24,7 @@
 #include "access/multixact.h"
 #include "access/parallel.h"
 #include "access/subtrans.h"
+#include "access/tpd.h"
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/undodiscard.h"
@@ -69,6 +70,7 @@
 #include "utils/timestamp.h"
 #include "pg_trace.h"
 
+#define	AtAbort_ResetTPDBuffers	ResetTPDBuffers()
 
 /*
  *	User-tweakable parameters
@@ -196,6 +198,7 @@ typedef struct TransactionStateData
 	bool		didLogXid;		/* has xid been included in WAL record? */
 	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
 	bool		chain;			/* start a new block after this one */
+	bool            subXactLock;    /* has lock created for subtransaction? */
 	XactUndoInfo *undo_info;        /* Transaction's undo related undo. */
 
 	/* start and end undo record location for each log category */
@@ -312,7 +315,6 @@ typedef struct SubXactCallbackItem
 } SubXactCallbackItem;
 
 static SubXactCallbackItem *SubXact_callbacks = NULL;
-
 
 /* local function prototypes */
 static void AssignTransactionId(TransactionState s);
@@ -729,6 +731,28 @@ AssignTransactionId(TransactionState s)
 }
 
 /*
+ *	SetCurrentSubTransactionLocked
+ */
+void
+SetCurrentSubTransactionLocked()
+{
+	TransactionState s = CurrentTransactionState;
+
+	s->subXactLock = true;
+}
+
+/*
+ *	HasCurrentSubTransactionLock
+ */
+bool
+HasCurrentSubTransactionLock()
+{
+	TransactionState s = CurrentTransactionState;
+
+	return s->subXactLock;
+}
+
+/*
  *	GetCurrentSubTransactionId
  */
 SubTransactionId
@@ -737,6 +761,17 @@ GetCurrentSubTransactionId(void)
 	TransactionState s = CurrentTransactionState;
 
 	return s->subTransactionId;
+}
+
+/*
+ * GetCurrentTransactionResOwner
+ */
+ResourceOwner
+GetCurrentTransactionResOwner(void)
+{
+	TransactionState s = CurrentTransactionState;
+
+	return s->curTransactionOwner;
 }
 
 /*
@@ -790,6 +825,15 @@ GetCurrentCommandId(bool used)
 		currentCommandIdUsed = true;
 	}
 	return currentCommandId;
+}
+
+/*
+ *	GetCurrentCommandIdUsed
+ */
+bool
+GetCurrentCommandIdUsed(void)
+{
+	return currentCommandIdUsed;
 }
 
 /*
@@ -1026,6 +1070,26 @@ bool
 IsInParallelMode(void)
 {
 	return CurrentTransactionState->parallelModeLevel != 0;
+}
+
+/*
+ * SetUndoActionsInfo - set the start and end undo record pointers before
+ * performing the undo actions.
+ */
+void
+SetUndoActionsInfo(void)
+{
+	TransactionState s = CurrentTransactionState;
+	int			i;
+
+	for (i = 0; i < UndoPersistenceLevels; i++)
+	{
+		if (s->latest_urec_ptr[i])
+		{
+			s->performUndoActions = true;
+			break;
+		}
+	}
 }
 
 /*
@@ -1994,6 +2058,15 @@ StartTransaction(void)
 	currentCommandId = FirstCommandId;
 	currentCommandIdUsed = false;
 
+	/* initialize undo record locations for the transaction */
+	for (i = 0; i < UndoPersistenceLevels; i++)
+	{
+		s->start_urec_ptr[i] = InvalidUndoRecPtr;
+		s->latest_urec_ptr[i] = InvalidUndoRecPtr;
+	}
+	s->performUndoActions = false;
+	s->subXactLock = false;
+
 	/*
 	 * initialize reported xid accounting
 	 */
@@ -2577,6 +2650,10 @@ PrepareTransaction(void)
 	AtEOXact_Snapshot(true, true);
 	pgstat_report_xact_timestamp(0);
 
+	/* In single user mode, discard all the undo logs, once committed. */
+	if (!IsUnderPostmaster)
+		UndoLogDiscardAll();
+
 	CurrentResourceOwner = NULL;
 	ResourceOwnerDelete(TopTransactionResourceOwner);
 	s->curTransactionOwner = NULL;
@@ -2595,6 +2672,8 @@ PrepareTransaction(void)
 
 	XactTopFullTransactionId = InvalidFullTransactionId;
 	nParallelCurrentXids = 0;
+
+	ResetUndoActionsInfo();
 
 	/*
 	 * done with 1st phase commit processing, set current transaction state
@@ -2784,6 +2863,7 @@ AbortTransaction(void)
 		AtEOXact_PgStat(false, is_parallel_worker);
 		AtEOXact_ApplyLauncher(false);
 		pgstat_report_xact_timestamp(0);
+		AtAbort_ResetTPDBuffers;
 	}
 
 	/*
@@ -2833,6 +2913,8 @@ CleanupTransaction(void)
 
 	XactTopFullTransactionId = InvalidFullTransactionId;
 	nParallelCurrentXids = 0;
+
+	ResetUndoActionsInfo();
 
 	ResetUndoActionsInfo();
 
@@ -3101,6 +3183,24 @@ CommitTransactionCommand(void)
 		case TBLOCK_SUBRELEASE:
 			do
 			{
+				int			i;
+
+				/*
+				 * Before cleaning up the current sub transaction state,
+				 * overwrite parent transaction's latest_urec_ptr with current
+				 * transaction's latest_urec_ptr so that in case parent
+				 * transaction get aborted we must not skip performing undo
+				 * for this transaction.  Also set the start_urec_ptr if
+				 * parent start_urec_ptr is not valid.
+				 */
+				for (i = 0; i < UndoPersistenceLevels; i++)
+				{
+					if (UndoRecPtrIsValid(s->latest_urec_ptr[i]))
+						s->parent->latest_urec_ptr[i] = s->latest_urec_ptr[i];
+					if (!UndoRecPtrIsValid(s->parent->start_urec_ptr[i]))
+						s->parent->start_urec_ptr[i] = s->start_urec_ptr[i];
+				}
+
 				CommitSubTransaction();
 				s = CurrentTransactionState;	/* changed by pop */
 			} while (s->blockState == TBLOCK_SUBRELEASE);
@@ -4801,6 +4901,14 @@ char
 TransactionBlockStatusCode(void)
 {
 	TransactionState s = CurrentTransactionState;
+
+	/*
+	 * Here, we just detect whether there are any pending undo actions so that
+	 * we can skip releasing the locks during abort transaction.  We don't
+	 * release the locks till we execute undo actions otherwise, there is a
+	 * risk of deadlock.
+	 */
+	SetUndoActionsInfo();
 
 	switch (s->blockState)
 	{

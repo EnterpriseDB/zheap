@@ -10,12 +10,12 @@ SELECT * FROM bt_page_stats('test1_a_idx', 0);
 SELECT * FROM bt_page_stats('test1_a_idx', 1);
 SELECT * FROM bt_page_stats('test1_a_idx', 2);
 
-SELECT * FROM bt_page_items('test1_a_idx', 0);
-SELECT * FROM bt_page_items('test1_a_idx', 1);
-SELECT * FROM bt_page_items('test1_a_idx', 2);
+SELECT itemoffset, itemlen, nulls, vars, data FROM bt_page_items('test1_a_idx', 0);
+SELECT itemoffset, itemlen, nulls, vars, data FROM bt_page_items('test1_a_idx', 1);
+SELECT itemoffset, itemlen, nulls, vars, data FROM bt_page_items('test1_a_idx', 2);
 
-SELECT * FROM bt_page_items(get_raw_page('test1_a_idx', 0));
-SELECT * FROM bt_page_items(get_raw_page('test1_a_idx', 1));
-SELECT * FROM bt_page_items(get_raw_page('test1_a_idx', 2));
+SELECT itemoffset, itemlen, nulls, vars, data FROM bt_page_items(get_raw_page('test1_a_idx', 0));
+SELECT itemoffset, itemlen, nulls, vars, data FROM bt_page_items(get_raw_page('test1_a_idx', 1));
+SELECT itemoffset, itemlen, nulls, vars, data FROM bt_page_items(get_raw_page('test1_a_idx', 2));
 
 DROP TABLE test1;

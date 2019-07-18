@@ -540,8 +540,14 @@ ExecInsert(ModifyTableState *mtstate,
 			 * insertion lock".  Others can use that to wait for us to decide
 			 * if we're going to go ahead with the insertion, instead of
 			 * waiting for the whole transaction to complete.
+			 *
+			 * In this case, we use top transaction id to create the
+			 * speculative lock tag to make it generic across different
+			 * storage engine.  When encountering a conflict, we should use
+			 * SubTransGetTopmostTransaction() to determine the xid on which
+			 * we should wait.
 			 */
-			specToken = SpeculativeInsertionLockAcquire(GetCurrentTransactionId());
+			specToken = SpeculativeInsertionLockAcquire(GetTopTransactionId());
 
 			/* insert the tuple, with the speculative token */
 			table_tuple_insert_speculative(resultRelationDesc, slot,
@@ -562,11 +568,11 @@ ExecInsert(ModifyTableState *mtstate,
 			/*
 			 * Wake up anyone waiting for our decision.  They will re-check
 			 * the tuple, see that it's no longer speculative, and wait on our
-			 * XID as if this was a regularly inserted tuple all along.  Or if
-			 * we killed the tuple, they will see it's dead, and proceed as if
-			 * the tuple never existed.
+			 * top XID as if this was a regularly inserted tuple all along. Or
+			 * if we killed the tuple, they will see it's dead, and proceed as
+			 * if the tuple never existed.
 			 */
-			SpeculativeInsertionLockRelease(GetCurrentTransactionId());
+			SpeculativeInsertionLockRelease(GetTopTransactionId());
 
 			/*
 			 * If there was a conflict, start from the beginning.  We'll do
@@ -836,7 +842,7 @@ ldelete:;
 											  estate->es_snapshot,
 											  inputslot, estate->es_output_cid,
 											  LockTupleExclusive, LockWaitBlock,
-											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
+											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION | TUPLE_LOCK_FLAG_WEIRD,
 											  &tmfd);
 
 					switch (result)
@@ -1378,7 +1384,7 @@ lreplace:;
 											  estate->es_snapshot,
 											  inputslot, estate->es_output_cid,
 											  lockmode, LockWaitBlock,
-											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
+											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION | TUPLE_LOCK_FLAG_WEIRD,
 											  &tmfd);
 
 					switch (result)
@@ -1526,7 +1532,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 	test = table_tuple_lock(relation, conflictTid,
 							estate->es_snapshot,
 							existing, estate->es_output_cid,
-							lockmode, LockWaitBlock, 0,
+							lockmode, LockWaitBlock, TUPLE_LOCK_FLAG_WEIRD,
 							&tmfd);
 	switch (test)
 	{
@@ -1569,6 +1575,16 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 			break;
 
 		case TM_SelfModified:
+#ifdef ZBORKED
+
+			/*
+			 * ZHEAP accepts this, but this isn't ok from a layering POV (and
+			 * I'm doubtful about the correctness). See 1e9d17cc240.
+			 *
+			 * Unlike heap, we expect TM_SelfModified in the same scenario as
+			 * the new tuple could have been in-place updated.
+			 */
+#endif
 
 			/*
 			 * This state should never be reached. As a dirty snapshot is used

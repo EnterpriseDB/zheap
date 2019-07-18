@@ -836,6 +836,7 @@ enable_tap_tests
 with_blocksize
 with_segsize
 with_wal_blocksize
+with_trans_slots_per_zheap_page
 with_CC
 with_llvm
 enable_depend
@@ -1542,6 +1543,8 @@ Optional Packages:
   --with-segsize=SEGSIZE  set table segment size in GB [1]
   --with-wal-blocksize=BLOCKSIZE
                           set WAL block size in kB [8]
+  --with-trans_slots_per_zheap_page=SLOTS
+                          set transaction slots per zheap page [4]
   --with-CC=CMD           set compiler (deprecated)
   --with-llvm             build with LLVM based JIT support
   --with-icu              build with ICU support
@@ -3776,6 +3779,51 @@ $as_echo "${wal_blocksize}kB" >&6; }
 
 cat >>confdefs.h <<_ACEOF
 #define XLOG_BLCKSZ ${XLOG_BLCKSZ}
+_ACEOF
+
+
+#
+# transaction slots per zheap page
+#
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for transaction slots per zheap page" >&5
+$as_echo_n "checking for transaction slots per zheap page... " >&6; }
+
+
+
+# Check whether --with-trans_slots_per_zheap_page was given.
+if test "${with_trans_slots_per_zheap_page+set}" = set; then :
+  withval=$with_trans_slots_per_zheap_page;
+  case $withval in
+    yes)
+      as_fn_error $? "argument required for --with-trans_slots_per_zheap_page option" "$LINENO" 5
+      ;;
+    no)
+      as_fn_error $? "argument required for --with-trans_slots_per_zheap_page option" "$LINENO" 5
+      ;;
+    *)
+      trans_slots_per_page=$withval
+      ;;
+  esac
+
+else
+  trans_slots_per_page=4
+fi
+
+
+case ${trans_slots_per_page} in
+  2) ZHEAP_PAGE_TRANS_SLOTS=2;;
+  4) ZHEAP_PAGE_TRANS_SLOTS=4;;
+  8) ZHEAP_PAGE_TRANS_SLOTS=8;;
+ 16) ZHEAP_PAGE_TRANS_SLOTS=16;;
+ 31) ZHEAP_PAGE_TRANS_SLOTS=31;;
+  *) as_fn_error $? "Invalid transaction slots per zheap page. Allowed values are 2,4,8,16,31." "$LINENO" 5
+esac
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: ${trans_slots_per_page}" >&5
+$as_echo "${trans_slots_per_page}" >&6; }
+
+
+cat >>confdefs.h <<_ACEOF
+#define ZHEAP_PAGE_TRANS_SLOTS ${ZHEAP_PAGE_TRANS_SLOTS}
 _ACEOF
 
 

@@ -145,25 +145,25 @@ SELECT * FROM itest2;
 -- UPDATE tests
 UPDATE itest1 SET a = 101 WHERE a = 1;
 UPDATE itest1 SET a = DEFAULT WHERE a = 2;
-SELECT * FROM itest1;
+SELECT * FROM itest1 ORDER BY a;
   a  |  b  
 -----+-----
-  10 | xyz
    3 | xyz
- 101 | 
    4 | 
+  10 | xyz
+ 101 | 
 (4 rows)
 
 UPDATE itest2 SET a = 101 WHERE a = 1;
 ERROR:  column "a" can only be updated to DEFAULT
 DETAIL:  Column "a" is an identity column defined as GENERATED ALWAYS.
 UPDATE itest2 SET a = DEFAULT WHERE a = 2;
-SELECT * FROM itest2;
+SELECT * FROM itest2 ORDER BY a;
  a  |  b  
 ----+-----
   1 | 
- 10 | xyz
   3 | 
+ 10 | xyz
 (3 rows)
 
 -- COPY tests

@@ -230,7 +230,6 @@ extern PGDLLIMPORT const TupleTableSlotOps TTSOpsBufferHeapTuple;
 #define TTS_IS_MINIMALTUPLE(slot) ((slot)->tts_ops == &TTSOpsMinimalTuple)
 #define TTS_IS_BUFFERTUPLE(slot) ((slot)->tts_ops == &TTSOpsBufferHeapTuple)
 
-
 /*
  * Tuple table slot implementations.
  */

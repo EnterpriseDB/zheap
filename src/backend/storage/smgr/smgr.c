@@ -22,6 +22,7 @@
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/md.h"
+#include "storage/undofile.h"
 #include "storage/smgr.h"
 #include "storage/undofile.h"
 #include "utils/hsearch.h"

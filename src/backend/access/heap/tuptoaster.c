@@ -69,21 +69,11 @@ typedef struct toast_compress_header
 static void toast_delete_datum(Relation rel, Datum value, bool is_speculative);
 static Datum toast_save_datum(Relation rel, Datum value,
 							  struct varlena *oldexternal, int options);
-static bool toastrel_valueid_exists(Relation toastrel, Oid valueid);
-static bool toastid_valueid_exists(Oid toastrelid, Oid valueid);
 static struct varlena *toast_fetch_datum(struct varlena *attr);
 static struct varlena *toast_fetch_datum_slice(struct varlena *attr,
 											   int32 sliceoffset, int32 length);
 static struct varlena *toast_decompress_datum(struct varlena *attr);
 static struct varlena *toast_decompress_datum_slice(struct varlena *attr, int32 slicelength);
-static int	toast_open_indexes(Relation toastrel,
-							   LOCKMODE lock,
-							   Relation **toastidxs,
-							   int *num_indexes);
-static void toast_close_indexes(Relation *toastidxs, int num_indexes,
-								LOCKMODE lock);
-static void init_toast_snapshot(Snapshot toast_snapshot);
-
 
 /* ----------
  * heap_tuple_fetch_attr -
@@ -1790,7 +1780,7 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
  *	toast rows with that ID; see notes for GetNewOidWithIndex().
  * ----------
  */
-static bool
+bool
 toastrel_valueid_exists(Relation toastrel, Oid valueid)
 {
 	bool		result = false;
@@ -1838,7 +1828,7 @@ toastrel_valueid_exists(Relation toastrel, Oid valueid)
  *	As above, but work from toast rel's OID not an open relation
  * ----------
  */
-static bool
+bool
 toastid_valueid_exists(Oid toastrelid, Oid valueid)
 {
 	bool		result;
@@ -2321,7 +2311,7 @@ toast_decompress_datum_slice(struct varlena *attr, int32 slicelength)
  *	relation in this array. It is the responsibility of the caller of this
  *	function to close the indexes as well as free them.
  */
-static int
+int
 toast_open_indexes(Relation toastrel,
 				   LOCKMODE lock,
 				   Relation **toastidxs,
@@ -2380,7 +2370,7 @@ toast_open_indexes(Relation toastrel,
  *	Close an array of indexes for a toast relation and free it. This should
  *	be called for a set of indexes opened previously with toast_open_indexes.
  */
-static void
+void
 toast_close_indexes(Relation *toastidxs, int num_indexes, LOCKMODE lock)
 {
 	int			i;
@@ -2399,7 +2389,7 @@ toast_close_indexes(Relation *toastidxs, int num_indexes, LOCKMODE lock)
  *	just use the oldest one.  This is safe: at worst, we will get a "snapshot
  *	too old" error that might have been avoided otherwise.
  */
-static void
+void
 init_toast_snapshot(Snapshot toast_snapshot)
 {
 	Snapshot	snapshot = GetOldestSnapshot();

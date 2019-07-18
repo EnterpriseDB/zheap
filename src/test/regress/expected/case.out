@@ -269,25 +269,25 @@ SELECT '' AS "Two", *
 UPDATE CASE_TBL
   SET i = CASE WHEN i >= 3 THEN (- i)
                 ELSE (2 * i) END;
-SELECT * FROM CASE_TBL;
+SELECT * FROM CASE_TBL ORDER BY i;
  i  |   f   
 ----+-------
+ -4 |      
+ -3 | -30.3
   2 |  10.1
   4 |  20.2
- -3 | -30.3
- -4 |      
 (4 rows)
 
 UPDATE CASE_TBL
   SET i = CASE WHEN i >= 2 THEN (2 * i)
                 ELSE (3 * i) END;
-SELECT * FROM CASE_TBL;
+SELECT * FROM CASE_TBL ORDER BY i;
   i  |   f   
 -----+-------
+ -12 |      
+  -9 | -30.3
    4 |  10.1
    8 |  20.2
-  -9 | -30.3
- -12 |      
 (4 rows)
 
 UPDATE CASE_TBL
@@ -295,13 +295,13 @@ UPDATE CASE_TBL
                 ELSE (3 * j) END
   FROM CASE2_TBL b
   WHERE j = -CASE_TBL.i;
-SELECT * FROM CASE_TBL;
+SELECT * FROM CASE_TBL ORDER BY i;
   i  |   f   
 -----+-------
-   8 |  20.2
-  -9 | -30.3
  -12 |      
+  -9 | -30.3
   -8 |  10.1
+   8 |  20.2
 (4 rows)
 
 --

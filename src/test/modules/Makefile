@@ -19,6 +19,7 @@ SUBDIRS = \
 		  test_rbtree \
 		  test_rls_hooks \
 		  test_shm_mq \
+		  test_alter_tablespace_zheap \
 		  unsafe_tests \
 		  worker_spi
 

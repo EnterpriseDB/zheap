@@ -1,0 +1,40 @@
+From 3e5a344f8985645c36f2149d7f14cb4a49966389 Mon Sep 17 00:00:00 2001
+From: Mahendra Singh Thalor <mahi6run@gmail.com>
+Date: Thu, 11 Jul 2019 22:46:15 +0530
+Subject: [PATCH 15/18] Fixed a bug in zheap_prepare_undo_multi_insert
+
+In rebasing, we missed to initialize urec ptr for previous undo
+record(uur_blkprev) for first multi-insert,  so it was taking
+garbadge value and while reading that urec from log, getting
+error due to invalid urp.  So fixed this.
+
+Patch by Mahendra Singh Thalor
+---
+ src/backend/access/zheap/zheapam.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/backend/access/zheap/zheapam.c b/src/backend/access/zheap/zheapam.c
+index b915c8b..9e6f4f5 100644
+--- a/src/backend/access/zheap/zheapam.c
++++ b/src/backend/access/zheap/zheapam.c
+@@ -5329,7 +5329,6 @@ zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
+ 		undorecord[i].uur_fxid = zh_undo_info->fxid;
+ 		undorecord[i].uur_cid = zh_undo_info->cid;
+ 		undorecord[i].uur_fork = MAIN_FORKNUM;
+-		undorecord[i].uur_prevundo = zh_undo_info->prev_urecptr;
+ 		undorecord[i].uur_block = zh_undo_info->blkno;
+ 		undorecord[i].uur_tuple.len = 0;
+ 		undorecord[i].uur_offset = 0;
+@@ -5341,6 +5340,9 @@ zheap_prepare_undo_multi_insert(ZHeapPrepareUndoInfo *zh_undo_info,
+ 						  nranges,
+ 						  xlog_record);
+ 
++	/* Set previous undo record ptr. */
++	urecptr = zh_undo_info->prev_urecptr;
++
+ 	for (i = 0; i < nranges; i++)
+ 	{
+ 		undorecord[i].uur_prevundo = urecptr;
+-- 
+1.8.3.1
+

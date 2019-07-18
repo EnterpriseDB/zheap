@@ -75,7 +75,7 @@ int			undo_worker_quantum_ms = 10000;
 /* Flags set by signal handlers */
 static volatile sig_atomic_t got_SIGHUP = false;
 static volatile sig_atomic_t got_SIGTERM = false;
-
+static volatile sig_atomic_t got_SIGTERM = false;
 static TimestampTz last_xact_processed_at;
 
 typedef struct UndoApplyWorker
@@ -134,6 +134,16 @@ UndoLauncherOnExit(int code, Datum arg)
 {
 	UndoApplyCtx->launcher_pid = 0;
 	UndoApplyCtx->undo_launcher_latch = NULL;
+}
+
+/* SIGTERM: set flag to exit at next convenient time */
+static void
+UndoworkerSigtermHandler(SIGNAL_ARGS)
+{
+	got_SIGTERM = true;
+
+	/* Waken anything waiting on the process latch */
+	SetLatch(MyLatch);
 }
 
 /* SIGTERM: set flag to exit at next convenient time */

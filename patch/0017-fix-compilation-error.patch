@@ -1,0 +1,417 @@
+From fcafe345f8f482da8342465e98045719f2552421 Mon Sep 17 00:00:00 2001
+From: Dilip Kumar <dilip.kumar@enterprisedb.com>
+Date: Thu, 18 Jul 2019 14:09:37 +0530
+Subject: [PATCH 17/18] fix compilation error
+
+---
+ src/backend/access/transam/varsup.c           |  4 ++--
+ src/backend/access/zheap/rewritezheap.c       |  6 ++----
+ src/backend/access/zheap/tpd.c                |  7 +++----
+ src/backend/access/zheap/tpdxlog.c            |  2 +-
+ src/backend/access/zheap/zheapam.c            | 19 +++++++------------
+ src/backend/access/zheap/zheapam_handler.c    |  2 +-
+ src/backend/access/zheap/zheapam_visibility.c |  7 ++-----
+ src/backend/access/zheap/zheapamxlog.c        | 22 +++++++++++-----------
+ src/backend/access/zheap/zmultilocker.c       |  9 +++------
+ src/backend/access/zheap/zpage.c              |  2 +-
+ src/backend/access/zheap/zundo.c              |  3 +--
+ src/include/access/xlogutils.h                |  1 -
+ src/include/access/zheap.h                    |  3 +--
+ 13 files changed, 35 insertions(+), 52 deletions(-)
+
+diff --git a/src/backend/access/transam/varsup.c b/src/backend/access/transam/varsup.c
+index ba5a952..b7f1ea8 100644
+--- a/src/backend/access/transam/varsup.c
++++ b/src/backend/access/transam/varsup.c
+@@ -303,7 +303,7 @@ AdvanceNextFullTransactionIdPastXid(TransactionId xid)
+ 	ShmemVariableCache->nextFullXid = newNextFullXid;
+ 	LWLockRelease(XidGenLock);
+ }
+-
++#if 0
+ /*
+  * ZBORKED: Document, test, and move to a better place?
+  *
+@@ -337,7 +337,7 @@ XLogRecGetFullXid(XLogReaderState *record)
+ 
+ 	return FullTransactionIdFromEpochAndXid(epoch, xid);
+ }
+-
++#endif
+ /*
+  * ZBORKED: Blindly written - and should be removed ASAP
+  */
+diff --git a/src/backend/access/zheap/rewritezheap.c b/src/backend/access/zheap/rewritezheap.c
+index f37196a..6ba8ba9 100644
+--- a/src/backend/access/zheap/rewritezheap.c
++++ b/src/backend/access/zheap/rewritezheap.c
+@@ -162,8 +162,7 @@ end_zheap_rewrite(RewriteZheapState state)
+ 	if (state->rs_buffer_valid)
+ 	{
+ 		if (state->rs_use_wal)
+-			log_newpage(SMGR_MD,
+-						&state->rs_new_rel->rd_node,
++			log_newpage(&state->rs_new_rel->rd_node,
+ 						MAIN_FORKNUM,
+ 						state->rs_blockno,
+ 						state->rs_buffer,
+@@ -326,8 +325,7 @@ raw_zheap_insert(RewriteZheapState state, ZHeapTuple tup)
+ 
+ 			/* XLOG stuff */
+ 			if (state->rs_use_wal)
+-				log_newpage(SMGR_MD,
+-							&state->rs_new_rel->rd_node,
++				log_newpage(&state->rs_new_rel->rd_node,
+ 							MAIN_FORKNUM,
+ 							state->rs_blockno,
+ 							page,
+diff --git a/src/backend/access/zheap/tpd.c b/src/backend/access/zheap/tpd.c
+index ce429ed..586eef5 100644
+--- a/src/backend/access/zheap/tpd.c
++++ b/src/backend/access/zheap/tpd.c
+@@ -2382,11 +2382,10 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
+ 
+ 	if (NoTPDBufLock)
+ 	{
+-		SmgrId		smgrid;
+ 		SMgrRelation smgr;
+ 		BlockNumber lastblock;
+ 
+-		BufferGetTag(heapbuf, &smgrid, &rnode, &forknum, &heapblk);
++		BufferGetTag(heapbuf, &rnode, &forknum, &heapblk);
+ 
+ 		if (InRecovery)
+ 			relpersistence = RELPERSISTENCE_PERMANENT;
+@@ -2398,7 +2397,7 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
+ 			relpersistence = get_rel_persistence(reloid);
+ 		}
+ 
+-		smgr = smgropen(smgrid, rnode,
++		smgr = smgropen(rnode,
+ 						relpersistence == RELPERSISTENCE_TEMP ?
+ 						MyBackendId : InvalidBackendId);
+ 
+@@ -2407,7 +2406,7 @@ TPDPageGetTransactionSlotInfo(Buffer heapbuf, int trans_slot,
+ 		/* required block exists? */
+ 		if (tpdblk < lastblock)
+ 		{
+-			tpdbuffer = ReadBufferWithoutRelcache(smgrid, rnode, forknum, tpdblk, RBM_NORMAL,
++			tpdbuffer = ReadBufferWithoutRelcache(rnode, forknum, tpdblk, RBM_NORMAL,
+ 												  NULL, relpersistence);
+ 
+ 			/* Check whether TPD entry can exist on page? */
+diff --git a/src/backend/access/zheap/tpdxlog.c b/src/backend/access/zheap/tpdxlog.c
+index a4c5db2..768948d 100644
+--- a/src/backend/access/zheap/tpdxlog.c
++++ b/src/backend/access/zheap/tpdxlog.c
+@@ -399,7 +399,7 @@ tpd_xlog_free_page(XLogReaderState *record)
+ 		}
+ 	}
+ 
+-	XLogRecGetBlockTag(record, 1, NULL, &rnode, NULL, &blkno);
++	XLogRecGetBlockTag(record, 1, &rnode, NULL, &blkno);
+ 	action = XLogReadBufferForRedo(record, 1, &buffer);
+ 	page = (Page) BufferGetPage(buffer);
+ 
+diff --git a/src/backend/access/zheap/zheapam.c b/src/backend/access/zheap/zheapam.c
+index 8ccffb6..90a912b 100644
+--- a/src/backend/access/zheap/zheapam.c
++++ b/src/backend/access/zheap/zheapam.c
+@@ -4729,8 +4729,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
+ 
+ 	while (true)
+ 	{
+-		urec = ZHeapUndoFetchRecord(zinfo.urec_ptr, blk, offnum, zinfo.xid, NULL,
+-							   ZHeapSatisfyUndoRecord);
++		urec = ZHeapUndoFetchRecord(zinfo.urec_ptr, blk, offnum, zinfo.xid, NULL);
+ 		if (urec == NULL)
+ 		{
+ 			/*
+@@ -7524,8 +7523,7 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
+ 						   ItemPointerGetBlockNumber(&zhtup->t_self),
+ 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
+ 						   InvalidTransactionId,
+-						   NULL,
+-						   ZHeapSatisfyUndoRecord);
++						   NULL);
+ 	if (urec == NULL)
+ 		return InvalidCommandId;
+ 
+@@ -7558,8 +7556,7 @@ ZHeapTupleGetSubXid(Buffer buf, OffsetNumber offnum, UndoRecPtr urec_ptr,
+ 						   BufferGetBlockNumber(buf),
+ 						   offnum,
+ 						   InvalidTransactionId,
+-						   NULL,
+-						   ZHeapSatisfyUndoRecord);
++						   NULL);
+ 
+ 	/*
+ 	 * We mostly expect urec here to be valid as it try to fetch
+@@ -7633,8 +7630,7 @@ ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
+ 						   ItemPointerGetBlockNumber(&zhtup->t_self),
+ 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
+ 						   InvalidTransactionId,
+-						   NULL,
+-						   ZHeapSatisfyUndoRecord);
++						   NULL);
+ 
+ 	/*
+ 	 * We always expect urec to be valid as it try to fetch speculative token
+@@ -8480,7 +8476,7 @@ copy_buffer:
+ 		 * space.
+ 		 */
+ 		if (use_wal)
+-			log_newpage(SMGR_MD, &dst->smgr_rnode.node, MAIN_FORKNUM, target_blkno, page, false);
++			log_newpage(&dst->smgr_rnode.node, MAIN_FORKNUM, target_blkno, page, false);
+ 
+ 		PageSetChecksumInplace(page, target_blkno);
+ 
+@@ -8789,8 +8785,7 @@ RefetchAndCheckTupleStatus(Relation relation,
+ 
+ UnpackedUndoRecord*
+ ZHeapUndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
+-					 TransactionId xid, UndoRecPtr *urec_ptr_out,
+-					 SatisfyUndoRecordCallback callback)
++					 TransactionId xid, UndoRecPtr *urec_ptr_out)
+ {
+ 	UnpackedUndoRecord *urec;
+ 	UndoRecordFetchContext	context;
+@@ -8801,7 +8796,7 @@ ZHeapUndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
+ 		urec = UndoFetchRecord(&context, urp);
+ 		if (urec == NULL)
+ 			break;
+-		if (callback(urec, blkno, offset, xid))
++		if (ZHeapSatisfyUndoRecord(urec, blkno, offset, xid))
+ 			break;
+ 
+ 		urp = urec->uur_prevundo;
+diff --git a/src/backend/access/zheap/zheapam_handler.c b/src/backend/access/zheap/zheapam_handler.c
+index 47267e2..f664f15 100644
+--- a/src/backend/access/zheap/zheapam_handler.c
++++ b/src/backend/access/zheap/zheapam_handler.c
+@@ -1866,7 +1866,7 @@ zheapam_relation_copy_data(Relation rel, const RelFileNode *newrnode)
+ {
+ 	SMgrRelation dstrel;
+ 
+-	dstrel = smgropen(SMGR_MD, *newrnode, rel->rd_backend);
++	dstrel = smgropen(*newrnode, rel->rd_backend);
+ 	RelationOpenSmgr(rel);
+ 
+ 	/*
+diff --git a/src/backend/access/zheap/zheapam_visibility.c b/src/backend/access/zheap/zheapam_visibility.c
+index 34fa986..366b6dd 100644
+--- a/src/backend/access/zheap/zheapam_visibility.c
++++ b/src/backend/access/zheap/zheapam_visibility.c
+@@ -88,7 +88,6 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
+ 					   ItemPointer new_ctid)
+ {
+ 	UnpackedUndoRecord *urec;
+-	uint32		epoch;
+ 
+ 	/*
+ 	 * If caller wants the CTID of the latest version of the tuple, set it to
+@@ -112,8 +111,7 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
+ 		 */
+ 		urec = ZHeapUndoFetchRecord(zinfo->urec_ptr, blocknum, offnum,
+ 							   xid,
+-							   &zinfo->urec_ptr,
+-							   ZHeapSatisfyUndoRecord);
++							   &zinfo->urec_ptr);
+ 
+ 		/*
+ 		 * If the undo record containing the information about the last
+@@ -388,8 +386,7 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid, Buffer buffer,
+ 						   BufferGetBlockNumber(buffer),
+ 						   offnum,
+ 						   xid,
+-						   NULL,
+-						   ZHeapSatisfyUndoRecord);
++						   NULL);
+ 	if (urec == NULL)
+ 		return false;
+ 
+diff --git a/src/backend/access/zheap/zheapamxlog.c b/src/backend/access/zheap/zheapamxlog.c
+index 8865e32..14e9ceb 100644
+--- a/src/backend/access/zheap/zheapamxlog.c
++++ b/src/backend/access/zheap/zheapamxlog.c
+@@ -69,7 +69,7 @@ zheap_xlog_insert(XLogReaderState *record)
+ 	else if (xlrec->flags & XLZ_INSERT_CONTAINS_TPD_SLOT)
+ 		tpd_trans_slot_id = (int *) ((char *) xlrec + SizeOfZHeapInsert);
+ 
+-	XLogRecGetBlockTag(record, 0, NULL, &target_node, NULL, &blkno);
++	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
+ 	ItemPointerSetBlockNumber(&target_tid, blkno);
+ 	ItemPointerSetOffsetNumber(&target_tid, xlrec->offnum);
+ 
+@@ -257,7 +257,7 @@ zheap_xlog_delete(XLogReaderState *record)
+ 	if (xlrec->flags & XLZ_DELETE_CONTAINS_TPD_SLOT)
+ 		tpd_trans_slot_id = (int *) ((char *) xlrec + SizeOfZHeapDelete);
+ 
+-	XLogRecGetBlockTag(record, 0, NULL, &target_node, NULL, &blkno);
++	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
+ 	ItemPointerSetBlockNumber(&target_tid, blkno);
+ 	ItemPointerSetOffsetNumber(&target_tid, xlrec->offnum);
+ 
+@@ -487,8 +487,8 @@ zheap_xlog_update(XLogReaderState *record)
+ 		inplace_update = true;
+ 	}
+ 
+-	XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, &newblk);
+-	if (XLogRecGetBlockTag(record, 1, NULL, NULL, NULL, &oldblk))
++	XLogRecGetBlockTag(record, 0, &rnode, NULL, &newblk);
++	if (XLogRecGetBlockTag(record, 1, NULL, NULL, &oldblk))
+ 	{
+ 		/* inplace updates are never done across pages */
+ 		Assert(!inplace_update);
+@@ -947,7 +947,7 @@ zheap_xlog_freeze_xact_slot(XLogReaderState *record)
+ 		 */
+ 		TransactionId lastestFrozenXid = xlrec->lastestFrozenXid;
+ 
+-		XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, NULL);
++		XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
+ 		ResolveRecoveryConflictWithSnapshot(lastestFrozenXid, rnode);
+ 	}
+ 
+@@ -1143,7 +1143,7 @@ zheap_xlog_lock(XLogReaderState *record)
+ 
+ 	xlrec = (xl_zheap_lock *) ((char *) xlundohdr + SizeOfUndoHeader);
+ 
+-	XLogRecGetBlockTag(record, 0, NULL, &target_node, NULL, &blkno);
++	XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
+ 	ItemPointerSet(&target_tid, blkno, xlrec->offnum);
+ 
+ 	reln = CreateFakeRelcacheEntry(target_node);
+@@ -1297,7 +1297,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
+ 	xlundohdr = (xl_undo_header *) XLogRecGetData(record);
+ 	xlrec = (xl_zheap_multi_insert *) ((char *) xlundohdr + SizeOfUndoHeader);
+ 
+-	XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, &blkno);
++	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+ 
+ 	/*
+ 	 * The visibility map may need to be fixed even if the heap page is
+@@ -1558,7 +1558,7 @@ zheap_xlog_clean(XLogReaderState *record)
+ 	OffsetNumber *target_offnum;
+ 	Size	   *space_required;
+ 
+-	XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, &blkno);
++	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+ 
+ 	/*
+ 	 * We're about to remove tuples. In Hot Standby mode, ensure that there's
+@@ -1744,7 +1744,7 @@ zheap_xlog_unused(XLogReaderState *record)
+ 	unused = (OffsetNumber *) ((char *) xlrec + SizeOfZHeapUnused);
+ 	uncnt = xlrec->nunused;
+ 
+-	XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, &blkno);
++	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+ 
+ 	/*
+ 	 * We're about to remove tuples. In Hot Standby mode, ensure that there's
+@@ -1895,7 +1895,7 @@ zheap_xlog_visible(XLogReaderState *record)
+ 	Buffer		vmbuffer = InvalidBuffer;
+ 	RelFileNode rnode;
+ 
+-	XLogRecGetBlockTag(record, 0, NULL, &rnode, NULL, NULL);
++	XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
+ 
+ 	/*
+ 	 * If there are any Hot Standby transactions running that have an xmin
+@@ -2012,7 +2012,7 @@ zheap_undo_xlog_page(XLogReaderState *record)
+ 		RelFileNode target_node;
+ 		BlockNumber blkno;
+ 
+-		XLogRecGetBlockTag(record, 0, NULL, &target_node, NULL, &blkno);
++		XLogRecGetBlockTag(record, 0, &target_node, NULL, &blkno);
+ 		reln = CreateFakeRelcacheEntry(target_node);
+ 		visibilitymap_pin(reln, blkno, &vmbuffer);
+ 		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);
+diff --git a/src/backend/access/zheap/zmultilocker.c b/src/backend/access/zheap/zmultilocker.c
+index 0567ac6..9f6b021 100644
+--- a/src/backend/access/zheap/zmultilocker.c
++++ b/src/backend/access/zheap/zmultilocker.c
+@@ -51,8 +51,7 @@ ZCurrentXactHasTupleLockMode(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
+ 							   ItemPointerGetBlockNumber(&zhtup->t_self),
+ 							   ItemPointerGetOffsetNumber(&zhtup->t_self),
+ 							   InvalidTransactionId,
+-							   NULL,
+-							   ZHeapSatisfyUndoRecord);
++							   NULL);
+ 
+ 		/* If undo is discarded, we can't proceed further. */
+ 		if (!urec)
+@@ -217,8 +216,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
+ 								   blkno,
+ 								   offnum,
+ 								   InvalidTransactionId,
+-								   NULL,
+-								   ZHeapSatisfyUndoRecord);
++								   NULL);
+ 
+ 			/* If undo is discarded, we can't proceed further. */
+ 			if (!urec)
+@@ -681,8 +679,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
+ 								   ItemPointerGetBlockNumber(tid),
+ 								   ItemPointerGetOffsetNumber(tid),
+ 								   InvalidTransactionId,
+-								   &out_urec_ptr,
+-								   ZHeapSatisfyUndoRecord);
++								   &out_urec_ptr);
+ 
+ 			/*
+ 			 * We couldn't find any undo record for the tuple corresponding to
+diff --git a/src/backend/access/zheap/zpage.c b/src/backend/access/zheap/zpage.c
+index d9dcea8..94d69f9 100644
+--- a/src/backend/access/zheap/zpage.c
++++ b/src/backend/access/zheap/zpage.c
+@@ -505,7 +505,7 @@ ZheapInitMetaPage(RelFileNode rnode, ForkNumber forkNum,
+ 	Buffer		buf;
+ 	bool		use_wal;
+ 
+-	buf = ReadBufferWithoutRelcache(SMGR_MD, rnode, forkNum,
++	buf = ReadBufferWithoutRelcache(rnode, forkNum,
+ 									already_exists ? ZHEAP_METAPAGE : P_NEW,
+ 									RBM_NORMAL, NULL, persistence);
+ 	if (BufferGetBlockNumber(buf) != ZHEAP_METAPAGE)
+diff --git a/src/backend/access/zheap/zundo.c b/src/backend/access/zheap/zundo.c
+index 17f2198..e8961e3 100644
+--- a/src/backend/access/zheap/zundo.c
++++ b/src/backend/access/zheap/zundo.c
+@@ -291,8 +291,7 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
+ 							   ItemPointerGetBlockNumber(tid),
+ 							   ItemPointerGetOffsetNumber(tid),
+ 							   zinfo.xid,
+-							   NULL,
+-							   ZHeapSatisfyUndoRecord);
++							   NULL);
+ 
+ 		/*
+ 		 * As we still hold a snapshot to which priorXmax is not visible,
+diff --git a/src/include/access/xlogutils.h b/src/include/access/xlogutils.h
+index 72e685d..b27f608 100644
+--- a/src/include/access/xlogutils.h
++++ b/src/include/access/xlogutils.h
+@@ -37,7 +37,6 @@ extern XLogRedoAction XLogReadBufferForRedo(XLogReaderState *record,
+ 											uint8 buffer_id, Buffer *buf);
+ extern Buffer XLogInitBufferForRedo(XLogReaderState *record, uint8 block_id);
+ extern XLogRedoAction XLogReadBufferForRedoBlock(XLogReaderState *record,
+-												 SmgrId smgrid,
+ 												 RelFileNode rnode,
+ 												 ForkNumber forknum,
+ 												 BlockNumber blockno,
+diff --git a/src/include/access/zheap.h b/src/include/access/zheap.h
+index 57a91ee..adbeb5e 100644
+--- a/src/include/access/zheap.h
++++ b/src/include/access/zheap.h
+@@ -347,7 +347,6 @@ extern ZHeapTuple ztoast_insert_or_update(Relation rel,
+ 										  int options, uint32 specToken);
+ extern void ztoast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative);
+ extern UnpackedUndoRecord* ZHeapUndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
+-					 TransactionId xid, UndoRecPtr *urec_ptr_out,
+-					 SatisfyUndoRecordCallback callback);
++					 TransactionId xid, UndoRecPtr *urec_ptr_out);
+ 
+ #endif							/* ZHEAP_H */
+-- 
+1.8.3.1
+

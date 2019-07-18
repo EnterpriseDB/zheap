@@ -338,4 +338,12 @@ extern PGPROC *AuxiliaryPidGetProc(int pid);
 extern void BecomeLockGroupLeader(void);
 extern bool BecomeLockGroupMember(PGPROC *leader, int pid);
 
+static inline bool
+FullTransactionIdOlderThanAllUndo(FullTransactionId full_xid)
+{
+	uint64		cutoff = pg_atomic_read_u64(&ProcGlobal->oldestFullXidHavingUnappliedUndo);
+
+	return U64FromFullTransactionId(full_xid) < cutoff;
+}
+
 #endif							/* PROC_H */

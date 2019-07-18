@@ -21,6 +21,19 @@
 #include "storage/buf.h"
 #include "storage/off.h"
 
+typedef enum undorectype
+{
+	UNDO_INSERT,
+	UNDO_MULTI_INSERT,
+	UNDO_DELETE,
+	UNDO_INPLACE_UPDATE,
+	UNDO_UPDATE,
+	UNDO_XID_LOCK_ONLY,
+	UNDO_XID_LOCK_FOR_UPDATE,
+	UNDO_XID_MULTI_LOCK_ONLY,
+	UNDO_ITEMID_UNUSED
+} undorectype;
+
 /*
  * The below common information will be stored in the first undo record of the
  * page.  Every subsequent undo record will not store this information, if it's
@@ -60,6 +73,8 @@ typedef struct UndoCompressionInfo
 #define UREC_INFO_BLOCK						0x080
 #define UREC_INFO_LOGSWITCH					0x100
 #define UREC_INFO_PAYLOAD					0x200
+#define UREC_INFO_PAYLOAD_CONTAINS_SLOT		0x400
+#define UREC_INFO_PAYLOAD_CONTAINS_SUBXACT	0x800
 
 #define UREC_INFO_PAGE_COMMON  (UREC_INFO_RMID | UREC_INFO_RELOID | UREC_INFO_FXID | UREC_INFO_CID)
 

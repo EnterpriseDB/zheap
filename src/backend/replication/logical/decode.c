@@ -160,6 +160,22 @@ LogicalDecodingProcessRecord(LogicalDecodingContext *ctx, XLogReaderState *recor
 			ReorderBufferProcessXid(ctx->reorder, XLogRecGetXid(record),
 									buf.origptr);
 			break;
+		case RM_ZHEAP_ID:
+			/* Logical decoding is not yet implemented for zheap. */
+			Assert(0);
+			break;
+		case RM_ZHEAP2_ID:
+			/* Logical decoding is not yet implemented for zheap. */
+			Assert(0);
+			break;
+		case RM_ZUNDO_ID:
+			/* Logical decoding is not yet implemented for zheap. */
+			Assert(0);
+			break;
+		case RM_TPD_ID:
+			/* Logical decoding is not yet implemented for TPD. */
+			Assert(0);
+			break;			
 		case RM_NEXT_ID:
 			elog(ERROR, "unexpected RM_NEXT_ID rmgr_id: %u", (RmgrIds) XLogRecGetRmid(buf.record));
 	}

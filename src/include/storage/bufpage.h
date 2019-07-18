@@ -16,6 +16,7 @@
 
 #include "access/xlogdefs.h"
 #include "storage/block.h"
+#include "storage/buf.h"
 #include "storage/item.h"
 #include "storage/off.h"
 
@@ -166,6 +167,12 @@ typedef struct PageHeaderData
 typedef PageHeaderData *PageHeader;
 
 /*
+ * We cannot include storage/procarray.h here, otherwise it creates cyclic
+ * dependency. So declaring TransactionIdIsInProgress again.
+ */
+extern bool TransactionIdIsInProgress(TransactionId xid);
+
+/*
  * pd_flags contains the following flag bits.  Undefined bits are initialized
  * to zero and may be used in the future.
  *
@@ -198,6 +205,18 @@ typedef PageHeaderData *PageHeader;
  */
 #define PG_PAGE_LAYOUT_VERSION		4
 #define PG_DATA_CHECKSUM_VERSION	1
+
+/*
+ * sorting support for PageRepairFragmentation and PageIndexMultiDelete
+ */
+typedef struct itemIdSortData
+{
+	uint16		offsetindex;	/* linp array index */
+	int16		itemoff;		/* page offset of item data */
+	uint16		alignedlen;		/* MAXALIGN(item data len) */
+} itemIdSortData;
+typedef itemIdSortData *itemIdSort;
+
 
 /* ----------------------------------------------------------------
  *						page support macros
@@ -439,6 +458,20 @@ do { \
 #define PageClearPrunable(page) \
 	(((PageHeader) (page))->pd_prune_xid = InvalidTransactionId)
 
+#define ZPageIsPrunable(page) \
+( \
+	TransactionIdIsValid(((PageHeader) (page))->pd_prune_xid) && \
+	!TransactionIdIsInProgress(((PageHeader) (page))->pd_prune_xid) \
+)
+#define ZPageSetPrunable(page, xid) \
+do { \
+	Assert(TransactionIdIsNormal(xid)); \
+	if (!TransactionIdIsValid(((PageHeader) (page))->pd_prune_xid) || \
+		TransactionIdIsInProgress(((PageHeader) (page))->pd_prune_xid) || \
+		TransactionIdPrecedes(xid, ((PageHeader) (page))->pd_prune_xid)) \
+		((PageHeader) (page))->pd_prune_xid = (xid); \
+} while (0)
+#define ZPageClearPrunable(page) PageClearPrunable(page)
 
 /* ----------------------------------------------------------------
  *		extern declarations
@@ -462,6 +495,7 @@ extern Page PageGetTempPage(Page page);
 extern Page PageGetTempPageCopy(Page page);
 extern Page PageGetTempPageCopySpecial(Page page);
 extern void PageRestoreTempPage(Page tempPage, Page oldPage);
+extern void compactify_tuples(itemIdSort itemidbase, int nitems, Page page);
 extern void PageRepairFragmentation(Page page);
 extern Size PageGetFreeSpace(Page page);
 extern Size PageGetFreeSpaceForMultipleTuples(Page page, int ntups);

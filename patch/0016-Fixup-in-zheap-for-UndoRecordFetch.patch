@@ -1,0 +1,165 @@
+From 05a8e3113c901354b98136af47f87b4705c00864 Mon Sep 17 00:00:00 2001
+From: Dilip Kumar <dilip.kumar@enterprisedb.com>
+Date: Thu, 18 Jul 2019 13:54:45 +0530
+Subject: [PATCH 16/18] Fixup in zheap for UndoRecordFetch
+
+---
+ src/backend/access/zheap/zheapam.c            | 33 +++++++++++++++++++++++----
+ src/backend/access/zheap/zheapam_visibility.c |  4 ++--
+ src/backend/access/zheap/zmultilocker.c       |  6 ++---
+ src/backend/access/zheap/zundo.c              |  2 +-
+ src/include/access/zheap.h                    |  3 +++
+ 5 files changed, 38 insertions(+), 10 deletions(-)
+
+diff --git a/src/backend/access/zheap/zheapam.c b/src/backend/access/zheap/zheapam.c
+index 9e6f4f5..8ccffb6 100644
+--- a/src/backend/access/zheap/zheapam.c
++++ b/src/backend/access/zheap/zheapam.c
+@@ -4729,7 +4729,7 @@ zheap_fetchinsertxid(ZHeapTuple zhtup, Buffer buffer)
+ 
+ 	while (true)
+ 	{
+-		urec = UndoFetchRecord(zinfo.urec_ptr, blk, offnum, zinfo.xid, NULL,
++		urec = ZHeapUndoFetchRecord(zinfo.urec_ptr, blk, offnum, zinfo.xid, NULL,
+ 							   ZHeapSatisfyUndoRecord);
+ 		if (urec == NULL)
+ 		{
+@@ -7520,7 +7520,7 @@ ZHeapTupleGetCid(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
+ 		return InvalidCommandId;
+ 
+ 	Assert(UndoRecPtrIsValid(zinfo.urec_ptr));
+-	urec = UndoFetchRecord(zinfo.urec_ptr,
++	urec = ZHeapUndoFetchRecord(zinfo.urec_ptr,
+ 						   ItemPointerGetBlockNumber(&zhtup->t_self),
+ 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
+ 						   InvalidTransactionId,
+@@ -7554,7 +7554,7 @@ ZHeapTupleGetSubXid(Buffer buf, OffsetNumber offnum, UndoRecPtr urec_ptr,
+ 	*subxid = InvalidSubTransactionId;
+ 
+ 	Assert(UndoRecPtrIsValid(urec_ptr));
+-	urec = UndoFetchRecord(urec_ptr,
++	urec = ZHeapUndoFetchRecord(urec_ptr,
+ 						   BufferGetBlockNumber(buf),
+ 						   offnum,
+ 						   InvalidTransactionId,
+@@ -7629,7 +7629,7 @@ ZHeapTupleGetSpecToken(ZHeapTuple zhtup, Buffer buf, UndoRecPtr urec_ptr,
+ {
+ 	UnpackedUndoRecord *urec;
+ 
+-	urec = UndoFetchRecord(urec_ptr,
++	urec = ZHeapUndoFetchRecord(urec_ptr,
+ 						   ItemPointerGetBlockNumber(&zhtup->t_self),
+ 						   ItemPointerGetOffsetNumber(&zhtup->t_self),
+ 						   InvalidTransactionId,
+@@ -8786,3 +8786,28 @@ RefetchAndCheckTupleStatus(Relation relation,
+ 
+ 	return true;
+ }
++
++UnpackedUndoRecord*
++ZHeapUndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
++					 TransactionId xid, UndoRecPtr *urec_ptr_out,
++					 SatisfyUndoRecordCallback callback)
++{
++	UnpackedUndoRecord *urec;
++	UndoRecordFetchContext	context;
++
++	BeginUndoFetch(&context);
++	while(1)
++	{
++		urec = UndoFetchRecord(&context, urp);
++		if (urec == NULL)
++			break;
++		if (callback(urec, blkno, offset, xid))
++			break;
++
++		urp = urec->uur_prevundo;
++		UndoRecordRelease(urec);
++	}
++	FinishUndoFetch(&context);
++
++	return urec;
++}
+\ No newline at end of file
+diff --git a/src/backend/access/zheap/zheapam_visibility.c b/src/backend/access/zheap/zheapam_visibility.c
+index 9bfe3ed..34fa986 100644
+--- a/src/backend/access/zheap/zheapam_visibility.c
++++ b/src/backend/access/zheap/zheapam_visibility.c
+@@ -110,7 +110,7 @@ FetchTransInfoFromUndo(BlockNumber blocknum, OffsetNumber offnum,
+ 		 * for the latest version of the tuple in the undo rather than some
+ 		 * earlier one.)
+ 		 */
+-		urec = UndoFetchRecord(zinfo->urec_ptr, blocknum, offnum,
++		urec = ZHeapUndoFetchRecord(zinfo->urec_ptr, blocknum, offnum,
+ 							   xid,
+ 							   &zinfo->urec_ptr,
+ 							   ZHeapSatisfyUndoRecord);
+@@ -384,7 +384,7 @@ GetTupleFromUndoRecord(UndoRecPtr urec_ptr, TransactionId xid, Buffer buffer,
+ 	UnpackedUndoRecord *urec;
+ 	uint32		epoch;
+ 
+-	urec = UndoFetchRecord(urec_ptr,
++	urec = ZHeapUndoFetchRecord(urec_ptr,
+ 						   BufferGetBlockNumber(buffer),
+ 						   offnum,
+ 						   xid,
+diff --git a/src/backend/access/zheap/zmultilocker.c b/src/backend/access/zheap/zmultilocker.c
+index 0b143c7..0567ac6 100644
+--- a/src/backend/access/zheap/zmultilocker.c
++++ b/src/backend/access/zheap/zmultilocker.c
+@@ -47,7 +47,7 @@ ZCurrentXactHasTupleLockMode(ZHeapTuple zhtup, UndoRecPtr urec_ptr,
+ 	memcpy(&hdr, zhtup->t_data, SizeofZHeapTupleHeader);
+ 	do
+ 	{
+-		urec = UndoFetchRecord(urec_ptr,
++		urec = ZHeapUndoFetchRecord(urec_ptr,
+ 							   ItemPointerGetBlockNumber(&zhtup->t_self),
+ 							   ItemPointerGetOffsetNumber(&zhtup->t_self),
+ 							   InvalidTransactionId,
+@@ -213,7 +213,7 @@ ZGetMultiLockMembers(Relation rel, ZHeapTuple zhtup, Buffer buf,
+ 		do
+ 		{
+ 			prev_trans_slot_id = trans_slot_id;
+-			urec = UndoFetchRecord(urec_ptr,
++			urec = ZHeapUndoFetchRecord(urec_ptr,
+ 								   blkno,
+ 								   offnum,
+ 								   InvalidTransactionId,
+@@ -677,7 +677,7 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
+ 			UndoRecPtr	out_urec_ptr PG_USED_FOR_ASSERTS_ONLY;
+ 
+ 			out_urec_ptr = InvalidUndoRecPtr;
+-			urec = UndoFetchRecord(urec_ptr,
++			urec = ZHeapUndoFetchRecord(urec_ptr,
+ 								   ItemPointerGetBlockNumber(tid),
+ 								   ItemPointerGetOffsetNumber(tid),
+ 								   InvalidTransactionId,
+diff --git a/src/backend/access/zheap/zundo.c b/src/backend/access/zheap/zundo.c
+index 8f4572c..17f2198 100644
+--- a/src/backend/access/zheap/zundo.c
++++ b/src/backend/access/zheap/zundo.c
+@@ -287,7 +287,7 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
+ 
+ 		Assert(prev_trans_slot_id != ZHTUP_SLOT_FROZEN);
+ 
+-		urec = UndoFetchRecord(zinfo.urec_ptr,
++		urec = ZHeapUndoFetchRecord(zinfo.urec_ptr,
+ 							   ItemPointerGetBlockNumber(tid),
+ 							   ItemPointerGetOffsetNumber(tid),
+ 							   zinfo.xid,
+diff --git a/src/include/access/zheap.h b/src/include/access/zheap.h
+index e38919f..57a91ee 100644
+--- a/src/include/access/zheap.h
++++ b/src/include/access/zheap.h
+@@ -346,5 +346,8 @@ extern ZHeapTuple ztoast_insert_or_update(Relation rel,
+ 										  ZHeapTuple newtup, ZHeapTuple oldtup,
+ 										  int options, uint32 specToken);
+ extern void ztoast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative);
++extern UnpackedUndoRecord* ZHeapUndoFetchRecord(UndoRecPtr urp, BlockNumber blkno, OffsetNumber offset,
++					 TransactionId xid, UndoRecPtr *urec_ptr_out,
++					 SatisfyUndoRecordCallback callback);
+ 
+ #endif							/* ZHEAP_H */
+-- 
+1.8.3.1
+

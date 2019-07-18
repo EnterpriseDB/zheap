@@ -19,7 +19,7 @@ $$;
 
 CALL transaction_test1();
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 TRUNCATE test1;
@@ -41,7 +41,7 @@ $$;
 
 SELECT transaction_test2();
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 -- also not allowed if procedure is called from a function
@@ -54,7 +54,7 @@ $$;
 
 SELECT transaction_test3();
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 -- commit inside cursor loop
@@ -74,7 +74,7 @@ $$;
 
 CALL transaction_test4a();
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 -- rollback inside cursor loop
@@ -91,7 +91,7 @@ $$;
 
 CALL transaction_test4b();
 
-SELECT * FROM test1;
+SELECT * FROM test1 ORDER BY 1, 2;
 
 
 DROP TABLE test1;

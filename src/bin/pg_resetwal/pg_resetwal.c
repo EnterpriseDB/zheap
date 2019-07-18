@@ -58,6 +58,11 @@
 #include "pg_getopt.h"
 #include "getopt_long.h"
 
+#ifndef WIN32
+#define pg_mv_file		rename
+#else
+#define pg_mv_file		pgrename
+#endif
 
 static ControlFileData ControlFile; /* pg_control values */
 static XLogSegNo newXlogSegNo;	/* new XLOG segment # */
@@ -86,6 +91,7 @@ static void FindEndOfXLOG(void);
 static void KillExistingXLOG(void);
 static void KillExistingArchiveStatus(void);
 static void WriteEmptyXLOG(void);
+static bool FindLatestUndoCheckPointFile(char *latest_undo_checkpoint_file);
 static void usage(void);
 
 
@@ -116,6 +122,9 @@ main(int argc, char *argv[])
 	char	   *DataDir = NULL;
 	char	   *log_fname = NULL;
 	int			fd;
+	char		latest_undo_checkpoint_file[MAXPGPATH];
+	char		new_undo_checkpoint_file[MAXPGPATH];
+	bool		found = false;
 
 	pg_logging_init(argv[0]);
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("pg_resetwal"));
@@ -446,6 +455,7 @@ main(int argc, char *argv[])
 		if (ControlFile.checkPointCopy.oldestXid < FirstNormalTransactionId)
 			ControlFile.checkPointCopy.oldestXid += FirstNormalTransactionId;
 		ControlFile.checkPointCopy.oldestXidDB = InvalidOid;
+		ControlFile.checkPointCopy.oldestFullXidHavingUnappliedUndo = InvalidFullTransactionId;
 	}
 
 	if (set_oldest_commit_ts_xid != 0)
@@ -513,6 +523,25 @@ main(int argc, char *argv[])
 	 */
 	AdjustRedoLocation(DataDir);
 	RewriteControlFile();
+
+	/*
+	 * Find the newest undo checkpoint file under pg_undo directory and rename
+	 * it as per the latest checkpoint redo location in control file.
+	 */
+	found = FindLatestUndoCheckPointFile(latest_undo_checkpoint_file);
+	if (!found)
+		fprintf(stderr, _("Could not find the latest undo checkpoint file.\n"));
+
+	snprintf(new_undo_checkpoint_file, sizeof(new_undo_checkpoint_file),
+			 "pg_undo/%016" INT64_MODIFIER "X", ControlFile.checkPointCopy.redo);
+
+	if (pg_mv_file(latest_undo_checkpoint_file, new_undo_checkpoint_file) != 0)
+	{
+		fprintf(stderr, _("Unable to rename %s to %s.\n"), latest_undo_checkpoint_file,
+				new_undo_checkpoint_file);
+		exit(1);
+	}
+
 	KillExistingXLOG();
 	KillExistingArchiveStatus();
 	WriteEmptyXLOG();
@@ -704,6 +733,7 @@ GuessControlValues(void)
 	ControlFile.checkPointCopy.oldestMultiDB = InvalidOid;
 	ControlFile.checkPointCopy.time = (pg_time_t) time(NULL);
 	ControlFile.checkPointCopy.oldestActiveXid = InvalidTransactionId;
+	ControlFile.checkPointCopy.oldestFullXidHavingUnappliedUndo = InvalidFullTransactionId;
 
 	ControlFile.state = DB_SHUTDOWNED;
 	ControlFile.time = (pg_time_t) time(NULL);
@@ -788,6 +818,8 @@ PrintControlValues(bool guessed)
 		   ControlFile.checkPointCopy.oldestCommitTsXid);
 	printf(_("Latest checkpoint's newestCommitTsXid:%u\n"),
 		   ControlFile.checkPointCopy.newestCommitTsXid);
+	printf(_("Latest checkpoint's oldestFullXidHavingUnappliedUndo:" UINT64_FORMAT "\n"),
+		   U64FromFullTransactionId(ControlFile.checkPointCopy.oldestFullXidHavingUnappliedUndo));
 	printf(_("Maximum data alignment:               %u\n"),
 		   ControlFile.maxAlign);
 	/* we don't print floatFormat since can't say much useful about it */
@@ -864,6 +896,8 @@ PrintNewControlValues(void)
 			   ControlFile.checkPointCopy.oldestXid);
 		printf(_("OldestXID's DB:                       %u\n"),
 			   ControlFile.checkPointCopy.oldestXidDB);
+		printf(_("OldestFullXidHavingUnappliedUndo:" UINT64_FORMAT "\n"),
+			   U64FromFullTransactionId(ControlFile.checkPointCopy.oldestFullXidHavingUnappliedUndo));
 	}
 
 	if (set_xid_epoch != -1)
@@ -1287,6 +1321,55 @@ WriteEmptyXLOG(void)
 	close(fd);
 }
 
+/*
+ * Find the latest modified undo checkpoint file under pg_undo directory and
+ * delete all other files.
+ */
+static bool
+FindLatestUndoCheckPointFile(char *latest_undo_checkpoint_file)
+{
+	char	  **filenames;
+	char	  **filename;
+	char		latest[UNDO_CHECKPOINT_FILENAME_LENGTH + 1];
+	bool		result = false;
+
+	memset(latest, 0, sizeof(latest));
+
+	/* Copy all the files from pg_undo directory into filenames */
+	filenames = pgfnames("pg_undo");
+
+	/*
+	 * Start reading each file under pg_undo to identify the latest modified
+	 * file and remove the older files that are not required.
+	 */
+	for (filename = filenames; *filename; filename++)
+	{
+		if (!(strlen(*filename) == UNDO_CHECKPOINT_FILENAME_LENGTH))
+			continue;
+
+		if (UndoCheckPointFilenamePrecedes(latest, *filename))
+		{
+			if (latest[0] != '\0')
+			{
+				snprintf(latest_undo_checkpoint_file, MAXPGPATH, "pg_undo/%s",
+						 latest);
+				if (unlink(latest_undo_checkpoint_file) != 0)
+					fprintf(stderr, _("could not unlink file \"%s\": %s\n"),
+							*filename, strerror(errno));
+			}
+			memcpy(latest, *filename, UNDO_CHECKPOINT_FILENAME_LENGTH);
+			latest[UNDO_CHECKPOINT_FILENAME_LENGTH] = '\0';
+			result = true;
+		}
+	}
+
+	if (result)
+		snprintf(latest_undo_checkpoint_file, MAXPGPATH, "pg_undo/%s", latest);
+
+	pgfnames_cleanup(filenames);
+
+	return result;
+}
 
 static void
 usage(void)

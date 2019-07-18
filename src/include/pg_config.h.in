@@ -993,6 +993,10 @@
    */
 #undef XLOG_BLCKSZ
 
+/* transaction slots per zheap page. By default, it is set to 4. Changing
+   ZHEAP_PAGE_TRANS_SLOTS requires an initdb. */
+#undef ZHEAP_PAGE_TRANS_SLOTS
+
 
 
 /* Number of bits in a file offset, on hosts where this is settable. */

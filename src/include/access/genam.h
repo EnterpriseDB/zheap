@@ -212,6 +212,7 @@ extern SysScanDesc systable_beginscan_ordered(Relation heapRelation,
 											  int nkeys, ScanKey key);
 extern HeapTuple systable_getnext_ordered(SysScanDesc sysscan,
 										  ScanDirection direction);
+extern struct TupleTableSlot *systable_getnext_ordered_slot(SysScanDesc sysscan, ScanDirection direction);
 extern void systable_endscan_ordered(SysScanDesc sysscan);
 
 #endif							/* GENAM_H */

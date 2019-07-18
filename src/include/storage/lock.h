@@ -18,6 +18,7 @@
 #error "lock.h may not be included from frontend code"
 #endif
 
+#include "nodes/lockoptions.h"
 #include "storage/lockdefs.h"
 #include "storage/backendid.h"
 #include "storage/lwlock.h"
@@ -143,8 +144,25 @@ typedef enum LockTagType
 	LOCKTAG_TUPLE,				/* one physical tuple */
 	LOCKTAG_TRANSACTION,		/* transaction (for waiting for xact done) */
 	LOCKTAG_VIRTUALTRANSACTION, /* virtual transaction (ditto) */
+	/* ID info for a virtual transaction is its VirtualTransactionId */
+	LOCKTAG_SUBTRANSACTION,		/* virtual transaction (ditto) */
+
+	/*
+	 * ID info for a sub transaction is its top transaction id +
+	 * subTransactionId
+	 */
 	LOCKTAG_SPECULATIVE_TOKEN,	/* speculative insertion Xid and token */
 	LOCKTAG_OBJECT,				/* non-relation database object */
+	/* ID info for an object is DB OID + CLASS OID + OBJECT OID + SUBID */
+
+	/* ID info for an transaction undoaction is transaction id */
+	LOCKTAG_TRANSACTION_UNDOACTION, /* transaction (waiting for undoaction) */
+
+	/*
+	 * Note: object ID has same representation as in pg_depend and
+	 * pg_description, but notice that we are constraining SUBID to 16 bits.
+	 * Also, we use DB OID = 0 for shared objects such as tablespaces.
+	 */
 	LOCKTAG_USERLOCK,			/* reserved for old contrib/userlock code */
 	LOCKTAG_ADVISORY			/* advisory user locks */
 } LockTagType;
@@ -231,6 +249,14 @@ typedef struct LOCKTAG
 	 (locktag).locktag_type = LOCKTAG_VIRTUALTRANSACTION, \
 	 (locktag).locktag_lockmethodid = DEFAULT_LOCKMETHOD)
 
+#define SET_LOCKTAG_SUBTRANSACTION(locktag,xid,subxid) \
+	((locktag).locktag_field1 = (xid), \
+	 (locktag).locktag_field2 = (subxid), \
+	 (locktag).locktag_field3 = 0, \
+	 (locktag).locktag_field4 = 0, \
+	 (locktag).locktag_type = LOCKTAG_SUBTRANSACTION, \
+	 (locktag).locktag_lockmethodid = DEFAULT_LOCKMETHOD)
+
 /*
  * ID info for a speculative insert is TRANSACTION info +
  * its speculative insert counter.
@@ -241,6 +267,14 @@ typedef struct LOCKTAG
 	 (locktag).locktag_field3 = 0, \
 	 (locktag).locktag_field4 = 0, \
 	 (locktag).locktag_type = LOCKTAG_SPECULATIVE_TOKEN, \
+	 (locktag).locktag_lockmethodid = DEFAULT_LOCKMETHOD)
+
+#define SET_LOCKTAG_TRANSACTION_UNDOACTION(locktag,xid) \
+	((locktag).locktag_field1 = (xid), \
+	 (locktag).locktag_field2 = 0, \
+	 (locktag).locktag_field3 = 0, \
+	 (locktag).locktag_field4 = 0, \
+	 (locktag).locktag_type = LOCKTAG_TRANSACTION_UNDOACTION, \
 	 (locktag).locktag_lockmethodid = DEFAULT_LOCKMETHOD)
 
 /*
@@ -266,6 +300,13 @@ typedef struct LOCKTAG
 	 (locktag).locktag_type = LOCKTAG_ADVISORY, \
 	 (locktag).locktag_lockmethodid = USER_LOCKMETHOD)
 
+
+struct LockExtraInfo
+{
+	LOCKMODE	hwlock;
+	int			lockstatus;
+	int			updstatus;
+};
 
 /*
  * Per-locked-object lock information:
@@ -583,6 +624,10 @@ extern void RememberSimpleDeadLock(PGPROC *proc1,
 extern void InitDeadLockChecking(void);
 
 extern int	LockWaiterCount(const LOCKTAG *locktag);
+extern LOCKMODE GetHWLockModeFromMode(LockTupleMode mode);
+
+#define UnlockTupleTuplock(rel, tup, mode) \
+	UnlockTuple((rel), (tup), GetHWLockModeFromMode(mode))
 
 #ifdef LOCK_DEBUG
 extern void DumpLocks(PGPROC *proc);

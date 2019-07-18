@@ -250,6 +250,8 @@ bool		restart_after_crash = true;
 
 bool		enable_undo_launcher = true;
 
+bool		disable_undo_launcher;
+
 /* PIDs of special child processes; 0 when not running */
 static pid_t StartupPID = 0,
 			BgWriterPID = 0,

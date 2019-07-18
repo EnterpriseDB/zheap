@@ -1,0 +1,23 @@
+From 3c46cb47101b50666eec0e22f172311a28ef8845 Mon Sep 17 00:00:00 2001
+From: Kuntal Ghosh <kuntal.ghosh@enterprisedb.com>
+Date: Mon, 1 Jul 2019 15:47:29 +0530
+Subject: [PATCH 06/18] Fix alter table space test for zheap
+
+---
+ src/test/modules/test_alter_tablespace_zheap/atz.conf | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/test/modules/test_alter_tablespace_zheap/atz.conf b/src/test/modules/test_alter_tablespace_zheap/atz.conf
+index 44d5c29..bf0c4ed 100644
+--- a/src/test/modules/test_alter_tablespace_zheap/atz.conf
++++ b/src/test/modules/test_alter_tablespace_zheap/atz.conf
+@@ -2,5 +2,5 @@
+ # perform the undo actions while performing alter table set tablespace command
+ # by the backend itself.
+ default_table_access_method = 'zheap'
+-disable_undo_launcher = true
++enable_undo_launcher = false
+ rollback_overflow_size = 0
+-- 
+1.8.3.1
+

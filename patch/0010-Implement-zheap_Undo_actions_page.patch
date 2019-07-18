@@ -1,0 +1,120 @@
+From 66d2b4def13ecfb5b46b5a3c2039c21900a99ee2 Mon Sep 17 00:00:00 2001
+From: Kuntal Ghosh <kuntal.ghosh@enterprisedb.com>
+Date: Thu, 27 Jun 2019 11:26:05 +0530
+Subject: [PATCH 10/18] Implement zheap_Undo_actions_page
+
+---
+ src/backend/access/zheap/zundo.c | 60 ++++++++++++++++++++++++++++++++++++++--
+ src/include/access/zheap.h       |  4 +--
+ 2 files changed, 58 insertions(+), 6 deletions(-)
+
+diff --git a/src/backend/access/zheap/zundo.c b/src/backend/access/zheap/zundo.c
+index dc67d99..c19b262 100644
+--- a/src/backend/access/zheap/zundo.c
++++ b/src/backend/access/zheap/zundo.c
+@@ -41,6 +41,9 @@ static void RestoreXactFromUndoRecord(UnpackedUndoRecord *urec, Buffer buffer,
+ static int	TransSlotFromUndoRecord(UnpackedUndoRecord *urec,
+ 									ZHeapTupleHeader hdr, Page page);
+ static void log_zheap_undo_actions(ZHeapUndoActionWALInfo *wal_info);
++static bool zheap_undo_actions_page(UndoRecInfo *urp_array, int first_idx, int last_idx,
++							   Oid reloid, FullTransactionId full_xid, BlockNumber blkno,
++							   bool blk_chain_complete);
+ 
+ /*
+  * Per-undorecord callback from UndoFetchRecord to check whether
+@@ -501,7 +504,7 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
+ 			break;
+ 
+ 		/* Apply the undo actions. */
+-		zheap_undo_actions(urp_array, 0, nrecords - 1, rel->rd_id, fxid,
++		zheap_undo_actions_page(urp_array, 0, nrecords - 1, rel->rd_id, fxid,
+ 						   BufferGetBlockNumber(buffer),
+ 						   UndoRecPtrIsValid(urec_ptr) ? false : true);
+ 
+@@ -611,6 +614,57 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
+ 	ZPageSetPrunable(page, xid);
+ }
+ 
++void
++zheap_undo_actions(int nrecords, UndoRecInfo *urp_array)
++{
++	bool	prev_initialized = false;
++	Oid		prev_reloid = InvalidOid;
++	int		last_index = 0;
++	int 	i;
++	/*
++	 * FIXME: We always set the blk_chain_complete as false for now. Later,
++	 * we've plans to store this information in undo records.
++	 */
++	bool	blk_chain_complete = false;
++	FullTransactionId	full_xid;
++	ForkNumber	prev_fork = InvalidForkNumber;
++	BlockNumber prev_block = InvalidBlockNumber;
++
++	for (i = 0; i < nrecords; i++)
++	{
++		UnpackedUndoRecord *uur = urp_array[i].uur;
++
++		if(prev_initialized)
++		{
++			/*
++			 * If this undo is not for the same block then apply all undo
++			 * actions for the previous block.
++			 */
++			if (prev_reloid != uur->uur_reloid ||
++				 prev_fork != uur->uur_fork ||
++				 prev_block != uur->uur_block)
++			{
++				zheap_undo_actions_page(urp_array, last_index, i - 1,
++										  prev_reloid, full_xid, prev_block,
++										  blk_chain_complete);
++				last_index = i;
++			}
++		}
++		else
++			prev_initialized = true;
++
++		prev_reloid = uur->uur_reloid;
++		prev_fork = uur->uur_fork;
++		prev_block = uur->uur_block;
++		full_xid = uur->uur_fxid;
++	}
++
++	/* Apply the last set of the actions. */
++	zheap_undo_actions_page(urp_array, last_index, i - 1,
++							  prev_reloid, full_xid, prev_block,
++							  blk_chain_complete);
++}
++
+ /*
+  * zheap_undo_actions - Execute the undo actions for a zheap page
+  *
+@@ -625,8 +679,8 @@ undo_action_insert(Relation rel, Page page, OffsetNumber off,
+  *
+  *	returns true, if successfully applied the undo actions, otherwise, false.
+  */
+-bool
+-zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
++static bool
++zheap_undo_actions_page(UndoRecInfo *urp_array, int first_idx, int last_idx,
+ 				   Oid reloid, FullTransactionId full_xid, BlockNumber blkno,
+ 				   bool blk_chain_complete)
+ {
+diff --git a/src/include/access/zheap.h b/src/include/access/zheap.h
+index cf7f0ce..8e68623 100644
+--- a/src/include/access/zheap.h
++++ b/src/include/access/zheap.h
+@@ -338,9 +338,7 @@ extern void lazy_vacuum_zheap_rel(Relation onerel, struct VacuumParams *params,
+ 								  BufferAccessStrategy bstrategy);
+ 
+ /* in zheap/zundo.c */
+-extern bool zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
+-							   Oid reloid, FullTransactionId full_xid, BlockNumber blkno,
+-							   bool blk_chain_complete);
++extern void zheap_undo_actions(int nrecords, UndoRecInfo *urp_array);
+ 
+ /* in zheap/ztuptoaster.c */
+ extern ZHeapTuple ztoast_insert_or_update(Relation rel,
+-- 
+1.8.3.1
+

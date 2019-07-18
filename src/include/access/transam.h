@@ -116,6 +116,14 @@ FullTransactionIdAdvance(FullTransactionId *dest)
 	(AssertMacro(TransactionIdIsNormal(id1) && TransactionIdIsNormal(id2)), \
 	(int32) ((id1) - (id2)) > 0)
 
+/* Extract xid from a value comprised of epoch and xid  */
+#define GetXidFromEpochXid(epochxid)			\
+	((uint32) (epochxid) & 0XFFFFFFFF)
+
+/* Extract epoch from a value comprised of epoch and xid  */
+#define GetEpochFromEpochXid(epochxid)			\
+	((uint32) ((epochxid) >> 32))
+
 /* ----------
  *		Object ID (OID) zero is InvalidOid.
  *
@@ -235,6 +243,9 @@ extern XLogRecPtr TransactionIdGetCommitLSN(TransactionId xid);
 /* in transam/varsup.c */
 extern FullTransactionId GetNewTransactionId(bool isSubXact);
 extern void AdvanceNextFullTransactionIdPastXid(TransactionId xid);
+
+/* ZBORKED: eliminate */
+extern uint32 GetEpochForXid(TransactionId xid);
 extern FullTransactionId ReadNextFullTransactionId(void);
 extern void SetTransactionIdLimit(TransactionId oldest_datfrozenxid,
 								  Oid oldest_datoid);

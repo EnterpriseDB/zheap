@@ -111,15 +111,17 @@ VACUUM (INDEX_CLEANUP FALSE) vactst; -- index cleanup option is ignored if no in
 VACUUM (INDEX_CLEANUP FALSE, FREEZE TRUE) vaccluster;
 
 -- TRUNCATE option
+CREATE TABLE vac_truncate_test_empty(i INT NOT NULL, j text);
 CREATE TABLE vac_truncate_test(i INT NOT NULL, j text)
 	WITH (vacuum_truncate=true, autovacuum_enabled=false);
 INSERT INTO vac_truncate_test VALUES (1, NULL), (NULL, NULL);
 VACUUM (TRUNCATE FALSE) vac_truncate_test;
-SELECT pg_relation_size('vac_truncate_test') > 0;
+SELECT pg_relation_size('vac_truncate_test') > pg_relation_size('vac_truncate_test_empty');
 VACUUM vac_truncate_test;
-SELECT pg_relation_size('vac_truncate_test') = 0;
+SELECT pg_relation_size('vac_truncate_test') = pg_relation_size('vac_truncate_test_empty');
 VACUUM (TRUNCATE FALSE, FULL TRUE) vac_truncate_test;
 DROP TABLE vac_truncate_test;
+DROP TABLE vac_truncate_test_empty;
 
 -- partitioned table
 CREATE TABLE vacparted (a int, b char) PARTITION BY LIST (a);

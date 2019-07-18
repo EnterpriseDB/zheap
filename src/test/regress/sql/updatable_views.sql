@@ -583,7 +583,7 @@ CREATE TRIGGER rw_view1_ins_trig AFTER INSERT ON base_tbl
 CREATE VIEW rw_view1 AS SELECT a AS aa, b AS bb FROM base_tbl;
 
 INSERT INTO rw_view1 VALUES (3, 'Row 3');
-select * from base_tbl;
+select * from base_tbl ORDER BY a;
 
 DROP VIEW rw_view1;
 DROP TRIGGER rw_view1_ins_trig on base_tbl;
@@ -745,7 +745,7 @@ UPDATE rw_view1 SET b = 5 WHERE a = 3; -- ok
 UPDATE rw_view1 SET b = -5 WHERE a = 3; -- should fail
 INSERT INTO rw_view1(a) VALUES (9); -- ok
 INSERT INTO rw_view1(a) VALUES (10); -- should fail
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a, b;
 
 DROP TABLE base_tbl CASCADE;
 
@@ -774,7 +774,7 @@ SELECT * FROM information_schema.views WHERE table_name = 'rw_view2';
 
 INSERT INTO rw_view2 VALUES (-10); -- ok, but not in view
 INSERT INTO rw_view2 VALUES (20); -- should fail
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a;
 
 ALTER VIEW rw_view1 SET (check_option=here); -- invalid
 ALTER VIEW rw_view1 SET (check_option=local);
@@ -786,7 +786,7 @@ ALTER VIEW rw_view2 RESET (check_option);
 \d+ rw_view2
 SELECT * FROM information_schema.views WHERE table_name = 'rw_view2';
 INSERT INTO rw_view2 VALUES (30); -- ok, but not in view
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a;
 
 DROP TABLE base_tbl CASCADE;
 
@@ -910,14 +910,14 @@ INSERT INTO rw_view2 VALUES (-5); -- should fail
 INSERT INTO rw_view2 VALUES (5); -- ok
 INSERT INTO rw_view2 VALUES (50); -- ok, but not in view
 UPDATE rw_view2 SET a = a - 10; -- should fail
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl order by a, b;
 
 -- Check option won't cascade down to base view with INSTEAD OF triggers
 
 ALTER VIEW rw_view2 SET (check_option=cascaded);
 INSERT INTO rw_view2 VALUES (100); -- ok, but not in view (doesn't fail rw_view1's check)
 UPDATE rw_view2 SET a = 200 WHERE a = 5; -- ok, but not in view (doesn't fail rw_view1's check)
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl ORDER BY a;
 
 -- Neither local nor cascaded check options work with INSTEAD rules
 
@@ -932,7 +932,7 @@ INSERT INTO rw_view2 VALUES (20); -- ok, but not in view (doesn't fail rw_view1'
 UPDATE rw_view2 SET a = 30 WHERE a = 5; -- ok, but not in view (doesn't fail rw_view1's check)
 INSERT INTO rw_view2 VALUES (5); -- ok
 UPDATE rw_view2 SET a = -5 WHERE a = 5; -- ok, but not in view (doesn't fail rw_view2's check)
-SELECT * FROM base_tbl;
+SELECT * FROM base_tbl ORDER BY a;
 
 DROP TABLE base_tbl CASCADE;
 DROP FUNCTION rw_view1_trig_fn();

@@ -107,6 +107,7 @@ extern void smgrwriteback(SMgrRelation reln, ForkNumber forknum,
 extern BlockNumber smgrnblocks(SMgrRelation reln, ForkNumber forknum);
 extern void smgrtruncate(SMgrRelation reln, ForkNumber forknum,
 						 BlockNumber nblocks);
+extern void smgrrequestsync(RelFileNode rnode, ForkNumber forknum, int segno);
 extern void smgrimmedsync(SMgrRelation reln, ForkNumber forknum);
 extern void AtEOXact_SMgr(void);
 

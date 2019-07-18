@@ -206,6 +206,9 @@ extern void HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,
 extern bool HeapTupleHeaderIsOnlyLocked(HeapTupleHeader tuple);
 extern bool XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot);
 extern bool HeapTupleIsSurelyDead(HeapTuple htup, TransactionId OldestXmin);
+extern bool HeapTupleHasSerializableConflictOut(bool visible,
+												HeapTuple htup, Buffer buffer,
+												TransactionId *xid);
 
 /*
  * To avoid leaking too much knowledge about reorderbuffer implementation
