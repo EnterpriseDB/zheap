@@ -799,7 +799,10 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	 * once we know where in the WAL the record will be inserted. The CRC does
 	 * not include the record header yet.
 	 */
-	rechdr->xl_xid = GetCurrentTransactionIdIfAny();
+	if (rmid == RM_UNDOTEST_ID)
+		rechdr->xl_xid = GetTopTransactionIdIfAny();
+	else
+		rechdr->xl_xid = GetCurrentTransactionIdIfAny();
 	rechdr->xl_tot_len = total_len;
 	rechdr->xl_info = info;
 	rechdr->xl_rmid = rmid;

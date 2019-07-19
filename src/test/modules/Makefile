@@ -20,6 +20,7 @@ SUBDIRS = \
 		  test_rls_hooks \
 		  test_shm_mq \
 		  unsafe_tests \
+		  test_undo_api \
 		  worker_spi
 
 $(recurse)

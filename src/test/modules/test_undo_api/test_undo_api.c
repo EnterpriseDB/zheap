@@ -3,6 +3,7 @@
 #include "access/transam.h"
 #include "access/undoaccess.h"
 #include "access/xact.h"
+#include "access/undotest.h"
 #include "catalog/pg_class.h"
 #include "fmgr.h"
 #include "funcapi.h"
@@ -17,6 +18,7 @@
 PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(test_undo_api);
+PG_FUNCTION_INFO_V1(test_undo_insert);
 
 static void
 compare_undo_record(UnpackedUndoRecord *urp1, UnpackedUndoRecord *urp2)
@@ -712,5 +714,29 @@ test_undo_api(PG_FUNCTION_ARGS)
 	/* Test undo record bulk fetch API*/
 	test_bulk_fetch();
 
+	PG_RETURN_VOID();
+}
+
+/*
+ * Insert an undorecord for undotest rmgr inside a transaction.
+ */
+Datum
+test_undo_insert(PG_FUNCTION_ARGS)
+{
+	char			*per_level_num = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	BlockNumber 	block_num = PG_GETARG_UINT32(1);
+	OffsetNumber	off_num = PG_GETARG_UINT32(2);
+	int				per_level;
+
+	if (pg_strncasecmp(per_level_num, "UNDO_PERMANENT", 15) == 0)
+		per_level = UNDO_PERMANENT;
+	else if (pg_strncasecmp(per_level_num, "UNDO_UNLOGGED", 13) == 0)
+		per_level = UNDO_UNLOGGED;
+	else if (pg_strncasecmp(per_level_num, "UNDO_TEMP", 9) == 0)
+		per_level = UNDO_TEMP;
+	else
+		elog(ERROR, "Invalid persistence level %s", per_level_num);
+
+	undotest_insert(InvalidOid, block_num, off_num, per_level);
 	PG_RETURN_VOID();
 }

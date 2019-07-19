@@ -29,6 +29,7 @@
 #include "access/transam.h"
 #endif
 
+#include "access/transam.h"
 #include "access/xlogrecord.h"
 
 typedef struct XLogReaderState XLogReaderState;

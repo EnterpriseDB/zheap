@@ -12,6 +12,6 @@ OBJS = brindesc.o clogdesc.o committsdesc.o dbasedesc.o genericdesc.o \
 	   gindesc.o gistdesc.o hashdesc.o heapdesc.o logicalmsgdesc.o \
 	   mxactdesc.o nbtdesc.o relmapdesc.o replorigindesc.o seqdesc.o \
 	   smgrdesc.o spgdesc.o standbydesc.o tblspcdesc.o undoactiondesc.o \
-	   undologdesc.o xactdesc.o xlogdesc.o
+	   undologdesc.o undotestdesc.o xactdesc.o xlogdesc.o
 
 include $(top_srcdir)/src/backend/common.mk
