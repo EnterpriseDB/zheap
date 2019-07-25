@@ -705,6 +705,15 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 				break;
 			}
 
+			if (xid != urec->uur_xid)
+			{
+				/*
+				 * We are done, once the undo record suggests that prior tuple
+				 * version is modified by a different transaction.
+				 */
+				break;
+			}
+
 			uur_type = urec->uur_type;
 
 			if (uur_type == UNDO_INSERT || uur_type == UNDO_MULTI_INSERT)
@@ -720,15 +729,6 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 				uur_type == UNDO_XID_LOCK_FOR_UPDATE)
 			{
 				found = true;
-				break;
-			}
-
-			if (xid != urec->uur_xid)
-			{
-				/*
-				 * We are done, once the undo record suggests that prior tuple
-				 * version is modified by a different transaction.
-				 */
 				break;
 			}
 
