@@ -650,6 +650,12 @@ GetLockerTransInfo(Relation rel, ItemPointer tid, Buffer buf,
 	bool		found = false;
 	BlockNumber tpd_blkno;
 
+	/* Set the default values. */
+	if (fxid_out)
+		*fxid_out = InvalidFullTransactionId;
+	if (trans_slot)
+		*trans_slot = InvalidXactSlotId;
+
 	oldestXidWithEpochHavingUndo = FullTransactionIdFromU64(
 															pg_atomic_read_u64(&ProcGlobal->oldestXidWithEpochHavingUndo));
 	trans_slots = GetTransactionsSlotsForPage(rel, buf, &total_trans_slots,
