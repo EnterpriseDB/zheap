@@ -1249,8 +1249,9 @@ ZHeapTupleSatisfiesUpdate(Relation rel, ItemPointer tid, ZHeapTuple zhtup,
 		 * the slot's current xid is all-visible, then the xid prior to it
 		 * must be all-visible.
 		 */
-		if (FullTransactionIdIsValid(zinfo->epoch_xid) &&
-			FullTransactionIdOlderThanAllUndo(zinfo->epoch_xid))
+		if (zinfo->trans_slot == ZHTUP_SLOT_FROZEN ||
+			(FullTransactionIdIsValid(zinfo->epoch_xid) &&
+			FullTransactionIdOlderThanAllUndo(zinfo->epoch_xid)))
 		{
 			zinfo->trans_slot = ZHTUP_SLOT_FROZEN;
 			zinfo->epoch_xid = InvalidFullTransactionId;
