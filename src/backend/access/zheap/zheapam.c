@@ -3716,6 +3716,9 @@ lock_tuple:
 		offnum = ItemPointerGetOffsetNumber(&mytup->t_self);
 		lp = PageGetItemId(page, offnum);
 
+		/* Copy ctid here. */
+		ItemPointerCopy(&mytup->t_self, ctid);
+
 		/* free the old tuple */
 		zheap_freetuple(mytup);
 
@@ -3732,9 +3735,6 @@ lock_tuple:
 		}
 		else if (ItemIdIsDeleted(lp))
 		{
-			/* There is no point of locking a deleted and pruned tuple. */
-			ZHeapTupleFetch(rel, buf, offnum, SnapshotAny, &mytup, NULL);
-			ctid = &mytup->t_self;
 			ZHeapPageGetNewCtid(buf, ctid, &zinfo);
 			goto next;
 		}
