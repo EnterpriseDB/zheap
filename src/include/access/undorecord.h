@@ -271,4 +271,5 @@ extern void UndoRecordGetCompressionInfo(Page page, int starting_byte,
 										 UndoCompressionInfo *compresssion_info);
 extern void UndoRecordSetInfo(UnpackedUndoRecord *uur);
 
+extern void mask_undo_page(char *pagedata);
 #endif							/* UNDORECORD_H */
