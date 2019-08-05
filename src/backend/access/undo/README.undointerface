@@ -1,0 +1,47 @@
+The undo interface layer is about packing undo records into undo pages.
+We are assuming that certain operations are happening in a transaction and
+those operation might need to insert the undo for the visibility or for
+rolling back the effect of the transaction.  So this layer will provide
+interfaces for inserting and fetching the undo records.
+
+We want those undo records to be as space efficient as possible.  In most cases
+we won't need to write them out to the disk but in some cases when the
+transaction is big we might.  So we don't want them to be big.  In order to
+make that happen we have chosen to do the record compression therein we avoid
+storing the common fields in all the undo record on the page provided the first
+record on the page is from the same transaction.  This layer don't worry about
+compressing the payload data but that is the AM specific information so the AM
+layer might need to worry about compressing that information.
+
+Inserting an undo record
+------------------------
+For inserting an undo record the caller must first prepare undo records then
+insert the prepared undo records.  The prepare will just make the undo space
+ready and lock the necessary buffers and the insert will actually write the
+prepared records into the undo buffers.  There is an option to set the prepare
+limit which allows to prepare the multiple undo records and insert all of them
+in one shot.  This will allow the caller to prepared all the undo records
+(which are required under single WAL logged operation) outside the critical
+section and then insert all of them at once under the critical section.
+
+Fetching an undo record
+------------------------
+To fetch an undo record, a caller must provide a valid undo record pointer.
+The api will read the undo records from the underlying pages and return the
+unpacked undo record.  There is also an interface to bulk fetch the undo
+records which takes the start and end undo record pointers as input and it
+will return the array of unpacked undo records between that range.
+
+Undo record compression:
+------------------------
+Under a single transaction, there are some fields which will be common across
+the undo records, for example, the full transaction id is always the same,
+apart from that, the reloid, cid and rmid can also be same.  So we can avoid
+storing the common information in all the records and we can fetch it from the
+record in which it is stored.  We don't want to do this compression for
+complete transaction otherwise we might need to fetch the undo record across
+pages so we have decided to do the page level compression that is if the first
+record on the page is from the same transaction and if any of these common
+field value is same as the first record of the page then we will not store that
+value in our record. But, while fetching the undo record we will read that
+value from the first complete record of the page and return it to the caller.
