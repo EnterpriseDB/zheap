@@ -130,7 +130,7 @@ typedef int UndoLogNumber;
 	(((uint64) (logno) << UndoLogOffsetBits) | (offset))
 
 /* The number of unusable bytes in the header of each block. */
-#define UndoLogBlockHeaderSize SizeOfPageHeaderData
+#define UndoLogBlockHeaderSize SizeOfUndoPageHeaderData
 
 /* The number of usable bytes we can store per block. */
 #define UndoLogUsableBytesPerPage (BLCKSZ - UndoLogBlockHeaderSize)
@@ -159,6 +159,10 @@ typedef int UndoLogNumber;
 /* Compute the offset of a given UndoRecPtr in the page that holds it. */
 #define UndoRecPtrGetPageOffset(urp)			\
 	(UndoRecPtrGetOffset(urp) % BLCKSZ)
+
+/* Compute the undo record pointer offset given the undo rec page offset and the block number. */
+#define UndoRecPageOffsetGetRecPtr(offset, blkno)             \
+	((blkno * BLCKSZ) + offset)
 
 /* Compare two undo checkpoint files to find the oldest file. */
 #define UndoCheckPointFilenamePrecedes(file1, file2)	\
