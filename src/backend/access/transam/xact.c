@@ -27,6 +27,7 @@
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/undorecordset.h"
+#include "access/undostate.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -127,6 +128,7 @@ typedef enum TransState
 	TRANS_DEFAULT,				/* idle */
 	TRANS_START,				/* transaction starting */
 	TRANS_INPROGRESS,			/* inside a valid transaction */
+	TRANS_UNDO,					/* foreground undo in progress */
 	TRANS_COMMIT,				/* commit in progress */
 	TRANS_ABORT,				/* abort in progress */
 	TRANS_PREPARE				/* prepare in progress */
@@ -302,7 +304,7 @@ static SubXactCallbackItem *SubXact_callbacks = NULL;
 
 /* local function prototypes */
 static void AssignTransactionId(TransactionState s);
-static void AbortTransaction(void);
+static void AbortTransaction(bool *perform_foreground_undo);
 static void AtAbort_Memory(void);
 static void AtCleanup_Memory(void);
 static void AtAbort_ResourceOwner(void);
@@ -324,10 +326,14 @@ static void StartTransaction(void);
 
 static void StartSubTransaction(void);
 static void CommitSubTransaction(void);
-static void AbortSubTransaction(void);
+static void AbortSubTransaction(bool *perform_foreground_undo);
 static void CleanupSubTransaction(void);
 static void PushTransaction(void);
 static void PopTransaction(void);
+
+static void PerformForegroundUndo(void);
+static void BeginUndoTransactionContext(void);
+static void EndUndoTransactionContext(void);
 
 static void AtSubAbort_Memory(void);
 static void AtSubCleanup_Memory(void);
@@ -362,10 +368,10 @@ IsTransactionState(void)
 	 * TRANS_DEFAULT and TRANS_ABORT are obviously unsafe states.  However, we
 	 * also reject the startup/shutdown states TRANS_START, TRANS_COMMIT,
 	 * TRANS_PREPARE since it might be too soon or too late within those
-	 * transition states to do anything interesting.  Hence, the only "valid"
-	 * state is TRANS_INPROGRESS.
+	 * transition states to do anything interesting.  TRANS_INPROGRESS is a
+	 * valid state, though, and so is TRANS_UNDO.
 	 */
-	return (s->state == TRANS_INPROGRESS);
+	return (s->state == TRANS_INPROGRESS || s->state == TRANS_UNDO);
 }
 
 /*
@@ -560,7 +566,7 @@ AssignTransactionId(TransactionState s)
 
 	/* Assert that caller didn't screw up */
 	Assert(!FullTransactionIdIsValid(s->fullTransactionId));
-	Assert(s->state == TRANS_INPROGRESS);
+	Assert(s->state == TRANS_INPROGRESS);	/* NB: undo shouldn't need an XID */
 
 	/*
 	 * Workers synchronize transaction state at the beginning of each parallel
@@ -2090,8 +2096,10 @@ CommitTransaction(void)
 	TransactionState s = CurrentTransactionState;
 	TransactionId latestXid;
 	bool		is_parallel_worker;
+	bool		is_undo;
 
 	is_parallel_worker = (s->blockState == TBLOCK_PARALLEL_INPROGRESS);
+	is_undo = (s->state == TRANS_UNDO);
 
 	/* Enforce parallel mode restrictions during parallel worker commit. */
 	if (is_parallel_worker)
@@ -2102,7 +2110,7 @@ CommitTransaction(void)
 	/*
 	 * check the current transaction state
 	 */
-	if (s->state != TRANS_INPROGRESS)
+	if (s->state != TRANS_INPROGRESS && s->state != TRANS_UNDO)
 		elog(WARNING, "CommitTransaction while in %s state",
 			 TransStateAsString(s->state));
 	Assert(s->parent == NULL);
@@ -2150,7 +2158,8 @@ CommitTransaction(void)
 	 * Let ON COMMIT management do its thing (must happen after closing
 	 * cursors, to avoid dangling-reference problems)
 	 */
-	PreCommit_on_commit_actions();
+	if (!is_undo)
+		PreCommit_on_commit_actions();
 
 	/* close large objects before lower-level cleanup */
 	AtEOXact_LargeObject(true);
@@ -2182,7 +2191,8 @@ CommitTransaction(void)
 	 * set the current transaction state information appropriately during
 	 * commit processing
 	 */
-	s->state = TRANS_COMMIT;
+	if (!is_undo)
+		s->state = TRANS_COMMIT;
 	s->parallelModeLevel = 0;
 
 	if (!is_parallel_worker)
@@ -2235,6 +2245,8 @@ CommitTransaction(void)
 
 	CallXactCallbacks(is_parallel_worker ? XACT_EVENT_PARALLEL_COMMIT
 					  : XACT_EVENT_COMMIT);
+
+	AtCommit_UndoState();
 
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_BEFORE_LOCKS,
@@ -2290,30 +2302,44 @@ CommitTransaction(void)
 	AtEOXact_ApplyLauncher(true);
 	pgstat_report_xact_timestamp(0);
 
-	CurrentResourceOwner = NULL;
-	ResourceOwnerDelete(TopTransactionResourceOwner);
-	s->curTransactionOwner = NULL;
-	CurTransactionResourceOwner = NULL;
-	TopTransactionResourceOwner = NULL;
+	if (is_undo)
+	{
+		/*
+		 * If this transaction was performing foreground undo, it should not
+		 * have acquired an XID during undo, and we should put it back in the
+		 * abort state from which it came. CleanupTransaction will eventually
+		 * be executed, which make up for the clenaup steps skipped below.
+		 */
+		Assert(!TransactionIdIsValid(latestXid));
+		s->state = TRANS_ABORT;
+	}
+	else
+	{
+		CurrentResourceOwner = NULL;
+		ResourceOwnerDelete(TopTransactionResourceOwner);
+		s->curTransactionOwner = NULL;
+		CurTransactionResourceOwner = NULL;
+		TopTransactionResourceOwner = NULL;
 
-	AtCommit_Memory();
+		AtCommit_Memory();
 
-	s->fullTransactionId = InvalidFullTransactionId;
-	s->subTransactionId = InvalidSubTransactionId;
-	s->nestingLevel = 0;
-	s->gucNestLevel = 0;
-	s->childXids = NULL;
-	s->nChildXids = 0;
-	s->maxChildXids = 0;
+		s->fullTransactionId = InvalidFullTransactionId;
+		s->subTransactionId = InvalidSubTransactionId;
+		s->nestingLevel = 0;
+		s->gucNestLevel = 0;
+		s->childXids = NULL;
+		s->nChildXids = 0;
+		s->maxChildXids = 0;
 
-	XactTopFullTransactionId = InvalidFullTransactionId;
-	nParallelCurrentXids = 0;
+		XactTopFullTransactionId = InvalidFullTransactionId;
+		nParallelCurrentXids = 0;
 
-	/*
-	 * done with commit processing, set current transaction state back to
-	 * default
-	 */
-	s->state = TRANS_DEFAULT;
+		/*
+		 * done with commit processing, set current transaction state back to
+		 * default
+		 */
+		s->state = TRANS_DEFAULT;
+	}
 
 	RESUME_INTERRUPTS();
 }
@@ -2606,7 +2632,7 @@ PrepareTransaction(void)
  *	AbortTransaction
  */
 static void
-AbortTransaction(void)
+AbortTransaction(bool *perform_foreground_undo)
 {
 	TransactionState s = CurrentTransactionState;
 	TransactionId latestXid;
@@ -2668,7 +2694,8 @@ AbortTransaction(void)
 	 * check the current transaction state
 	 */
 	is_parallel_worker = (s->blockState == TBLOCK_PARALLEL_INPROGRESS);
-	if (s->state != TRANS_INPROGRESS && s->state != TRANS_PREPARE)
+	if (s->state != TRANS_INPROGRESS && s->state != TRANS_PREPARE &&
+		s->state != TRANS_UNDO)
 		elog(WARNING, "AbortTransaction while in %s state",
 			 TransStateAsString(s->state));
 	Assert(s->parent == NULL);
@@ -2748,6 +2775,8 @@ AbortTransaction(void)
 			CallXactCallbacks(XACT_EVENT_PARALLEL_ABORT);
 		else
 			CallXactCallbacks(XACT_EVENT_ABORT);
+
+		AtAbort_UndoState(perform_foreground_undo);
 
 		ResourceOwnerRelease(TopTransactionResourceOwner,
 							 RESOURCE_RELEASE_BEFORE_LOCKS,
@@ -2941,6 +2970,7 @@ void
 CommitTransactionCommand(void)
 {
 	TransactionState s = CurrentTransactionState;
+	bool		perform_foreground_undo;
 
 	if (s->chain)
 		SaveTransactionCharacteristics();
@@ -3037,7 +3067,9 @@ CommitTransactionCommand(void)
 			 * and then clean up.
 			 */
 		case TBLOCK_ABORT_PENDING:
-			AbortTransaction();
+			AbortTransaction(&perform_foreground_undo);
+			if (perform_foreground_undo)
+				PerformForegroundUndo();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
 			if (s->chain)
@@ -3133,7 +3165,9 @@ CommitTransactionCommand(void)
 			 * As above, but it's not dead yet, so abort first.
 			 */
 		case TBLOCK_SUBABORT_PENDING:
-			AbortSubTransaction();
+			AbortSubTransaction(&perform_foreground_undo);
+			if (perform_foreground_undo)
+				PerformForegroundUndo();
 			CleanupSubTransaction();
 			CommitTransactionCommand();
 			break;
@@ -3153,7 +3187,9 @@ CommitTransactionCommand(void)
 				s->name = NULL;
 				savepointLevel = s->savepointLevel;
 
-				AbortSubTransaction();
+				AbortSubTransaction(&perform_foreground_undo);
+				if (perform_foreground_undo)
+					PerformForegroundUndo();
 				CleanupSubTransaction();
 
 				DefineSavepoint(NULL);
@@ -3205,6 +3241,7 @@ void
 AbortCurrentTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
+	bool		perform_foreground_undo;
 
 	switch (s->blockState)
 	{
@@ -3224,7 +3261,9 @@ AbortCurrentTransaction(void)
 				 */
 				if (s->state == TRANS_START)
 					s->state = TRANS_INPROGRESS;
-				AbortTransaction();
+				AbortTransaction(&perform_foreground_undo);
+				if (perform_foreground_undo)
+					PerformForegroundUndo();
 				CleanupTransaction();
 			}
 			break;
@@ -3236,7 +3275,9 @@ AbortCurrentTransaction(void)
 			 */
 		case TBLOCK_STARTED:
 		case TBLOCK_IMPLICIT_INPROGRESS:
-			AbortTransaction();
+			AbortTransaction(&perform_foreground_undo);
+			if (perform_foreground_undo)
+				PerformForegroundUndo();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
 			break;
@@ -3249,7 +3290,9 @@ AbortCurrentTransaction(void)
 			 * state.
 			 */
 		case TBLOCK_BEGIN:
-			AbortTransaction();
+			AbortTransaction(&perform_foreground_undo);
+			if (perform_foreground_undo)
+				PerformForegroundUndo();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
 			break;
@@ -3261,7 +3304,9 @@ AbortCurrentTransaction(void)
 			 */
 		case TBLOCK_INPROGRESS:
 		case TBLOCK_PARALLEL_INPROGRESS:
-			AbortTransaction();
+			AbortTransaction(&perform_foreground_undo);
+			if (perform_foreground_undo)
+				PerformForegroundUndo();
 			s->blockState = TBLOCK_ABORT;
 			/* CleanupTransaction happens when we exit TBLOCK_ABORT_END */
 			break;
@@ -3272,7 +3317,9 @@ AbortCurrentTransaction(void)
 			 * the transaction).
 			 */
 		case TBLOCK_END:
-			AbortTransaction();
+			AbortTransaction(&perform_foreground_undo);
+			if (perform_foreground_undo)
+				PerformForegroundUndo();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
 			break;
@@ -3301,7 +3348,9 @@ AbortCurrentTransaction(void)
 			 * Abort, cleanup, go to idle state.
 			 */
 		case TBLOCK_ABORT_PENDING:
-			AbortTransaction();
+			AbortTransaction(&perform_foreground_undo);
+			if (perform_foreground_undo)
+				PerformForegroundUndo();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
 			break;
@@ -3312,7 +3361,9 @@ AbortCurrentTransaction(void)
 			 * the transaction).
 			 */
 		case TBLOCK_PREPARE:
-			AbortTransaction();
+			AbortTransaction(&perform_foreground_undo);
+			if (perform_foreground_undo)
+				PerformForegroundUndo();
 			CleanupTransaction();
 			s->blockState = TBLOCK_DEFAULT;
 			break;
@@ -3323,7 +3374,9 @@ AbortCurrentTransaction(void)
 			 * we get ROLLBACK.
 			 */
 		case TBLOCK_SUBINPROGRESS:
-			AbortSubTransaction();
+			AbortSubTransaction(&perform_foreground_undo);
+			if (perform_foreground_undo)
+				PerformForegroundUndo();
 			s->blockState = TBLOCK_SUBABORT;
 			break;
 
@@ -3337,7 +3390,9 @@ AbortCurrentTransaction(void)
 		case TBLOCK_SUBCOMMIT:
 		case TBLOCK_SUBABORT_PENDING:
 		case TBLOCK_SUBRESTART:
-			AbortSubTransaction();
+			AbortSubTransaction(&perform_foreground_undo);
+			if (perform_foreground_undo)
+				PerformForegroundUndo();
 			CleanupSubTransaction();
 			AbortCurrentTransaction();
 			break;
@@ -4552,7 +4607,13 @@ RollbackAndReleaseCurrentSubTransaction(void)
 	 * Abort the current subtransaction, if needed.
 	 */
 	if (s->blockState == TBLOCK_SUBINPROGRESS)
-		AbortSubTransaction();
+	{
+		bool		perform_foreground_undo;
+
+		AbortSubTransaction(&perform_foreground_undo);
+		if (perform_foreground_undo)
+			PerformForegroundUndo();
+	}
 
 	/* And clean it up, too */
 	CleanupSubTransaction();
@@ -4570,6 +4631,15 @@ RollbackAndReleaseCurrentSubTransaction(void)
  *	This routine is provided for error recovery purposes.  It aborts any
  *	active transaction or transaction block, leaving the system in a known
  *	idle state.
+ *
+ *  This function skips undo processing entirely. Any temporary or permanent
+ *  undo processing will be forcibly pushed into the background, and any
+ *  temporary undo will be abandoned. Hence, this function should only be
+ *  used if it is known that no undo will be present, or when the backend
+ *  will be exiting anyway, or as a measure of last resort. (If we find in
+ *  the future that we sometimes want to allow undo processing here, it would
+ *  be easy enough to add a parameter controlling the behavior, but this is
+ *  good enough for existing callers.)
  */
 void
 AbortOutOfAnyTransaction(void)
@@ -4602,7 +4672,7 @@ AbortOutOfAnyTransaction(void)
 					 */
 					if (s->state == TRANS_START)
 						s->state = TRANS_INPROGRESS;
-					AbortTransaction();
+					AbortTransaction(NULL);
 					CleanupTransaction();
 				}
 				break;
@@ -4615,7 +4685,7 @@ AbortOutOfAnyTransaction(void)
 			case TBLOCK_ABORT_PENDING:
 			case TBLOCK_PREPARE:
 				/* In a transaction, so clean up */
-				AbortTransaction();
+				AbortTransaction(NULL);
 				CleanupTransaction();
 				s->blockState = TBLOCK_DEFAULT;
 				break;
@@ -4642,7 +4712,7 @@ AbortOutOfAnyTransaction(void)
 			case TBLOCK_SUBCOMMIT:
 			case TBLOCK_SUBABORT_PENDING:
 			case TBLOCK_SUBRESTART:
-				AbortSubTransaction();
+				AbortSubTransaction(NULL);
 				CleanupSubTransaction();
 				s = CurrentTransactionState;	/* changed by pop */
 				break;
@@ -4812,10 +4882,12 @@ static void
 CommitSubTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
+	bool		is_undo;
 
 	ShowTransactionState("CommitSubTransaction");
+	is_undo = (s->state == TRANS_UNDO);
 
-	if (s->state != TRANS_INPROGRESS)
+	if (s->state != TRANS_INPROGRESS && s->state != TRANS_UNDO)
 		elog(WARNING, "CommitSubTransaction while in %s state",
 			 TransStateAsString(s->state));
 
@@ -4835,7 +4907,8 @@ CommitSubTransaction(void)
 	UndoCloseAndDestroyForXactLevel(s->nestingLevel);
 
 	/* Do the actual "commit", such as it is */
-	s->state = TRANS_COMMIT;
+	if (!is_undo)
+		s->state = TRANS_COMMIT;
 
 	/* Must CCI to ensure commands of subtransaction are seen as done */
 	CommandCounterIncrement();
@@ -4859,6 +4932,8 @@ CommitSubTransaction(void)
 
 	CallSubXactCallbacks(SUBXACT_EVENT_COMMIT_SUB, s->subTransactionId,
 						 s->parent->subTransactionId);
+
+	AtSubCommit_UndoState(s->nestingLevel);
 
 	ResourceOwnerRelease(s->curTransactionOwner,
 						 RESOURCE_RELEASE_BEFORE_LOCKS,
@@ -4898,30 +4973,43 @@ CommitSubTransaction(void)
 	AtSubCommit_Snapshot(s->nestingLevel);
 	AtEOSubXact_ApplyLauncher(true, s->nestingLevel);
 
-	/*
-	 * We need to restore the upper transaction's read-only state, in case the
-	 * upper is read-write while the child is read-only; GUC will incorrectly
-	 * think it should leave the child state in place.
-	 */
-	XactReadOnly = s->prevXactReadOnly;
+	if (is_undo)
+	{
+		/*
+		 * If this transaction was performing foreground undo, then there will
+		 * eventually be a call to CleanupTransaction, so we need to skip some
+		 * of these cleanup steps.  The state also goes back to TRANS_ABORT,
+		 * not TRANS_DEFAULT.
+		 */
+		s->state = TRANS_ABORT;
+	}
+	else
+	{
+		/*
+		 * We need to restore the upper transaction's read-only state, in case
+		 * the upper is read-write while the child is read-only; GUC will
+		 * incorrectly think it should leave the child state in place.
+		 */
+		XactReadOnly = s->prevXactReadOnly;
 
-	CurrentResourceOwner = s->parent->curTransactionOwner;
-	CurTransactionResourceOwner = s->parent->curTransactionOwner;
-	ResourceOwnerDelete(s->curTransactionOwner);
-	s->curTransactionOwner = NULL;
+		CurrentResourceOwner = s->parent->curTransactionOwner;
+		CurTransactionResourceOwner = s->parent->curTransactionOwner;
+		ResourceOwnerDelete(s->curTransactionOwner);
+		s->curTransactionOwner = NULL;
 
-	AtSubCommit_Memory();
+		AtSubCommit_Memory();
 
-	s->state = TRANS_DEFAULT;
+		s->state = TRANS_DEFAULT;
 
-	PopTransaction();
+		PopTransaction();
+	}
 }
 
 /*
  * AbortSubTransaction
  */
 static void
-AbortSubTransaction(void)
+AbortSubTransaction(bool *perform_foreground_undo)
 {
 	TransactionState s = CurrentTransactionState;
 
@@ -4982,7 +5070,7 @@ AbortSubTransaction(void)
 	 */
 	ShowTransactionState("AbortSubTransaction");
 
-	if (s->state != TRANS_INPROGRESS)
+	if (s->state != TRANS_INPROGRESS && s->state != TRANS_UNDO)
 		elog(WARNING, "AbortSubTransaction while in %s state",
 			 TransStateAsString(s->state));
 
@@ -5026,6 +5114,8 @@ AbortSubTransaction(void)
 		CallSubXactCallbacks(SUBXACT_EVENT_ABORT_SUB, s->subTransactionId,
 							 s->parent->subTransactionId);
 
+		AtSubAbort_UndoState(s->nestingLevel, perform_foreground_undo);
+
 		ResourceOwnerRelease(s->curTransactionOwner,
 							 RESOURCE_RELEASE_BEFORE_LOCKS,
 							 false, false);
@@ -5052,6 +5142,7 @@ AbortSubTransaction(void)
 		AtEOSubXact_PgStat(false, s->nestingLevel);
 		AtSubAbort_Snapshot(s->nestingLevel);
 		AtEOSubXact_ApplyLauncher(false, s->nestingLevel);
+		/* XXX need to do something with perform_foreground_undo */
 	}
 
 	/*
@@ -5188,6 +5279,121 @@ PopTransaction(void)
 	if (s->name)
 		pfree(s->name);
 	pfree(s);
+}
+
+/*
+ * PerformForegroundUndo
+ *
+ * A transaction or subtransaction has failed, and we need to attempt
+ * foreground undo before continuing.
+ */
+static void
+PerformForegroundUndo(void)
+{
+	TransactionState s = CurrentTransactionState;
+
+	/* Establish a safe environment in which to perform undo work. */
+	BeginUndoTransactionContext();
+
+	/* Do the actual work. */
+	PerformUndoActions(s->nestingLevel);
+
+	/* Clean up. */
+	EndUndoTransactionContext();
+}
+
+/*
+ * BeginUndoTransactionContext
+ *
+ * Before we try to apply undo, we need to establish a safe environment
+ * in which to perform operations that might fail.  Note that there are
+ * restrictions on what operations can be safely performed during undo
+ * apply, so we don't need absolutely everything to be working here.  For
+ * instance, it's fine to ignore triggers here, because undo apply should never
+ * fire them. For further discussion, see "Expectations for Undo Handlers" in
+ * src/backend/access/undo/README.
+ *
+ * AbortTransaction() has already been called before reaching this point,
+ * and has released most of the resources owned by the prior transaction,
+ * so there's actually not that much to do here.
+ */
+static void
+BeginUndoTransactionContext()
+{
+	TransactionState s = CurrentTransactionState;
+
+	/*
+	 * Switch back out of TransactionAbortContext.  We don't want undo apply
+	 * to consume our reserved space; that could leave us unable to cope with
+	 * another failure.
+	 *
+	 * If the original transaction failed due to memory exhaustion, it's
+	 * possible that undo apply may immediately fail again as soon as it tries
+	 * to allocate anything.  However, note that we've already cleaned up
+	 * portals, which makes it substantially less likely that we're still low
+	 * on memory.
+	 */
+	MemoryContextSwitchTo(s->curTransactionContext);
+	CurTransactionContext = s->curTransactionContext;
+
+	/*
+	 * We want to treat undo apply a bit like a new transaction with no XID;
+	 * so, forget about our XID and any committed sub-XIDs.  (Otherwise, we
+	 * might try to write a new commit or abort record later for the existing
+	 * XIDs, for which an abort record has already been written.)
+	 */
+	s->fullTransactionId = InvalidFullTransactionId;
+	if (s->nestingLevel == 1)
+		XactTopFullTransactionId = InvalidFullTransactionId;
+	s->nChildXids = 0;
+	s->childXids = NULL;
+
+	/*
+	 * AbortTransaction() tore down the transaction's GUC nesting level. Stand
+	 * up a new one.
+	 */
+	s->gucNestLevel = NewGUCNestLevel();
+
+	/*
+	 * XXX. Release old VXID lock, acquire new one? Other stuff?
+	 */
+
+	/*
+	 * Ready to apply undo.
+	 *
+	 * Note that we change the transaction state here, but not the transaction
+	 * block state; the latter is the user-visible state of the block. Should
+	 * we fail during undo apply, we want to end up back in the same branch of
+	 * the switch in AbortCurrentTransaction() that we took to get here in the
+	 * first place. On the second trip through, perform_foreground_undo will
+	 * be set to false (see undostate.c for details) and so we won't try undo
+	 * apply again.
+	 */
+	s->state = TRANS_UNDO;
+}
+
+/*
+ * EndUndoTransactionContext
+ *
+ * In the event that undo apply completes without error, we'll end up here.
+ */
+static void
+EndUndoTransactionContext(void)
+{
+	TransactionState s = CurrentTransactionState;
+
+	/*
+	 * We handle this pretty much like the commit of a subtransaction without
+	 * an XID.  CommitTransaction or CommitSubTransaction will do all the
+	 * heavy lifting, including resetting the state back to TRANS_ABORT.  We
+	 * just need to call the right one.
+	 */
+	if (s->nestingLevel == 1)
+		CommitTransaction();
+	else
+		CommitSubTransaction();
+
+	Assert(s->state == TRANS_ABORT);
 }
 
 /*
@@ -5446,6 +5652,8 @@ TransStateAsString(TransState state)
 			return "START";
 		case TRANS_INPROGRESS:
 			return "INPROGRESS";
+		case TRANS_UNDO:
+			return "UNDO";
 		case TRANS_COMMIT:
 			return "COMMIT";
 		case TRANS_ABORT:

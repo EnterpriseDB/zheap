@@ -28,8 +28,33 @@ typedef struct RBTNode
 	struct RBTNode *parent;		/* parent, or NULL (not RBTNIL!) if none */
 } RBTNode;
 
-/* Opaque struct representing a whole tree */
-typedef struct RBTree RBTree;
+/* Support functions to be provided by caller */
+typedef int (*rbt_comparator) (const RBTNode *a, const RBTNode *b, void *arg);
+typedef void (*rbt_combiner) (RBTNode *existing, const RBTNode *newdata, void *arg);
+typedef RBTNode *(*rbt_allocfunc) (void *arg);
+typedef void (*rbt_freefunc) (RBTNode *x, void *arg);
+
+/*
+ * RBTree control structure
+ *
+ * This is declared here to make it possible to preallocate an object of
+ * the correct size, but callers should not access the members diretly.
+ */
+typedef struct RBTree
+{
+	RBTNode    *root;			/* root node, or RBTNIL if tree is empty */
+
+	/* Remaining fields are constant after rbt_create */
+
+	Size		node_size;		/* actual size of tree nodes */
+	/* The caller-supplied manipulation functions */
+	rbt_comparator comparator;
+	rbt_combiner combiner;
+	rbt_allocfunc allocfunc;
+	rbt_freefunc freefunc;
+	/* Passthrough arg passed to all manipulation functions */
+	void	   *arg;
+} RBTree;
 
 /* Available tree iteration orderings */
 typedef enum RBTOrderControl
@@ -53,18 +78,19 @@ struct RBTreeIterator
 	bool		is_over;
 };
 
-/* Support functions to be provided by caller */
-typedef int (*rbt_comparator) (const RBTNode *a, const RBTNode *b, void *arg);
-typedef void (*rbt_combiner) (RBTNode *existing, const RBTNode *newdata, void *arg);
-typedef RBTNode *(*rbt_allocfunc) (void *arg);
-typedef void (*rbt_freefunc) (RBTNode *x, void *arg);
-
 extern RBTree *rbt_create(Size node_size,
 						  rbt_comparator comparator,
 						  rbt_combiner combiner,
 						  rbt_allocfunc allocfunc,
 						  rbt_freefunc freefunc,
 						  void *arg);
+extern void rbt_initialize(RBTree *rbt,
+						   Size node_size,
+						   rbt_comparator comparator,
+						   rbt_combiner combiner,
+						   rbt_allocfunc allocfunc,
+						   rbt_freefunc freefunc,
+						   void *arg);
 
 extern RBTNode *rbt_find(RBTree *rbt, const RBTNode *data);
 extern RBTNode *rbt_leftmost(RBTree *rbt);

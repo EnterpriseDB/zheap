@@ -2540,6 +2540,13 @@ ULONG
 ULONG_PTR
 UV
 UVersionInfo
+UndoRecPtr
+UndoRequest
+UndoRequestManager
+UndoRequestNode
+UndoRequestSource
+UndoStateData
+UndoSubTransaction
 Unique
 UniquePath
 UniquePathMethod

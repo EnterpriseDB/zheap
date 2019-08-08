@@ -36,25 +36,6 @@
 #define RBTRED		(1)
 
 /*
- * RBTree control structure
- */
-struct RBTree
-{
-	RBTNode    *root;			/* root node, or RBTNIL if tree is empty */
-
-	/* Remaining fields are constant after rbt_create */
-
-	Size		node_size;		/* actual size of tree nodes */
-	/* The caller-supplied manipulation functions */
-	rbt_comparator comparator;
-	rbt_combiner combiner;
-	rbt_allocfunc allocfunc;
-	rbt_freefunc freefunc;
-	/* Passthrough arg passed to all manipulation functions */
-	void	   *arg;
-};
-
-/*
  * all leafs are sentinels, use customized NIL name to prevent
  * collision with system-wide constant NIL which is actually NULL
  */
@@ -120,6 +101,33 @@ rbt_create(Size node_size,
 	tree->arg = arg;
 
 	return tree;
+}
+
+/*
+ * rbt_initialize: initalize an empty RBTree
+ *
+ * This is just like rbt_create, except that the caller is responsible for
+ * allocating the memory.
+ */
+void
+rbt_initialize(RBTree *rbt,
+			   Size node_size,
+			   rbt_comparator comparator,
+			   rbt_combiner combiner,
+			   rbt_allocfunc allocfunc,
+			   rbt_freefunc freefunc,
+			   void *arg)
+{
+	Assert(node_size > sizeof(RBTNode));
+
+	rbt->root = RBTNIL;
+	rbt->node_size = node_size;
+	rbt->comparator = comparator;
+	rbt->combiner = combiner;
+	rbt->allocfunc = allocfunc;
+	rbt->freefunc = freefunc;
+
+	rbt->arg = arg;
 }
 
 /* Copy the additional data fields from one RBTNode to another */
