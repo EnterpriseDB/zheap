@@ -18,7 +18,21 @@
 #include "catalog/pg_class.h"
 #include "storage/lwlock.h"
 
-extern void UndoDiscard(TransactionId xmin, bool *hibernate);
+struct HTAB;
+
+typedef struct DiscardWaitTableEntry
+{
+	UndoLogNumber logno;
+	FullTransactionId wait_fxmin;
+} DiscardWaitTableEntry;
+
+typedef struct DiscardWorkerState
+{
+	struct HTAB *wait_table;
+} DiscardWorkerState;
+
+extern void UndoDiscard(DiscardWorkerState *state, TransactionId xmin,
+						bool *hibernate);
 extern void UndoLogDiscardAll(void);
 extern void TempUndoDiscard(UndoLogNumber);
 extern void UndoLogProcess(void);

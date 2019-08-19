@@ -101,6 +101,12 @@ DiscardWorkerRegister(void)
 void
 DiscardWorkerMain(Datum main_arg)
 {
+	DiscardWorkerState worker_state;
+	HASHCTL wait_table_control = {
+		.keysize = sizeof(UndoLogNumber),
+		.entrysize = sizeof(DiscardWaitTableEntry)
+	};
+
 	ereport(LOG,
 			(errmsg("discard worker started")));
 
@@ -124,6 +130,12 @@ DiscardWorkerMain(Datum main_arg)
 	 * undo.  See comments atop UndoLogProcess.
 	 */
 	UndoLogProcess();
+
+	/* Initialize the state UndoDiscard() will use between invocations. */
+	worker_state.wait_table = hash_create("discard worker wait table",
+										  1024,
+										  &wait_table_control,
+										  HASH_ELEM | HASH_BLOBS);
 
 	/* Enter main loop */
 	while (!got_SIGTERM)
@@ -152,7 +164,7 @@ DiscardWorkerMain(Datum main_arg)
 		if (OldestXmin != InvalidTransactionId &&
 			TransactionIdPrecedes(oldestXidHavingUndo, OldestXmin))
 		{
-			UndoDiscard(OldestXmin, &hibernate);
+			UndoDiscard(&worker_state, OldestXmin, &hibernate);
 
 			/*
 			 * If we got some undo logs to discard or discarded something,
