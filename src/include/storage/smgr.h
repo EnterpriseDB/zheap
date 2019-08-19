@@ -95,7 +95,7 @@ extern void smgrextend(SMgrRelation reln, ForkNumber forknum,
 					   BlockNumber blocknum, char *buffer, bool skipFsync);
 extern void smgrprefetch(SMgrRelation reln, ForkNumber forknum,
 						 BlockNumber blocknum);
-extern void smgrread(SMgrRelation reln, ForkNumber forknum,
+extern bool smgrread(SMgrRelation reln, ForkNumber forknum,
 					 BlockNumber blocknum, char *buffer);
 extern void smgrwrite(SMgrRelation reln, ForkNumber forknum,
 					  BlockNumber blocknum, char *buffer, bool skipFsync);
