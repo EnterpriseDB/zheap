@@ -44,6 +44,20 @@ extern XLogRedoAction XLogReadBufferForRedoExtended(XLogReaderState *record,
 extern Buffer XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 									 BlockNumber blkno, ReadBufferMode mode);
 
+extern bool XLogFindBlockId(XLogReaderState *record,
+							RelFileNode rnode,
+							ForkNumber forknum,
+							BlockNumber blockno,
+							uint8 *block_id);
+
+extern XLogRedoAction XLogReadBufferForRedoBlock(XLogReaderState *record,
+												 RelFileNode rnode,
+												 ForkNumber forknum,
+												 BlockNumber blockno,
+												 ReadBufferMode mode,
+												 bool get_cleanup_lock,
+												 Buffer *buf);
+
 extern Relation CreateFakeRelcacheEntry(RelFileNode rnode);
 extern void FreeFakeRelcacheEntry(Relation fakerel);
 
