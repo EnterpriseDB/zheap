@@ -234,7 +234,6 @@ static void
 PrepareUndoRecordUpdateNext(UndoRecordInsertContext *context,
 							UndoRecPtr urecptr, UndoRecPtr prevurp)
 {
-	UndoLogSlot *slot;
 	int			index = 0;
 	int			offset;
 
@@ -245,22 +244,14 @@ PrepareUndoRecordUpdateNext(UndoRecordInsertContext *context,
 	if (!UndoRecPtrIsValid(prevurp))
 		return;
 
-	slot = UndoLogGetSlot(UndoRecPtrGetLogNo(prevurp), false);
-
 	/*
-	 * Acquire the discard update lock before reading the undo record so that
-	 * the undo record doesn't get discarded while we are reading undo
-	 * buffers.
+	 * Preliminary check if it's already discarded, to avoid bothering the
+	 * buffer manager if we can.  It could still be discarded after our check,
+	 * but then we'll just get invalid buffers or buffers marked discarded and
+	 * skip doing work later.
 	 */
-	LWLockAcquire(&slot->discard_update_lock, LW_SHARED);
-
-	/* Check if it is already discarded. */
 	if (UndoRecPtrIsDiscarded(prevurp))
-	{
-		/* Release lock and return. */
-		LWLockRelease(&slot->discard_update_lock);
 		return;
-	}
 
 	/* Compute the offset of the uur_next_group in the undo record. */
 	offset = SizeOfUndoRecordHeader +
@@ -271,12 +262,6 @@ PrepareUndoRecordUpdateNext(UndoRecordInsertContext *context,
 
 	/* Store the next group's undo record pointer in urec_update_info. */
 	context->urec_update_info[index].next = urecptr;
-
-	/*
-	 * We can now release the discard lock as we have already acquired the
-	 * buffer locks.
-	 */
-	LWLockRelease(&slot->discard_update_lock);
 }
 
 /*
@@ -477,7 +462,8 @@ UndoGetBufferSlot(UndoRecordInsertContext *context,
 										   RelPersistenceForUndoLogCategory(category));
 
 		/* Lock the buffer */
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		if (BufferIsValid(buffer))
+			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	}
 
 	/*
@@ -544,6 +530,11 @@ CompressUndoRecord(UndoRecordInsertContext *context, UndoRecPtr urecptr,
 	bufidx = UndoGetBufferSlot(context, rnode, UndoRecPtrGetBlockNum(urecptr),
 							   RBM_NORMAL);
 	buffer = context->prepared_undo_buffers[bufidx].buf;
+
+	/* If there buffer isn't valid (because it was discarded), give up. */
+	if (!BufferIsValid(buffer))
+		return false;
+
 	page = BufferGetPage(buffer);
 	phdr = (UndoPageHeader) page;
 
@@ -920,15 +911,9 @@ InsertUndoRecord(UndoRecordInsertContext *context,
 		Assert(bufidx < MAX_BUFFER_PER_UNDO);
 		buffer = prepared_buffres[prepared_undo->undo_buffer_idx[bufidx]].buf;
 
-		/*
-		 * During recovery, there might be some blocks which are already
-		 * deleted due to some discard command so we can just skip inserting
-		 * into those blocks.
-		 */
+		/* There might be some blocks which are already discarded. */
 		if (!BufferIsValid(buffer))
 		{
-			Assert(InRecovery);
-
 			/*
 			 * Instead of inserting the actual record this function will just
 			 * update the bookkeeping information in the context.
@@ -1129,6 +1114,11 @@ UndoGetOneRecord(UnpackedUndoRecord *urec, UndoRecPtr urp, RelFileNode rnode,
 				*curbuf = buffer;
 		}
 
+		/* If we hit a buffer that is discarded, give up. */
+		/* TODO: Review this, probably needs work */
+		if (!BufferIsValid(buffer))
+			return NULL;
+
 		/* Acquire shared lock on the buffer before reading undo from it. */
 		LockBuffer(buffer, BUFFER_LOCK_SHARE);
 
@@ -1217,55 +1207,14 @@ UnpackedUndoRecord *
 UndoFetchRecord(UndoRecordFetchContext *context, UndoRecPtr urp)
 {
 	RelFileNode rnode;
-	int			logno;
-	UndoLogSlot *slot;
 	UnpackedUndoRecord *uur = NULL;
 
-	logno = UndoRecPtrGetLogNo(urp);
-	slot = UndoLogGetSlot(logno, true);
-
 	/*
-	 * If slot is NULL that means undo log number is unknown.  Presumably it
-	 * has been entirely discarded.
+	 * Check if it's discarded before we begin.  It might still turn out to be
+	 * discarded later, but we'll detect that.
 	 */
-	if (slot == NULL)
+	if (UndoRecPtrIsDiscarded(urp))
 		return NULL;
-
-	/*
-	 * Prevent UndoDiscardOneLog() from discarding data while we try to read
-	 * it.  Usually we would acquire log->mutex to read log->meta members, but
-	 * in this case we know that discard can't move without also holding
-	 * log->discard_lock.
-	 *
-	 * In Hot Standby mode log->oldest_data is never initialized because it's
-	 * get updated by undo discard worker whereas in HotStandby undo logs are
-	 * getting discarded using discard WAL.  So in HotStandby we can directly
-	 * check whether the undo record pointer is discarded or not.  But, we can
-	 * not do same for normal case because discard worker can concurrently
-	 * discard the undo logs.
-	 *
-	 * XXX We can avoid this check by always initializing log->oldest_data in
-	 * HotStandby mode as well whenever we apply discard WAL.  But, for doing
-	 * that we need to acquire discard lock just for setting this variable?
-	 */
-	if (InHotStandby)
-	{
-		if (UndoRecPtrIsDiscarded(urp))
-			return NULL;
-	}
-	else
-	{
-		LWLockAcquire(&slot->discard_lock, LW_SHARED);
-		if (slot->logno != logno || urp < slot->oldest_data)
-		{
-			/*
-			 * The slot has been recycled because the undo log was entirely
-			 * discarded, or the pointer is before the oldest data.
-			 */
-			LWLockRelease(&slot->discard_lock);
-			return NULL;
-		}
-	}
 
 	/*
 	 * Allocate memory for holding the undo record, caller should be
@@ -1288,12 +1237,10 @@ UndoFetchRecord(UndoRecordFetchContext *context, UndoRecPtr urp)
 		context->buffer = InvalidBuffer;
 	}
 
-	/* Fetch the current undo record. */
-	UndoGetOneRecord(uur, urp, rnode, slot->meta.category, &context->buffer);
-
-	/* Release the discard lock after fetching the record. */
-	if (!InHotStandby)
-		LWLockRelease(&slot->discard_lock);
+	/* Fetch the current undo record.  Check for discarded bufers. */
+	if (!UndoGetOneRecord(uur, urp, rnode, UndoRecPtrGetCategory(urp),
+						  &context->buffer))
+		return NULL;
 
 	context->urp = urp;
 
@@ -1495,7 +1442,8 @@ UndoBulkFetchRecord(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 							  from_blkno, category);
 
 		/* Get the undo record. */
-		UndoGetOneRecord(uur, urecptr, rnode, category, &buffer);
+		if (!UndoGetOneRecord(uur, urecptr, rnode, category, &buffer))
+			break;
 
 		/* Remember the previous undo record pointer. */
 		prev_urec_ptr = urecptr;
@@ -1579,6 +1527,9 @@ RegisterUndoLogBuffers(UndoRecordInsertContext *context, uint8 first_block_id)
 
 	for (idx = 0; idx < context->nprepared_undo_buffer; idx++)
 	{
+		/* Skip discarded buffers. */
+		if (!BufferIsValid(context->prepared_undo_buffers[idx].buf))
+			continue;
 		flags = context->prepared_undo_buffers[idx].zero
 			? REGBUF_KEEP_DATA_AFTER_CP | REGBUF_WILL_INIT
 			: REGBUF_KEEP_DATA_AFTER_CP;
@@ -1598,8 +1549,13 @@ UndoLogBuffersSetLSN(UndoRecordInsertContext *context, XLogRecPtr recptr)
 	int			idx;
 
 	for (idx = 0; idx < context->nprepared_undo_buffer; idx++)
+	{
+		/* Skip discarded buffers. */
+		if (!BufferIsValid(context->prepared_undo_buffers[idx].buf))
+			continue;
 		PageSetLSN(BufferGetPage(context->prepared_undo_buffers[idx].buf),
 				   recptr);
+	}
 }
 
 /*
