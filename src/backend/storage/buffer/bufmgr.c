@@ -177,6 +177,7 @@ static PrivateRefCountEntry *NewPrivateRefCountEntry(Buffer buffer);
 static PrivateRefCountEntry *GetPrivateRefCountEntry(Buffer buffer, bool do_move);
 static inline int32 GetPrivateRefCount(Buffer buffer);
 static void ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref);
+static void InvalidateBuffer(BufferDesc *buf);
 
 /*
  * Ensure that the PrivateRefCountArray has sufficient space to store one more
@@ -620,10 +621,12 @@ ReadBuffer(Relation reln, BlockNumber blockNum)
  * valid, the page is zeroed instead of throwing an error. This is intended
  * for non-critical data, where the caller is prepared to repair errors.
  *
- * In RBM_ZERO_AND_LOCK mode, if the page isn't in buffer cache already, it's
+ * In RBM_ZERO mode, if the page isn't in buffer cache already, it's
  * filled with zeros instead of reading it from disk.  Useful when the caller
  * is going to fill the page from scratch, since this saves I/O and avoids
  * unnecessary failure if the page-on-disk has corrupt page headers.
+ *
+ * In RBM_ZERO_AND_LOCK mode, the page is zeroed and also locked.
  * The page is returned locked to ensure that the caller has a chance to
  * initialize the page before it's made visible to others.
  * Caution: do not use this mode to read a page that is beyond the relation's
@@ -674,24 +677,20 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
 /*
  * ReadBufferWithoutRelcache -- like ReadBufferExtended, but doesn't require
  *		a relcache entry for the relation.
- *
- * NB: At present, this function may only be used on permanent relations, which
- * is OK, because we only use it during XLOG replay.  If in the future we
- * want to use it on temporary or unlogged relations, we could pass additional
- * parameters.
  */
 Buffer
 ReadBufferWithoutRelcache(RelFileNode rnode, ForkNumber forkNum,
 						  BlockNumber blockNum, ReadBufferMode mode,
-						  BufferAccessStrategy strategy)
+						  BufferAccessStrategy strategy,
+						  char relpersistence)
 {
 	bool		hit;
 
-	SMgrRelation smgr = smgropen(rnode, InvalidBackendId);
+	SMgrRelation smgr = smgropen(rnode,
+								 relpersistence == RELPERSISTENCE_TEMP
+								 ? MyBackendId : InvalidBackendId);
 
-	Assert(InRecovery);
-
-	return ReadBuffer_common(smgr, RELPERSISTENCE_PERMANENT, forkNum, blockNum,
+	return ReadBuffer_common(smgr, relpersistence, forkNum, blockNum,
 							 mode, strategy, &hit);
 }
 
@@ -885,7 +884,9 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 * Read in the page, unless the caller intends to overwrite it and
 		 * just wants us to allocate a buffer.
 		 */
-		if (mode == RBM_ZERO_AND_LOCK || mode == RBM_ZERO_AND_CLEANUP_LOCK)
+		if (mode == RBM_ZERO ||
+			mode == RBM_ZERO_AND_LOCK ||
+			mode == RBM_ZERO_AND_CLEANUP_LOCK)
 			MemSet((char *) bufBlock, 0, BLCKSZ);
 		else
 		{
@@ -895,7 +896,17 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			if (track_io_timing)
 				INSTR_TIME_SET_CURRENT(io_start);
 
-			smgrread(smgr, forkNum, blockNum, (char *) bufBlock);
+			if (!smgrread(smgr, forkNum, blockNum, (char *) bufBlock))
+			{
+				/*
+				 * smgr reports that the block has been discarded, so we can't
+				 * attempt to read it.
+				 */
+				TerminateBufferIO(bufHdr, false, 0);
+				UnpinBuffer(bufHdr, true);
+
+				return InvalidBuffer;
+			}
 
 			if (track_io_timing)
 			{
@@ -1307,7 +1318,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	 * just like permanent relations.
 	 */
 	buf->tag = newTag;
-	buf_state &= ~(BM_VALID | BM_DIRTY | BM_JUST_DIRTIED |
+	buf_state &= ~(BM_VALID | BM_DIRTY | BM_JUST_DIRTIED | BM_DISCARDED |
 				   BM_CHECKPOINT_NEEDED | BM_IO_ERROR | BM_PERMANENT |
 				   BUF_USAGECOUNT_MASK);
 	if (relpersistence == RELPERSISTENCE_PERMANENT || forkNum == INIT_FORKNUM)
@@ -1337,6 +1348,78 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		*foundPtr = true;
 
 	return buf;
+}
+
+/*
+ * DiscardBuffer -- drop a buffer from pool, or mark discarded if pinned
+ *
+ * If the buffer isn't present in shared buffers, nothing happens.  If it is
+ * present and not pinned, it is discarded without making any attempt to write
+ * it back out to the operating system.  If it is present and pinned, it is
+ * marked as discarded, which marks it clean and unused until invalidated.
+ * The caller must therefore somehow be sure that the data won't be needed for
+ * anything now or in the future once no longer pinned.
+ */
+void
+DiscardBuffer(RelFileNode rnode, ForkNumber forkNum, BlockNumber blockNum)
+{
+	SMgrRelation smgr = smgropen(rnode, InvalidBackendId);
+	BufferTag	tag;			/* identity of target block */
+	uint32		hash;			/* hash value for tag */
+	LWLock	   *partitionLock;	/* buffer partition lock for it */
+	int			buf_id;
+	BufferDesc *bufHdr;
+	uint32		buf_state;
+
+	/* create a tag so we can lookup the buffer */
+	INIT_BUFFERTAG(tag, smgr->smgr_rnode.node, forkNum, blockNum);
+
+	/* determine its hash code and partition lock ID */
+	hash = BufTableHashCode(&tag);
+	partitionLock = BufMappingPartitionLock(hash);
+
+	/* see if the block is in the buffer pool */
+	LWLockAcquire(partitionLock, LW_SHARED);
+	buf_id = BufTableLookup(&tag, hash);
+	LWLockRelease(partitionLock);
+
+	/* didn't find it, so nothing to do */
+	if (buf_id < 0)
+		return;
+
+	/* take the buffer header lock */
+	bufHdr = GetBufferDescriptor(buf_id);
+	buf_state = LockBufHdr(bufHdr);
+
+	/*
+	 * The buffer might been evicted after we released the partition lock and
+	 * before we acquired the buffer header lock.  If so, the buffer we've
+	 * locked might contain some other data which we shouldn't touch. If the
+	 * buffer hasn't been recycled, we proceed to invalidate it.
+	 */
+	if (RelFileNodeEquals(bufHdr->tag.rnode, rnode) &&
+		bufHdr->tag.blockNum == blockNum &&
+		bufHdr->tag.forkNum == forkNum)
+	{
+		if (BUF_STATE_GET_REFCOUNT(buf_state) == 0)
+		{
+			/* Nobody has it pinned, so we can immediately invalidate it. */
+			InvalidateBuffer(bufHdr);		/* releases spinlock */
+		}
+		else
+		{
+			/*
+			 * We can't invalidate it yet, but we can prevent it from being
+			 * written back, and mark it as unused so that it's a candidate
+			 * for early replacement once it's unpinned.
+			 */
+			buf_state |= BM_DISCARDED;
+			buf_state &= ~(BM_DIRTY | BM_JUST_DIRTIED | BUF_USAGECOUNT_MASK);
+			UnlockBufHdr(bufHdr, buf_state);
+		}
+	}
+	else
+		UnlockBufHdr(bufHdr, buf_state);
 }
 
 /*
@@ -1485,7 +1568,10 @@ MarkBufferDirty(Buffer buffer)
 		buf_state = old_buf_state;
 
 		Assert(BUF_STATE_GET_REFCOUNT(buf_state) > 0);
-		buf_state |= BM_DIRTY | BM_JUST_DIRTIED;
+
+		/* Suppress dirty mark if discarded */
+		if (!(buf_state & BM_DISCARDED))
+			buf_state |= BM_DIRTY | BM_JUST_DIRTIED;
 
 		if (pg_atomic_compare_exchange_u32(&bufHdr->state, &old_buf_state,
 										   buf_state))
@@ -1495,7 +1581,7 @@ MarkBufferDirty(Buffer buffer)
 	/*
 	 * If the buffer was not dirty already, do vacuum accounting.
 	 */
-	if (!(old_buf_state & BM_DIRTY))
+	if (!(old_buf_state & BM_DIRTY) && (buf_state & BM_DIRTY))
 	{
 		VacuumPageDirty++;
 		pgBufferUsage.shared_blks_dirtied++;
@@ -1603,7 +1689,11 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy)
 			/* increase refcount */
 			buf_state += BUF_REFCOUNT_ONE;
 
-			if (strategy == NULL)
+			if (buf_state & BM_DISCARDED)
+			{
+				/* Suppress usage count bump for discarded buffers. */
+			}
+			else if (strategy == NULL)
 			{
 				/* Default case: increase usagecount unless already max. */
 				if (BUF_STATE_GET_USAGECOUNT(buf_state) < BM_MAX_USAGE_COUNT)
