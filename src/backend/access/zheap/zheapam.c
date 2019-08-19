@@ -3535,11 +3535,14 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		if (DoLockModesConflict(HWLOCKMODE_from_locktupmode(old_mode),
 								HWLOCKMODE_from_locktupmode(required_mode)))
 		{
-			OffsetNumber offnum = ItemPointerGetOffsetNumber(&zhtup->t_self);
-
 			*needwait = true;
 			if (subxid)
-				ZHeapTupleGetSubXid(buf, offnum, urec_ptr, subxid);
+			{
+				Assert(zhtup != NULL);
+				ZHeapTupleGetSubXid(buf,
+									ItemPointerGetOffsetNumber(&zhtup->t_self),
+									urec_ptr, subxid);
+			}
 		}
 
 		/*
