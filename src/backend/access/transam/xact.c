@@ -3167,10 +3167,10 @@ CommitTransactionCommand(void)
 				 */
 				for (i = 0; i < UndoLogCategories; i++)
 				{
-					if (UndoRecPtrIsValid(s->latest_urec_ptr[i]))
-						s->parent->latest_urec_ptr[i] = s->latest_urec_ptr[i];
-					if (!UndoRecPtrIsValid(s->parent->start_urec_ptr[i]))
-						s->parent->start_urec_ptr[i] = s->start_urec_ptr[i];
+					if (UndoRecPtrIsValid(s->latestUrecPtr[i]))
+						s->parent->latestUrecPtr[i] = s->latestUrecPtr[i];
+					if (!UndoRecPtrIsValid(s->parent->startUrecPtr[i]))
+						s->parent->startUrecPtr[i] = s->startUrecPtr[i];
 				}
 
 				CommitSubTransaction();

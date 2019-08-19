@@ -1396,10 +1396,16 @@ PrefetchUndoPages(RelFileNode rnode, int prefetch_target, int *prefetch_pages,
  * to_urecptr		- Last undo record pointer to be fetched.
  * max_result_size	- Memory segment limit to collect undo records.
  * nrecords			- Number of undo records read.
+ * one_page			- Caller is applying undo only for one block not for
+ *					  complete transaction.  If this is set true then instead
+ *					  of following transaction undo chain using prevlen we will
+ *					  follow the block prev chain of the block so that we can
+ *					  avoid reading many unnecessary undo records of the
+ *					  transaction.
  */
 UndoRecInfo *
 UndoBulkFetchRecord(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
-					int max_result_size, int *nrecords)
+					int max_result_size, int *nrecords, bool one_page)
 {
 	RelFileNode rnode;
 	UndoRecPtr	urecptr,
@@ -1414,6 +1420,7 @@ UndoBulkFetchRecord(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 	int			prefetch_target = 0;
 	int			prefetch_pages = 0;
 	Size		total_size = 0;
+	FullTransactionId fxid = InvalidFullTransactionId;
 
 	/*
 	 * If we are fetching undo records from more than one logs, We can not
@@ -1425,7 +1432,8 @@ UndoBulkFetchRecord(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 	 * the same undo log.  But, it may not be possible for the caller to
 	 * always detect that?
 	 */
-	if (UndoRecPtrGetLogNo(*from_urecptr) == UndoRecPtrGetLogNo(to_urecptr))
+	if (!one_page &&
+		(UndoRecPtrGetLogNo(*from_urecptr) == UndoRecPtrGetLogNo(to_urecptr)))
 		prefetch_target = target_prefetch_pages;
 
 	/*
@@ -1494,8 +1502,59 @@ UndoBulkFetchRecord(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 			PrefetchUndoPages(rnode, prefetch_target, &prefetch_pages, to_blkno,
 							  from_blkno, category);
 
-		/* Get the undo record. */
-		UndoGetOneRecord(uur, urecptr, rnode, category, &buffer);
+		/*
+		 * In one_page mode it's possible that the undo of the transaction
+		 * might have been applied by worker and undo got discarded. Prevent
+		 * discard worker from discarding undo data while we are reading it.
+		 * See detail comment in UndoFetchRecord.  In normal mode we are
+		 * holding transaction undo action lock so it can not be discarded.
+		 */
+		if (one_page)
+		{
+			/* Refer comments in UndoFetchRecord. */
+			if (InHotStandby)
+			{
+				if (UndoRecPtrIsDiscarded(urecptr))
+					break;
+			}
+			else
+			{
+				LWLockAcquire(&slot->discard_lock, LW_SHARED);
+				if (slot->logno != logno || urecptr < slot->oldest_data)
+				{
+					/*
+					 * The undo log slot has been recycled because it was
+					 * entirely discarded, or the data has been discarded
+					 * already.
+					 */
+					LWLockRelease(&slot->discard_lock);
+					break;
+				}
+			}
+
+			/* Read the undo record. */
+			UndoGetOneRecord(uur, urecptr, rnode, category, &buffer);
+
+			/* Release the discard lock after fetching the record. */
+			if (!InHotStandby)
+				LWLockRelease(&slot->discard_lock);
+		}
+		else
+			UndoGetOneRecord(uur, urecptr, rnode, category, &buffer);
+
+		/*
+		 * As soon as the transaction id is changed we can stop fetching the
+		 * undo record.  Ideally, to_urecptr should control this but while
+		 * reading undo only for a page we don't know what is the end undo
+		 * record pointer for the transaction.
+		 */
+		if (one_page)
+		{
+			if (!FullTransactionIdIsValid(fxid))
+				fxid = uur->uur_fxid;
+			else if (!FullTransactionIdEquals(fxid, uur->uur_fxid))
+				break;
+		}
 
 		/* Remember the previous undo record pointer. */
 		prev_urec_ptr = urecptr;
@@ -1508,7 +1567,10 @@ UndoBulkFetchRecord(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 		 * return handle to the caller with appropriate from_urecptr so that
 		 * caller can resume the fetching.
 		 */
-		if (uur->uur_logswitch)
+		if (one_page)
+			urecptr = uur->uur_prevundo;
+		else if (uur->uur_logswitch)
+
 		{
 			urecptr = UndoGetPrevUrp(uur, prev_urec_ptr, buffer, category);
 			*from_urecptr = urecptr;

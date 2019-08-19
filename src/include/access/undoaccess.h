@@ -111,7 +111,7 @@ extern void FinishUndoFetch(UndoRecordFetchContext *context);
 extern void UndoRecordRelease(UnpackedUndoRecord *urec);
 extern UndoRecInfo *UndoBulkFetchRecord(UndoRecPtr *from_urecptr,
 										UndoRecPtr to_urecptr,
-										int undo_apply_size, int *nrecords);
+										int undo_apply_size, int *nrecords,  bool one_page);
 extern void RegisterUndoLogBuffers(UndoRecordInsertContext *context,
 								   uint8 first_block_id);
 extern void UndoLogBuffersSetLSN(UndoRecordInsertContext *context,

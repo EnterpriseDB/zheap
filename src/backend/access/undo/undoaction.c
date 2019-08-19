@@ -302,7 +302,7 @@ ProcessAndApplyUndo(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 		 * the last_log_start_urec_ptr and proceed to the previous undo log.
 		 */
 		urecinfo = UndoBulkFetchRecord(&urec_ptr, last_log_start_urec_ptr,
-									   undo_apply_size, &nrecords);
+									   undo_apply_size, &nrecords, false);
 
 		/*
 		 * Since the rollback of this transaction is in-progress, there will be
