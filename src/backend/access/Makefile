@@ -9,6 +9,6 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 SUBDIRS	    = brin common gin gist hash heap index nbtree rmgrdesc spgist \
-			  table tablesample transam
+			  table tablesample transam undo
 
 include $(top_srcdir)/src/backend/common.mk
