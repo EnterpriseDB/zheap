@@ -351,6 +351,10 @@ check_data_dir(ClusterInfo *cluster)
 		check_single_dir(pg_data, "pg_clog");
 	else
 		check_single_dir(pg_data, "pg_xact");
+
+	/* pg_undo is new in v13 */
+	if (GET_MAJOR_VERSION(cluster->major_version) >= 1300)
+		check_single_dir(pg_data, "pg_undo");
 }
 
 

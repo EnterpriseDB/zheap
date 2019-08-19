@@ -17,15 +17,22 @@
 /* Avoid including typcache.h */
 struct SharedRecordTypmodRegistry;
 
+/* Avoid including undolog.h */
+struct UndoLogSlot;
+
 /*
  * A struct encapsulating some elements of a user's session.  For now this
- * manages state that applies to parallel query, but it principle it could
- * include other things that are currently global variables.
+ * manages state that applies to parallel query and undo, but it principle it
+ * could include other things that are currently global variables.
  */
 typedef struct Session
 {
 	dsm_segment *segment;		/* The session-scoped DSM segment. */
 	dsa_area   *area;			/* The session-scoped DSA area. */
+
+	/* State managed by undolog.c. */
+	struct UndoLogSlot *attached_undo_slots[4];		/* UndoLogCategories */
+	bool		need_to_choose_undo_tablespace;
 
 	/* State managed by typcache.c. */
 	struct SharedRecordTypmodRegistry *shared_typmod_registry;

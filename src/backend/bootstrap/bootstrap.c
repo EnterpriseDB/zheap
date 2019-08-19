@@ -20,6 +20,7 @@
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
+#include "access/session.h"
 #include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
@@ -518,6 +519,8 @@ BootstrapModeMain(void)
 	InitProcess();
 
 	InitPostgres(NULL, InvalidOid, NULL, InvalidOid, NULL, false);
+
+	InitializeSession();
 
 	/* Initialize stuff for bootstrap-file processing */
 	for (i = 0; i < MAXATTR; i++)

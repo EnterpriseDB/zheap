@@ -10731,4 +10731,20 @@
   proname => 'pg_partition_root', prorettype => 'regclass',
   proargtypes => 'regclass', prosrc => 'pg_partition_root' },
 
+# undo logs
+{ oid => '8472', descr => 'list undo logs',
+  proname => 'pg_stat_get_undo_logs', procost => '1', prorows => '10', proretset => 't',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{oid,text,text,text,text,text,text,xid,int4}', proargmodes => '{o,o,o,o,o,o,o,o,o}',
+  proargnames => '{logno,category,tablespace,begin,discard,insert,end,xid,pid}', prosrc => 'pg_stat_get_undo_logs' },
+{ oid => '8473', descr => 'forcibly discard undo data',
+  prokind => 'p',
+  proname => 'pg_force_discard_undo', provolatile => 'v',
+  proparallel => 'u', prorettype => 'void', proargtypes => 'int4',
+  prosrc => 'pg_force_discard_undo' },
+{ oid => '8474', descr => 'simulate a full undo log, for testing',
+  prokind => 'p',
+  proname => 'pg_simulate_full_undo', provolatile => 'v',
+  proparallel => 'u', prorettype => 'void', proargtypes => 'int4',
+  prosrc => 'pg_simulate_full_undo' },
 ]

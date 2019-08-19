@@ -522,6 +522,8 @@ RegisterLWLockTranches(void)
 	LWLockRegisterTranche(LWTRANCHE_PARALLEL_APPEND, "parallel_append");
 	LWLockRegisterTranche(LWTRANCHE_PARALLEL_HASH_JOIN, "parallel_hash_join");
 	LWLockRegisterTranche(LWTRANCHE_SXACT, "serializable_xact");
+	LWLockRegisterTranche(LWTRANCHE_UNDOLOG, "undo_log");
+	LWLockRegisterTranche(LWTRANCHE_UNDOFILE, "undo_file");
 
 	/* Register named tranches. */
 	for (i = 0; i < NamedLWLockTrancheRequests; i++)
@@ -1739,7 +1741,7 @@ LWLockRelease(LWLock *lock)
 			break;
 
 	if (i < 0)
-		elog(ERROR, "lock %s is not held", T_NAME(lock));
+		elog(PANIC, "lock %s is not held", T_NAME(lock));
 
 	mode = held_lwlocks[i].mode;
 

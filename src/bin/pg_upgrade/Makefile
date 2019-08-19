@@ -9,7 +9,7 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = check.o controldata.o dump.o exec.o file.o function.o info.o \
        option.o parallel.o pg_upgrade.o relfilenode.o server.o \
-       tablespace.o util.o version.o $(WIN32RES)
+       tablespace.o undo.o util.o version.o $(WIN32RES)
 
 override CPPFLAGS := -DDLSUFFIX=\"$(DLSUFFIX)\" -I$(srcdir) -I$(libpq_srcdir) $(CPPFLAGS)
 LDFLAGS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
