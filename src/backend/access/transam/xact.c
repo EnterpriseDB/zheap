@@ -429,6 +429,17 @@ GetTopTransactionIdIfAny(void)
 }
 
 /*
+ *	GetTopTransactionUndoInfo
+ *
+ * This will return the undo information stored in the top transaction state.
+ */
+XactUndoInfo*
+GetTopTransactionUndoInfo(void)
+{
+	return TopTransactionStateData.undo_info;
+}
+
+/*
  *	GetCurrentTransactionId
  *
  * This will return the XID of the current transaction (main or sub
@@ -2053,6 +2064,9 @@ StartTransaction(void)
 	AtStart_Cache();
 	AfterTriggerBeginXact();
 
+	/* Allocate memory for undo related info. */
+	s->undo_info = palloc0(sizeof(XactUndoInfo));
+
 	/*
 	 * done with start processing, set current transaction state to "in
 	 * progress"
@@ -2072,7 +2086,7 @@ static void
 CommitTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
-	TransactionId latestXid;
+	TransactionId latestXid = InvalidTransactionId;
 	bool		is_parallel_worker;
 
 	is_parallel_worker = (s->blockState == TBLOCK_PARALLEL_INPROGRESS);
@@ -2708,6 +2722,7 @@ AbortTransaction(void)
 	 * record.  Also, skip this if undo apply is in progress as in that case
 	 * we would have already written abort record.
 	 */
+	latestXid = InvalidTransactionId; /* TODO: fix compiler warning about uninitialized variable */
 	if (!is_parallel_worker && !undo_apply_in_progress)
 		latestXid = RecordTransactionAbort(false);
 	else if (is_parallel_worker)

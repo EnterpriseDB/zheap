@@ -131,6 +131,14 @@ typedef enum
 typedef void (*SubXactCallback) (SubXactEvent event, SubTransactionId mySubid,
 								 SubTransactionId parentSubid, void *arg);
 
+/*
+ * Transaction's undo related info.
+ */
+typedef struct XactUndoInfo
+{
+	/* Transaction's header undo record pointer in last undo log. */
+	UndoRecPtr		prevlog_xact_start[UndoLogCategories];
+} XactUndoInfo;
 
 /* ----------------
  *		transaction-related XLOG entries
@@ -364,6 +372,7 @@ extern FullTransactionId GetTopFullTransactionId(void);
 extern FullTransactionId GetTopFullTransactionIdIfAny(void);
 extern FullTransactionId GetCurrentFullTransactionId(void);
 extern FullTransactionId GetCurrentFullTransactionIdIfAny(void);
+extern XactUndoInfo* GetTopTransactionUndoInfo(void);
 extern void MarkCurrentTransactionIdLoggedIfAny(void);
 extern bool SubTransactionIsActive(SubTransactionId subxid);
 extern CommandId GetCurrentCommandId(bool used);
