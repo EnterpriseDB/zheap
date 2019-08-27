@@ -430,8 +430,19 @@ zheap_exec_pending_rollback(Relation rel, Buffer buf, int trans_slot_id,
 		Assert(TransactionIdIsCurrentTransactionId(xid) ||
 			   !TransactionIdIsInProgress(xid));
 
-		/* If the transaction is aborted, apply undo actions */
-		if (TransactionIdIsValid(xid) && TransactionIdDidAbort(xid))
+		/*
+		 * If the transaction is aborted, apply undo actions. To check abort,
+		 * we can call TransactionIdDidAbort but always this will not give
+		 * proper status because if this transaction was running at the time of
+		 * crash, and after restart, status of this transaction will be as
+		 * aborted but still we should consider this transaction as aborted and
+		 * should apply the actions. So here, to identify all types of aborted
+		 * transaction, we will check that if this transaction is not committed
+		 * and not in-progress, it means this is aborted and we can apply
+		 * actions here.
+		 */
+		if (TransactionIdIsValid(xid) && !TransactionIdDidCommit(xid) &&
+			!TransactionIdIsInProgress(xid))
 		{
 			/* Remember if we've rolled back a transaction from a TPD-slot. */
 			if (tpd_blkno != NULL && (slot_no >= ZHEAP_PAGE_TRANS_SLOTS - 1) &&
