@@ -3459,7 +3459,19 @@ zheap_lock_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zhtup,
 			return LOCK_WAIT_RECHECK;
 	}
 
-	if (TransactionIdIsValid(xwait) && TransactionIdDidAbort(xwait))
+	/*
+	 * For aborted transaction, if the undo actions are not applied yet. To
+	 * check abort, we can call TransactionIdDidAbort but always this will not
+	 * give proper status because if this transaction was running at the time
+	 * of crash, and after restart, status of this transaction will be as
+	 * aborted but still we should consider this transaction as aborted and
+	 * should apply the actions. So here, to identify all types of aborted
+	 * transaction, we will check that if this transaction is not committed
+	 * and not in-progress, it means this is aborted and we can apply actions
+	 * here.
+	 */
+	if (TransactionIdIsValid(xwait) && !TransactionIdDidCommit(xwait) &&
+		!TransactionIdIsInProgress(xwait))
 	{
 		/*
 		 * For aborted transaction, if the undo actions are not applied yet,
@@ -3551,11 +3563,20 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
 		 */
 		return TM_Ok;
 	}
-	else if (TransactionIdDidAbort(xid))
+	else if (!TransactionIdDidCommit(xid) && !TransactionIdIsInProgress(xid))
 	{
 		/*
 		 * For aborted transaction, if the undo actions are not applied yet,
 		 * then apply them before modifying the page.
+		 *
+		 * To check abort, we can call TransactionIdDidAbort but always this
+		 * will not give proper status because if this transaction was running
+		 * at the time of crash, and after restart, status of this transaction
+		 * will be as aborted but still we should consider this transaction as
+		 * aborted and should apply the actions. So here, to identify all types
+		 * of aborted transaction, we will check that if this transaction is
+		 * not committed and not in-progress, it means this is aborted and we
+		 * can apply actions here.
 		 */
 		zheap_exec_pending_rollback(rel, buf, trans_slot_id, xid, NULL);
 
@@ -3731,13 +3752,39 @@ lock_tuple:
 		old_infomask = mytup->t_data->t_infomask;
 
 		/*
-		 * If this tuple was created by an aborted (sub)transaction, then we
-		 * already locked the last live one in the chain, thus we're done, so
-		 * return success.
+		 * If this tuple was created by an aborted (sub)transaction, then here
+		 * we will apply undo actions before taking any actions, and we will
+		 * make sure that caller will re-verify again by sending
+		 * rollback_and_relocked flag as set.
+		 *
+		 * To check abort, we can call TransactionIdDidAbort but always this
+		 * will not give proper status because if this transaction was running
+		 * at the time of crash, and after restart, status of this transaction
+		 * will be as aborted but still we should consider this transaction as
+		 * aborted and should apply the actions. So here, to identify all types
+		 * of aborted transaction, we will check that if this transaction is
+		 * not committed and not in-progress, it means this is aborted and we
+		 * can apply actions here.
 		 */
 		if (!IsZHeapTupleModified(old_infomask) &&
-			TransactionIdDidAbort(zinfo.xid))
+			!TransactionIdDidCommit(zinfo.xid) &&
+			!TransactionIdIsInProgress(zinfo.xid))
 		{
+			/*
+			 * For aborted transaction, if the undo actions are not applied
+			 * yet, then apply them before modifying the page.
+			 */
+			zheap_exec_pending_rollback(rel, buf, zinfo.trans_slot, zinfo.xid,
+										NULL);
+
+			/*
+			 * If it was only a locker, then the lock is completely gone now
+			 * and we can return success; but if it was an update, then after
+			 * applying pending actions, the tuple might have changed and we
+			 * must report error to the caller.  It will allow caller to
+			 * reverify the tuple in case it's values got changed.
+			 */
+			*rollback_and_relocked = true;
 			result = TM_Ok;
 			goto out_locked;
 		}
