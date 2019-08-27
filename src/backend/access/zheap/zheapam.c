@@ -3662,29 +3662,15 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 			 * creator transaction aborted.  So behave as if we got to the end
 			 * of the chain, and there's no further tuple to lock: return
 			 * success to caller.
+			 *
+			 * Here, we are passing SnapshotAny so we will never fetch tuple
+			 * from undo.  If the current version of the tuple exists, then we
+			 * will fetch and will return status as true from zheap_fetch and
+			 * visible tuple but if status is false, then we are setting
+			 * visible tuple as NULL.  So here, mytup should be NULL.
 			 */
-			if (mytup == NULL)
-				return TM_Ok;
-
-			/*
-			 * If we reached the end of the chain, we're done, so return
-			 * success.  See EvalPlanQualZFetch for detailed reason.
-			 */
-			if (TransactionIdIsValid(priorXmax) &&
-				!ValidateTuplesXact(rel, mytup, SnapshotAny, buf,
-									priorXmax, true))
-				return TM_Ok;
-
-			/* deleted or moved to another partition, so forget about it */
-			if (ZHeapTupleIsMoved(mytup->t_data->t_infomask) ||
-				ItemPointerEquals(&(mytup->t_self), ctid))
-				return TM_Ok;
-
-			/* updated row should have xid matching this xmax */
-			priorXmax = ZHeapTupleGetTransXID(mytup, buf, true);
-
-			/* continue to lock the next version of tuple */
-			continue;
+			Assert(mytup == NULL);
+			return TM_Ok;
 		}
 
 lock_tuple:
