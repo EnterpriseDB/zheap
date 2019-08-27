@@ -371,7 +371,7 @@ reacquire_buffer:
 
 		urecptr = zheap_prepare_undoinsert(&zh_undo_info, specToken,
 										   (options & ZHEAP_INSERT_SPECULATIVE) ? true : false,
-										   &undorecord, NULL);
+										   &undorecord, NULL, MyDatabaseId);
 	}
 
 	/*
@@ -4795,7 +4795,8 @@ UndoRecPtr
 zheap_prepare_undoinsert(ZHeapPrepareUndoInfo *zh_undo_info,
 						 uint32 specToken, bool specIns,
 						 UnpackedUndoRecord *undorecord,
-						 XLogReaderState *xlog_record)
+						 XLogReaderState *xlog_record,
+						Oid dbid)
 {
 	UndoRecPtr	urecptr = InvalidUndoRecPtr;
 
@@ -4842,8 +4843,7 @@ zheap_prepare_undoinsert(ZHeapPrepareUndoInfo *zh_undo_info,
 						  zh_undo_info->undo_category,
 						  1,
 						  xlog_record);
-	urecptr = PrepareUndoInsert(&zh_undo_info->context, undorecord,
-								!InRecovery ? MyDatabaseId : InvalidOid);
+	urecptr = PrepareUndoInsert(&zh_undo_info->context, undorecord, dbid);
 
 	return urecptr;
 }
@@ -4959,7 +4959,7 @@ zheap_prepare_undoupdate(ZHeapPrepareUpdateUndoInfo *zh_undoinfo, ZHeapTuple zht
 							  xlrec);
 		urecptr = PrepareUndoInsert(&zh_undoinfo->gen_info->context,
 									zh_undoinfo->old_undorec,
-									!InRecovery ? MyDatabaseId : InvalidOid);
+									!InRecovery ? MyDatabaseId : xlrec->blocks[0].rnode.dbNode);
 	}
 	else
 	{

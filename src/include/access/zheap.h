@@ -258,7 +258,8 @@ extern TransactionId zheap_compute_xid_horizon_for_tuples(Relation rel,
 extern UndoRecPtr zheap_prepare_undoinsert(ZHeapPrepareUndoInfo *zh_undo_info,
 										   uint32 specToken, bool specIns,
 										   UnpackedUndoRecord *undorecord,
-										   XLogReaderState *xlog_record);
+										   XLogReaderState *xlog_record,
+										   Oid dbid);
 extern UndoRecPtr zheap_prepare_undodelete(ZHeapPrepareUndoInfo *zhUndoInfo, ZHeapTuple zhtup,
 										   TransactionId tup_xid, int tup_trans_slot_id,
 										   SubTransactionId subxid, UnpackedUndoRecord *undorecord,

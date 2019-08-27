@@ -104,6 +104,7 @@ zheap_xlog_insert(XLogReaderState *record)
 		 * assertion as well as the dummy speculative token.
 		 */
 		uint32		dummy_specToken = 1;
+		Oid		dbid = record->blocks[0].rnode.dbNode;
 
 		zh_undo_info.reloid = xlundohdr->reloid;
 		zh_undo_info.blkno = ItemPointerGetBlockNumber(&target_tid);
@@ -117,7 +118,7 @@ zheap_xlog_insert(XLogReaderState *record)
 		urecptr = zheap_prepare_undoinsert(&zh_undo_info,
 										   dummy_specToken,
 										   xlrec->flags & XLZ_INSERT_IS_SPECULATIVE ? true : false,
-										   &undorecord, record);
+										   &undorecord, record, dbid);
 		InsertPreparedUndo(&zh_undo_info.context);
 
 		/*
