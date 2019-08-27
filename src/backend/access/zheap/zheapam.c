@@ -3705,6 +3705,7 @@ lock_tuple:
 
 		/* free the old tuple */
 		zheap_freetuple(mytup);
+		mytup = NULL;
 
 		/*
 		 * If this tuple was created by an aborted (sub)transaction and its
@@ -4002,16 +4003,22 @@ lock_tuple:
 									 false, RelationNeedsWAL(rel),
 									 &zh_undo_info, NULL);
 
+		/* if we find the end of update chain, we're done. */
+		if (ZHeapTupleIsMoved(zhtup.t_data->t_infomask) ||
+			ItemPointerEquals(&zhtup.t_self, ctid) ||
+			ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask))
+		{
+			result = TM_Ok;
+			goto out_locked;
+		}
+
 next:
 
 		/*
-		 * if we find the end of update chain, or if the transaction that has
-		 * updated the tuple is aborter, we're done.
+		 * if the transaction that has updated the tuple is aborter, we're
+		 * done.
 		 */
-		if (TransactionIdDidAbort(zinfo.xid) ||
-			ZHeapTupleIsMoved(zhtup.t_data->t_infomask) ||
-			ItemPointerEquals(&zhtup.t_self, ctid) ||
-			ZHEAP_XID_IS_LOCKED_ONLY(zhtup.t_data->t_infomask))
+		if (TransactionIdDidAbort(zinfo.xid))
 		{
 			result = TM_Ok;
 			goto out_locked;
@@ -4034,7 +4041,8 @@ next:
 		Assert(TransactionIdIsValid(priorXmax));
 
 		/* be tidy */
-		zheap_freetuple(mytup);
+		if (mytup)
+			zheap_freetuple(mytup);
 		UnlockReleaseBuffer(buf);
 	}
 
