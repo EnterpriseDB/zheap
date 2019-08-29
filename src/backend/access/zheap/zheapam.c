@@ -8758,11 +8758,17 @@ RefetchAndCheckTupleStatus(Relation relation,
 	{
 		FullTransactionId current_single_locker_fxid;
 		TransactionId current_single_locker_xid;
+		bool		found;
 
-		GetLockerTransInfo(relation, &zhtup->t_self, buffer,
-						   NULL, &current_single_locker_fxid);
-		current_single_locker_xid =
-			XidFromFullTransactionId(current_single_locker_fxid);
+		found = GetLockerTransInfo(relation, &zhtup->t_self, buffer,
+								   NULL, &current_single_locker_fxid);
+
+		/* Extract xid from fxid. */
+		if (found)
+			current_single_locker_xid =
+				XidFromFullTransactionId(current_single_locker_fxid);
+		else
+			current_single_locker_xid = InvalidTransactionId;
 
 		if (mode && (*mode == LockTupleKeyShare || *mode == LockTupleShare))
 		{
