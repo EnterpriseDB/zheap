@@ -960,6 +960,14 @@ UndoLogAllocateInRecovery(UndoLogAllocContext *context,
 			*need_xact_header =
 				context->try_location == InvalidUndoRecPtr &&
 				slot->meta.unlogged.insert == slot->meta.unlogged.this_xact_start;
+
+			/*
+			 * If no try_location was passed in, or if we switched logs, then we'll
+			 * return the current insertion point.
+			 */
+			if (context->try_location == InvalidUndoRecPtr)
+				context->try_location = MakeUndoRecPtr(slot->logno, slot->meta.unlogged.insert);
+
 			*last_xact_start = slot->meta.unlogged.last_xact_start;
 			context->recovery_logno = slot->logno;
 
