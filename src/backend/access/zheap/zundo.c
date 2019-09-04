@@ -510,12 +510,39 @@ process_and_execute_undo_actions_page(UndoRecPtr from_urecptr, Relation rel,
 		if (nrecords == 0)
 			break;
 
-		/* Apply the last set of the actions. */
-		actions_applied = zheap_undo_actions(urp_array, 0, nrecords - 1,
-											 rel->rd_id, fxid,
-											 BufferGetBlockNumber(buffer),
-											 UndoRecPtrIsValid(urec_ptr) ?
-											 false : true);
+		/*
+		 * As we don't have the buffer lock held, it is quite possible that
+		 * before we fetch the records the rollback has been performed by
+		 * background workers and undo pointer is moved back.   So, we need to
+		 * check if the undo belongs to our transaction.
+		 *
+		 * FIXME: Ideally,  UndoRecordBulkFetch should take fxid as an argument
+		 * and ensures that it fetches the correct undo.
+		 */
+		if (urp_array[0].uur->uur_xid == XidFromFullTransactionId(fxid))
+		{
+			/* Apply the actions. */
+			zheap_undo_actions(urp_array, 0, nrecords - 1,
+							   rel->rd_id, fxid,
+							   BufferGetBlockNumber(buffer),
+							   UndoRecPtrIsValid(urec_ptr) ?
+							   false : true);
+
+			/*
+			 * If we cleared xid from slot at the time of applying actions,
+			 * then set flag.
+			 */
+			if (!UndoRecPtrIsValid(urec_ptr))
+				actions_applied = true;
+		}
+		else
+		{
+			/*
+			 * Actions are already applied so set urec ptr as invalid to
+			 * break loop.
+			 */
+			urec_ptr = InvalidUndoRecPtr;
+		}
 
 		/* Free all undo records. */
 		for (i = 0; i < nrecords; i++)
@@ -784,6 +811,9 @@ zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_idx,
 	{
 		UndoRecInfo *urec_info = (UndoRecInfo *) urp_array + i;
 		UnpackedUndoRecord *uur = urec_info->uur;
+
+		/* Insure that we are applying correct undo record. */
+		Assert(xid == uur->uur_xid);
 
 		/* Skip already applied undo. */
 		if (block_prev_urp < urec_info->urp)
