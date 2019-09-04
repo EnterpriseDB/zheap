@@ -668,7 +668,8 @@ check_tup_satisfies_update:
 	if (crosscheck != InvalidSnapshot && result == TM_Ok)
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
-		if (!ZHeapTupleFetch(relation, buffer, offnum, crosscheck, NULL, NULL))
+		if (!ZHeapTupleFetch(relation, buffer, offnum, crosscheck, NULL, NULL,
+							 false))
 			result = TM_Updated;
 	}
 
@@ -1448,7 +1449,7 @@ check_tup_satisfies_update:
 	{
 		/* Perform additional check for transaction-snapshot mode RI updates */
 		if (!ZHeapTupleFetch(relation, buffer, old_offnum, crosscheck, NULL,
-							 NULL))
+							 NULL, false))
 			result = TM_Updated;
 	}
 
@@ -3683,7 +3684,7 @@ zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
 		uint16		old_infomask;
 		UndoRecPtr	urec_ptr;
 
-		if (!zheap_fetch(rel, SnapshotAny, ctid, &mytup, &buf, false))
+		if (!zheap_fetch(rel, SnapshotAny, ctid, &mytup, &buf, false, false))
 		{
 			/*
 			 * if we fail to find the updated version of the tuple, it's
@@ -3715,7 +3716,7 @@ lock_tuple:
 		 */
 		if (TransactionIdIsValid(priorXmax) &&
 			!ValidateTuplesXact(rel, mytup, SnapshotAny,
-								buf, priorXmax, false))
+								buf, priorXmax, false, false))
 		{
 			UnlockReleaseBuffer(buf);
 			return TM_Ok;
@@ -8212,7 +8213,7 @@ zheap_get_latest_tid(TableScanDesc sscan,
 		 */
 		if (TransactionIdIsValid(priorXmax) &&
 			!ValidateTuplesXact(relation, tp, snapshot,
-								buffer, priorXmax, false))
+								buffer, priorXmax, false, false))
 		{
 			UnlockReleaseBuffer(buffer);
 			break;
@@ -8231,7 +8232,7 @@ zheap_get_latest_tid(TableScanDesc sscan,
 		 */
 		ItemPointerSetInvalid(&new_ctid);
 		ZHeapTupleFetch(relation, buffer, offnum, snapshot,
-						&resulttup, &new_ctid);
+						&resulttup, &new_ctid, false);
 
 		/*
 		 * If any prior version is visible, we pass latest visible as true.

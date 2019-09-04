@@ -69,7 +69,7 @@ extern ZHTSV_Result ZHeapTupleSatisfiesOldestXmin(ZHeapTuple zhtup,
 
 extern bool ZHeapTupleFetch(Relation rel, Buffer buffer, OffsetNumber offnum,
 							Snapshot snapshot, ZHeapTuple *visible_tuple,
-							ItemPointer new_ctid);
+							ItemPointer new_ctid, bool keep_tup);
 
 extern bool ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 												 ItemPointer tid, Buffer buffer,

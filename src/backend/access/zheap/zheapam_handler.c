@@ -77,7 +77,8 @@ zheapam_fetch_row_version(Relation relation,
 
 	ExecClearTuple(slot);
 
-	if (zheap_fetch(relation, snapshot, tid, &zslot->tuple, &buffer, false))
+	if (zheap_fetch(relation, snapshot, tid, &zslot->tuple, &buffer, false,
+					false))
 	{
 		ExecStoreZHeapTuple(zslot->tuple, slot, true);
 		ReleaseBuffer(buffer);
@@ -254,7 +255,8 @@ retry:
 						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 						 errmsg("tuple to be locked was already moved to another partition due to concurrent update")));
 
-			if (zheap_fetch(relation, &SnapshotDirty, tid, &tuple, &buffer, true))
+			if (zheap_fetch(relation, &SnapshotDirty, tid, &tuple, &buffer,
+							true, true))
 			{
 				/*
 				 * Ensure that the tuple is same as what we are expecting.  If
@@ -265,7 +267,7 @@ retry:
 				 * do nothing.
 				 */
 				if (!ValidateTuplesXact(relation, tuple, &SnapshotDirty,
-										buffer, priorXmax, true))
+										buffer, priorXmax, true, false))
 				{
 					ReleaseBuffer(buffer);
 					return TM_Deleted;
@@ -392,7 +394,7 @@ retry:
 			 * above.
 			 */
 			if (!ValidateTuplesXact(relation, tuple, &SnapshotDirty,
-									buffer, priorXmax, true))
+									buffer, priorXmax, true, true))
 			{
 				if (BufferIsValid(buffer))
 					ReleaseBuffer(buffer);
@@ -508,7 +510,7 @@ zheapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot sn
 	 */
 
 	ZHeapTupleFetch(rel, buffer, ItemPointerGetOffsetNumber(tid), snapshot,
-					&tup, NULL);
+					&tup, NULL, false);
 
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 	ReleaseBuffer(buffer);
@@ -1588,7 +1590,7 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 											  scan->rs_cbuf,
 											  tupoffset,
 											  scan->rs_base.rs_snapshot,
-											  &tuple, NULL);
+											  &tuple, NULL, false);
 				}
 
 				/*
