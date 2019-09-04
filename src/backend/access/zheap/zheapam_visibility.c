@@ -829,6 +829,11 @@ ZHeapSelectVersionSelf(ZTupleTidOp op, TransactionId xid)
  * If visible_tuple != NULL, then set *visible_tuple to the visible version
  * of the tuple, if there is one, or otherwise to NULL.
  *
+ * The true value of keep_tup indicates that we want to get the tuple version
+ * and ctid for non-in place updated tuples even if they are not visible.  This
+ * is required to traverse the tuple chain.  Also, in such cases, it will be
+ * the responsibility of the caller to free the tuple.
+ *
  * For aborted transactions, we may need to fetch the visible tuple from undo.
  * It is possible that actions corresponding to aborted transaction have
  * been applied, but still xid is present in slot, however we should never
@@ -843,7 +848,7 @@ ZHeapSelectVersionSelf(ZTupleTidOp op, TransactionId xid)
 bool
 ZHeapTupleFetch(Relation rel, Buffer buffer, OffsetNumber offnum,
 				Snapshot snapshot, ZHeapTuple *visible_tuple,
-				ItemPointer new_ctid)
+				ItemPointer new_ctid, bool keep_tup)
 {
 	Page		dp = BufferGetPage(buffer);
 	ItemId		lp = PageGetItemId(dp, offnum);
@@ -856,6 +861,7 @@ ZHeapTupleFetch(Relation rel, Buffer buffer, OffsetNumber offnum,
 	bool		locked_only;
 	ZHeapTupleTransInfo zinfo;
 	ZVersionSelector zselect;
+	bool		valid = true;
 
 	/*
 	 * If caller wants SNAPSHOT_DIRTY semantics, certain fields need to be
@@ -1018,8 +1024,12 @@ ZHeapTupleFetch(Relation rel, Buffer buffer, OffsetNumber offnum,
 	/*
 	 * If we decided that we need to consult the undo log to figure out what
 	 * version our snapshot can see, call GetTupleFromUndo to fetch it.
+	 *
+	 * If keep_tup is set and itemId is marked deleted, then caller needs tuple
+	 * to follow chain, so here we will fetch tuple from undo.
 	 */
-	if (zselect == ZVERSION_OLDER)
+	if (zselect == ZVERSION_OLDER || (tuple == NULL &&
+									  zselect == ZVERSION_NONE && keep_tup))
 	{
 		ZHeapTuple	prior_tuple;
 
@@ -1034,8 +1044,17 @@ ZHeapTupleFetch(Relation rel, Buffer buffer, OffsetNumber offnum,
 	/* If we decide that no tuple is visible, free the tuple we built here. */
 	if (zselect == ZVERSION_NONE && tuple != NULL)
 	{
-		pfree(tuple);
-		tuple = NULL;
+		/*
+		 * We will retain the not-visible tuple if the caller asked us to do
+		 * so, but that won't change the visibility status.
+		 */
+		if(keep_tup)
+			valid = false;
+		else
+		{
+			pfree(tuple);
+			tuple = NULL;
+		}
 	}
 
 	/*
@@ -1094,7 +1113,7 @@ out:
 		*visible_tuple = tuple;
 	else if (tuple)
 		pfree(tuple);
-	return (tuple != NULL);
+	return (tuple != NULL && valid);
 }
 
 /*
@@ -1843,7 +1862,8 @@ ZHeapTupleHasSerializableConflictOut(bool visible, Relation relation,
 		if (visible)
 		{
 			snap = GetTransactionSnapshot();
-			ZHeapTupleFetch(relation, buffer, offnum, snap, &tuple, NULL);
+			ZHeapTupleFetch(relation, buffer, offnum, snap, &tuple, NULL,
+							false);
 			*xid = ZHeapTupleGetTransXID(tuple, buffer, false);
 			pfree(tuple);
 			return true;

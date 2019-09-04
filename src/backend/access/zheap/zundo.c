@@ -215,7 +215,8 @@ TransSlotFromUndoRecord(UnpackedUndoRecord *urec, ZHeapTupleHeader hdr,
  */
 bool
 ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
-				   Buffer buf, TransactionId priorXmax, bool nobuflock)
+				   Buffer buf, TransactionId priorXmax, bool nobuflock,
+				   bool keep_tup)
 {
 	ZHeapTuple	visible_tuple;
 	ZHeapTupleHeaderData hdr;
@@ -232,7 +233,8 @@ ValidateTuplesXact(Relation relation, ZHeapTuple tuple, Snapshot snapshot,
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 
 	/* XXX. This is a waste; we really only need the tuple header. */
-	ZHeapTupleFetch(relation, buf, offnum, snapshot, &visible_tuple, NULL);
+	ZHeapTupleFetch(relation, buf, offnum, snapshot, &visible_tuple, NULL,
+					keep_tup);
 
 	if (visible_tuple == NULL)
 	{

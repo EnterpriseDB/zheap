@@ -461,7 +461,8 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 
 			if (!all_visible)
 				valid = ZHeapTupleFetch(scan->rs_base.rs_rd, buffer,
-										lineoff, snapshot, &resulttup, NULL);
+										lineoff, snapshot, &resulttup, NULL,
+										false);
 			else if (!ItemIdIsDeleted(lpp))
 			{
 				valid = true;
@@ -929,7 +930,7 @@ get_next_tuple:
 			bool		valid;
 
 			valid = ZHeapTupleFetch(scan->rs_base.rs_rd, scan->rs_cbuf,
-									lineoff, snapshot, &tuple, NULL);
+									lineoff, snapshot, &tuple, NULL, false);
 
 			/*
 			 * If any prior version is visible, we pass latest visible as
@@ -1237,7 +1238,7 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 			ItemPointerSet(&tid, page, offnum);
 
 			valid = ZHeapTupleFetch(scan->rs_base.rs_rd, buffer,
-									offnum, snapshot, &resulttup, NULL);
+									offnum, snapshot, &resulttup, NULL, false);
 
 			if (valid)
 			{
@@ -1341,7 +1342,8 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	 * by another of its kind. Try to get it from the UNDO if it is still
 	 * visible.
 	 */
-	if (ZHeapTupleFetch(relation, buffer, offnum, snapshot, &resulttup, NULL))
+	if (ZHeapTupleFetch(relation, buffer, offnum, snapshot, &resulttup, NULL,
+						false))
 	{
 		TransactionId insertxid = InvalidTransactionId;
 
@@ -1418,7 +1420,8 @@ zheap_fetch(Relation relation,
 			ItemPointer tid,
 			ZHeapTuple *tuple,
 			Buffer *userbuf,
-			bool keep_buf)
+			bool keep_buf,
+			bool keep_tup)
 {
 	ZHeapTuple	resulttup;
 	ItemId		lp;
@@ -1483,7 +1486,7 @@ zheap_fetch(Relation relation,
 
 	ctid = *tid;
 	valid = ZHeapTupleFetch(relation, buffer, offnum, snapshot, &resulttup,
-							&ctid);
+							&ctid, keep_tup);
 
 	if (valid)
 		PredicateLockTid(relation, &((resulttup)->t_self), snapshot,
@@ -1538,6 +1541,15 @@ zheap_fetch(Relation relation,
 		*userbuf = InvalidBuffer;
 	}
 
-	*tuple = NULL;
+	/*
+	 * If caller needs the tuple, then don't free here still it is not
+	 * visible because for committed non-inplace updates, we have to follow
+	 * the chain.
+	 */
+	if(resulttup != NULL)
+		*tuple = resulttup;
+	else
+		*tuple = NULL;
+
 	return false;
 }

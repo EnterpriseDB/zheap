@@ -326,7 +326,8 @@ extern int	UpdateTupleHeaderFromUndoRecord(UnpackedUndoRecord *urec,
 											ZHeapTupleHeader hdr, Page page);
 extern bool ValidateTuplesXact(Relation relation, ZHeapTuple tuple,
 							   Snapshot snapshot, Buffer buf,
-							   TransactionId priorXmax, bool nobuflock);
+							   TransactionId priorXmax, bool nobuflock,
+							   bool keep_tup);
 extern bool zheap_exec_pending_rollback(Relation rel, Buffer buffer,
 										int slot_no, TransactionId xwait, BlockNumber *tpd_blkno);
 extern void process_and_execute_undo_actions_page(UndoRecPtr from_urecptr,
