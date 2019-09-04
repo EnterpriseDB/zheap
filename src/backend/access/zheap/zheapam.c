@@ -2786,8 +2786,16 @@ failed:
 	{
 		Assert(result == TM_SelfModified || result == TM_Deleted ||
 			   result == TM_Updated || result == TM_WouldBlock);
+
+		/*
+		 * It is quite possible that the itemId is normal and tuple is not
+		 * modified for SKIP lock case.  This is because after we have tried
+		 * to acquire the lock, the concurrent transaction got rolled back and
+		 * changed the tuple back to an un-modified tuple.
+		 */
 		Assert(ItemIdIsDeleted(lp) ||
-			   IsZHeapTupleModified(zhtup.t_data->t_infomask));
+			   IsZHeapTupleModified(zhtup.t_data->t_infomask) ||
+			   (result == TM_WouldBlock && ItemIdIsNormal(lp)));
 
 		/* If item id is deleted, tuple can't be marked as moved. */
 		if (!ItemIdIsDeleted(lp) &&

@@ -2664,7 +2664,7 @@ static void
 AbortTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
-	TransactionId latestXid;
+	TransactionId latestXid = InvalidTransactionId;
 	bool		is_parallel_worker;
 	bool		undo_apply_in_progress;
 
@@ -2777,8 +2777,6 @@ AbortTransaction(void)
 		latestXid = RecordTransactionAbort(false);
 	else if (is_parallel_worker)
 	{
-		latestXid = InvalidTransactionId;
-
 		/*
 		 * Since the parallel master won't get our value of XactLastRecEnd in
 		 * this case, we nudge WAL-writer ourselves in this case.  See related
