@@ -305,6 +305,9 @@ SnapMgrInit(void)
 Snapshot
 GetTransactionSnapshot(void)
 {
+	/* Unsafe if transaction is aborted, or if we're not in a transaction. */
+	Assert(IsTransactionState());
+
 	/*
 	 * Return historic snapshot if doing logical decoding. We'll never need a
 	 * non-historic transaction snapshot in this (sub-)transaction, so there's
@@ -380,6 +383,9 @@ GetTransactionSnapshot(void)
 Snapshot
 GetLatestSnapshot(void)
 {
+	/* Unsafe if transaction is aborted, or if we're not in a transaction. */
+	Assert(IsTransactionState());
+
 	/*
 	 * We might be able to relax this, but nothing that could otherwise work
 	 * needs it.
@@ -415,6 +421,9 @@ GetOldestSnapshot(void)
 	Snapshot	OldestRegisteredSnapshot = NULL;
 	XLogRecPtr	RegisteredLSN = InvalidXLogRecPtr;
 
+	/* Unsafe if transaction is aborted, or if we're not in a transaction. */
+	Assert(IsTransactionState());
+
 	if (!pairingheap_is_empty(&RegisteredSnapshots))
 	{
 		OldestRegisteredSnapshot = pairingheap_container(SnapshotData, ph_node,
@@ -441,6 +450,9 @@ GetOldestSnapshot(void)
 Snapshot
 GetCatalogSnapshot(Oid relid)
 {
+	/* Unsafe if transaction is aborted, or if we're not in a transaction. */
+	Assert(IsTransactionState());
+
 	/*
 	 * Return historic snapshot while we're doing logical decoding, so we can
 	 * see the appropriate state of the catalog.
@@ -463,6 +475,9 @@ GetCatalogSnapshot(Oid relid)
 Snapshot
 GetNonHistoricCatalogSnapshot(Oid relid)
 {
+	/* Unsafe if transaction is aborted, or if we're not in a transaction. */
+	Assert(IsTransactionState());
+
 	/*
 	 * If the caller is trying to scan a relation that has no syscache, no
 	 * catcache invalidations will be sent when it is updated.  For a few key
@@ -789,6 +804,9 @@ UpdateActiveSnapshotCommandId(void)
 	Assert(ActiveSnapshot->as_snap->active_count == 1);
 	Assert(ActiveSnapshot->as_snap->regd_count == 0);
 
+	/* This is not sensible except within a valid transaction. */
+	Assert(IsTransactionState());
+
 	/*
 	 * Don't allow modification of the active snapshot during parallel
 	 * operation.  We share the snapshot to worker backends at the beginning
@@ -842,6 +860,9 @@ GetActiveSnapshot(void)
 {
 	Assert(ActiveSnapshot != NULL);
 
+	/* Unsafe if transaction is aborted, or if we're not in a transaction. */
+	Assert(IsTransactionState());
+
 	return ActiveSnapshot->as_snap;
 }
 
@@ -881,6 +902,9 @@ RegisterSnapshotOnOwner(Snapshot snapshot, ResourceOwner owner)
 
 	if (snapshot == InvalidSnapshot)
 		return InvalidSnapshot;
+
+	/* It's unsafe to use snapshots in an aborted transaction. */
+	Assert(!IsAbortedTransactionBlockState());
 
 	/* Static snapshot?  Create a persistent copy */
 	snap = snapshot->copied ? snapshot : CopySnapshot(snapshot);

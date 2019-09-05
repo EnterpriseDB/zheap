@@ -2810,6 +2810,18 @@ AbortTransaction(bool *perform_foreground_undo)
 		*perform_foreground_undo = false;
 
 	/*
+	 * Any snapshots taken by this transaction were unsafe to use even at the
+	 * time when we entered AbortTransaction(), since we might have, for
+	 * example, inserted a heap tuple and failed while inserting index tuples.
+	 * They were even more unsafe after ProcArrayEndTransaction(), since after
+	 * that point tuples we inserted could be pruned by other backends.
+	 * However, we postpone the cleanup until this point in the sequence
+	 * because it has to be done after ResourceOwnerRelease() has finishing
+	 * unregistering snapshots.
+	 */
+	AtEOXact_Snapshot(false, true);
+
+	/*
 	 * State remains TRANS_ABORT until CleanupTransaction().
 	 */
 	RESUME_INTERRUPTS();
@@ -2834,7 +2846,6 @@ CleanupTransaction(void)
 	 * do abort cleanup processing
 	 */
 	AtCleanup_Portals();		/* now safe to release portal memory */
-	AtEOXact_Snapshot(false, true); /* and release the transaction's snapshots */
 
 	CurrentResourceOwner = NULL;	/* and resource owner */
 	if (TopTransactionResourceOwner)

@@ -663,6 +663,12 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 	 * checking whether parse analysis requires a snapshot; utility commands
 	 * don't have invalidatable plans, so we'd not get here for such a
 	 * command.
+	 *
+	 * Note that this code shouldn't be reached from within a failed
+	 * transaction, because only transaction control commands are legal in
+	 * that context, and we've already checked for those. That's important,
+	 * because we can't safely call GetTransactionSnapshot() from a failed
+	 * transaction.
 	 */
 	snapshot_set = false;
 	if (!ActiveSnapshotSet())
