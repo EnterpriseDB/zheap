@@ -69,6 +69,6 @@ extern ZHeapTuple zheap_search_buffer(ItemPointer tid, Relation relation,
 									  Buffer buffer, Snapshot snapshot, bool *all_dead);
 extern bool zheap_fetch(Relation relation, Snapshot snapshot,
 						ItemPointer tid, ZHeapTuple *tuple, Buffer *userbuf,
-						bool keep_buf);
+						bool keep_buf, bool keep_tup);
 
 #endif							/* ZHEAPSCAN_H */
