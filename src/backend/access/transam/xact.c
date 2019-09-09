@@ -2886,8 +2886,6 @@ CleanupTransaction(void)
 
 	ResetUndoActionsInfo();
 
-	ResetUndoActionsInfo();
-
 	/*
 	 * done with abort processing, set current transaction state back to
 	 * default

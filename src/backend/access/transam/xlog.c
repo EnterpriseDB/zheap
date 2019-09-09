@@ -6746,9 +6746,6 @@ StartupXLOG(void)
 	/* Recover undo log meta data corresponding to this checkpoint. */
 	StartupUndoLogs(ControlFile->checkPointCopy.redo);
 
-	/* Recover undo log meta data corresponding to this checkpoint. */
-	StartupUndoLogs(ControlFile->checkPointCopy.redo);
-
 	lastFullPageWrites = checkPoint.fullPageWrites;
 
 	RedoRecPtr = XLogCtl->RedoRecPtr = XLogCtl->Insert.RedoRecPtr = checkPoint.redo;

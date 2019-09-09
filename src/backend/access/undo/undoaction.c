@@ -398,7 +398,7 @@ ProcessAndApplyUndo(FullTransactionId full_xid, UndoRecPtr from_urecptr,
 
 		/*
 		 * FIXME: We need to fix how to set slot xid as invalid transaction
-		 * once the rollback for the transaction has benn completed for this
+		 * once the rollback for the transaction has been completed for this
 		 * block.  Else, the previous transaction might be rolled back wrongly
 		 * when the rollback for the current transaction has been performed.
 		 * Currently, we don't have the block chain complete info here.  We
