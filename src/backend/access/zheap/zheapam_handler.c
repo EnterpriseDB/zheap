@@ -296,7 +296,7 @@ retry:
 						case LockWaitSkip:
 							if (!ConditionalSubXactLockTableWait(SnapshotDirty.xmax,
 																 SnapshotDirty.subxid))
-								return result;	/* skip instead of waiting */
+								return TM_WouldBlock;	/* skip instead of waiting */
 							break;
 						case LockWaitError:
 							if (ConditionalSubXactLockTableWait(SnapshotDirty.xmax,
