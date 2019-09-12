@@ -1365,6 +1365,17 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 		urecptr = zheap_prepare_undo_multi_insert(&zh_undo_info, nranges,
                                                   &undorecord, record);
 
+		for (i = 0; i < nranges; i++)
+		{
+			appendBinaryStringInfo(&undorecord[i].uur_payload,
+								   (char *) ranges_data,
+								   2 * sizeof(OffsetNumber));
+
+			ranges_data += undorecord[i].uur_payload.len;
+			ranges_data_size += undorecord[i].uur_payload.len;
+
+		}
+
 		elog(DEBUG1, "Undo record prepared: %d for Block Number: %d",
 			 nranges, blkno);
 
@@ -1529,6 +1540,7 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 	}
 
 	/* be tidy */
+	FinishUndoRecordInsert(&zh_undo_info.context);
 	if (!skip_undo)
 	{
 		for (i = 0; i < nranges; i++)
@@ -1539,7 +1551,6 @@ zheap_xlog_multi_insert(XLogReaderState *record)
 
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
-	FinishUndoRecordInsert(&zh_undo_info.context);
 	UnlockReleaseTPDBuffers();
 }
 

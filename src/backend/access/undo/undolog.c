@@ -861,7 +861,7 @@ UndoLogAllocateInRecovery(UndoLogAllocContext *context,
 		if (UndoLogOffsetPlusUsableBytes(try_offset, size) <= slot->meta.end)
 		{
 			*need_xact_header = false;
-			return try_offset;
+			return context->try_location;
 		}
 
 		*prevlog_xact_start = MakeUndoRecPtr(slot->logno, slot->meta.unlogged.this_xact_start);
@@ -890,7 +890,8 @@ UndoLogAllocateInRecovery(UndoLogAllocContext *context,
 
 		/* We're looking for the first block referencing a new undo log. */
 		block = &context->xlog_record->blocks[context->recovery_block_id];
-		if (block->rnode.dbNode == UndoDbOid &&
+		if (block->in_use &&
+			block->rnode.dbNode == UndoDbOid &&
 			block->rnode.relNode != context->recovery_logno)
 		{
 			UndoLogNumber logno = block->rnode.relNode;
@@ -1046,7 +1047,7 @@ UndoLogAdvanceFinal(UndoRecPtr insertion_point, size_t size)
  * underlying segment file may have been physically removed.
  *
  * Return true if the discard point was updated, and false if nothing was done
- * because the log precending the given point was already discarded.
+ * because the log preceeding the given point was already discarded.
  *
  * TODO: The return value is not yet reliable and the code still doesn't work
  * correctly if called for the same undo log in two backends; more

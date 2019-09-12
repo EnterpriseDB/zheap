@@ -81,7 +81,7 @@ pgbench (
 		qr{creating tables},
 		qr{vacuuming},
 		qr{creating primary keys},
-		qr{done\.}
+		qr{done}
 	],
 	'pgbench scale 10 initialization');
 
