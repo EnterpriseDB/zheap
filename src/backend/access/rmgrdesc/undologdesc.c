@@ -36,16 +36,14 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 		appendStringInfo(buf, "logno %u " "discard " UndoLogOffsetFormat,
 						 xlrec->logno, xlrec->discard);
 	}
-	else if (info == XLOG_UNDOLOG_SWITCH)
+	else if (info == XLOG_UNDOLOG_MARK_FULL)
 	{
-		xl_undolog_switch *xlrec = (xl_undolog_switch *) rec;
+		xl_undolog_mark_full *xlrec = (xl_undolog_mark_full *) rec;
 
-		appendStringInfo(buf, "logno %u start " UndoLogOffsetFormat " last " UndoLogOffsetFormat,
+		appendStringInfo(buf, "logno %u full " UndoLogOffsetFormat,
 						 xlrec->logno,
-						 xlrec->prevlog_xact_start,
-						 xlrec->prevlog_last_urp);
+						 xlrec->full);
 	}
-
 }
 
 const char *
@@ -61,8 +59,8 @@ undolog_identify(uint8 info)
 		case XLOG_UNDOLOG_DISCARD:
 			id = "DISCARD";
 			break;
-		case XLOG_UNDOLOG_SWITCH:
-			id = "SWITCH";
+		case XLOG_UNDOLOG_MARK_FULL:
+			id = "MARK_FULL";
 			break;
 	}
 

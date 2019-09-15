@@ -20,42 +20,29 @@
 /* XLOG records */
 #define XLOG_UNDOLOG_CREATE		0x00
 #define XLOG_UNDOLOG_DISCARD	0x10
-#define XLOG_UNDOLOG_SWITCH		0x20
-#define XLOG_UNDOLOG_MARK_FULL	0x30
+#define XLOG_UNDOLOG_MARK_FULL	0x20
 
 /* Create a new undo log. */
 typedef struct xl_undolog_create
 {
 	UndoLogNumber logno;
-	Oid		tablespace;
-	UndoLogCategory category;
+	Oid			tablespace;
+	char		persistence;
 } xl_undolog_create;
 
 #define SizeOfUndologCreate \
-	(offsetof(xl_undolog_create, category) + sizeof(UndoLogCategory))
+	(offsetof(xl_undolog_create, persistence) + sizeof(persistence))
 
 /* Discard space, and possibly destroy or recycle undo log segments. */
 typedef struct xl_undolog_discard
 {
 	UndoLogNumber logno;
 	UndoLogOffset discard;
-	TransactionId latestxid;	/* latest xid whose undolog are discarded. */
 	bool		  entirely_discarded;
 } xl_undolog_discard;
 
 #define SizeOfUndologDiscard \
 	(offsetof(xl_undolog_discard, entirely_discarded) + sizeof(bool))
-
-/* Switch undo log. */
-typedef struct xl_undolog_switch
-{
-	UndoLogNumber logno;
-	UndoRecPtr prevlog_xact_start;
-	UndoRecPtr prevlog_last_urp;
-} xl_undolog_switch;
-
-#define SizeOfUndologSwitch \
-	(offsetof(xl_undolog_switch, prevlog_last_urp) + sizeof(UndoRecPtr))
 
 /* Mark an undo log as full. */
 typedef struct xl_undolog_mark_full

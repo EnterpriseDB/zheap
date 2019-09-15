@@ -18,7 +18,7 @@ typedef struct
 {
 	UndoLogNumber logno;
 	UndoLogOffset discard;
-	UndoLogCategory category;
+	char		persistence;
 	Oid			tablespace;
 } UndoLogInfo;
 
@@ -59,7 +59,7 @@ read_one_undo_log(int fd, ClusterInfo *cluster, UndoLogInfo *info)
 				 sizeof(meta_data), rc);
 
 	info->logno = meta_data.logno;
-	info->category = meta_data.category;
+	info->persistence = meta_data.persistence;
 	info->tablespace = meta_data.tablespace;
 	info->discard = meta_data.discard;
 }
@@ -94,12 +94,12 @@ merge_undo_log(UndoLogInfo *logs, UndoLogNumber *num_logs,
 			 * levels).  The most permanent is the best choice, because TEMP
 			 * undo logs might be rewound in future.
 			 */
-			StaticAssertStmt(UNDO_PERMANENT < UNDO_UNLOGGED,
-							 "undo log persistent out of order");
-			StaticAssertStmt(UNDO_UNLOGGED < UNDO_TEMP,
-							 "undo log persistent out of order");
-			if (logs[i].category > info->category)
-				logs[i].category = info->category;
+			if (logs[i].persistence == 'p' || info->persistence == 'p')
+				logs[i].persistence = 'p';
+			else if (logs[i].persistence == 'u' || info->persistence == 'u')
+				logs[i].persistence = 'u';
+			else
+				logs[i].persistence = 't';
 
 			/*
 			 * Take the highest tablespace OID.  The choice of 'highest' is
@@ -247,8 +247,8 @@ merge_undo_logs(void)
 		 */
 		end = ((info->discard + UndoLogSegmentSize - 1) / UndoLogSegmentSize)
 			* UndoLogSegmentSize;
-		meta_data.unlogged.insert = meta_data.discard =
-			((meta_data.unlogged.insert / UndoLogSegmentSize) + 1) *
+		meta_data.insert = meta_data.discard =
+			((meta_data.insert / UndoLogSegmentSize) + 1) *
 			UndoLogSegmentSize;
 
 		/* TODO full? */

@@ -21,6 +21,7 @@
 #include "catalog/database_internal.h"
 #include "catalog/pg_class.h"
 #include "common/relpath.h"
+#include "lib/ilist.h"
 #include "storage/bufpage.h"
 
 #ifndef FRONTEND
@@ -32,51 +33,6 @@ typedef uint64 UndoRecPtr;
 
 /* The type used for undo record lengths. */
 typedef uint16 UndoRecordSize;
-
-/*
- * Undo log categories.  These correspond to the different persistence levels
- * of relations so that we can discard unlogged and temporary undo data
- * wholesale in some circumstance.  We also have a separate category for
- * 'shared' records that are not associated with a single transactions.  Since
- * they might live longer than the transaction that created them, and since we
- * prefer to avoid interleaving records that don't belong to the same
- * transaction, we keep them separate.
- */
-typedef enum
-{
-	UNDO_PERMANENT = 0,
-	UNDO_UNLOGGED = 1,
-	UNDO_TEMP = 2,
-	UNDO_SHARED = 3
-} UndoLogCategory;
-
-#define UndoLogCategories 4
-
-/*
- * Convert from relpersistence ('p', 'u', 't') to an UndoLogCategory
- * enumerator.
- */
-#define UndoLogCategoryForRelPersistence(rp)						\
-	((rp) == RELPERSISTENCE_PERMANENT ? UNDO_PERMANENT :			\
-	 (rp) == RELPERSISTENCE_UNLOGGED ? UNDO_UNLOGGED : UNDO_TEMP)
-
-/*
- * Convert from UndoLogCategory to a relpersistence value.  There is no
- * relpersistence level for UNDO_SHARED, but the only use of this macro is to
- * pass a value to ReadBufferWithoutRelcache, which cares only about detecting
- * RELPERSISTENCE_TEMP.  XXX There must be a better way.
- */
-#define RelPersistenceForUndoLogCategory(up)				\
-	((up) == UNDO_PERMANENT ? RELPERSISTENCE_PERMANENT :	\
-	 (up) == UNDO_UNLOGGED ? RELPERSISTENCE_UNLOGGED :		\
-	 (up) == UNDO_SHARED ? RELPERSISTENCE_PERMANENT :		\
-	 RELPERSISTENCE_TEMP)
-
-/*
- * Get the appropriate UndoLogCategory value from a Relation.
- */
-#define UndoLogCategoryForRelation(rel)									\
-	(UndoLogCategoryForRelPersistence((rel)->rd_rel->relpersistence))
 
 /* Type for offsets within undo logs */
 typedef uint64 UndoLogOffset;
@@ -192,21 +148,15 @@ typedef int UndoLogNumber;
 		(rfn).relNode = UndoRecPtrGetRelNode(urp);							 \
 	} while (false);
 
+/* How many peristence levels do we have? */
+#define NPersistenceLevels 3
+
 /*
- * Properties of an undo log that don't have explicit WAL records logging
- * their changes, to reduce WAL volume.  Instead, they change incrementally
- * whenever data is inserted as a result of other WAL records.  Since the
- * values recorded in an online checkpoint may be out of the sync (ie not the
- * correct values as at the redo LSN), these are backed up in buffer data on
- * first change after each checkpoint.
+ * Map a persistence levels ('u', 'p', 't') to a contiguous range of integers
+ * 0-2 for use as an array indexes.  This expression relies on a trivial
+ * perfect hash.
  */
-typedef struct UndoLogUnloggedMetaData
-{
-	UndoLogOffset insert;			/* next insertion point (head) */
-	UndoLogOffset last_xact_start;	/* last transaction's first byte in this log */
-	UndoLogOffset this_xact_start;	/* this transaction's first byte in this log */
-	TransactionId xid;				/* currently attached/writing xid */
-} UndoLogUnloggedMetaData;
+#define UndoPersistenceIndex(persistence) ((persistence) % NPersistenceLevels)
 
 /*
  * Control metadata for an active undo log.  Lives in shared memory inside an
@@ -214,58 +164,14 @@ typedef struct UndoLogUnloggedMetaData
  */
 typedef struct UndoLogMetaData
 {
-	/* Members that are not managed by explicit WAL logs. */
-	UndoLogUnloggedMetaData unlogged;
-
-	/* Members that are fixed for the lifetime of the undo log. */
 	UndoLogNumber logno;
 	Oid			tablespace;
-	UndoLogCategory category;
+	char		persistence;
 
-	/* Members that are changed by explicit WAL records. */
-	UndoLogOffset full;				/* If insert == full, the log is full. */
 	UndoLogOffset discard;			/* oldest data needed (tail) */
-
-	/*
-	 * Below two variable are used during recovery when transaction's undo
-	 * records are split across undo logs.  Replay of switch will restore
-	 * these two undo record pointers which will be reset on next allocation
-	 * during recovery. */
-	UndoRecPtr	prevlog_xact_start; /* Transaction's start undo record pointer
-									 * in the previous log. */
-	UndoRecPtr	prevlog_last_urp;	/* Transaction's last undo record pointer in
-									 * the previous log. */
+	UndoLogOffset insert;			/* location of next insert (head) */
+	UndoLogOffset full;				/* If insert == full, the log is full. */
 } UndoLogMetaData;
-
-/*
- * Context used to hold undo log state across all the undo log insertions
- * corresponding to a single WAL record.
- */
-typedef struct UndoLogAllocContext
-{
-	UndoLogCategory category;
-
-	UndoLogNumber logno;
-	UndoLogOffset insert;
-	UndoLogOffset recent_end;
-
-	XLogReaderState *xlog_record;
-	uint8 		recovery_block_id;
-	bool		new_shared_record_set;
-
-	/*
-	 * The maximum number of undo logs that a single WAL record could insert
-	 * into, modifying its unlogged meta data.  Typically the number is 1, but
-	 * it might touch a couple or more in rare cases where space runs out.
-	 */
-#define MAX_META_DATA_IMAGES 4
-	int			num_meta_data_images;
-	struct
-	{
-		UndoLogNumber logno;
-		UndoLogUnloggedMetaData data;
-	} meta_data_images[MAX_META_DATA_IMAGES];
-} UndoLogAllocContext;
 
 #ifndef FRONTEND
 
@@ -293,8 +199,7 @@ typedef struct UndoLogSlot
 	 */
 	UndoLogNumber logno;			/* InvalidUndoLogNumber for unused slots */
 
-	/* Protected by UndoLogLock. */
-	UndoLogNumber next_free;		/* link for active unattached undo logs */
+	slist_node	next;				/* link node for freelists */
 
 	LWLock		file_lock;			/* prevents concurrent file operations */
 
@@ -302,13 +207,12 @@ typedef struct UndoLogSlot
 	UndoLogMetaData meta;			/* current meta-data */
 	bool		simulate_full;		/* for testing only */
 	pid_t		pid;				/* InvalidPid for unattached */
+	TransactionId xid;
 	UndoLogOffset begin;			/* beginning of lowest segment file */
 	UndoLogOffset end;				/* one past end of highest segment */
 } UndoLogSlot;
 
 extern UndoLogSlot *UndoLogGetSlot(UndoLogNumber logno, bool missing_ok);
-extern UndoLogSlot *UndoLogNextSlot(UndoLogSlot *slot);
-extern bool AmAttachedToUndoLogSlot(UndoLogSlot *slot);
 extern UndoRecPtr UndoLogGetOldestRecord(UndoLogNumber logno, bool *full);
 
 /*
@@ -328,7 +232,7 @@ typedef struct UndoLogTableEntry
 	UndoLogNumber	number;
 	UndoLogSlot	   *slot;
 	Oid				tablespace;
-	UndoLogCategory category;
+	char			persistence;
 	UndoRecPtr		recent_discard;
 	char			status;			/* used by simplehash */
 } UndoLogTableEntry;
@@ -395,41 +299,22 @@ UndoRecPtrGetTablespace(UndoRecPtr urp)
 /*
  * Look up the category for an undo log in our cache.
  */
-static inline UndoLogCategory
-UndoLogNumberGetCategory(UndoLogNumber logno)
+static inline char
+UndoLogNumberGetPersistence(UndoLogNumber logno)
 {
-	return UndoLogGetTableEntry(logno)->category;
+	return UndoLogGetTableEntry(logno)->persistence;
 }
 
-static inline UndoLogCategory
-UndoRecPtrGetCategory(UndoRecPtr urp)
+static inline char
+UndoRecPtrGetPersistence(UndoRecPtr urp)
 {
-	return UndoLogNumberGetCategory(UndoRecPtrGetLogNo(urp));
+	return UndoLogNumberGetPersistence(UndoRecPtrGetLogNo(urp));
 }
 
 #endif
 
-/* Space management. */
-extern void UndoLogBeginInsert(UndoLogAllocContext *context,
-							   UndoLogCategory category,
-							   XLogReaderState *xlog_record);
-extern void UndoLogRegister(UndoLogAllocContext *context,
-							uint8 block_id,
-							UndoLogNumber logno);
-extern UndoRecPtr UndoLogAllocate(UndoLogAllocContext *context,
-								  uint16 size,
-								  bool *need_xact_header,
-								  UndoRecPtr *last_xact_start,
-								  UndoRecPtr *prevlog_xact_start);
-extern UndoRecPtr UndoLogAllocateInRecovery(UndoLogAllocContext *context,
-											TransactionId xid,
-											uint16 size,
-											bool *need_xact_header,
-											UndoRecPtr *last_xact_start,
-											UndoRecPtr *prevlog_xact_start);
-extern void UndoLogAdvance(UndoLogAllocContext *context, size_t size);
-extern void UndoLogAdvanceFinal(UndoRecPtr insertion_point, size_t size);
-extern void UndoLogDiscard(UndoRecPtr discard_point, TransactionId xid);
+/* Discarding data. */
+extern void UndoDiscard(UndoRecPtr location);
 extern bool UndoLogRecPtrIsDiscardedSlowPath(UndoRecPtr pointer);
 
 #ifndef FRONTEND
@@ -455,6 +340,14 @@ UndoRecPtrIsDiscarded(UndoRecPtr pointer)
 	return UndoLogRecPtrIsDiscardedSlowPath(pointer);
 }
 
+/* Interfaces used by undorecordset.c. */
+extern UndoLogSlot *UndoLogGetForPersistence(char persistence);
+extern void UndoLogPut(UndoLogSlot *slot);
+extern void UndoLogAdjustPhysicalRange(UndoLogNumber logno,
+									   UndoLogOffset new_discard,
+									   UndoLogOffset new_isnert);
+extern void UndoLogMarkFull(UndoLogSlot *uls);
+
 #endif
 
 /* Initialization interfaces. */
@@ -462,10 +355,13 @@ extern void StartupUndoLogs(XLogRecPtr checkPointRedo);
 extern void UndoLogShmemInit(void);
 extern Size UndoLogShmemSize(void);
 extern void UndoLogInit(void);
+
+/* Interfaces exported for undo_file.c. */
+extern void UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);
 extern void UndoLogDirectory(Oid tablespace, char *path);
 extern void UndoLogSegmentPath(UndoLogNumber logno, int segno, Oid tablespace,
 							   char *path);
-extern void ResetUndoLogs(UndoLogCategory category);
+extern void ResetUndoLogs(char persistence);
 
 /* Interface use by tablespace.c. */
 extern bool DropUndoLogsInTablespace(Oid tablespace);
@@ -477,18 +373,7 @@ extern void assign_undo_tablespaces(const char *newval, void *extra);
 extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
 							   XLogRecPtr priorCheckPointRedo);
 
-/* File sync request management. */
-
-
-extern UndoRecPtr UndoLogGetNextInsertPtr(UndoLogNumber logno);
-extern void UndoLogSwitchSetPrevLogInfo(UndoLogNumber logno,
-										UndoRecPtr prevlog_last_urp,
-										UndoRecPtr prevlog_xact_start);
-extern void UndoLogSetLSN(XLogRecPtr lsn);
-void UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);
-/* Redo interface. */
 extern void undolog_redo(XLogReaderState *record);
-/* Discard the undo logs for temp tables */
 extern void TempUndoDiscard(UndoLogNumber);
 
 #endif
