@@ -2537,6 +2537,12 @@ undolog_xlog_discard(XLogReaderState *record)
 	/* Update shmem. */
 	LWLockAcquire(&slot->mutex, LW_EXCLUSIVE);
 	slot->meta.discard = xlrec->discard;
+
+	/* Updated oldest_data */
+	LWLockAcquire(&slot->discard_lock, LW_EXCLUSIVE);
+	slot->oldest_data = xlrec->discard;
+	LWLockRelease(&slot->discard_lock);
+
 	slot->meta.end = end;
 	LWLockRelease(&slot->mutex);
 
