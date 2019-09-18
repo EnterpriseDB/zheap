@@ -35,10 +35,9 @@ undo_xlog_apply_progress(XLogReaderState *record)
 	BeginUndoRecordInsert(&context, category, 1, record);
 
 	/* Update the undo apply progress in the transaction header. */
-	PrepareUndoRecordApplyProgress(&context, xlrec->urec_ptr,
-								   xlrec->progress);
-
-	UndoRecordUpdate(&context, 0);
+	if (PrepareUndoRecordApplyProgress(&context, xlrec->urec_ptr,
+								   xlrec->progress))
+		UndoRecordUpdate(&context, 0);
 
 	/* Release undo buffers. */
 	FinishUndoRecordInsert(&context);

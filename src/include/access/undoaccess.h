@@ -93,7 +93,7 @@ typedef struct UndoRecordFetchContext
 	UndoRecPtr	urp;			/* Previous undo record pointer. */
 } UndoRecordFetchContext;
 
-extern void PrepareUndoRecordApplyProgress(UndoRecordInsertContext *context,
+extern bool PrepareUndoRecordApplyProgress(UndoRecordInsertContext *context,
 									UndoRecPtr urecptr, BlockNumber progress);
 extern void UndoRecordUpdate(UndoRecordInsertContext *context, int idx);
 extern void BeginUndoRecordInsert(UndoRecordInsertContext *context,

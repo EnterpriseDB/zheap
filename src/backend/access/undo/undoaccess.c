@@ -282,7 +282,7 @@ PrepareUndoRecordUpdateNext(UndoRecordInsertContext *context,
 /*
  * Prepare to update the undo apply progress in the group header.
  */
-void
+bool
 PrepareUndoRecordApplyProgress(UndoRecordInsertContext *context,
 							   UndoRecPtr urecptr, BlockNumber progress)
 {
@@ -296,14 +296,28 @@ PrepareUndoRecordApplyProgress(UndoRecordInsertContext *context,
 	 * to do anything.
 	 */
 	if (UndoRecPtrGetCategory(urecptr) == UNDO_TEMP)
-		return;
+		return false;
 
 	/*
 	 * Here, we are preparing to update the undo apply progress of a
 	 * transaction being rolled back.  The undo must not be discarded
 	 * till the transaction is completely rolled back.
+	 * UndoRecPtrIsDiscarded(urecptr) is added temporarily to handle the
+	 * following issue:
+	 * A transaction, inserts one undo record and generated a WAL record
+	 * for the same, say at WAL location 0/2000A000. Next, the undo record
+	 * gets discarded and WAL is generated to update the meta.discard
+	 * pointer at location 0/2000B000  At the same time, an ongoing
+	 * checkpoint with checkpoint.redo at 0/20000000 flushes the latest
+	 * meta.discard pointer. Now, the system crashes. Now, the recovery
+	 * starts from the location 0/20000000. When the recovery of 0/2000A000
+	 * happens, it sees the undo record that it's about to insert, is
+	 * already discarded as per meta.discard (flushed by checkpoint).
+	 * The below fix just skips this undo record pointer.
 	 */
-	Assert(!UndoRecPtrIsDiscarded(urecptr));
+	Assert(InRecovery || !UndoRecPtrIsDiscarded(urecptr));
+	if (InRecovery && UndoRecPtrIsDiscarded(urecptr))
+		return false;
 
 	/* Compute the offset of the urec_progress in the undo record. */
 	offset = SizeOfUndoRecordHeader +
@@ -317,6 +331,8 @@ PrepareUndoRecordApplyProgress(UndoRecordInsertContext *context,
 	 * in actual undo record during update phase.
 	 */
 	context->urec_update_info[index].progress = progress;
+
+	return true;
 }
 
 /*
