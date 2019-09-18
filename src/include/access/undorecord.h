@@ -94,7 +94,7 @@ typedef struct UndoRecordHeader
 } UndoRecordHeader;
 
 #define SizeOfUndoRecordHeader	\
-	(offsetof(UndoRecordHeader, urec_prevxid) + sizeof(uint16))
+	(offsetof(UndoRecordHeader, urec_prevlen) + sizeof(uint16))
 
 /*
  * Undo group header keep the information per undo group which can be discarded
