@@ -78,7 +78,7 @@ UndoDiscardOneLog(UndoLogSlot *slot, TransactionId xmin, bool *hibernate)
 		TransactionId wait_xid = InvalidTransactionId;
 		bool pending_abort = false;
 		bool request_rollback = false;
-		UndoStatus status;
+		UndoStatus status PG_USED_FOR_ASSERTS_ONLY;
 		UndoRecordFetchContext	context;
 
 		next_insert = UndoLogGetNextInsertPtr(logno);
