@@ -3409,10 +3409,19 @@ GetTupleForTrigger(EState *estate,
 	else
 	{
 		/*
+		 * tid might get overwritten with the latest tid in non-inplace update
+		 * case.  So make the copy of tid before fetching the tuple.  So that
+		 * in the unsuccessful case if we need to re-fetch the tuple then we
+		 * have the right tid.
+		 */
+		ItemPointerData	temp_tid = ItemPointerCopy(tid, &temp_tid);
+
+		/*
 		 * We expect the tuple to be present, thus very simple error handling
 		 * suffices.
 		 */
-		if (!table_tuple_fetch_row_version(relation, tid, estate->es_snapshot,
+		if (!table_tuple_fetch_row_version(relation, &temp_tid,
+										   estate->es_snapshot,
 										   oldslot))
 		{
 			/*
