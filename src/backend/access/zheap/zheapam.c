@@ -8819,7 +8819,8 @@ RefetchAndCheckTupleStatus(Relation relation,
 	 * modified it before we grabbed the buffer lock.  In that case, we've to
 	 * go back and perform the conflict check again, so return false.
 	 */
-	if (ZHEAP_XID_IS_LOCKED_ONLY(zhtup->t_data->t_infomask) &&
+	if (TransactionIdIsValid(*single_locker_xid) &&
+		ZHEAP_XID_IS_LOCKED_ONLY(zhtup->t_data->t_infomask) &&
 		!ZHeapTupleHasMultiLockers(zhtup->t_data->t_infomask))
 	{
 		FullTransactionId current_single_locker_fxid;
