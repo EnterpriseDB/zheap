@@ -401,23 +401,32 @@ tpd_xlog_free_page(XLogReaderState *record)
 
 	XLogRecGetBlockTag(record, 1, &rnode, NULL, &blkno);
 	action = XLogReadBufferForRedo(record, 1, &buffer);
-	page = (Page) BufferGetPage(buffer);
 
 	/*
-	 * Note that we still update the page even if it was restored from a full
-	 * page image, because the special space is not included in the image.
+	 * It is quite possible that this buffer is already flushed by checkpoint
+	 * so in that case, we will can't read that buffer because at do time, we
+	 * are making buffer as new to free it.  So, if here action is BLK_NOTFOUND,
+	 * then we will skip memset.
 	 */
-	if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
+	if (action != BLK_NOTFOUND)
 	{
-		MemSet((PageHeader) page, 0, BufferGetPageSize(buffer));
+		page = (Page) BufferGetPage(buffer);
 
-		MarkBufferDirty(buffer);
+		/*
+		 * Note that we still update the page even if it was restored from a
+		 * full page image, because the special space is not included in the
+		 * image.
+		 */
+		if (action == BLK_NEEDS_REDO || action == BLK_RESTORED)
+		{
+			MemSet((PageHeader) page, 0, BufferGetPageSize(buffer));
+			MarkBufferDirty(buffer);
+		}
+
+		/* Page should be marked as NEW. */
+		Assert(PageIsNew(page));
+		Assert(blkno == BufferGetBlockNumber(buffer));
 	}
-
-	/* Page should be marked as NEW. */
-	Assert(PageIsNew(page));
-	Assert(blkno == BufferGetBlockNumber(buffer));
-	freespace = BLCKSZ - SizeOfPageHeaderData;
 
 	if (XLogRecHasBlockRef(record, 2))
 	{
@@ -463,6 +472,8 @@ tpd_xlog_free_page(XLogReaderState *record)
 		UnlockReleaseBuffer(nextbuf);
 	if (BufferIsValid(metabuf))
 		UnlockReleaseBuffer(metabuf);
+
+	freespace = BLCKSZ - SizeOfPageHeaderData;
 
 	/* Record the empty page in FSM. */
 	XLogRecordPageWithFreeSpace(rnode, blkno, freespace);
