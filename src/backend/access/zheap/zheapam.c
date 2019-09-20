@@ -116,7 +116,7 @@ static LockWaitStatus zheap_lock_wait_helper(Relation relation, Buffer buffer,
 											 bool *any_multi_locker_member_alive, bool *have_tuple_lock);
 static ZHeapTuple zheap_prepare_insert(Relation relation, ZHeapTuple tup,
 									   int options, uint32 specToken);
-static TM_Result zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
+static TM_Result zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid, TransactionId xwait,
 										  FullTransactionId fxid, LockTupleMode mode, LockOper lockopr,
 										  CommandId cid, bool *rollback_and_relocked);
 static UndoRecPtr zheap_lock_tuple_guts(Buffer buf, ZHeapTuple zhtup,
@@ -3062,7 +3062,8 @@ zheap_lock_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zhtup,
 					TM_Result	res;
 
 					res = zheap_lock_updated_tuple(relation, zhtup, ctid,
-												   fxid, mode, lockopr, cid,
+												   xwait, fxid, mode, lockopr,
+												   cid,
 												   &rollback_and_relocked);
 
 					/*
@@ -3386,7 +3387,7 @@ zheap_lock_wait_helper(Relation relation, Buffer buffer, ZHeapTuple zhtup,
 			if (!ZHeapTupleIsMoved(zhtup->t_data->t_infomask) &&
 				!ItemPointerEquals(&zhtup->t_self, ctid))
 			{
-				res = zheap_lock_updated_tuple(relation, zhtup, ctid,
+				res = zheap_lock_updated_tuple(relation, zhtup, ctid, xwait,
 											   fxid, mode, lockopr, cid,
 											   &rollback_and_relocked);
 
@@ -3658,8 +3659,8 @@ test_lockmode_for_conflict(Relation rel, Buffer buf, ZHeapTuple zhtup,
  */
 static TM_Result
 zheap_lock_updated_tuple(Relation rel, ZHeapTuple tuple, ItemPointer ctid,
-						 FullTransactionId fxid, LockTupleMode mode,
-						 LockOper lockopr, CommandId cid,
+						 TransactionId xwait, FullTransactionId fxid,
+						 LockTupleMode mode, LockOper lockopr, CommandId cid,
 						 bool *rollback_and_relocked)
 {
 	TM_Result	result;
@@ -3762,6 +3763,24 @@ lock_tuple:
 			mytup = zheap_gettuple(rel, buf, offnum);
 
 		ZHeapTupleGetTransInfo(buf, offnum, &zinfo);
+
+		/*
+		 * Here, if tuple xid is not same as our wait xid, then we can't go
+		 * ahead, because either our wait xid is committed or aborted and
+		 * new tuple xid may be in-progress, so return from here.  We will set
+		 * rollback_and_relocked so that caller will reverify xwait again.
+		 */
+		if(zinfo.xid != xwait)
+		{
+			/*
+			 * Set rollback_and_relocked so that to caller will refetch tuple
+			 * again and reverify it's status to know latest xwait.
+			 */
+			*rollback_and_relocked = true;
+			result = TM_Ok;
+			goto out_locked;
+		}
+
 		urec_ptr = zinfo.urec_ptr;
 		old_infomask = mytup->t_data->t_infomask;
 
