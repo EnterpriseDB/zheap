@@ -12,6 +12,8 @@
 #ifndef UNDORECORDSET_H
 #define UNDORECORDSET_H
 
+#include "access/undolog.h"
+
 typedef enum UndoRecordSetType
 {
 	URST_TRANSACTION,

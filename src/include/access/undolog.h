@@ -16,13 +16,9 @@
 #ifndef UNDOLOG_H
 #define UNDOLOG_H
 
-#include "access/transam.h"
 #include "access/xlogreader.h"
 #include "catalog/database_internal.h"
-#include "catalog/pg_class.h"
-#include "common/relpath.h"
 #include "lib/ilist.h"
-#include "storage/bufpage.h"
 
 #ifndef FRONTEND
 #include "storage/lwlock.h"
