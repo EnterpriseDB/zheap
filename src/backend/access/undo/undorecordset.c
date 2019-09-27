@@ -21,6 +21,7 @@
 #include "access/xlogutils.h"
 #include "storage/buf.h"
 #include "storage/bufmgr.h"
+#include "storage/ipc.h"
 
 /*
  * Per-chunk bookkeeping.
@@ -72,6 +73,8 @@ struct UndoRecordSet
 
 	bool			closed;
 	UndoLogOffset	recent_end;
+
+	slist_node		link;
 };
 
 /* TODO: should perhaps make type a char and not include the padding */
@@ -79,12 +82,41 @@ struct UndoRecordSet
 
 static size_t urst_header_size(UndoRecordSetType type);
 static inline void reserve_buffer_array(UndoRecordSet *urs, size_t capacity);
+static void AtProcExit_UndoRecordSet(int code, Datum arg);
 
+/*
+ * It's essential that we perform proper cleanup when we finish using an
+ * UndoRecordSet; see UndoMarkClosed and UndoRelease for details. To be
+ * certain this happens in all cases, we keep a list of every UndoRecordSet
+ * object that has been created but not yet cleaned up.
+ */
+static slist_head UndoRecordSetList = SLIST_STATIC_INIT(UndoRecordSetList);
+
+/*
+ * We store data UndoRecordSet objects and subsidiary data in a separate
+ * context so to make it easy to spot leaks or excessive memory utilization.
+ */
+static MemoryContext UndoRecordSetContext = NULL;
+
+/*
+ * Create a new UndoRecordSet.
+ */
 UndoRecordSet *
 UndoCreate(UndoRecordSetType type, char persistence)
 {
 	UndoRecordSet *urs;
+	MemoryContext	oldcontext;
 
+	if (unlikely(UndoRecordSetContext == NULL))
+	{
+		UndoRecordSetContext =
+			AllocSetContextCreate(TopMemoryContext,
+								  "UndoRecordSet",
+								  ALLOCSET_DEFAULT_SIZES);
+		on_shmem_exit(AtProcExit_UndoRecordSet, 0);
+	}
+
+	oldcontext = MemoryContextSwitchTo(UndoRecordSetContext);
 	urs = palloc0(sizeof(UndoRecordSet));
 	urs->type = type;
 	urs->persistence = persistence;
@@ -95,6 +127,8 @@ UndoCreate(UndoRecordSetType type, char persistence)
 	urs->need_type_header = true;
 	urs->type_header_size = urst_header_size(type);
 	Assert(urs->type_header_size <= sizeof(urs->type_header));
+	slist_push_head(&UndoRecordSetList, &urs->link);
+	MemoryContextSwitchTo(oldcontext);
 
 	return urs;
 }
@@ -907,6 +941,29 @@ UndoRelease(UndoRecordSet *urs)
 		/* Return undo logs to appropriate free lists. */
 		for (int i = 0; i < urs->nchunks; ++i)
 			UndoLogPut(urs->chunks[i].slot);
+
+		/* Remove from list of all known record sets. */
+		slist_delete(&UndoRecordSetList, &urs->link);
+
+		/* Free memory. */
+		pfree(urs->chunks);
+		pfree(urs->buffers);
 		pfree(urs);
 	}
+}
+
+/*
+ * AtProcExit_UndoRecordSet
+ *
+ * It should be impossible to reach this code with any UndoRecordSet still
+ * in existence. But if it does happen, PANIC. System restart will finalize
+ * the size of any UndoRecordSet that was not properly closed, and will also
+ * recreate all relevant UndoLogSlot objects and put them on the global
+ * free lists.
+ */
+static void
+AtProcExit_UndoRecordSet(int code, Datum arg)
+{
+	if (!slist_is_empty(&UndoRecordSetList))
+		elog(PANIC, "undo record set not closed before backend exit");
 }
