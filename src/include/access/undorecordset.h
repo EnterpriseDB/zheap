@@ -12,7 +12,8 @@
 #ifndef UNDORECORDSET_H
 #define UNDORECORDSET_H
 
-#include "access/undolog.h"
+#include "access/undodefs.h"
+#include "access/xlogreader.h"
 
 typedef enum UndoRecordSetType
 {

@@ -16,6 +16,7 @@
 #ifndef UNDOLOG_H
 #define UNDOLOG_H
 
+#include "access/undodefs.h"
 #include "access/xlogreader.h"
 #include "catalog/database_internal.h"
 #include "lib/ilist.h"
@@ -23,15 +24,6 @@
 #ifndef FRONTEND
 #include "storage/lwlock.h"
 #endif
-
-/* The type used to identify an undo log and position within it. */
-typedef uint64 UndoRecPtr;
-
-/* The type used for undo record lengths. */
-typedef uint16 UndoRecordSize;
-
-/* Type for offsets within undo logs */
-typedef uint64 UndoLogOffset;
 
 /* printf-family format string for UndoRecPtr. */
 #define UndoRecPtrFormat "%016" INT64_MODIFIER "X"
@@ -54,9 +46,6 @@ typedef uint64 UndoLogOffset;
 /* The width of an undo log offset in bits.  40 allows for 1TB per log.*/
 #define UndoLogOffsetBits (64 - UndoLogNumberBits)
 
-/* Special value for undo record pointer which indicates that it is invalid. */
-#define	InvalidUndoRecPtr	((UndoRecPtr) 0)
-
 /* End-of-list value when building linked lists of undo logs. */
 #define InvalidUndoLogNumber -1
 
@@ -66,21 +55,6 @@ typedef uint64 UndoLogOffset;
  */
 #define UndoLogMaxSize ((UndoLogOffset) 1 << UndoLogOffsetBits)
 
-/* Type for numbering undo logs. */
-typedef int UndoLogNumber;
-
-/* Extract the undo log number from an UndoRecPtr. */
-#define UndoRecPtrGetLogNo(urp)					\
-	((urp) >> UndoLogOffsetBits)
-
-/* Extract the offset from an UndoRecPtr. */
-#define UndoRecPtrGetOffset(urp)				\
-	((urp) & ((UINT64CONST(1) << UndoLogOffsetBits) - 1))
-
-/* Make an UndoRecPtr from an log number and offset. */
-#define MakeUndoRecPtr(logno, offset)			\
-	(((uint64) (logno) << UndoLogOffsetBits) | (offset))
-
 /* The number of unusable bytes in the header of each block. */
 #define UndoLogBlockHeaderSize SizeOfPageHeaderData
 
@@ -89,13 +63,6 @@ typedef int UndoLogNumber;
 
 /* Length of undo checkpoint filename */
 #define UNDO_CHECKPOINT_FILENAME_LENGTH	16
-
-/*
- * UndoRecPtrIsValid
- *		True iff undoRecPtr is valid.
- */
-#define UndoRecPtrIsValid(undoRecPtr) \
-	((bool) ((UndoRecPtr) (undoRecPtr) != InvalidUndoRecPtr))
 
 /* Extract the relnode for an undo log. */
 #define UndoRecPtrGetRelNode(urp)				\

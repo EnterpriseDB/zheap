@@ -13,6 +13,7 @@
 
 #include "postgres.h"
 
+#include "access/undolog.h"
 #include "access/undorecordset.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
