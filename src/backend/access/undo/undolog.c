@@ -56,7 +56,7 @@
 /*
  * Main control structure for undo log management in shared memory.
  * UndoLogSlot objects are arranged in a fixed-size array, with no particular
-  * ordering.
+ * ordering.
  */
 typedef struct UndoLogSharedData
 {
