@@ -1074,7 +1074,7 @@ UndoMarkClosedForXactLevel(int nestingLevel)
 	{
 		UndoRecordSet *urs = slist_container(UndoRecordSet, link, iter.cur);
 
-		if (nestingLevel >= urs->nestingLevel &&
+		if (nestingLevel <= urs->nestingLevel &&
 			urs->state == URS_STATE_DIRTY)
 			UndoMarkClosed(urs);
 	}
@@ -1094,7 +1094,7 @@ UndoPageSetLSNForXactLevel(int nestingLevel, XLogRecPtr lsn)
 	{
 		UndoRecordSet *urs = slist_container(UndoRecordSet, link, iter.cur);
 
-		if (nestingLevel >= urs->nestingLevel &&
+		if (nestingLevel <= urs->nestingLevel &&
 			urs->state == URS_STATE_DIRTY)
 			UndoPageSetLSN(urs, lsn);
 	}
@@ -1122,7 +1122,7 @@ UndoDestroyForXactLevel(int nestingLevel)
 	{
 		UndoRecordSet *urs = slist_container(UndoRecordSet, link, iter.cur);
 
-		if (nestingLevel >= urs->nestingLevel)
+		if (nestingLevel <= urs->nestingLevel)
 			UndoRelease(urs);
 	}
 
@@ -1144,7 +1144,7 @@ UndoDestroyForXactLevel(int nestingLevel)
 			UndoRecordSet *urs;
 
 			urs = slist_container(UndoRecordSet, link, iter.cur);
-			if (nestingLevel >= urs->nestingLevel)
+			if (nestingLevel <= urs->nestingLevel)
 			{
 				UndoDestroy(urs);
 				restart = true;
@@ -1157,20 +1157,25 @@ UndoDestroyForXactLevel(int nestingLevel)
 /*
  * Close and release all UndoRecordSets for this transaction level.
  *
- * This should be only used when a transaction or subtransaction ends without
- * writing some other WAL record to which the closure of the UndoRecordSet
- * could be attached.
+ * This should normally be used only when a transaction or subtransaction ends
+ * without writing some other WAL record to which the closure of the
+ * UndoRecordSet could be attached.
  *
  * Closing an UndoRecordSet piggybacks on another WAL record; since this
  * is intended to be used when there is no such record, we write an XLOG_NOOP
  * record.
+ *
+ * Returns true if we did anything, and false if nothing needed to be done.
  */
-void
-UndoCloseAndReleaseForXactLevel(int nestingLevel)
+bool
+UndoCloseAndDestroyForXactLevel(int nestingLevel)
 {
 	XLogRecPtr	lsn;
+	bool		needs_work;
 
-	if (UndoPrepareToMarkClosedForXactLevel(nestingLevel))
+	needs_work = UndoPrepareToMarkClosedForXactLevel(nestingLevel);
+
+	if (needs_work)
 	{
 		START_CRIT_SECTION();
 		XLogBeginInsert();
@@ -1181,6 +1186,8 @@ UndoCloseAndReleaseForXactLevel(int nestingLevel)
 	}
 
 	UndoDestroyForXactLevel(nestingLevel);
+
+	return needs_work;
 }
 
 /*

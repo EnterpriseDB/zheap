@@ -82,6 +82,7 @@
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/twophase_rmgr.h"
+#include "access/undorecordset.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -1115,6 +1116,15 @@ EndPrepare(GlobalTransaction gxact)
 				 errmsg("two-phase state file maximum length exceeded")));
 
 	/*
+	 * Prepare to mark any active UndoRecordSets closed as part of the
+	 * XLOG_XACT_PREPARE record we're about to write.
+	 *
+	 * XXX. It seems like this might require that we adjust the argument
+	 * we're about to pass to XLogEnsureRecordSpace upward.
+	 */
+	UndoPrepareToMarkClosedForXactLevel(1);
+
+	/*
 	 * Now writing 2PC state data to WAL. We let the WAL's CRC protection
 	 * cover us, so no need to calculate a separate CRC.
 	 *
@@ -1137,9 +1147,18 @@ EndPrepare(GlobalTransaction gxact)
 	for (record = records.head; record != NULL; record = record->next)
 		XLogRegisterData(record->data, record->len);
 
+	UndoMarkClosedForXactLevel(1);
+
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
 	gxact->prepare_end_lsn = XLogInsert(RM_XACT_ID, XLOG_XACT_PREPARE);
+
+	/*
+	 * Set the page LSNs for any undo pages we just updated. Also release
+	 * the buffer locks and destroy the underlying UndoRecordSet objects.
+	 */
+	UndoPageSetLSNForXactLevel(1, gxact->prepare_end_lsn);
+	UndoDestroyForXactLevel(1);
 
 	if (replorigin)
 	{

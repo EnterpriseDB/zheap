@@ -23,7 +23,13 @@ PG_FUNCTION_INFO_V1(foo_close);
 
 PG_FUNCTION_INFO_V1(foo_createwriteclose);
 
+static void foo_xact_callback(XactEvent event, void *arg);
+static void foo_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
+								 SubTransactionId parentSubid, void *arg);
+
 static UndoRecordSet *current_urs = NULL;
+static SubTransactionId current_urs_subid = InvalidSubTransactionId;
+static bool xact_callbacks_registered = false;
 
 Datum
 foo_create(PG_FUNCTION_ARGS)
@@ -44,8 +50,17 @@ foo_create(PG_FUNCTION_ARGS)
 	if (current_urs != NULL)
 		elog(ERROR, "an UndoRecordSet is already active");
 
+	if (!xact_callbacks_registered)
+	{
+		RegisterXactCallback(foo_xact_callback, NULL);
+		RegisterSubXactCallback(foo_subxact_callback, NULL);
+		xact_callbacks_registered = true;
+	}
+
 	old_context = MemoryContextSwitchTo(TopMemoryContext);
-	current_urs = UndoCreate(URST_FOO, *persistence, 0);
+	current_urs = UndoCreate(URST_FOO, *persistence,
+							 GetCurrentTransactionNestLevel());
+	current_urs_subid = GetCurrentSubTransactionId();
 	MemoryContextSwitchTo(old_context);
 
 	PG_RETURN_VOID();
@@ -207,5 +222,26 @@ foo_redo(XLogReaderState *record)
 			break;
 		default:
 			elog(PANIC, "foo_redo: unknown op code %u", info);
+	}
+}
+
+static void
+foo_xact_callback(XactEvent event, void *arg)
+{
+	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_ABORT ||
+		event == XACT_EVENT_PREPARE)
+		current_urs = NULL;
+}
+
+static void
+foo_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
+					 SubTransactionId parentSubid, void *arg)
+{
+	if ((event == SUBXACT_EVENT_COMMIT_SUB ||
+		 event == SUBXACT_EVENT_ABORT_SUB) &&
+		current_urs_subid == mySubid)
+	{
+		current_urs = NULL;
+		current_urs_subid = InvalidSubTransactionId;
 	}
 }

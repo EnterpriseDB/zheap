@@ -1263,6 +1263,15 @@ RecordTransactionCommit(void)
 		}
 
 		/*
+		 * If there is an UndoRecordSet open to which data has been written,
+		 * we must properly close it. This could piggyback on the record we're
+		 * emitting in LogStandbyInvalidations, above, but it's unclear that
+		 * the two cases would ever happen in the same transaction.
+		 */
+		if (UndoCloseAndDestroyForXactLevel(1))
+			wrote_xlog = true;
+
+		/*
 		 * If we didn't create XLOG entries, we're done here; otherwise we
 		 * should trigger flushing those entries the same as a commit record
 		 * would.  This will primarily happen for HOT pruning and the like; we
@@ -1273,6 +1282,7 @@ RecordTransactionCommit(void)
 	}
 	else
 	{
+		XLogRecPtr	lsn;
 		bool		replorigin;
 
 		/*
@@ -1282,11 +1292,15 @@ RecordTransactionCommit(void)
 		replorigin = (replorigin_session_origin != InvalidRepOriginId &&
 					  replorigin_session_origin != DoNotReplicateId);
 
-		/*
-		 * Begin commit critical section and insert the commit XLOG record.
-		 */
 		/* Tell bufmgr and smgr to prepare for commit */
 		BufmgrCommit();
+
+		/*
+		 * Prepare to mark any active UndoRecordSets closed. The relevant
+		 * changes will get attached to the commit record we're writing
+		 * anyway.
+		 */
+		UndoPrepareToMarkClosedForXactLevel(1);
 
 		/*
 		 * Mark ourselves as within our "commit critical section".  This
@@ -1310,12 +1324,22 @@ RecordTransactionCommit(void)
 
 		SetCurrentTransactionStopTimestamp();
 
-		XactLogCommitRecord(xactStopTimestamp,
-							nchildren, children, nrels, rels,
-							nmsgs, invalMessages,
-							RelcacheInitFileInval, forceSyncCommit,
-							MyXactFlags,
-							InvalidTransactionId, NULL /* plain commit */ );
+		lsn = XactLogCommitRecord(xactStopTimestamp, nchildren, children,
+								  nrels, rels, nmsgs, invalMessages,
+								  RelcacheInitFileInval, forceSyncCommit,
+								  MyXactFlags,
+								  InvalidTransactionId,
+								  NULL /* plain commit */ );
+
+		/*
+		 * Set the page LSNs for any undo pages we just updated.  Also
+		 * release the buffer locks and destroy the underlying UndoRecordSet
+		 * objects.  (Actually destroying the UndoRecordSet objects could be
+		 * postponed until later if necessary, but we probably shouldn't
+		 * postpone releasing buffer locks.)
+		 */
+		UndoPageSetLSNForXactLevel(1, lsn);
+		UndoDestroyForXactLevel(1);
 
 		if (replorigin)
 			/* Move LSNs forward for this replication origin */
@@ -1631,7 +1655,7 @@ RecordTransactionAbort(int nestingLevel)
 	if (!TransactionIdIsValid(xid))
 	{
 		/* No abort record, so emit separate WAL for open UndoRecordSets. */
-		UndoCloseAndReleaseForXactLevel(nestingLevel);
+		UndoCloseAndDestroyForXactLevel(nestingLevel);
 
 		/* Reset XactLastRecEnd until the next transaction writes something */
 		if (!isSubXact)
@@ -4807,6 +4831,9 @@ CommitSubTransaction(void)
 		s->parallelModeLevel = 0;
 	}
 
+	/* Close out any UndoRecordSet for this transaction level. */
+	UndoCloseAndDestroyForXactLevel(s->nestingLevel);
+
 	/* Do the actual "commit", such as it is */
 	s->state = TRANS_COMMIT;
 
@@ -5604,6 +5631,9 @@ XactLogCommitRecord(TimestampTz commit_time,
 
 	if (xl_xinfo.xinfo & XACT_XINFO_HAS_ORIGIN)
 		XLogRegisterData((char *) (&xl_origin), sizeof(xl_xact_origin));
+
+	if (twophase_gid == NULL)
+		UndoMarkClosedForXactLevel(1);
 
 	/* we allow filtering by xacts */
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);

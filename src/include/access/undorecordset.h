@@ -45,6 +45,6 @@ extern bool UndoPrepareToMarkClosedForXactLevel(int nestingLevel);
 extern void UndoMarkClosedForXactLevel(int nestingLevel);
 extern void UndoPageSetLSNForXactLevel(int nestingLevel, XLogRecPtr lsn);
 extern void UndoDestroyForXactLevel(int nestingLevel);
-extern void UndoCloseAndReleaseForXactLevel(int nestingLevel);
+extern bool UndoCloseAndDestroyForXactLevel(int nestingLevel);
 
 #endif
