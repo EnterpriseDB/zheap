@@ -421,7 +421,7 @@ extern XLogRecPtr XactLogCommitRecord(TimestampTz commit_time,
 									  TransactionId twophase_xid,
 									  const char *twophase_gid);
 
-extern XLogRecPtr XactLogAbortRecord(TimestampTz abort_time,
+extern XLogRecPtr XactLogAbortRecord(int nestingLevel, TimestampTz abort_time,
 									 int nsubxacts, TransactionId *subxacts,
 									 int nrels, RelFileNode *rels,
 									 int xactflags, TransactionId twophase_xid,

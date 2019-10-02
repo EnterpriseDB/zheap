@@ -26,6 +26,7 @@
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undorecordset.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -318,7 +319,7 @@ static void CleanupTransaction(void);
 static void CheckTransactionBlock(bool isTopLevel, bool throwError,
 								  const char *stmtType);
 static void CommitTransaction(void);
-static TransactionId RecordTransactionAbort(bool isSubXact);
+static TransactionId RecordTransactionAbort(int nestingLevel);
 static void StartTransaction(void);
 
 static void StartSubTransaction(void);
@@ -1608,27 +1609,34 @@ AtSubCommit_childXids(void)
  * if the xact has no XID.  (We compute that here just because it's easier.)
  */
 static TransactionId
-RecordTransactionAbort(bool isSubXact)
+RecordTransactionAbort(int nestingLevel)
 {
 	TransactionId xid = GetCurrentTransactionIdIfAny();
 	TransactionId latestXid;
+	bool		isSubXact = (nestingLevel > 1);
 	int			nrels;
 	RelFileNode *rels;
 	int			nchildren;
 	TransactionId *children;
 	TimestampTz xact_time;
+	XLogRecPtr	lsn;
 
 	/*
 	 * If we haven't been assigned an XID, nobody will care whether we aborted
-	 * or not.  Hence, we're done in that case.  It does not matter if we have
-	 * rels to delete (note that this routine is not responsible for actually
-	 * deleting 'em).  We cannot have any child XIDs, either.
+	 * or not, but we still have to close any UndoRecordSet associated with
+	 * this transaction level.  It does not matter if we have rels to delete
+	 * (note that this routine is not responsible for actually deleting 'em).
+	 * We cannot have any child XIDs, either.
 	 */
 	if (!TransactionIdIsValid(xid))
 	{
+		/* No abort record, so emit separate WAL for open UndoRecordSets. */
+		UndoCloseAndReleaseForXactLevel(nestingLevel);
+
 		/* Reset XactLastRecEnd until the next transaction writes something */
 		if (!isSubXact)
 			XactLastRecEnd = 0;
+
 		return InvalidTransactionId;
 	}
 
@@ -1651,7 +1659,13 @@ RecordTransactionAbort(bool isSubXact)
 	nrels = smgrGetPendingDeletes(false, &rels);
 	nchildren = xactGetCommittedChildren(&children);
 
-	/* XXX do we really need a critical section here? */
+	/*
+	 * Prepare to mark any active UndoRecordSets closed.  The relevant changes
+	 * will get attached to the abort record we're writing anyway.
+	 */
+	UndoPrepareToMarkClosedForXactLevel(nestingLevel);
+
+	/* Establish a critical section. */
 	START_CRIT_SECTION();
 
 	/* Write the ABORT record */
@@ -1663,11 +1677,12 @@ RecordTransactionAbort(bool isSubXact)
 		xact_time = xactStopTimestamp;
 	}
 
-	XactLogAbortRecord(xact_time,
-					   nchildren, children,
-					   nrels, rels,
-					   MyXactFlags, InvalidTransactionId,
-					   NULL);
+	lsn = XactLogAbortRecord(nestingLevel, xact_time, nchildren, children,
+							 nrels, rels, MyXactFlags,
+							 InvalidTransactionId, NULL);
+
+	/* Set the page LSNs for any undo pages we just updated. */
+	UndoPageSetLSNForXactLevel(nestingLevel, lsn);
 
 	/*
 	 * Report the latest async abort LSN, so that the WAL writer knows to
@@ -1692,6 +1707,12 @@ RecordTransactionAbort(bool isSubXact)
 	TransactionIdAbortTree(xid, nchildren, children);
 
 	END_CRIT_SECTION();
+
+	/*
+	 * We can now destroy any UndoRecordSet we just closed.  This will also
+	 * release any buffer locks and pins acquired earlier.
+	 */
+	UndoDestroyForXactLevel(nestingLevel);
 
 	/* Compute latestXid while we have the child XIDs handy */
 	latestXid = TransactionIdLatest(xid, nchildren, children);
@@ -2590,8 +2611,9 @@ AbortTransaction(void)
 	AbortBufferIO();
 	UnlockBuffers();
 
-	/* Reset WAL record construction state */
+	/* Reset WAL and UNDO record construction state */
 	XLogResetInsertion();
+	UndoResetInsertion();
 
 	/* Cancel condition variable sleep */
 	ConditionVariableCancelSleep();
@@ -2669,7 +2691,7 @@ AbortTransaction(void)
 	 * record.
 	 */
 	if (!is_parallel_worker)
-		latestXid = RecordTransactionAbort(false);
+		latestXid = RecordTransactionAbort(s->nestingLevel);
 	else
 	{
 		latestXid = InvalidTransactionId;
@@ -4899,8 +4921,9 @@ AbortSubTransaction(void)
 	AbortBufferIO();
 	UnlockBuffers();
 
-	/* Reset WAL record construction state */
+	/* Reset WAL and UNDO record construction state */
 	XLogResetInsertion();
+	UndoResetInsertion();
 
 	/* Cancel condition variable sleep */
 	ConditionVariableCancelSleep();
@@ -4967,7 +4990,7 @@ AbortSubTransaction(void)
 		AtSubAbort_Notify();
 
 		/* Advertise the fact that we aborted in pg_xact. */
-		(void) RecordTransactionAbort(true);
+		(void) RecordTransactionAbort(s->nestingLevel);
 
 		/* Post-abort cleanup */
 		if (FullTransactionIdIsValid(s->fullTransactionId))
@@ -5593,9 +5616,14 @@ XactLogCommitRecord(TimestampTz commit_time,
  *
  * A 2pc abort will be emitted when twophase_xid is valid, a plain one
  * otherwise.
+ *
+ * Normally, we need to call UndoMarkClosedForXactLevel here, as part of
+ * closing down any UndoRecordSet that pertains to this transaction level,
+ * but prepared transactions pass nestingLevel as -1, signalling that this
+ * step should be skipped.
  */
 XLogRecPtr
-XactLogAbortRecord(TimestampTz abort_time,
+XactLogAbortRecord(int nestingLevel, TimestampTz abort_time,
 				   int nsubxacts, TransactionId *subxacts,
 				   int nrels, RelFileNode *rels,
 				   int xactflags, TransactionId twophase_xid,
@@ -5712,6 +5740,9 @@ XactLogAbortRecord(TimestampTz abort_time,
 
 	if (TransactionIdIsValid(twophase_xid))
 		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
+
+	if (nestingLevel >= 0)
+		UndoMarkClosedForXactLevel(nestingLevel);
 
 	return XLogInsert(RM_XACT_ID, info);
 }

@@ -10,6 +10,7 @@
 #include "access/foo_xlog.h"
 #include "access/undolog.h"
 #include "access/undorecordset.h"
+#include "access/xact.h"
 #include "access/xloginsert.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -44,7 +45,7 @@ foo_create(PG_FUNCTION_ARGS)
 		elog(ERROR, "an UndoRecordSet is already active");
 
 	old_context = MemoryContextSwitchTo(TopMemoryContext);
-	current_urs = UndoCreate(URST_FOO, *persistence);
+	current_urs = UndoCreate(URST_FOO, *persistence, 0);
 	MemoryContextSwitchTo(old_context);
 
 	PG_RETURN_VOID();
@@ -66,19 +67,23 @@ foo_close(PG_FUNCTION_ARGS)
 	 * that XLOG_XACT_COMMIT and friends would be used, for transactions.  For
 	 * non-transactional information such as multixacts, a single WAL record
 	 * might create, insert and close in one go.
+	 *
+	 * However, if UndoPrepareToMarkClosed returns false, then no data has
+	 * been written and we don't need to write any WAL.
 	 */
 
-	UndoPrepareToMarkClosed(current_urs);
+	if (UndoPrepareToMarkClosed(current_urs))
+	{
+		START_CRIT_SECTION();
+		XLogBeginInsert();
+		UndoMarkClosed(current_urs);
+		XLogRegisterData((char *) &record, sizeof(record));
+		lsn = XLogInsert(RM_FOO_ID, XLOG_FOO_PING);
+		UndoPageSetLSN(current_urs, lsn);
+		END_CRIT_SECTION();
+	}
 
-	START_CRIT_SECTION();
-	XLogBeginInsert();
-	UndoMarkClosed(current_urs);
-	XLogRegisterData((char *) &record, sizeof(record));
-	lsn = XLogInsert(RM_FOO_ID, XLOG_FOO_PING);
-	UndoPageSetLSN(current_urs, lsn);
-	END_CRIT_SECTION();
-
-	UndoRelease(current_urs);
+	UndoDestroy(current_urs);
 
 	current_urs = NULL;
 
@@ -143,7 +148,7 @@ foo_createwriteclose(PG_FUNCTION_ARGS)
 
 	/* We can do all of these things with a single WAL record. */
 
-	urs = UndoCreate(URST_FOO, 'p');
+	urs = UndoCreate(URST_FOO, 'p', GetCurrentTransactionNestLevel());
 	urp = UndoAllocate(urs, length + 1);
 	UndoPrepareToMarkClosed(urs);
 
@@ -156,7 +161,7 @@ foo_createwriteclose(PG_FUNCTION_ARGS)
 	UndoPageSetLSN(urs, lsn);
 	END_CRIT_SECTION();
 
-	UndoRelease(urs);
+	UndoDestroy(urs);
 
 	PG_RETURN_TEXT_P(cstring_to_text(psprintf(UndoRecPtrFormat, urp)));
 }

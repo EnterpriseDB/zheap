@@ -2351,8 +2351,14 @@ RecordTransactionAbortPrepared(TransactionId xid,
 	 * Emit the XLOG commit record. Note that we mark 2PC aborts as
 	 * potentially having AccessExclusiveLocks since we don't know whether or
 	 * not they do.
+	 *
+	 * Pass -1 as the nestingLevel to XactLogAbortRecord so that it doesn't
+	 * try to perform any undo-related operations. Any UndoRecordSet associated
+	 * with the transaction should have already been closed when the transaction
+	 * was prepared, and any UndoRecordSet we have open now is irrelevant to
+	 * the prepared transaction.
 	 */
-	recptr = XactLogAbortRecord(GetCurrentTimestamp(),
+	recptr = XactLogAbortRecord(-1, GetCurrentTimestamp(),
 								nchildren, children,
 								nrels, rels,
 								MyXactFlags | XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK,

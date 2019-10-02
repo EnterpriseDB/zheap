@@ -19,6 +19,8 @@
 #include "access/xloginsert.h"
 #include "access/xlogreader.h"
 #include "access/xlogutils.h"
+#include "catalog/pg_control.h"
+#include "miscadmin.h"
 #include "storage/buf.h"
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
@@ -43,6 +45,13 @@ typedef struct UndoRecordSetChunkHeader
 	UndoRecPtr		previous_chunk;
 	UndoRecordSetType type;
 } UndoRecordSetChunkHeader;
+
+typedef enum UndoRecordSetState
+{
+	URS_STATE_CLEAN,			/* has written no data */
+	URS_STATE_DIRTY,			/* has written some data */
+	URS_STATE_CLOSED			/* wrote data and was then closed */
+} UndoRecordSetState;
 
 struct UndoRecordSet
 {
@@ -71,10 +80,12 @@ struct UndoRecordSet
 	/* Currently active slot for insertion. */
 	UndoLogSlot *slot;
 
-	bool			closed;
 	UndoLogOffset	recent_end;
 
+	/* Resource management. */
+	UndoRecordSetState	state;
 	slist_node		link;
+	int				nestingLevel;
 };
 
 /* TODO: should perhaps make type a char and not include the padding */
@@ -84,25 +95,31 @@ static size_t urst_header_size(UndoRecordSetType type);
 static inline void reserve_buffer_array(UndoRecordSet *urs, size_t capacity);
 static void AtProcExit_UndoRecordSet(int code, Datum arg);
 
-/*
- * It's essential that we perform proper cleanup when we finish using an
- * UndoRecordSet; see UndoMarkClosed and UndoRelease for details. To be
- * certain this happens in all cases, we keep a list of every UndoRecordSet
- * object that has been created but not yet cleaned up.
- */
+/* Every UndoRecordSet created and not yet destroyed in this backend. */
 static slist_head UndoRecordSetList = SLIST_STATIC_INIT(UndoRecordSetList);
 
 /*
  * We store data UndoRecordSet objects and subsidiary data in a separate
- * context so to make it easy to spot leaks or excessive memory utilization.
+ * context to make it easier to spot leaks or excessive memory utilization.
  */
 static MemoryContext UndoRecordSetContext = NULL;
 
 /*
- * Create a new UndoRecordSet.
+ * Create a new UndoRecordSet with the indicated type and persistence level.
+ *
+ * The persistence level may be RELPERSISTENCE_TEMP, RELPERSISTENCE_UNLOGGED,
+ * or RELPERSISTENCE_PERMANENT.
+ *
+ * An UndoRecordSet is created using this function must be properly closed;
+ * see UndoPrepareToMarkClosed and UndoMarkClosed. If nestingLevel > 0, the
+ * UndoRecordSet will automatically be closed when the transaction nesting
+ * depth drops below this value, unless it has been previously closed
+ * explicitly. Even if you plan to close the UndoRecordSet explicitly in
+ * normal cases, the use of this facility is advisable to make sure that
+ * the UndoRecordSet is closed even in case of ERROR or FATAL.
  */
 UndoRecordSet *
-UndoCreate(UndoRecordSetType type, char persistence)
+UndoCreate(UndoRecordSetType type, char persistence, int nestingLevel)
 {
 	UndoRecordSet *urs;
 	MemoryContext	oldcontext;
@@ -128,6 +145,7 @@ UndoCreate(UndoRecordSetType type, char persistence)
 	urs->type_header_size = urst_header_size(type);
 	Assert(urs->type_header_size <= sizeof(urs->type_header));
 	slist_push_head(&UndoRecordSetList, &urs->link);
+	urs->nestingLevel = nestingLevel;
 	MemoryContextSwitchTo(oldcontext);
 
 	return urs;
@@ -170,8 +188,12 @@ find_or_read_buffer(UndoRecordSet *urs, UndoLogNumber logno, BlockNumber block)
 /*
  * Pin and lock buffers that hold all chunk headers, in preparation for
  * marking them closed.
+ *
+ * Returns 'true' if work needs to be done and 'false' if not. If the return
+ * value is 'false', it is acceptable to call UndoDestroy without doing
+ * anything further.
  */
-void
+bool
 UndoPrepareToMarkClosed(UndoRecordSet *urs)
 {
 	for (int i = 0; i < urs->nchunks; ++i)
@@ -195,6 +217,8 @@ UndoPrepareToMarkClosed(UndoRecordSet *urs)
 			chunk->chunk_header_buffer_index[1] =
 				find_or_read_buffer(urs, chunk->slot->logno, header_block + 1);
 	}
+
+	return (urs->nchunks > 0);
 }
 
 static void
@@ -223,6 +247,13 @@ write_update_ops_header(uint8 *ops, uint16 offset, uint16 size)
 void
 UndoMarkClosed(UndoRecordSet *urs)
 {
+	/* Must be in a critical section. */
+	Assert(CritSectionCount > 0);
+
+	/* Shouldn't already be closed, and should have chunks if it's dirty. */
+	Assert(urs->state != URS_STATE_CLOSED);
+	Assert(urs->state == URS_STATE_CLEAN || urs->nchunks != 0);
+
 	for (int i = 0; i < urs->nchunks; ++i)
 	{
 		UndoRecordSetChunk *chunk = &urs->chunks[i];
@@ -279,7 +310,9 @@ UndoMarkClosed(UndoRecordSet *urs)
 		}
 	}
 
-	urs->closed = true;
+	/* If it was dirty, mark it closed. */
+	if (urs->state == URS_STATE_DIRTY)
+		urs->state = URS_STATE_CLOSED;
 }
 
 /*
@@ -553,7 +586,15 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 									  rbm,
 									  NULL,
 									  urs->persistence);
-		/* TODO we don't hold the content lock yet so PageInit() is probably not OK yet */
+		/*
+		 * TODO we don't hold the content lock yet so PageInit() is probably
+		 * not OK yet.
+		 *
+		 * XXX: Also, it seems like a bad idea for us to be actually
+		 * peforming any modifications at all at this stage. It's possible
+		 * that we could ERROR out before completing UndoInsert(), in which
+		 * case it's best if nothing has actually happened yet.
+		 */
 		if (rbm == RBM_ZERO)
 			PageInit(BufferGetPage(buffer), BufferGetPageSize(buffer), 0);
 
@@ -682,6 +723,7 @@ UndoInsert(UndoRecordSet *urs,
 				 urs->buffers,
 				 first_block_id,
 				 urs->slot->meta.insert);
+	urs->state = URS_STATE_DIRTY;
 
 	/* Do we need to write a chunk header? */
 	if (urs->need_chunk_header)
@@ -733,7 +775,7 @@ UndoInsert(UndoRecordSet *urs,
 	LWLockRelease(&urs->slot->meta_lock);
 
 	/*
-	 * The type We won't need headers for future allocations, until we eventually spill
+	 * We won't need headers for future allocations, until we eventually spill
 	 * into another chunk and need a new chunk header.
 	 */
 	urs->need_chunk_header = false;
@@ -918,6 +960,9 @@ UndoInsertInRecovery(XLogReaderState *xlog_record, void *data, size_t data_size)
 	return result;
 }
 
+/*
+ * Set page LSNs for buffers dirtied by UndoInsert or UndoMarkClosed.
+ */
 void
 UndoPageSetLSN(UndoRecordSet *urs, UndoRecPtr lsn)
 {
@@ -925,31 +970,217 @@ UndoPageSetLSN(UndoRecordSet *urs, UndoRecPtr lsn)
 		PageSetLSN(BufferGetPage(urs->buffers[i]), lsn);
 }
 
+/*
+ * Release buffer locks and pins held by an UndoRecordSet.
+ */
 void
 UndoRelease(UndoRecordSet *urs)
 {
 	for (int i = 0; i < urs->nbuffers; ++i)
-	{
-		LockBuffer(urs->buffers[i], BUFFER_LOCK_UNLOCK);
-		ReleaseBuffer(urs->buffers[i]);
-	}
-
+		UnlockReleaseBuffer(urs->buffers[i]);
 	urs->nbuffers = 0;
+}
 
-	if (urs->closed)
+/*
+ * Destroy an UndoRecordSet.
+ *
+ * If any data has been written, the UndoRecordSet must be closed before it
+ * is destroyed.
+ */
+void
+UndoDestroy(UndoRecordSet *urs)
+{
+	/* Release buffer locks. */
+	UndoRelease(urs);
+
+	/* If you write any data, you also have to close it properly. */
+	if (urs->state == URS_STATE_DIRTY)
+		elog(PANIC, "dirty undo record set not closed before release");
+
+	/* Return undo logs to appropriate free lists. */
+	for (int i = 0; i < urs->nchunks; ++i)
+		UndoLogPut(urs->chunks[i].slot);
+
+	/* Remove from list of all known record sets. */
+	slist_delete(&UndoRecordSetList, &urs->link);
+
+	/* Free memory. */
+	pfree(urs->chunks);
+	pfree(urs->buffers);
+	pfree(urs);
+}
+
+/*
+ * Reset undo insertion state.
+ *
+ * This code is invoked during transaction abort to forget about any buffers
+ * we think we've locked in UndoAllocate() or UndoPrepareToMarkClosed(); such
+ * locks have already been released, and we'll have to reacquire them to
+ * close the UndoRecordSet.
+ */
+void
+UndoResetInsertion(void)
+{
+	slist_iter	iter;
+
+	slist_foreach(iter, &UndoRecordSetList)
 	{
-		/* Return undo logs to appropriate free lists. */
-		for (int i = 0; i < urs->nchunks; ++i)
-			UndoLogPut(urs->chunks[i].slot);
+		UndoRecordSet *urs = slist_container(UndoRecordSet, link, iter.cur);
 
-		/* Remove from list of all known record sets. */
-		slist_delete(&UndoRecordSetList, &urs->link);
-
-		/* Free memory. */
-		pfree(urs->chunks);
-		pfree(urs->buffers);
-		pfree(urs);
+		urs->nbuffers = 0;
 	}
+}
+
+/*
+ * Prepare to mark UndoRecordSets for this transaction level closed.
+ *
+ * Like UndoPrepareToMarkClosed, this should be called prior to entering
+ * a critical section.
+ *
+ * Returns true if there is work to be done and false otherwise; caller may
+ * skip directly to UndoDestroyForXactLevel if the return value is false.
+ */
+bool
+UndoPrepareToMarkClosedForXactLevel(int nestingLevel)
+{
+	slist_iter	iter;
+	bool		needs_work = false;
+
+	slist_foreach(iter, &UndoRecordSetList)
+	{
+		UndoRecordSet *urs = slist_container(UndoRecordSet, link, iter.cur);
+
+		if (nestingLevel <= urs->nestingLevel &&
+			urs->state == URS_STATE_DIRTY &&
+			UndoPrepareToMarkClosed(urs))
+			needs_work = true;
+	}
+
+	return needs_work;
+}
+
+/*
+ * Mark UndoRecordSets for this transaction level closed.
+ *
+ * Like UndoMarkClosed, this should be called from within the critical section,
+ * during WAL record construction.
+ */
+void
+UndoMarkClosedForXactLevel(int nestingLevel)
+{
+	slist_iter	iter;
+
+	slist_foreach(iter, &UndoRecordSetList)
+	{
+		UndoRecordSet *urs = slist_container(UndoRecordSet, link, iter.cur);
+
+		if (nestingLevel >= urs->nestingLevel &&
+			urs->state == URS_STATE_DIRTY)
+			UndoMarkClosed(urs);
+	}
+}
+
+/*
+ * Set page LSNs for all UndoRecordSets for this transaction level.
+ *
+ * Like UndoPageSetLSN, this should be called just after XLogInsert.
+ */
+void
+UndoPageSetLSNForXactLevel(int nestingLevel, XLogRecPtr lsn)
+{
+	slist_iter	iter;
+
+	slist_foreach(iter, &UndoRecordSetList)
+	{
+		UndoRecordSet *urs = slist_container(UndoRecordSet, link, iter.cur);
+
+		if (nestingLevel >= urs->nestingLevel &&
+			urs->state == URS_STATE_DIRTY)
+			UndoPageSetLSN(urs, lsn);
+	}
+}
+
+/*
+ * Destroy UndoRecordSets for this transaction level.
+ *
+ * Like UndoDestroy, this should be called after the UndoRecordSet has been
+ * marked closed and the surrounding critical section has ended.
+ */
+void
+UndoDestroyForXactLevel(int nestingLevel)
+{
+	slist_iter	iter;
+	bool		restart = true;
+
+	/*
+	 * First, release all buffer locks.
+	 *
+	 * It seems like a good idea not to hold any LWLocks for longer than
+	 * necessary, so do this step for every UndoRecordSet first.
+	 */
+	slist_foreach(iter, &UndoRecordSetList)
+	{
+		UndoRecordSet *urs = slist_container(UndoRecordSet, link, iter.cur);
+
+		if (nestingLevel >= urs->nestingLevel)
+			UndoRelease(urs);
+	}
+
+	/*
+	 * Now destroy the UndoRecordSets.
+	 *
+	 * UndoDestroy will update UndoRecordSetList, so we have to restart
+	 * the iterator after calling it. This might seem like an inefficient
+	 * approach, but in practice the list shouldn't have more than a few
+	 * elements and the ones we care about are probably all at the beginning,
+	 * so it shouldn't really matter.
+	 */
+	while (restart)
+	{
+		restart = false;
+
+		slist_foreach(iter, &UndoRecordSetList)
+		{
+			UndoRecordSet *urs;
+
+			urs = slist_container(UndoRecordSet, link, iter.cur);
+			if (nestingLevel >= urs->nestingLevel)
+			{
+				UndoDestroy(urs);
+				restart = true;
+				break;
+			}
+		}
+	}
+}
+
+/*
+ * Close and release all UndoRecordSets for this transaction level.
+ *
+ * This should be only used when a transaction or subtransaction ends without
+ * writing some other WAL record to which the closure of the UndoRecordSet
+ * could be attached.
+ *
+ * Closing an UndoRecordSet piggybacks on another WAL record; since this
+ * is intended to be used when there is no such record, we write an XLOG_NOOP
+ * record.
+ */
+void
+UndoCloseAndReleaseForXactLevel(int nestingLevel)
+{
+	XLogRecPtr	lsn;
+
+	if (UndoPrepareToMarkClosedForXactLevel(nestingLevel))
+	{
+		START_CRIT_SECTION();
+		XLogBeginInsert();
+		UndoMarkClosedForXactLevel(nestingLevel);
+		lsn = XLogInsert(RM_XLOG_ID, XLOG_NOOP);
+		UndoPageSetLSNForXactLevel(nestingLevel, lsn);
+		END_CRIT_SECTION();
+	}
+
+	UndoDestroyForXactLevel(nestingLevel);
 }
 
 /*
