@@ -21,10 +21,6 @@ typedef enum UndoRecordSetType
 	URST_FOO				/* THROWAWAY TEST VALUE */
 } UndoRecordSetType;
 
-/* The UndoRecordSet definition is private to undorecordset.c. */
-struct UndoRecordSet;
-typedef struct UndoRecordSet UndoRecordSet;
-
 extern UndoRecordSet *UndoCreate(UndoRecordSetType type, char presistence,
 								 int nestingLevel);
 extern bool UndoPrepareToMarkClosed(UndoRecordSet *urs);

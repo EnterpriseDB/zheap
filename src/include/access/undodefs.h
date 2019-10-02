@@ -50,4 +50,7 @@ typedef int UndoLogNumber;
 #define UndoRecPtrIsValid(undoRecPtr) \
 	((bool) ((UndoRecPtr) (undoRecPtr) != InvalidUndoRecPtr))
 
+struct UndoRecordSet;
+typedef struct UndoRecordSet UndoRecordSet;
+
 #endif

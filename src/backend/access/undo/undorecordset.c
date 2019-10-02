@@ -3,6 +3,11 @@
  * undorecordset.c
  *	  management of sets of records in undo logs
  *
+ * An UndoRecordSet acts as a contained for zero or more undo records.
+ * To allow for flexibility, an UndoRecordSet can be of any of a number
+ * of types; for details and interfaces pertaining to the important
+ * URST_TRANSACTION type, see xactundo.c/h.
+ *
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
