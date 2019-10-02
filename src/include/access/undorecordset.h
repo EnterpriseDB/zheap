@@ -27,17 +27,19 @@ typedef struct UndoRecordSet UndoRecordSet;
 
 extern UndoRecordSet *UndoCreate(UndoRecordSetType type, char presistence,
 								 int nestingLevel);
-extern UndoRecordSet *UndoOpen(UndoRecordSetType type, UndoRecPtr start);
-extern UndoRecordSet *UndoOpenAny(UndoRecPtr start_raw);
 extern bool UndoPrepareToMarkClosed(UndoRecordSet *urs);
 extern void UndoMarkClosed(UndoRecordSet *urs);
-extern void UndoUpdateInRecovery(XLogReaderState *xlog_record);
 extern UndoRecPtr UndoAllocate(UndoRecordSet *urs, size_t size);
-extern void UndoInsert(UndoRecordSet *urs, uint8 first_block_id, void *data, size_t size);
-extern UndoRecPtr UndoInsertInRecovery(XLogReaderState *xlog_record, void *data, size_t size);
+extern void UndoInsert(UndoRecordSet *urs, uint8 first_block_id, void *data,
+					   size_t size);
 extern void UndoPageSetLSN(UndoRecordSet *urs, XLogRecPtr lsn);
 extern void UndoRelease(UndoRecordSet *urs);
 extern void UndoDestroy(UndoRecordSet *urs);
+
+/* recovery */
+extern void UndoUpdateInRecovery(XLogReaderState *xlog_record);
+extern UndoRecPtr UndoInsertInRecovery(XLogReaderState *xlog_record,
+									   void *data, size_t size);
 
 /* transaction integration */
 extern void UndoResetInsertion(void);
