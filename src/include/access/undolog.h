@@ -133,16 +133,6 @@
 		(rfn).relNode = UndoRecPtrGetRelNode(urp);							 \
 	} while (false);
 
-/* How many peristence levels do we have? */
-#define NPersistenceLevels 3
-
-/*
- * Map a persistence levels ('u', 'p', 't') to a contiguous range of integers
- * 0-2 for use as an array indexes.  This expression relies on a trivial
- * perfect hash.
- */
-#define UndoPersistenceIndex(persistence) ((persistence) % NPersistenceLevels)
-
 /*
  * Control metadata for an active undo log.  Lives in shared memory inside an
  * UndoLogSlot object, but also written to disk during checkpoints.
@@ -332,6 +322,8 @@ extern void UndoLogAdjustPhysicalRange(UndoLogNumber logno,
 									   UndoLogOffset new_discard,
 									   UndoLogOffset new_isnert);
 extern void UndoLogMarkFull(UndoLogSlot *uls);
+
+extern UndoPersistenceLevel GetUndoPersistenceLevel(char persistence);
 
 #endif
 

@@ -18,7 +18,7 @@
 
 typedef struct XactUndoContext
 {
-	char	persistence;
+	UndoPersistenceLevel plevel;
 	StringInfoData data;
 } XactUndoContext;
 

@@ -43,7 +43,7 @@
 #include "access/xactundo.h"
 #include "catalog/pg_class.h"
 
-static UndoRecordSet *xact_undo_record_set[NPersistenceLevels];
+static UndoRecordSet *xact_undo_record_set[NUndoPersistenceLevels];
 
 static void
 EnsureUndoRequest(void)
@@ -65,7 +65,7 @@ UndoRecPtr
 PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 					UndoNode *undo_node)
 {
-	int		index = UndoPersistenceIndex(persistence);
+	UndoPersistenceLevel plevel = GetUndoPersistenceLevel(persistence);
 	UndoRecordSet *urs;
 
 	/*
@@ -79,7 +79,7 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 	 * session-local objects; moreover, no other backend could do so anyway,
 	 * since no other backend can read our local buffers.)
 	 */
-	if (persistence != RELPERSISTENCE_TEMP)
+	if (plevel != UNDOPERSISTENCE_TEMP)
 		EnsureUndoRequest();
 
 	/*
@@ -89,15 +89,15 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 	 * These record sets are always associated with the toplevel transaction,
 	 * not a subtransaction, in order to avoid fragmentation.
 	 */
-	urs = xact_undo_record_set[index];
+	urs = xact_undo_record_set[plevel];
 	if (urs == NULL)
 	{
 		urs = UndoCreate(URST_TRANSACTION, persistence, 1);
-		xact_undo_record_set[index] = urs;
+		xact_undo_record_set[plevel] = urs;
 	}
 
 	/* Remember persistence level. */
-	ctx->persistence = persistence;
+	ctx->plevel = plevel;
 
 	/* Prepare serialized undo data. */
 	initStringInfo(&ctx->data);
@@ -116,8 +116,7 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 void
 InsertXactUndoData(XactUndoContext *ctx, uint8 first_block_id)
 {
-	int		index = UndoPersistenceIndex(ctx->persistence);
-	UndoRecordSet *urs = xact_undo_record_set[index];
+	UndoRecordSet *urs = xact_undo_record_set[ctx->plevel];
 
 	Assert(urs != NULL);
 	UndoInsert(urs, first_block_id, ctx->data.data, ctx->data.len);
@@ -129,8 +128,7 @@ InsertXactUndoData(XactUndoContext *ctx, uint8 first_block_id)
 void
 SetXactUndoPageLSNs(XactUndoContext *ctx, XLogRecPtr lsn)
 {
-	int		index = UndoPersistenceIndex(ctx->persistence);
-	UndoRecordSet *urs = xact_undo_record_set[index];
+	UndoRecordSet *urs = xact_undo_record_set[ctx->plevel];
 
 	Assert(urs != NULL);
 	UndoPageSetLSN(urs, lsn);
@@ -142,8 +140,7 @@ SetXactUndoPageLSNs(XactUndoContext *ctx, XLogRecPtr lsn)
 void
 CleanupXactUndoInsertion(XactUndoContext *ctx)
 {
-	int		index = UndoPersistenceIndex(ctx->persistence);
-	UndoRecordSet *urs = xact_undo_record_set[index];
+	UndoRecordSet *urs = xact_undo_record_set[ctx->plevel];
 
 	UndoRelease(urs);
 	pfree(ctx->data.data);

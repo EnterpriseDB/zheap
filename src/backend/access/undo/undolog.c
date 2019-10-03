@@ -27,6 +27,7 @@
 #include "access/xlog.h"
 #include "access/xlogutils.h"
 #include "catalog/catalog.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_tablespace_d.h"
 #include "commands/tablespace.h"
 #include "funcapi.h"
@@ -127,7 +128,7 @@ UndoLogShmemInit(void)
 		 */
 		memset(UndoLogShared, 0, sizeof(*UndoLogShared));
 		UndoLogShared->nslots = UndoLogNumSlots();
-		for (int i = 0; i < NPersistenceLevels; ++i)
+		for (int i = 0; i < NUndoPersistenceLevels; ++i)
 			slist_init(&UndoLogShared->free_lists[i]);
 		for (int i = 0; i < UndoLogShared->nslots; ++i)
 		{
@@ -265,7 +266,7 @@ undo_log_before_exit(int code, Datum arg)
 	if (!CurrentSession)
 		return;
 
-	for (i = 0; i < NPersistenceLevels; ++i)
+	for (i = 0; i < NUndoPersistenceLevels; ++i)
 	{
 		slist_head *list = &CurrentSession->attached_undo_slots[i];
 
@@ -280,7 +281,7 @@ undo_log_before_exit(int code, Datum arg)
 			LWLockRelease(&slot->meta_lock);
 
 			LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
-			slist_push_head(&UndoLogShared->free_lists[UndoPersistenceIndex(slot->meta.persistence)],
+			slist_push_head(&UndoLogShared->free_lists[GetUndoPersistenceLevel(slot->meta.persistence)],
 							&slot->next);
 			LWLockRelease(UndoLogLock);
 		}
@@ -676,11 +677,11 @@ UndoLogGetForPersistence(char persistence)
 	slist_head *slist;
 	slist_mutable_iter iter;
 	xl_undolog_create xlrec;
-	int			p_index = UndoPersistenceIndex(persistence);
+	UndoPersistenceLevel plevel = GetUndoPersistenceLevel(persistence);
 	Oid			tablespace = DEFAULTTABLESPACE_OID;
 
 	/* Is there one on our private free list of attached undo logs? */
-	slist = &CurrentSession->attached_undo_slots[p_index];
+	slist = &CurrentSession->attached_undo_slots[plevel];
 	if (!slist_is_empty(slist))
 	{
 		/* TODO: Make sure we get rid of logs for the wrong tablespace */
@@ -697,7 +698,7 @@ UndoLogGetForPersistence(char persistence)
 
 	/* Is there one on the shared freelist? */
 	LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
-	slist_foreach_modify(iter, &UndoLogShared->free_lists[p_index])
+	slist_foreach_modify(iter, &UndoLogShared->free_lists[plevel])
 	{
 		slot = slist_container(UndoLogSlot, next, iter.cur);
 		if (slot->meta.persistence == persistence &&
@@ -766,7 +767,9 @@ UndoLogGetForPersistence(char persistence)
 void
 UndoLogPut(UndoLogSlot *slot)
 {
-	int persistence_index = UndoPersistenceIndex(slot->meta.persistence);
+	UndoPersistenceLevel plevel;
+
+	plevel = GetUndoPersistenceLevel(slot->meta.persistence);
 
 	/*
 	 * For now, we'll only allow you to keep one attached/sticky undo log
@@ -775,8 +778,8 @@ UndoLogPut(UndoLogSlot *slot)
 	 * TODO: Figure out a decent policy.
 	 */
 
-	if (slist_is_empty(&CurrentSession->attached_undo_slots[persistence_index]))
-		slist_push_head(&CurrentSession->attached_undo_slots[persistence_index],
+	if (slist_is_empty(&CurrentSession->attached_undo_slots[plevel]))
+		slist_push_head(&CurrentSession->attached_undo_slots[plevel],
 						&slot->next);
 	else
 	{
@@ -786,8 +789,7 @@ UndoLogPut(UndoLogSlot *slot)
 		LWLockRelease(&slot->meta_lock);
 
 		LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
-		slist_push_head(&UndoLogShared->free_lists[persistence_index],
-						&slot->next);
+		slist_push_head(&UndoLogShared->free_lists[plevel], &slot->next);
 		LWLockRelease(UndoLogLock);
 	}
 }
@@ -1217,7 +1219,7 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 
 		if (slot->meta.insert < slot->meta.full ||
 			slot->meta.discard < slot->meta.insert)
-			slist_push_head(&UndoLogShared->free_lists[UndoPersistenceIndex(slot->meta.persistence)],
+			slist_push_head(&UndoLogShared->free_lists[GetUndoPersistenceLevel(slot->meta.persistence)],
 							&slot->next);
 	}
 	FIN_CRC32C(new_crc);
@@ -1589,7 +1591,7 @@ choose_undo_tablespace(bool force_detach, Oid *tablespace)
 	 */
 	if (force_detach)
 	{
-		for (i = 0; i < NPersistenceLevels; ++i)
+		for (i = 0; i < NUndoPersistenceLevels; ++i)
 		{
 			UndoLogSlot *slot = CurrentSession->attached_undo_slots[i];
 
@@ -1682,7 +1684,7 @@ DropUndoLogsInTablespace(Oid tablespace)
 		if (return_to_freelist)
 		{
 			LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
-			slist_push_head(&UndoLogShared->free_lists[UndoPersistenceIndex(slot->meta.persistence)],
+			slist_push_head(&UndoLogShared->free_lists[GetUndoPersistenceLevel(slot->meta.persistence)],
 							&slot->next);
 			LWLockRelease(UndoLogLock);
 		}
@@ -1759,7 +1761,7 @@ DropUndoLogsInTablespace(Oid tablespace)
 
 	/* Remove all dropped undo logs from the free-lists. */
 	LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
-	for (int i = 0; i < NPersistenceLevels; ++i)
+	for (int i = 0; i < NUndoPersistenceLevels; ++i)
 	{
 		UndoLogSlot *slot;
 		slist_mutable_iter iter;
@@ -2162,4 +2164,19 @@ undolog_redo(XLogReaderState *record)
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);
 	}
+}
+
+/*
+ * Get the undo persistence level that corresponds to a relation persistence
+ * level.
+ */
+UndoPersistenceLevel
+GetUndoPersistenceLevel(char relpersistence)
+{
+	if (relpersistence == RELPERSISTENCE_TEMP)
+		return UNDOPERSISTENCE_TEMP;
+	if (relpersistence == RELPERSISTENCE_UNLOGGED)
+		return UNDOPERSISTENCE_UNLOGGED;
+	Assert(relpersistence == RELPERSISTENCE_PERMANENT);
+	return UNDOPERSISTENCE_PERMANENT;
 }

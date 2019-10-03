@@ -28,6 +28,18 @@ typedef uint64 UndoLogOffset;
 /* Type for numbering undo logs. */
 typedef int UndoLogNumber;
 
+/* Persistence levels as small integers that can be used as array indexes. */
+typedef enum
+{
+	UNDOPERSISTENCE_PERMANENT = 0,
+	UNDOPERSISTENCE_UNLOGGED = 1,
+	UNDOPERSISTENCE_TEMP = 2
+} UndoPersistenceLevel;
+
+/* Number of supported persistence levels for undo. */
+#define NUndoPersistenceLevels 3
+
+/* Opaque types. */
 struct UndoRecordSet;
 typedef struct UndoRecordSet UndoRecordSet;
 
