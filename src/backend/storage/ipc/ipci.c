@@ -22,7 +22,7 @@
 #include "access/subtrans.h"
 #include "access/twophase.h"
 #include "access/undolog.h"
-#include "access/undostate.h"
+#include "access/xactundo.h"
 #include "commands/async.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -150,7 +150,7 @@ CreateSharedMemoryAndSemaphores(void)
 		size = add_size(size, BTreeShmemSize());
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
-		size = add_size(size, UndoStateShmemSize());
+		size = add_size(size, XactUndoShmemSize());
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif
@@ -268,7 +268,7 @@ CreateSharedMemoryAndSemaphores(void)
 	BTreeShmemInit();
 	SyncScanShmemInit();
 	AsyncShmemInit();
-	UndoStateShmemInit();
+	XactUndoShmemInit();
 
 #ifdef EXEC_BACKEND
 

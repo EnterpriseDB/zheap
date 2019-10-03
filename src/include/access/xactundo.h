@@ -28,10 +28,25 @@ typedef struct UndoNode
 	int	dummy;
 } UndoNode;
 
+extern Size XactUndoShmemSize(void);
+extern void XactUndoShmemInit(void);
+
 extern UndoRecPtr PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 									  UndoNode *undo_node);
 extern void InsertXactUndoData(XactUndoContext *ctx, uint8 first_block_id);
 extern void SetXactUndoPageLSNs(XactUndoContext *ctx, XLogRecPtr lsn);
 extern void CleanupXactUndoInsertion(XactUndoContext *ctx);
+
+extern Oid InitializeBackgroundXactUndo(bool minimum_runtime_reached);
+extern void FinishBackgroundUndo(void);
+
+extern void PerformUndoActions(int nestingLevel);
+
+extern void AtCommit_XactUndo(void);
+extern void AtAbort_XactUndo(bool *perform_foreground_undo);
+extern void AtSubCommit_XactUndo(int level);
+extern void AtSubAbort_XactUndo(int level, bool *perform_foreground_undo);
+
+/* XXX what about prepare? */
 
 #endif

@@ -27,8 +27,8 @@
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/undorecordset.h"
-#include "access/undostate.h"
 #include "access/xact.h"
+#include "access/xactundo.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
@@ -2246,7 +2246,7 @@ CommitTransaction(void)
 	CallXactCallbacks(is_parallel_worker ? XACT_EVENT_PARALLEL_COMMIT
 					  : XACT_EVENT_COMMIT);
 
-	AtCommit_UndoState();
+	AtCommit_XactUndo();
 
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_BEFORE_LOCKS,
@@ -2776,7 +2776,7 @@ AbortTransaction(bool *perform_foreground_undo)
 		else
 			CallXactCallbacks(XACT_EVENT_ABORT);
 
-		AtAbort_UndoState(perform_foreground_undo);
+		AtAbort_XactUndo(perform_foreground_undo);
 
 		ResourceOwnerRelease(TopTransactionResourceOwner,
 							 RESOURCE_RELEASE_BEFORE_LOCKS,
@@ -4933,7 +4933,7 @@ CommitSubTransaction(void)
 	CallSubXactCallbacks(SUBXACT_EVENT_COMMIT_SUB, s->subTransactionId,
 						 s->parent->subTransactionId);
 
-	AtSubCommit_UndoState(s->nestingLevel);
+	AtSubCommit_XactUndo(s->nestingLevel);
 
 	ResourceOwnerRelease(s->curTransactionOwner,
 						 RESOURCE_RELEASE_BEFORE_LOCKS,
@@ -5114,7 +5114,7 @@ AbortSubTransaction(bool *perform_foreground_undo)
 		CallSubXactCallbacks(SUBXACT_EVENT_ABORT_SUB, s->subTransactionId,
 							 s->parent->subTransactionId);
 
-		AtSubAbort_UndoState(s->nestingLevel, perform_foreground_undo);
+		AtSubAbort_XactUndo(s->nestingLevel, perform_foreground_undo);
 
 		ResourceOwnerRelease(s->curTransactionOwner,
 							 RESOURCE_RELEASE_BEFORE_LOCKS,

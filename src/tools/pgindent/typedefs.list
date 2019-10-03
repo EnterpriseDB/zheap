@@ -2545,7 +2545,6 @@ UndoRequest
 UndoRequestManager
 UndoRequestNode
 UndoRequestSource
-UndoStateData
 UndoSubTransaction
 Unique
 UniquePath
@@ -2705,6 +2704,7 @@ XactCallback
 XactCallbackItem
 XactEvent
 XactLockTableWaitInfo
+XactUndoData
 XidHorizonPrefetchState
 XidStatus
 XmlExpr
