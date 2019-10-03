@@ -28,28 +28,6 @@ typedef uint64 UndoLogOffset;
 /* Type for numbering undo logs. */
 typedef int UndoLogNumber;
 
-/* Special value for undo record pointer which indicates that it is invalid. */
-#define	InvalidUndoRecPtr	((UndoRecPtr) 0)
-
-/* Extract the undo log number from an UndoRecPtr. */
-#define UndoRecPtrGetLogNo(urp)					\
-	((urp) >> UndoLogOffsetBits)
-
-/* Extract the offset from an UndoRecPtr. */
-#define UndoRecPtrGetOffset(urp)				\
-	((urp) & ((UINT64CONST(1) << UndoLogOffsetBits) - 1))
-
-/* Make an UndoRecPtr from an log number and offset. */
-#define MakeUndoRecPtr(logno, offset)			\
-	(((uint64) (logno) << UndoLogOffsetBits) | (offset))
-
-/*
- * UndoRecPtrIsValid
- *		True iff undoRecPtr is valid.
- */
-#define UndoRecPtrIsValid(undoRecPtr) \
-	((bool) ((UndoRecPtr) (undoRecPtr) != InvalidUndoRecPtr))
-
 struct UndoRecordSet;
 typedef struct UndoRecordSet UndoRecordSet;
 

@@ -17,7 +17,7 @@
 #define UNDOLOG_H
 
 #include "access/undodefs.h"
-#include "access/xlogreader.h"
+#include "access/xlogdefs.h"
 #include "catalog/database_internal.h"
 #include "lib/ilist.h"
 
@@ -46,14 +46,36 @@
 /* The width of an undo log offset in bits.  40 allows for 1TB per log.*/
 #define UndoLogOffsetBits (64 - UndoLogNumberBits)
 
+/* Special value for undo record pointer which indicates that it is invalid. */
+#define	InvalidUndoRecPtr	((UndoRecPtr) 0)
+
 /* End-of-list value when building linked lists of undo logs. */
 #define InvalidUndoLogNumber -1
+
+/*
+ * UndoRecPtrIsValid
+ *		True iff undoRecPtr is valid.
+ */
+#define UndoRecPtrIsValid(undoRecPtr) \
+	((bool) ((UndoRecPtr) (undoRecPtr) != InvalidUndoRecPtr))
 
 /*
  * The maximum amount of data that can be stored in an undo log.  Can be set
  * artificially low to test full log behavior.
  */
 #define UndoLogMaxSize ((UndoLogOffset) 1 << UndoLogOffsetBits)
+
+/* Extract the undo log number from an UndoRecPtr. */
+#define UndoRecPtrGetLogNo(urp)					\
+	((urp) >> UndoLogOffsetBits)
+
+/* Extract the offset from an UndoRecPtr. */
+#define UndoRecPtrGetOffset(urp)				\
+	((urp) & ((UINT64CONST(1) << UndoLogOffsetBits) - 1))
+
+/* Make an UndoRecPtr from an log number and offset. */
+#define MakeUndoRecPtr(logno, offset)			\
+	(((uint64) (logno) << UndoLogOffsetBits) | (offset))
 
 /* The number of unusable bytes in the header of each block. */
 #define UndoLogBlockHeaderSize SizeOfPageHeaderData
@@ -336,7 +358,6 @@ extern void assign_undo_tablespaces(const char *newval, void *extra);
 extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
 							   XLogRecPtr priorCheckPointRedo);
 
-extern void undolog_redo(XLogReaderState *record);
 extern void TempUndoDiscard(UndoLogNumber);
 
 #endif

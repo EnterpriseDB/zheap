@@ -8,8 +8,10 @@
 
 
 #include "postgres_fe.h"
-#include "pg_upgrade.h"
+
 #include "access/undolog.h"
+#include "pg_upgrade.h"
+#include "port/pg_crc32c.h"
 
 /*
  * The relevant parts of UndoLogMetaDataData, in a version-independent format.

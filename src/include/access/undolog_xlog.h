@@ -13,7 +13,7 @@
 #ifndef UNDOLOG_XLOG_H
 #define UNDOLOG_XLOG_H
 
-#include "access/undolog.h"
+#include "access/undodefs.h"
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 
@@ -54,6 +54,7 @@ typedef struct xl_undolog_mark_full
 #define SizeOfUndologMarkFull sizeof(xl_undolog_mark_full)
 
 extern void undolog_desc(StringInfo buf,XLogReaderState *record);
+extern void undolog_redo(XLogReaderState *record);
 extern const char *undolog_identify(uint8 info);
 
 #endif
