@@ -332,7 +332,7 @@ extern UndoPersistenceLevel GetUndoPersistenceLevel(char persistence);
 extern void StartupUndoLogs(XLogRecPtr checkPointRedo);
 extern void UndoLogShmemInit(void);
 extern Size UndoLogShmemSize(void);
-extern void UndoLogInit(void);
+extern void AtProcExit_UndoLog(void);
 
 /* Interfaces exported for undo_file.c. */
 extern void UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);

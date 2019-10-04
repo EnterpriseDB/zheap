@@ -25,7 +25,6 @@
 #include "access/session.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
-#include "access/undolog.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
@@ -560,7 +559,6 @@ BaseInit(void)
 	InitSync();
 	smgrinit();
 	InitBufferPoolAccess();
-	UndoLogInit();
 }
 
 

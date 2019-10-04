@@ -73,7 +73,6 @@ char	   *undo_tablespaces = NULL;
 static UndoLogSlot *find_undo_log_slot(UndoLogNumber logno, bool locked);
 static UndoLogSlot *allocate_undo_log_slot(void);
 static void free_undo_log_slot(UndoLogSlot *log);
-static void undo_log_before_exit(int code, Datum value);
 static void discard_undo_buffers(int logno, UndoLogOffset old_discard,
 								 UndoLogOffset new_discard,
 								 bool drop_tail);
@@ -155,12 +154,6 @@ UndoLogShmemInit(void)
 	LWLockAcquire(UndoLogLock, LW_SHARED);
 	undologtable_low_logno = UndoLogShared->low_logno;
 	LWLockRelease(UndoLogLock);
-}
-
-void
-UndoLogInit(void)
-{
-	before_shmem_exit(undo_log_before_exit, 0);
 }
 
 /*
@@ -250,16 +243,24 @@ UndoLogRecPtrIsDiscardedSlowPath(UndoRecPtr pointer)
 }
 
 /*
- * Exit handler, returning all 'attached' undo logs to the appropriate free
- * lists.  Note that this does not handle the undo logs that were in use by
- * open UndoRecordSet objects.
+ * Return undo logs from our private free lists to the shared free lists.
  *
- * TODO: Logs currently in use by URSs should perhaps be pushed onto a
- * 'problem' list, because their URS chunk headers have not been updated with
- * lengths.  Otherwise they are leaked on crash.
+ * When an UndoRecordSet finishes using an UndoLogSlot, it may get added to
+ * CurrentSession->sticky_undo_log_slots rather than placed on the shared
+ * freelist. The idea is that it's more efficient to keep reusing the same
+ * undo log rather than touching possibly-contended shared memory structures,
+ * and also figures to give better locality for the undo that gets
+ * generated.
+ *
+ * An UndoLogSlot that is currently in use by an UndoRecordSet isn't on
+ * either the backend-private freelist or the shared freelist, but closing
+ * the UndoRecordSet will return it to one of those two places. Hence, this
+ * cleanup code needs to run after closing every UndoRecordSet that might
+ * have been open. The UndoRecordSet code is responsible for ensuring that
+ * this gets called at the correct time.
  */
-static void
-undo_log_before_exit(int code, Datum arg)
+void
+AtProcExit_UndoLog(void)
 {
 	int		i;
 
@@ -268,7 +269,7 @@ undo_log_before_exit(int code, Datum arg)
 
 	for (i = 0; i < NUndoPersistenceLevels; ++i)
 	{
-		slist_head *list = &CurrentSession->attached_undo_slots[i];
+		slist_head *list = &CurrentSession->sticky_undo_log_slots[i];
 
 		while (!slist_is_empty(list))
 		{
@@ -681,7 +682,7 @@ UndoLogGetForPersistence(char persistence)
 	Oid			tablespace = DEFAULTTABLESPACE_OID;
 
 	/* Is there one on our private free list of attached undo logs? */
-	slist = &CurrentSession->attached_undo_slots[plevel];
+	slist = &CurrentSession->sticky_undo_log_slots[plevel];
 	if (!slist_is_empty(slist))
 	{
 		/* TODO: Make sure we get rid of logs for the wrong tablespace */
@@ -772,14 +773,14 @@ UndoLogPut(UndoLogSlot *slot)
 	plevel = GetUndoPersistenceLevel(slot->meta.persistence);
 
 	/*
-	 * For now, we'll only allow you to keep one attached/sticky undo log
+	 * For now, we'll only allow you to keep one sticky undo log
 	 * around, and push everything else back on the shared free list.
 	 *
 	 * TODO: Figure out a decent policy.
 	 */
 
-	if (slist_is_empty(&CurrentSession->attached_undo_slots[plevel]))
-		slist_push_head(&CurrentSession->attached_undo_slots[plevel],
+	if (slist_is_empty(&CurrentSession->sticky_undo_log_slots[plevel]))
+		slist_push_head(&CurrentSession->sticky_undo_log_slots[plevel],
 						&slot->next);
 	else
 	{
@@ -1593,7 +1594,7 @@ choose_undo_tablespace(bool force_detach, Oid *tablespace)
 	{
 		for (i = 0; i < NUndoPersistenceLevels; ++i)
 		{
-			UndoLogSlot *slot = CurrentSession->attached_undo_slots[i];
+			UndoLogSlot *slot = CurrentSession->sticky_undo_log_slots[i];
 
 			if (slot != NULL)
 			{
@@ -1607,7 +1608,7 @@ choose_undo_tablespace(bool force_detach, Oid *tablespace)
 				UndoLogShared->free_lists[i] = slot->logno;
 				LWLockRelease(UndoLogLock);
 
-				CurrentSession->attached_undo_slots[i] = NULL;
+				CurrentSession->sticky_undo_log_slots[i] = NULL;
 			}
 		}
 	}

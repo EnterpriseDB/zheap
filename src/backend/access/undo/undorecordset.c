@@ -1197,16 +1197,36 @@ UndoCloseAndDestroyForXactLevel(int nestingLevel)
 
 /*
  * AtProcExit_UndoRecordSet
- *
- * It should be impossible to reach this code with any UndoRecordSet still
- * in existence. But if it does happen, PANIC. System restart will finalize
- * the size of any UndoRecordSet that was not properly closed, and will also
- * recreate all relevant UndoLogSlot objects and put them on the global
- * free lists.
  */
 static void
 AtProcExit_UndoRecordSet(int code, Datum arg)
 {
+	/*
+	 * It should be impossible to reach this code with any UndoRecordSet
+	 * still in existence, but maybe there's someway for it to happen if
+	 * we experience failures while trying to abort the active transaction.
+	 *
+	 * It could also happen if somebody writes code that invokes UndoCreate()
+	 * and doesn't provide a mechanism to make sure that the UndoRecordSet
+	 * gets closed.
+	 *
+	 * If it does happen, use PANIC to recover. System restart will set
+	 * the size of any UndoRecordSet that was not properly closed. (We could
+	 * also try again here, but it's not clear whether all of the services
+	 * that we'd need in order to do so are still working. Also, if it already
+	 * failed during transaction abort, it doesn't seem all that likely to
+	 * work now.)
+	 */
 	if (!slist_is_empty(&UndoRecordSetList))
 		elog(PANIC, "undo record set not closed before backend exit");
+
+	/*
+	 * Shut down the UndoLog layer after we're done with our own work.
+	 *
+	 * NB: Right now, there's no real reason why AtProcExit_UndoLog couldn't
+	 * be registered via a separate call to on_shmem_exit, but since
+	 * AtProcExit_UndoLog depends on this layer having already been shut
+	 * down, it seems best to invoke it explicitly from here.
+	 */
+	AtProcExit_UndoLog();
 }

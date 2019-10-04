@@ -12,6 +12,7 @@
 #ifndef SESSION_H
 #define SESSION_H
 
+#include "access/undodefs.h"
 #include "lib/dshash.h"
 #include "lib/ilist.h"
 
@@ -29,7 +30,7 @@ typedef struct Session
 	dsa_area   *area;			/* The session-scoped DSA area. */
 
 	/* State managed by undolog.c. */
-	slist_head	attached_undo_slots[4];		/* UndoLogCategories */
+	slist_head	sticky_undo_log_slots[NUndoPersistenceLevels];
 	bool		need_to_choose_undo_tablespace;
 
 	/* State managed by typcache.c. */
