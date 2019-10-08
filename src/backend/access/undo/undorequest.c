@@ -46,33 +46,69 @@
 #include "utils/timestamp.h"
 
 /*
- * An UndoRequest represents the possible need to perform undo actions for
- * a transaction if it aborts; thus, it should be allocated before writing
- * undo that might require the system to perform cleanup actions (except
- * temporary undo, for which the backend is always responsible) and
- * deallocated when it is clear that no such actions will need to be
- * performed or when they have all been performed successfully.
+ * An UndoRequestData object stores the information that we must have in order
+ * to perform background undo for a transaction. It may be stored in memory or
+ * serialized to disk.
  *
- * At any given time, an UndoRequest is one of three states: FREE (not
- * allocated to any transaction; available for reuse), UNLISTED (allocated
- * to a transaction but not in any RBTree), or LISTED (allocated to a
- * transaction and in either both requests_by_fxid and requests_by_size or
- * else in requests_by_retry_time).
+ * We won't have all of this information while the transaction is still
+ * runnning and need not ever collect it if the transaction commits, but if
+ * the transaction aborts or is prepared, we need to remember all of these
+ * details at that point.
  *
- * Changes to UndoRequest objects are protected by the UndoRequestManager's
- * lock, but not all changes require the lock.  The following rules apply:
+ * If the transaction is aborted by a crash, we need to reconstruct these
+ * details after restarting.
  *
- * fxid must be InvalidFullTransactionId if and only if the UndoRequest is
- * FREE, and may only be changed while holding the lock.
+ * Note that we don't care about temporary undo, because it can never need
+ * to be performed in the background. If the session dies without taking care
+ * of permanent or unlogged undo, the associated undo actions still need to
+ * be performed at some later point, but the same principle does not apply
+ * to temporary undo. All temporary objects disappear with the session that
+ * owned them, making the undo irrelevant.
+ */
+typedef struct UndoRequestData
+{
+	FullTransactionId fxid;
+	Oid			dbid;
+	Size		size;
+	UndoRecPtr	start_location_logged;
+	UndoRecPtr	end_location_logged;
+	UndoRecPtr	start_location_unlogged;
+	UndoRecPtr	end_location_unlogged;
+} UndoRequestData;
+
+/*
+ * An UndoRequest object represents the possible need to perform background
+ * undo actions for a transaction if it aborts; unlike an UndoRequestData
+ * object, it only ever exists in memory.
  *
- * next_free_request must be NULL unless the UndoRequest is FREE, and may
- * only be changed while holding the lock.
+ * The main purpose of this module is to manage a fixed pool of UndoRequest
+ * objects. Because the pool is of fixed size, an UndoRequest should be
+ * allocated before a transaction writes any permanent or unlogged undo (see
+ * comments on UndoRequestData for why we don't care about temporary undo).
+ * It can be deallocated when it is clear that no such actions will need to
+ * be performed or when they have all been performed successfully.
  *
- * The remaining fields must be accurate if the UndoRequest is LISTED, but
- * otherwise may or may not contain correct data. They should not be changed
- * while the request is FREE, may be changed without holding the lock while
- * the request is UNLISTED, and may only be changed while holding the lock
- * if the requested is LISTED.
+ * At any given time, an UndoRequest managed by an UndoRequestManager is in
+ * one of three states: FREE, UNLISTED, or LISTED. FREE can be distinguished
+ * from the other states by examining the state of the UndoRequest itself:
+ * if d.fxid is InvalidFullTransactionId, the UndoRequest is FREE; otherwise,
+ * it is either LISTED or UNLISTED.  When an UndoRequest is FREE, it is not
+ * allocated to any transaction and is available for reuse.
+ *
+ * Nothing in the UndoRequest explicitly distinguishes between the LISTED and
+ * UNLISTED state. In either state, the UndoRequest has been allocated to the
+ * transaction identified by d.fxid. When UNLISTED, the UndoRequestManager
+ * has not added the UndoRequest to any RBTRee; when LISTED, it has been
+ * added either to both of requests_by_fxid and requests_by_size or else to
+ * requests_by_retry_time.
+ *
+ * When an UndoRequest is either FREE or LISTED, all changes to it require
+ * the UndoRequestManager's lock. When it is UNLISTED, changes be made without
+ * taking the lock, except for d.fxid and next_retry_time, which should not
+ * be modified. This is safe because nothing should rely on the data in an
+ * UNLISTED request actually being correct; it corresponds to a tranasction
+ * which is still running, for which the final values of fields in the
+ * UndoRequestData are not yet known.
  *
  * Callers must be careful never to lose track of an entry that is UNLISTED;
  * such entries will be permanently leaked. An entry that is FREE can be
@@ -82,13 +118,7 @@
  */
 struct UndoRequest
 {
-	FullTransactionId fxid;
-	Oid			dbid;
-	Size		size;
-	UndoRecPtr	start_location_logged;
-	UndoRecPtr	end_location_logged;
-	UndoRecPtr	start_location_unlogged;
-	UndoRecPtr	end_location_unlogged;
+	UndoRequestData	d;
 	TimestampTz retry_time;
 	UndoRequest *next_free_request;
 };
@@ -281,13 +311,13 @@ RegisterUndoRequest(UndoRequestManager *urm, FullTransactionId fxid, Oid dbid)
 		++urm->utilization;
 
 		/* Initialize request object. */
-		req->fxid = fxid;
-		req->dbid = dbid;
-		req->size = 0;
-		req->start_location_logged = InvalidUndoRecPtr;
-		req->end_location_logged = InvalidUndoRecPtr;
-		req->start_location_unlogged = InvalidUndoRecPtr;
-		req->end_location_unlogged = InvalidUndoRecPtr;
+		req->d.fxid = fxid;
+		req->d.dbid = dbid;
+		req->d.size = 0;
+		req->d.start_location_logged = InvalidUndoRecPtr;
+		req->d.end_location_logged = InvalidUndoRecPtr;
+		req->d.start_location_unlogged = InvalidUndoRecPtr;
+		req->d.end_location_unlogged = InvalidUndoRecPtr;
 		req->retry_time = DT_NOBEGIN;
 
 		/* Save this fxid as the oldest one, if necessary. */
@@ -338,11 +368,11 @@ FinalizeUndoRequest(UndoRequestManager *urm, UndoRequest *req, Size size,
 		   UndoRecPtrIsValid(start_location_logged));
 	Assert(UndoRecPtrIsValid(end_location_unlogged) ==
 		   UndoRecPtrIsValid(start_location_unlogged));
-	req->size = size;
-	req->start_location_logged = start_location_logged;
-	req->start_location_unlogged = start_location_unlogged;
-	req->end_location_logged = end_location_logged;
-	req->end_location_unlogged = end_location_unlogged;
+	req->d.size = size;
+	req->d.start_location_logged = start_location_logged;
+	req->d.start_location_unlogged = start_location_unlogged;
+	req->d.end_location_logged = end_location_logged;
+	req->d.end_location_unlogged = end_location_unlogged;
 }
 
 /*
@@ -371,14 +401,14 @@ UnregisterUndoRequest(UndoRequestManager *urm, UndoRequest *req)
 	 */
 	if (req->retry_time != DT_NOBEGIN)
 		RemoveUndoRequest(&urm->requests_by_retry_time, req);
-	else if (req->size != 0)
+	else if (req->d.size != 0)
 	{
 		RemoveUndoRequest(&urm->requests_by_fxid, req);
 		RemoveUndoRequest(&urm->requests_by_size, req);
 	}
 
 	/* Plan to recompute oldest_fxid, if necessary. */
-	if (FullTransactionIdEquals(req->fxid, urm->oldest_fxid))
+	if (FullTransactionIdEquals(req->d.fxid, urm->oldest_fxid))
 		urm->oldest_fxid_valid = false;
 
 	/* Push onto freelist. */
@@ -424,8 +454,8 @@ PerformUndoInBackground(UndoRequestManager *urm, UndoRequest *req, bool force)
 	 * start locations, there's no work to be done.  In that case, we can just
 	 * unregister the request.
 	 */
-	if (!UndoRecPtrIsValid(req->start_location_logged) &&
-		!UndoRecPtrIsValid(req->start_location_unlogged))
+	if (!UndoRecPtrIsValid(req->d.start_location_logged) &&
+		!UndoRecPtrIsValid(req->d.start_location_unlogged))
 	{
 		UnregisterUndoRequest(urm, req);
 		return true;
@@ -563,7 +593,7 @@ GetNextUndoRequest(UndoRequestManager *urm, Oid dbid,
 		 * after the other tests so that we get the right value for the
 		 * saw_db_mismatch flag.
 		 */
-		if (OidIsValid(dbid) && node->req->dbid != dbid)
+		if (OidIsValid(dbid) && node->req->d.dbid != dbid)
 		{
 			saw_db_mismatch = true;
 			continue;
@@ -610,12 +640,12 @@ GetNextUndoRequest(UndoRequestManager *urm, Oid dbid,
 		*out_dbid = InvalidOid;
 	else
 	{
-		*out_dbid = req->dbid;
-		*fxid = req->fxid;
-		*start_location_logged = req->start_location_logged;
-		*end_location_logged = req->end_location_logged;
-		*start_location_unlogged = req->start_location_unlogged;
-		*end_location_unlogged = req->end_location_unlogged;
+		*out_dbid = req->d.dbid;
+		*fxid = req->d.fxid;
+		*start_location_logged = req->d.start_location_logged;
+		*end_location_logged = req->d.end_location_logged;
+		*start_location_unlogged = req->d.start_location_unlogged;
+		*end_location_unlogged = req->d.end_location_unlogged;
 	}
 
 	/* All done. */
@@ -704,23 +734,23 @@ RecreateUndoRequest(UndoRequestManager *urm, FullTransactionId fxid,
 		/* Already called for opposite value of is_logged. */
 		if (is_logged)
 		{
-			Assert(!UndoRecPtrIsValid(req->start_location_logged));
-			Assert(!UndoRecPtrIsValid(req->end_location_logged));
-			req->start_location_logged = start_location;
-			req->end_location_logged = end_location;
+			Assert(!UndoRecPtrIsValid(req->d.start_location_logged));
+			Assert(!UndoRecPtrIsValid(req->d.end_location_logged));
+			req->d.start_location_logged = start_location;
+			req->d.end_location_logged = end_location;
 		}
 		else
 		{
-			Assert(!UndoRecPtrIsValid(req->start_location_unlogged));
-			Assert(!UndoRecPtrIsValid(req->end_location_unlogged));
-			req->start_location_unlogged = start_location;
-			req->end_location_unlogged = end_location;
+			Assert(!UndoRecPtrIsValid(req->d.start_location_unlogged));
+			Assert(!UndoRecPtrIsValid(req->d.end_location_unlogged));
+			req->d.start_location_unlogged = start_location;
+			req->d.end_location_unlogged = end_location;
 		}
-		Assert(req->dbid == dbid);
+		Assert(req->d.dbid == dbid);
 
 		/* Adjusting size may change position in RBTree. */
 		RemoveUndoRequest(&urm->requests_by_size, req);
-		req->size += size;
+		req->d.size += size;
 		InsertUndoRequest(&urm->requests_by_size, req);
 	}
 	else
@@ -741,16 +771,16 @@ RecreateUndoRequest(UndoRequestManager *urm, FullTransactionId fxid,
 		++urm->utilization;
 
 		/* Initialize request object. */
-		req->fxid = fxid;
-		req->dbid = dbid;
-		req->size = size;
-		req->start_location_logged = InvalidUndoRecPtr;
-		req->start_location_unlogged = InvalidUndoRecPtr;
+		req->d.fxid = fxid;
+		req->d.dbid = dbid;
+		req->d.size = size;
+		req->d.start_location_logged = InvalidUndoRecPtr;
+		req->d.start_location_unlogged = InvalidUndoRecPtr;
 		req->retry_time = DT_NOBEGIN;
 		if (is_logged)
-			req->start_location_logged = start_location;
+			req->d.start_location_logged = start_location;
 		else
-			req->start_location_unlogged = start_location;
+			req->d.start_location_unlogged = start_location;
 
 		/*
 		 * List this request so that undo workers will see it.  Note that we
@@ -795,7 +825,7 @@ SuspendPreparedUndoRequest(UndoRequestManager *urm, FullTransactionId fxid)
 	LWLockAcquire(urm->lock, LW_EXCLUSIVE);
 	req = FindUndoRequest(urm, fxid);
 	Assert(req != NULL);
-	Assert(req->size != 0);
+	Assert(req->d.size != 0);
 	RemoveUndoRequest(&urm->requests_by_fxid, req);
 	RemoveUndoRequest(&urm->requests_by_size, req);
 	LWLockRelease(urm->lock);
@@ -826,10 +856,10 @@ UndoRequestManagerOldestFXID(UndoRequestManager *urm)
 		{
 			UndoRequest *req = &urm->all_requests[i];
 
-			if (FullTransactionIdIsValid(req->fxid) &&
+			if (FullTransactionIdIsValid(req->d.fxid) &&
 				(!FullTransactionIdIsValid(result) ||
-				 FullTransactionIdPrecedes(req->fxid, result)))
-				result = req->fxid;
+				 FullTransactionIdPrecedes(req->d.fxid, result)))
+				result = req->d.fxid;
 		}
 
 		urm->oldest_fxid = result;
@@ -875,7 +905,7 @@ FindUndoRequestForDatabase(UndoRequestManager *urm, Oid dbid)
 				if (doneflags == 7) /* all bits set */
 					break;
 			}
-			else if (node->req->dbid == dbid)
+			else if (node->req->d.dbid == dbid)
 				return node->req;
 		}
 		i = (i + 1) % 3;
@@ -972,8 +1002,8 @@ UndoRequestNodeCompareRetryTime(const RBTNode *a, const RBTNode *b, void *arg)
 {
 	const UndoRequestNode *aa = (UndoRequestNode *) a;
 	const UndoRequestNode *bb = (UndoRequestNode *) b;
-	FullTransactionId fxid_a = aa->req->fxid;
-	FullTransactionId fxid_b = bb->req->fxid;
+	FullTransactionId fxid_a = aa->req->d.fxid;
+	FullTransactionId fxid_b = bb->req->d.fxid;
 	TimestampTz retry_time_a = aa->req->retry_time;
 	TimestampTz retry_time_b = bb->req->retry_time;
 
@@ -997,8 +1027,8 @@ UndoRequestNodeCompareFXID(const RBTNode *a, const RBTNode *b, void *arg)
 {
 	const UndoRequestNode *aa = (UndoRequestNode *) a;
 	const UndoRequestNode *bb = (UndoRequestNode *) b;
-	FullTransactionId fxid_a = aa->req->fxid;
-	FullTransactionId fxid_b = bb->req->fxid;
+	FullTransactionId fxid_a = aa->req->d.fxid;
+	FullTransactionId fxid_b = bb->req->d.fxid;
 
 	if (FullTransactionIdPrecedes(fxid_a, fxid_b))
 		return -1;
@@ -1017,10 +1047,10 @@ UndoRequestNodeCompareSize(const RBTNode *a, const RBTNode *b, void *arg)
 {
 	const UndoRequestNode *aa = (UndoRequestNode *) a;
 	const UndoRequestNode *bb = (UndoRequestNode *) b;
-	FullTransactionId fxid_a = aa->req->fxid;
-	FullTransactionId fxid_b = bb->req->fxid;
-	Size		size_a = aa->req->size;
-	Size		size_b = bb->req->size;
+	FullTransactionId fxid_a = aa->req->d.fxid;
+	FullTransactionId fxid_b = bb->req->d.fxid;
+	Size		size_a = aa->req->d.size;
+	Size		size_b = bb->req->d.size;
 
 	if (size_a != size_b)
 		return size_a < size_b ? 1 : -1;
@@ -1098,7 +1128,7 @@ FindUndoRequest(UndoRequestManager *urm, FullTransactionId fxid)
 	 * the comparator will look at the dummy UndoRequestNode, and it will only
 	 * look at UndoRequest, and specifically its FXID.
 	 */
-	dummy_request.fxid = fxid;
+	dummy_request.d.fxid = fxid;
 	dummy_node.req = &dummy_request;
 	node = rbt_find(&urm->requests_by_fxid, &dummy_node.rbtnode);
 	if (node == NULL)
