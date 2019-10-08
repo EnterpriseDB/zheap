@@ -61,13 +61,10 @@ extern UndoRequest *GetNextUndoRequest(UndoRequestManager *urm, Oid dbid,
 /* Reschedule failed undo attempt. */
 extern void RescheduleUndoRequest(UndoRequestManager *urm, UndoRequest *req);
 
-/* Restore state after crash. */
-extern bool RecreateUndoRequest(UndoRequestManager *urm,
-								FullTransactionId fxid, Oid dbid,
-								bool is_logged,
-								UndoRecPtr start_location,
-								UndoRecPtr end_location,
-								Size size);
+/* Save and restore state. */
+extern char *SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes);
+extern void RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes,
+								   char *data);
 extern UndoRequest *SuspendPreparedUndoRequest(UndoRequestManager *urm,
 											   FullTransactionId fxid);
 

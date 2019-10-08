@@ -698,91 +698,110 @@ RescheduleUndoRequest(UndoRequestManager *urm, UndoRequest *req)
 }
 
 /*
- * Recreate UndoRequest state after a shutdown.
+ * Serialize state that needs to survive a shutdown.
  *
- * This function is expected to be called after a shutdown, whether a clean
- * shutdown or a crash, both for aborted transactions with unprocessed undo
- * and also for prepared transactions.  All calls to this function must be
- * completed, and SuspendPreparedUndoRequest must be called for every prepared
- * transaction, before the first call to GetNextUndoRequest occurs.
+ * We don't worry about saving the retry time; see the comments in
+ * RestoreUndoRequestData for further details.
  *
- * This function be called up two twice per FullTransactionId, once with
- * is_logged true and once with is_logged false, because the transaction may
- * have both logged and unlogged undo in different places. start_location is
- * the beginning of the type of undo indicated by the is_logged parameter, and
- * size is the amount of such undo in bytes.  If this function is called twice,
- * the result will be a single UndoRequest containing both start locations and
- * a size which is the sum of the two sizes passed to the separate calls.
+ * We only need to save data for LISTED undo requests. An UNLISTED request
+ * doesn't necessarily contain fully valid data yet, and a FREE request
+ * certainly doesn't.
  *
- * If this function is unable to allocate a new UndoRequest when required,
- * it will return false.  If that happens, it's not safe to continue using
- * this UndoRequestManager and a system-wide shutdown to raise the limit on
- * the number of outstanding requests is indicated.
+ * The return value is a pointer to the serialized data; *nbytes is set to
+ * the length of that data. The serialized data is allocated in the current
+ * memory context and the caller may free it using pfree if desired.
  */
-bool
-RecreateUndoRequest(UndoRequestManager *urm, FullTransactionId fxid,
-					Oid dbid, bool is_logged, UndoRecPtr start_location,
-					UndoRecPtr end_location, Size size)
+char *
+SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes)
 {
-	UndoRequest *req;
+	UndoRequestData *darray;
+	RBTreeIterator iter;
+	int		nrequests = 0;
+	int		i = 0;
 
-	Assert(UndoRecPtrIsValid(start_location));
 	LWLockAcquire(urm->lock, LW_EXCLUSIVE);
-	req = FindUndoRequest(urm, fxid);
-	if (req)
-	{
-		/* Already called for opposite value of is_logged. */
-		if (is_logged)
-		{
-			Assert(!UndoRecPtrIsValid(req->d.start_location_logged));
-			Assert(!UndoRecPtrIsValid(req->d.end_location_logged));
-			req->d.start_location_logged = start_location;
-			req->d.end_location_logged = end_location;
-		}
-		else
-		{
-			Assert(!UndoRecPtrIsValid(req->d.start_location_unlogged));
-			Assert(!UndoRecPtrIsValid(req->d.end_location_unlogged));
-			req->d.start_location_unlogged = start_location;
-			req->d.end_location_unlogged = end_location;
-		}
-		Assert(req->d.dbid == dbid);
 
-		/* Adjusting size may change position in RBTree. */
-		RemoveUndoRequest(&urm->requests_by_size, req);
-		req->d.size += size;
-		InsertUndoRequest(&urm->requests_by_size, req);
+	/* Count the number of LISTED requests. */
+	rbt_begin_iterate(&urm->requests_by_fxid, LeftRightWalk, &iter);
+	while (rbt_iterate(&iter) != NULL)
+		++nrequests;
+	rbt_begin_iterate(&urm->requests_by_retry_time, LeftRightWalk, &iter);
+	while (rbt_iterate(&iter) != NULL)
+		++nrequests;
+
+	/* Allocate memory. */
+	*nbytes = sizeof(UndoRequestData) * nrequests;
+	darray = palloc(*nbytes);
+
+	/* Save requests. */
+	rbt_begin_iterate(&urm->requests_by_fxid, LeftRightWalk, &iter);
+	while (rbt_iterate(&iter) != NULL)
+	{
+		UndoRequestNode *node = (UndoRequestNode *) rbt_iterate(&iter);
+
+		memcpy(&darray[i++], &node->req->d, sizeof(UndoRequestData));
 	}
-	else
+	rbt_begin_iterate(&urm->requests_by_retry_time, LeftRightWalk, &iter);
+	while (rbt_iterate(&iter) != NULL)
 	{
-		/* First call for this FullTransactionId. */
-		req = urm->first_free_request;
-		if (req == NULL)
-		{
-			LWLockRelease(urm->lock);
-			return false;
-		}
+		UndoRequestNode *node = (UndoRequestNode *) rbt_iterate(&iter);
 
-		/* We got an item; pop it from the free list. */
+		memcpy(&darray[i++], &node->req->d, sizeof(UndoRequestData));
+	}
+
+	/* All done. */
+	LWLockRelease(urm->lock);
+	Assert(i == nrequests);
+	return (char *) darray;
+}
+
+/*
+ * Restore state previously saved by RestoreUndoRequestData.
+ */
+void
+RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes, char *data)
+{
+	UndoRequestData *darray = (UndoRequestData *) data;
+	int			nrequests;
+	int			i;
+
+	/* Caller should have ensured a sane size, but let's double-check. */
+	if (nbytes % sizeof(UndoRequestData) != 0)
+		elog(ERROR, "undo request data size is corrupt");
+
+	/* Compute number of requests and check capacity. */
+	nrequests = nbytes / sizeof(UndoRequestData);
+	if (nrequests > urm->capacity)
+		ereport(ERROR,
+				(errmsg("too many undo requests"),
+				 errdetail("There are %d outstanding undo requests, but only enough shared memory for %zu requests.",
+						   nrequests, urm->capacity),
+				 errhint("Consider increasing max_connctions.")));
+
+	/* Now we acquire the lock. */
+	LWLockAcquire(urm->lock, LW_EXCLUSIVE);
+
+	for (i = 0; i < nrequests; ++i)
+	{
+		UndoRequestData	   *d = &darray[i];
+		UndoRequest		   *req;
+
+		/* Allocate a request. */
+		Assert(urm->first_free_request != NULL);
+		req = urm->first_free_request;
 		urm->first_free_request = req->next_free_request;
-		req->next_free_request = NULL;
 
 		/* Increase utilization. */
 		++urm->utilization;
 
-		/* Initialize request object. */
-		req->d.fxid = fxid;
-		req->d.dbid = dbid;
-		req->d.size = size;
-		req->d.start_location_logged = InvalidUndoRecPtr;
-		req->d.start_location_unlogged = InvalidUndoRecPtr;
-		req->retry_time = DT_NOBEGIN;
-		if (is_logged)
-			req->d.start_location_logged = start_location;
-		else
-			req->d.start_location_unlogged = start_location;
+		/* Sanity checks. */
+		Assert(FullTransactionIdIsValid(d->fxid));
+		Assert(OidIsValid(d->dbid));
+		Assert(d->size != 0);
 
 		/*
+		 * Populate data and list the request.
+		 *
 		 * List this request so that undo workers will see it.  Note that we
 		 * assume that these are new aborts, but it's possible that there are
 		 * actually a whole series of previous undo failures before the
@@ -794,12 +813,15 @@ RecreateUndoRequest(UndoRequestManager *urm, FullTransactionId fxid,
 		 * we're just trying to guarantee that we don't busy-loop or starve
 		 * other requests. (FindUndoRequest would get confused, too.)
 		 */
+		memcpy(&req->d, d, sizeof(UndoRequestData));
+		req->retry_time = DT_NOBEGIN;
+		req->next_free_request = NULL;
 		InsertUndoRequest(&urm->requests_by_fxid, req);
 		InsertUndoRequest(&urm->requests_by_size, req);
 	}
 
+	/* All done. */
 	LWLockRelease(urm->lock);
-	return true;
 }
 
 /*
