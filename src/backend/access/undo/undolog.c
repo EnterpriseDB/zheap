@@ -1010,23 +1010,20 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo)
 				(errcode_for_file_access(),
 				 errmsg("could not create file \"%s\": %m", path)));
 
-	/* Compute header checksum. */
+	/* Compute checksum as we go. */
 	INIT_CRC32C(crc);
 	COMP_CRC32C(crc, &next_logno, sizeof(next_logno));
 	COMP_CRC32C(crc, &num_logs, sizeof(num_logs));
-	FIN_CRC32C(crc);
 
-	/* Write out the number of active logs + crc. */
+	/* Write out the next log number and the number of active logs. */
 	if ((write(fd, &next_logno, sizeof(next_logno)) != sizeof(next_logno)) ||
-		(write(fd, &num_logs, sizeof(num_logs)) != sizeof(num_logs)) ||
-		(write(fd, &crc, sizeof(crc)) != sizeof(crc)))
+		(write(fd, &num_logs, sizeof(num_logs)) != sizeof(num_logs)))
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not write to file \"%s\": %m", path)));
 
 	/* Write out the meta data for all active undo logs. */
 	data = (char *) serialized;
-	INIT_CRC32C(crc);
 	serialized_size = num_logs * sizeof(UndoLogMetaData);
 	while (serialized_size > 0)
 	{
@@ -1117,19 +1114,13 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 	/* Read the active log number range. */
 	if ((read(fd, &UndoLogShared->next_logno, sizeof(UndoLogShared->next_logno))
 		 != sizeof(UndoLogShared->next_logno)) ||
-		(read(fd, &nlogs, sizeof(nlogs)) != sizeof(nlogs)) ||
-		(read(fd, &crc, sizeof(crc)) != sizeof(crc)))
+		(read(fd, &nlogs, sizeof(nlogs)) != sizeof(nlogs)))
 		elog(ERROR, "pg_undo file \"%s\" is corrupted", path);
 
-	/* Verify the header checksum. */
+	/* Begin checksum calculation. */
 	INIT_CRC32C(new_crc);
 	COMP_CRC32C(new_crc, &UndoLogShared->next_logno, sizeof(UndoLogShared->next_logno));
 	COMP_CRC32C(new_crc, &nlogs, sizeof(UndoLogShared->next_logno));
-	FIN_CRC32C(new_crc);
-
-	if (crc != new_crc)
-		elog(ERROR,
-			 "pg_undo file \"%s\" has incorrect checksum", path);
 
 	/*
 	 * We'll acquire UndoLogLock just because allocate_undo_log() asserts we
@@ -1138,7 +1129,6 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 	LWLockAcquire(UndoLogLock, LW_EXCLUSIVE);
 
 	/* Initialize all the logs and set up the freelist. */
-	INIT_CRC32C(new_crc);
 	for (i = 0; i < nlogs; ++i)
 	{
 		ssize_t size;
