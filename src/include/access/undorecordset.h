@@ -45,4 +45,6 @@ extern void UndoPageSetLSNForXactLevel(int nestingLevel, XLogRecPtr lsn);
 extern void UndoDestroyForXactLevel(int nestingLevel);
 extern bool UndoCloseAndDestroyForXactLevel(int nestingLevel);
 
+extern void AtProcExit_UndoRecordSet(void);
+
 #endif

@@ -21,6 +21,7 @@
 #include "postgres.h"
 
 #include "access/session.h"
+#include "access/undo.h"
 #include "access/undolog.h"
 #include "access/undolog_xlog.h"
 #include "access/xact.h"
@@ -143,7 +144,7 @@ UndoLogShmemInit(void)
 		Assert(found);
 
 	/* All backends prepare their per-backend lookup table. */
-	undologtable_cache = undologtable_create(TopMemoryContext,
+	undologtable_cache = undologtable_create(UndoContext,
 											 UndoLogNumSlots(),
 											 NULL);
 

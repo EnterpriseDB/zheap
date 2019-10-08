@@ -18,6 +18,7 @@
 
 #include "postgres.h"
 
+#include "access/undo.h"
 #include "access/undolog.h"
 #include "access/undorecordset.h"
 #include "access/xlog.h"
@@ -98,16 +99,9 @@ struct UndoRecordSet
 
 static size_t urst_header_size(UndoRecordSetType type);
 static inline void reserve_buffer_array(UndoRecordSet *urs, size_t capacity);
-static void AtProcExit_UndoRecordSet(int code, Datum arg);
 
 /* Every UndoRecordSet created and not yet destroyed in this backend. */
 static slist_head UndoRecordSetList = SLIST_STATIC_INIT(UndoRecordSetList);
-
-/*
- * We store data UndoRecordSet objects and subsidiary data in a separate
- * context to make it easier to spot leaks or excessive memory utilization.
- */
-static MemoryContext UndoRecordSetContext = NULL;
 
 /*
  * Create a new UndoRecordSet with the indicated type and persistence level.
@@ -129,16 +123,9 @@ UndoCreate(UndoRecordSetType type, char persistence, int nestingLevel)
 	UndoRecordSet *urs;
 	MemoryContext	oldcontext;
 
-	if (unlikely(UndoRecordSetContext == NULL))
-	{
-		UndoRecordSetContext =
-			AllocSetContextCreate(TopMemoryContext,
-								  "UndoRecordSet",
-								  ALLOCSET_DEFAULT_SIZES);
-		on_shmem_exit(AtProcExit_UndoRecordSet, 0);
-	}
+	Assert(UndoContext != NULL);
 
-	oldcontext = MemoryContextSwitchTo(UndoRecordSetContext);
+	oldcontext = MemoryContextSwitchTo(UndoContext);
 	urs = palloc0(sizeof(UndoRecordSet));
 	urs->type = type;
 	urs->persistence = persistence;
@@ -1196,37 +1183,24 @@ UndoCloseAndDestroyForXactLevel(int nestingLevel)
 }
 
 /*
- * AtProcExit_UndoRecordSet
+ * It should be impossible to reach this code with any UndoRecordSet
+ * still in existence, but maybe there's someway for it to happen if
+ * we experience failures while trying to abort the active transaction.
+ *
+ * It could also happen if somebody writes code that invokes UndoCreate()
+ * and doesn't provide a mechanism to make sure that the UndoRecordSet
+ * gets closed.
+ *
+ * If it does happen, use PANIC to recover. System restart will set
+ * the size of any UndoRecordSet that was not properly closed. (We could
+ * also try again here, but it's not clear whether all of the services
+ * that we'd need in order to do so are still working. Also, if it already
+ * failed during transaction abort, it doesn't seem all that likely to
+ * work now.)
  */
-static void
-AtProcExit_UndoRecordSet(int code, Datum arg)
+void
+AtProcExit_UndoRecordSet(void)
 {
-	/*
-	 * It should be impossible to reach this code with any UndoRecordSet
-	 * still in existence, but maybe there's someway for it to happen if
-	 * we experience failures while trying to abort the active transaction.
-	 *
-	 * It could also happen if somebody writes code that invokes UndoCreate()
-	 * and doesn't provide a mechanism to make sure that the UndoRecordSet
-	 * gets closed.
-	 *
-	 * If it does happen, use PANIC to recover. System restart will set
-	 * the size of any UndoRecordSet that was not properly closed. (We could
-	 * also try again here, but it's not clear whether all of the services
-	 * that we'd need in order to do so are still working. Also, if it already
-	 * failed during transaction abort, it doesn't seem all that likely to
-	 * work now.)
-	 */
 	if (!slist_is_empty(&UndoRecordSetList))
 		elog(PANIC, "undo record set not closed before backend exit");
-
-	/*
-	 * Shut down the UndoLog layer after we're done with our own work.
-	 *
-	 * NB: Right now, there's no real reason why AtProcExit_UndoLog couldn't
-	 * be registered via a separate call to on_shmem_exit, but since
-	 * AtProcExit_UndoLog depends on this layer having already been shut
-	 * down, it seems best to invoke it explicitly from here.
-	 */
-	AtProcExit_UndoLog();
 }

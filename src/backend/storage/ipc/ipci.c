@@ -21,8 +21,7 @@
 #include "access/nbtree.h"
 #include "access/subtrans.h"
 #include "access/twophase.h"
-#include "access/undolog.h"
-#include "access/xactundo.h"
+#include "access/undo.h"
 #include "commands/async.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -127,7 +126,6 @@ CreateSharedMemoryAndSemaphores(void)
 		size = add_size(size, ProcGlobalShmemSize());
 		size = add_size(size, XLOGShmemSize());
 		size = add_size(size, CLOGShmemSize());
-		size = add_size(size, UndoLogShmemSize());
 		size = add_size(size, CommitTsShmemSize());
 		size = add_size(size, SUBTRANSShmemSize());
 		size = add_size(size, TwoPhaseShmemSize());
@@ -150,7 +148,7 @@ CreateSharedMemoryAndSemaphores(void)
 		size = add_size(size, BTreeShmemSize());
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
-		size = add_size(size, XactUndoShmemSize());
+		size = add_size(size, UndoShmemSize());
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif
@@ -217,7 +215,6 @@ CreateSharedMemoryAndSemaphores(void)
 	 */
 	XLOGShmemInit();
 	CLOGShmemInit();
-	UndoLogShmemInit();
 	CommitTsShmemInit();
 	SUBTRANSShmemInit();
 	MultiXactShmemInit();
@@ -268,7 +265,7 @@ CreateSharedMemoryAndSemaphores(void)
 	BTreeShmemInit();
 	SyncScanShmemInit();
 	AsyncShmemInit();
-	XactUndoShmemInit();
+	UndoShmemInit();
 
 #ifdef EXEC_BACKEND
 

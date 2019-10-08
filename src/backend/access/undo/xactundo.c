@@ -640,6 +640,16 @@ AtSubAbort_XactUndo(int level, bool *perform_foreground_undo)
 }
 
 /*
+ * Make sure we're not leaking an UndoRequest.
+ */
+void
+AtProcExit_XactUndo(void)
+{
+	if (XactUndo.my_request != NULL)
+		elog(PANIC, "undo request not handled before backend exit");
+}
+
+/*
  * Reset backend-local undo state.
  */
 static void
@@ -665,8 +675,8 @@ ResetXactUndo(void)
 }
 
 /*
- * Add the size of an undo record to the location where it starts to find the end
- * location.
+ * Add the size of an undo record to the location where it starts to find the
+ * end location.
  */
 static UndoRecPtr
 GetUndoRecordEndPtr(UndoRecPtr start_location, Size size)
