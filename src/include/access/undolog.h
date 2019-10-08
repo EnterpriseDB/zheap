@@ -348,8 +348,7 @@ extern bool DropUndoLogsInTablespace(Oid tablespace);
 extern void assign_undo_tablespaces(const char *newval, void *extra);
 
 /* Checkpointing interfaces. */
-extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
-							   XLogRecPtr priorCheckPointRedo);
+extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo);
 
 extern void TempUndoDiscard(UndoLogNumber);
 

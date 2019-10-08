@@ -19,14 +19,19 @@
 
 #include "postgres.h"
 
+#include <unistd.h>
+
 #include "access/undo.h"
 #include "access/undolog.h"
 #include "access/undorecordset.h"
 #include "access/xactundo.h"
+#include "miscadmin.h"
+#include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/shmem.h"
 
 static void AtProcExit_Undo(int code, Datum arg);
+static void CleanUpUndoCheckPointFiles(XLogRecPtr checkPointRedo);
 
 /*
  * UndoContext is a child of TopMemoryContext which is never reset. The only
@@ -73,13 +78,76 @@ UndoShmemInit(void)
 	XactUndoShmemInit();
 }
 
-/*
- * Shutdown undo subsystems in the correct order.
- */
 void
+StartupUndo(XLogRecPtr checkPointRedo)
+{
+	StartupUndoLogs(checkPointRedo);
+}
+
+void
+CheckPointUndo(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
+{
+	CheckPointUndoLogs(checkPointRedo);
+	CleanUpUndoCheckPointFiles(priorCheckPointRedo);
+}
+
+/*
+ * Shut down undo subsystems in the correct order.
+ *
+ * Generally, higher-level stuff should be shut down first.
+ */
+static void
 AtProcExit_Undo(int code, Datum arg)
 {
 	AtProcExit_XactUndo();
 	AtProcExit_UndoRecordSet();
 	AtProcExit_UndoLog();
+}
+
+/*
+ * Delete unreachable files under pg_undo.  Any files corresponding to LSN
+ * positions before the previous checkpoint are no longer needed.
+ */
+static void
+CleanUpUndoCheckPointFiles(XLogRecPtr checkPointRedo)
+{
+	DIR	   *dir;
+	struct dirent *de;
+	char	path[MAXPGPATH];
+	char	oldest_path[MAXPGPATH];
+
+	/*
+	 * If a base backup is in progress, we can't delete any checkpoint
+	 * snapshot files because one of them corresponds to the backup label but
+	 * there could be any number of checkpoints during the backup.
+	 */
+	if (BackupInProgress())
+		return;
+
+	/* Otherwise keep only those >= the previous checkpoint's redo point. */
+	snprintf(oldest_path, MAXPGPATH, "%016" INT64_MODIFIER "X",
+			 checkPointRedo);
+	dir = AllocateDir("pg_undo");
+	while ((de = ReadDir(dir, "pg_undo")) != NULL)
+	{
+		/*
+		 * Assume that fixed width uppercase hex strings sort the same way as
+		 * the values they represent, so we can use strcmp to identify undo
+		 * log snapshot files corresponding to checkpoints that we don't need
+		 * anymore.  This assumption holds for ASCII.
+		 */
+		if (!(strlen(de->d_name) == UNDO_CHECKPOINT_FILENAME_LENGTH))
+			continue;
+
+		if (UndoCheckPointFilenamePrecedes(de->d_name, oldest_path))
+		{
+			snprintf(path, MAXPGPATH, "pg_undo/%s", de->d_name);
+			if (unlink(path) != 0)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not unlink file \"%s\": %m", path)));
+			elog(DEBUG2, "unlinking unreachable pg_undo file \"%s\"", path);
+		}
+	}
+	FreeDir(dir);
 }

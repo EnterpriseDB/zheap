@@ -20,6 +20,9 @@
 
 #include "postgres.h"
 
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include "access/session.h"
 #include "access/undo.h"
 #include "access/undolog.h"
@@ -41,9 +44,6 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/varlena.h"
-
-#include <sys/stat.h>
-#include <unistd.h>
 
 /*
  * Main control structure for undo log management in shared memory.
@@ -933,61 +933,13 @@ UndoDiscard(UndoRecPtr discard_point)
 }
 
 /*
- * Delete unreachable files under pg_undo.  Any files corresponding to LSN
- * positions before the previous checkpoint are no longer needed.
- */
-static void
-CleanUpUndoCheckPointFiles(XLogRecPtr checkPointRedo)
-{
-	DIR	   *dir;
-	struct dirent *de;
-	char	path[MAXPGPATH];
-	char	oldest_path[MAXPGPATH];
-
-	/*
-	 * If a base backup is in progress, we can't delete any checkpoint
-	 * snapshot files because one of them corresponds to the backup label but
-	 * there could be any number of checkpoints during the backup.
-	 */
-	if (BackupInProgress())
-		return;
-
-	/* Otherwise keep only those >= the previous checkpoint's redo point. */
-	snprintf(oldest_path, MAXPGPATH, "%016" INT64_MODIFIER "X",
-			 checkPointRedo);
-	dir = AllocateDir("pg_undo");
-	while ((de = ReadDir(dir, "pg_undo")) != NULL)
-	{
-		/*
-		 * Assume that fixed width uppercase hex strings sort the same way as
-		 * the values they represent, so we can use strcmp to identify undo
-		 * log snapshot files corresponding to checkpoints that we don't need
-		 * anymore.  This assumption holds for ASCII.
-		 */
-		if (!(strlen(de->d_name) == UNDO_CHECKPOINT_FILENAME_LENGTH))
-			continue;
-
-		if (UndoCheckPointFilenamePrecedes(de->d_name, oldest_path))
-		{
-			snprintf(path, MAXPGPATH, "pg_undo/%s", de->d_name);
-			if (unlink(path) != 0)
-				ereport(ERROR,
-						(errcode_for_file_access(),
-						 errmsg("could not unlink file \"%s\": %m", path)));
-			elog(DEBUG2, "unlinking unreachable pg_undo file \"%s\"", path);
-		}
-	}
-	FreeDir(dir);
-}
-
-/*
  * Write out the undo log meta data to the pg_undo directory.  The actual
  * contents of undo logs is in shared buffers and therefore handled by
  * CheckPointBuffers(), but here we record the table of undo logs and their
  * properties.
  */
 void
-CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
+CheckPointUndoLogs(XLogRecPtr checkPointRedo)
 {
 	UndoLogMetaData *serialized = NULL;
 	size_t	serialized_size = 0;
@@ -1109,8 +1061,6 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 	pgstat_report_wait_end();
 
 	pfree(serialized);
-
-	CleanUpUndoCheckPointFiles(priorCheckPointRedo);
 
 	for (int i = 0; i < nslots_to_free; ++i)
 		free_undo_log_slot(slots_to_free[i]);

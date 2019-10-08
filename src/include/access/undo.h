@@ -14,8 +14,16 @@
 #ifndef UNDO_H
 #define UNDO_H
 
+#include "access/xlogdefs.h"
+
+/* Shared memory initialization. */
 extern Size UndoShmemSize(void);
 extern void UndoShmemInit(void);
+
+/* Checkpoint/startup process interfaces. */
+extern void StartupUndo(XLogRecPtr checkPointRedo);
+extern void CheckPointUndo(XLogRecPtr checkPointRedo,
+						   XLogRecPtr priorCheckPointRedo);
 
 /* Context for undo-related data. */
 extern MemoryContext UndoContext;
