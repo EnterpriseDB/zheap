@@ -40,7 +40,9 @@ typedef enum
 #define NUndoPersistenceLevels 3
 
 /* Opaque types. */
+struct UndoCheckpointContext;
 struct UndoRecordSet;
+typedef struct UndoCheckpointContext UndoCheckpointContext;
 typedef struct UndoRecordSet UndoRecordSet;
 
 #endif

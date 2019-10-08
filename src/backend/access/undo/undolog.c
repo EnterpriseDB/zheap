@@ -30,15 +30,12 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
-#include "catalog/catalog.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_tablespace_d.h"
 #include "commands/tablespace.h"
 #include "funcapi.h"
 #include "lib/qunique.h"
 #include "miscadmin.h"
-#include "pgstat.h"
-#include "storage/ipc.h"
 #include "storage/procarray.h"
 #include "storage/undofile.h"
 #include "utils/builtins.h"
@@ -914,7 +911,7 @@ UndoDiscard(UndoRecPtr discard_point)
 	 * Have we crossed a segment file boundary?  If so, we'll need to do some
 	 * filesystem operations.  Now that we've discarded all buffers, the
 	 * buffer manager can't attempt to write back any data [TODO: really?  do
-	 * we need to wait for in progress IO to finish?], so it's safe to unlink
+	 * we need to wait for in progress I/O to finish?], so it's safe to unlink
 	 * or move files.  If there are any unused, perform expensive filesystem
 	 * operations.
 	 */
@@ -939,17 +936,14 @@ UndoDiscard(UndoRecPtr discard_point)
  * properties.
  */
 void
-CheckPointUndoLogs(XLogRecPtr checkPointRedo)
+CheckPointUndoLogs(XLogRecPtr checkPointRedo, UndoCheckpointContext *ctx)
 {
 	UndoLogMetaData *serialized = NULL;
 	size_t	serialized_size = 0;
 	char   *data;
-	char	path[MAXPGPATH];
 	UndoLogNumber num_logs;
 	UndoLogNumber next_logno;
-	int		fd;
 	int		i;
-	pg_crc32c crc;
 	UndoLogSlot **slots_to_free;
 	int nslots_to_free;
 
@@ -964,7 +958,7 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo)
 	LWLockAcquire(UndoLogLock, LW_SHARED);
 
 	/*
-	 * Rather than doing the file IO while we hold locks, we'll copy the
+	 * Rather than doing the file I/O while we hold locks, we'll copy the
 	 * meta-data into a palloc'd buffer.
 	 */
 	serialized_size = sizeof(UndoLogMetaData) * UndoLogNumSlots();
@@ -1000,63 +994,14 @@ CheckPointUndoLogs(XLogRecPtr checkPointRedo)
 
 	LWLockRelease(UndoLogLock);
 
-	/* Dump into a file under pg_undo. */
-	snprintf(path, MAXPGPATH, "pg_undo/%016" INT64_MODIFIER "X",
-			 checkPointRedo);
-	pgstat_report_wait_start(WAIT_EVENT_UNDO_CHECKPOINT_WRITE);
-	fd = OpenTransientFile(path, O_RDWR | O_CREAT | PG_BINARY);
-	if (fd < 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not create file \"%s\": %m", path)));
-
-	/* Compute checksum as we go. */
-	INIT_CRC32C(crc);
-	COMP_CRC32C(crc, &next_logno, sizeof(next_logno));
-	COMP_CRC32C(crc, &num_logs, sizeof(num_logs));
-
 	/* Write out the next log number and the number of active logs. */
-	if ((write(fd, &next_logno, sizeof(next_logno)) != sizeof(next_logno)) ||
-		(write(fd, &num_logs, sizeof(num_logs)) != sizeof(num_logs)))
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not write to file \"%s\": %m", path)));
+	WriteUndoCheckpointData(ctx, &next_logno, sizeof(next_logno));
+	WriteUndoCheckpointData(ctx, &num_logs, sizeof(num_logs));
 
 	/* Write out the meta data for all active undo logs. */
 	data = (char *) serialized;
 	serialized_size = num_logs * sizeof(UndoLogMetaData);
-	while (serialized_size > 0)
-	{
-		ssize_t written;
-
-		written = write(fd, data, serialized_size);
-		if (written < 0)
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not write to file \"%s\": %m", path)));
-		COMP_CRC32C(crc, data, written);
-		serialized_size -= written;
-		data += written;
-	}
-	FIN_CRC32C(crc);
-
-	if (write(fd, &crc, sizeof(crc)) != sizeof(crc))
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not write to file \"%s\": %m", path)));
-
-	pgstat_report_wait_end();
-
-	/* Flush file and directory entry. */
-	pgstat_report_wait_start(WAIT_EVENT_UNDO_CHECKPOINT_SYNC);
-	pg_fsync(fd);
-	if (CloseTransientFile(fd) < 0)
-		ereport(data_sync_elevel(ERROR),
-				(errcode_for_file_access(),
-				 errmsg("could not close file \"%s\": %m", path)));
-	fsync_fname("pg_undo", true);
-	pgstat_report_wait_end();
-
+	WriteUndoCheckpointData(ctx, data, serialized_size);
 	pfree(serialized);
 
 	for (int i = 0; i < nslots_to_free; ++i)
@@ -1087,40 +1032,15 @@ compute_low_logno(void)
 }
 
 void
-StartupUndoLogs(XLogRecPtr checkPointRedo)
+StartupUndoLogs(XLogRecPtr checkPointRedo, UndoCheckpointContext *ctx)
 {
-	char	path[MAXPGPATH];
 	int		i;
-	int		fd;
 	int		nlogs;
-	pg_crc32c crc;
-	pg_crc32c new_crc;
-
-	/* If initdb is calling, there is no file to read yet. */
-	if (IsBootstrapProcessingMode())
-		return;
-
-	/* Open the pg_undo file corresponding to the given checkpoint. */
-	snprintf(path, MAXPGPATH, "pg_undo/%016" INT64_MODIFIER "X",
-			 checkPointRedo);
-	pgstat_report_wait_start(WAIT_EVENT_UNDO_CHECKPOINT_READ);
-	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
-	if (fd < 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not open pg_undo checkpoint file \"%s\": %m",
-						path)));
 
 	/* Read the active log number range. */
-	if ((read(fd, &UndoLogShared->next_logno, sizeof(UndoLogShared->next_logno))
-		 != sizeof(UndoLogShared->next_logno)) ||
-		(read(fd, &nlogs, sizeof(nlogs)) != sizeof(nlogs)))
-		elog(ERROR, "pg_undo file \"%s\" is corrupted", path);
-
-	/* Begin checksum calculation. */
-	INIT_CRC32C(new_crc);
-	COMP_CRC32C(new_crc, &UndoLogShared->next_logno, sizeof(UndoLogShared->next_logno));
-	COMP_CRC32C(new_crc, &nlogs, sizeof(UndoLogShared->next_logno));
+	ReadUndoCheckpointData(ctx, &UndoLogShared->next_logno,
+						   sizeof(UndoLogShared->next_logno));
+	ReadUndoCheckpointData(ctx, &nlogs, sizeof(nlogs));
 
 	/*
 	 * We'll acquire UndoLogLock just because allocate_undo_log() asserts we
@@ -1131,7 +1051,6 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 	/* Initialize all the logs and set up the freelist. */
 	for (i = 0; i < nlogs; ++i)
 	{
-		ssize_t size;
 		UndoLogSlot *slot;
 
 		/*
@@ -1147,10 +1066,7 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 					 errhint("Consider increasing max_connections")));
 
 		/* Read in the meta data for this undo log. */
-		if ((size = read(fd, &slot->meta, sizeof(slot->meta))) != sizeof(slot->meta))
-			elog(ERROR, "short read of pg_undo meta data in file \"%s\": %m (got %zu, wanted %zu)",
-				 path, size, sizeof(slot->meta));
-		COMP_CRC32C(new_crc, &slot->meta, sizeof(slot->meta));
+		ReadUndoCheckpointData(ctx, &slot->meta, sizeof(slot->meta));
 
 		/*
 		 * At normal start-up, or during recovery, all active undo logs start
@@ -1164,7 +1080,6 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 			slist_push_head(&UndoLogShared->free_lists[GetUndoPersistenceLevel(slot->meta.persistence)],
 							&slot->next);
 	}
-	FIN_CRC32C(new_crc);
 
 	/*
 	 * Initialize the lowest undo log number.  Backends don't need negative
@@ -1173,16 +1088,6 @@ StartupUndoLogs(XLogRecPtr checkPointRedo)
 	compute_low_logno();
 
 	LWLockRelease(UndoLogLock);
-
-	/* Verify body checksum. */
-	if (read(fd, &crc, sizeof(crc)) != sizeof(crc))
-		elog(ERROR, "pg_undo file \"%s\" is corrupted", path);
-	if (crc != new_crc)
-		elog(ERROR,
-			 "pg_undo file \"%s\" has incorrect checksum", path);
-
-	CloseTransientFile(fd);
-	pgstat_report_wait_end();
 
 	/* Find the current begin and end pointers for each log. */
 	scan_physical_range();

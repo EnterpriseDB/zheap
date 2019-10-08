@@ -328,11 +328,16 @@ extern UndoPersistenceLevel GetUndoPersistenceLevel(char persistence);
 
 #endif
 
-/* Initialization interfaces. */
-extern void StartupUndoLogs(XLogRecPtr checkPointRedo);
+/* Initialization/cleanup interfaces. */
 extern void UndoLogShmemInit(void);
 extern Size UndoLogShmemSize(void);
 extern void AtProcExit_UndoLog(void);
+
+/* Startup/checkpoint interfaces. */
+extern void StartupUndoLogs(XLogRecPtr checkPointRedo,
+							UndoCheckpointContext *ctx);
+extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
+							   UndoCheckpointContext *ctx);
 
 /* Interfaces exported for undo_file.c. */
 extern void UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);
@@ -346,9 +351,6 @@ extern bool DropUndoLogsInTablespace(Oid tablespace);
 
 /* GUC interfaces. */
 extern void assign_undo_tablespaces(const char *newval, void *extra);
-
-/* Checkpointing interfaces. */
-extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo);
 
 extern void TempUndoDiscard(UndoLogNumber);
 

@@ -14,6 +14,7 @@
 #ifndef UNDO_H
 #define UNDO_H
 
+#include "access/undodefs.h"
 #include "access/xlogdefs.h"
 
 /* Shared memory initialization. */
@@ -24,6 +25,10 @@ extern void UndoShmemInit(void);
 extern void StartupUndo(XLogRecPtr checkPointRedo);
 extern void CheckPointUndo(XLogRecPtr checkPointRedo,
 						   XLogRecPtr priorCheckPointRedo);
+extern void ReadUndoCheckpointData(UndoCheckpointContext *ctx,
+								   void *buffer, Size nbytes);
+extern void WriteUndoCheckpointData(UndoCheckpointContext *ctx,
+									void *buffer, Size nbytes);
 
 /* Context for undo-related data. */
 extern MemoryContext UndoContext;
