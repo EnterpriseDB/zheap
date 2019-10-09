@@ -936,7 +936,7 @@ UndoDiscard(UndoRecPtr discard_point)
  * properties.
  */
 void
-CheckPointUndoLogs(XLogRecPtr checkPointRedo, UndoCheckpointContext *ctx)
+CheckPointUndoLogs(UndoCheckpointContext *ctx)
 {
 	UndoLogMetaData *serialized = NULL;
 	size_t	serialized_size = 0;
@@ -1032,7 +1032,7 @@ compute_low_logno(void)
 }
 
 void
-StartupUndoLogs(XLogRecPtr checkPointRedo, UndoCheckpointContext *ctx)
+StartupUndoLogs(UndoCheckpointContext *ctx)
 {
 	int		i;
 	int		nlogs;

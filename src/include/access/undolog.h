@@ -17,7 +17,6 @@
 #define UNDOLOG_H
 
 #include "access/undodefs.h"
-#include "access/xlogdefs.h"
 #include "catalog/database_internal.h"
 #include "lib/ilist.h"
 #include "storage/bufpage.h"
@@ -334,10 +333,8 @@ extern Size UndoLogShmemSize(void);
 extern void AtProcExit_UndoLog(void);
 
 /* Startup/checkpoint interfaces. */
-extern void StartupUndoLogs(XLogRecPtr checkPointRedo,
-							UndoCheckpointContext *ctx);
-extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
-							   UndoCheckpointContext *ctx);
+extern void StartupUndoLogs(UndoCheckpointContext *ctx);
+extern void CheckPointUndoLogs(UndoCheckpointContext *ctx);
 
 /* Interfaces exported for undo_file.c. */
 extern void UndoLogNewSegment(UndoLogNumber logno, Oid tablespace, int segno);
