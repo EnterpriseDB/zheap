@@ -14,8 +14,8 @@
 #define UNDOREQUEST_H
 
 #include "access/transam.h"
-#include "access/undolog.h"
-#include "datatype/timestamp.h"
+#include "access/undodefs.h"
+#include "storage/lwlock.h"
 
 struct UndoRequest;
 struct UndoRequestManager;

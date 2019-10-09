@@ -39,6 +39,7 @@
 #include "postgres.h"
 
 #include "access/undo.h"
+#include "access/undolog.h"
 #include "access/undorecordset.h"
 #include "access/undorequest.h"
 #include "access/xact.h"
