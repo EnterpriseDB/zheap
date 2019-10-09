@@ -38,6 +38,7 @@
 
 #include "postgres.h"
 
+#include "access/undo.h"
 #include "access/undorecordset.h"
 #include "access/undorequest.h"
 #include "access/xact.h"
@@ -144,6 +145,41 @@ XactUndoShmemInit(void)
 									 capacity, soft_limit);
 	Assert(XactUndo.my_request == NULL);
 	ResetXactUndo();
+}
+
+/*
+ * During cluster startup, reinitialize in-memory state from the checkpoint
+ * from which we are starting up.
+ */
+void
+StartupXactUndo(UndoCheckpointContext *ctx)
+{
+	Size	nbytes;
+
+	ReadUndoCheckpointData(ctx, &nbytes, sizeof(nbytes));
+	if (nbytes > 0)
+	{
+		char *data = palloc(nbytes);
+
+		ReadUndoCheckpointData(ctx, data, nbytes);
+		RestoreUndoRequestData(XactUndo.manager, nbytes, data);
+	}
+}
+
+/*
+ * At checkpoint time, save relevant state, so that we can reinitialize it
+ * after a restart.
+ */
+void
+CheckPointXactUndo(UndoCheckpointContext *ctx)
+{
+	Size	nbytes;
+	char   *data;
+
+	data = SerializeUndoRequestData(XactUndo.manager, &nbytes);
+	WriteUndoCheckpointData(ctx, &nbytes, sizeof(nbytes));
+	if (nbytes > 0)
+		WriteUndoCheckpointData(ctx, data, nbytes);
 }
 
 /*

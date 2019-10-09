@@ -31,6 +31,9 @@ typedef struct UndoNode
 extern Size XactUndoShmemSize(void);
 extern void XactUndoShmemInit(void);
 
+extern void StartupXactUndo(UndoCheckpointContext *ctx);
+extern void CheckPointXactUndo(UndoCheckpointContext *ctx);
+
 extern UndoRecPtr PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 									  UndoNode *undo_node);
 extern void InsertXactUndoData(XactUndoContext *ctx, uint8 first_block_id);

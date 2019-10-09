@@ -729,8 +729,15 @@ SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes)
 	while (rbt_iterate(&iter) != NULL)
 		++nrequests;
 
-	/* Allocate memory. */
+	/* Give up if no data. */
 	*nbytes = sizeof(UndoRequestData) * nrequests;
+	if (nrequests == 0)
+	{
+		LWLockRelease(urm->lock);
+		return NULL;
+	}
+
+	/* Allocate memory. */
 	darray = palloc(*nbytes);
 
 	/* Save requests. */

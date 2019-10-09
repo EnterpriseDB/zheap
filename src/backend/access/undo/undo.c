@@ -120,8 +120,12 @@ StartupUndo(XLogRecPtr checkPointRedo)
 	/* Initialize checksum calculation. */
 	INIT_CRC32C(ctx.crc);
 
-	/* Give undo log subsystem a chance to read its data. */
+	/*
+	 * Let each undo subsystem read its own data. The order of these calls
+	 * needs to match CheckPointUndo().
+	 */
 	StartupUndoLogs(&ctx);
+	StartupXactUndo(&ctx);
 
 	/* Read checksum, close file, verify checksum. */
 	ReadRawUndoCheckpointData(&ctx, &old_crc, sizeof(old_crc));
@@ -157,8 +161,12 @@ CheckPointUndo(XLogRecPtr checkPointRedo, XLogRecPtr priorCheckPointRedo)
 	/* Initialize checksum calculation. */
 	INIT_CRC32C(ctx.crc);
 
-	/* Give undo log subsystem a chance to write whatever data it needs. */
+	/*
+	 * Let each undo subsystem write some data. The order of these calls needs
+	 * to match StartupUndo.
+	 */
 	CheckPointUndoLogs(&ctx);
+	CheckPointXactUndo(&ctx);
 
 	/* Write checksum. */
 	FIN_CRC32C(ctx.crc);
