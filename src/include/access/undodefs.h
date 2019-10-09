@@ -28,6 +28,16 @@ typedef uint64 UndoLogOffset;
 /* Type for numbering undo logs. */
 typedef int UndoLogNumber;
 
+/* Special value for undo record pointer which indicates that it is invalid. */
+#define	InvalidUndoRecPtr	((UndoRecPtr) 0)
+
+/*
+ * UndoRecPtrIsValid
+ *		True iff undoRecPtr is valid.
+ */
+#define UndoRecPtrIsValid(undoRecPtr) \
+	((bool) ((UndoRecPtr) (undoRecPtr) != InvalidUndoRecPtr))
+
 /* Persistence levels as small integers that can be used as array indexes. */
 typedef enum
 {
