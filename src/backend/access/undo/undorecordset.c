@@ -289,7 +289,7 @@ UndoMarkClosed(UndoRecordSet *urs)
 				   sizeof(size) - bytes_on_first_page);
 
 			/* Capture this edit as buffer data. */
-			XLogRegisterBuffer(urs->first_block_id + buffer, buffer, 0);
+			XLogRegisterBuffer(urs->first_block_id + buffer_index, buffer, 0);
 			write_update_ops_header(chunk->chunk_header_ops[1],
 									header_offset,
 									bytes_on_first_page);
@@ -519,11 +519,12 @@ UndoRecPtr
 UndoAllocate(UndoRecordSet *urs, size_t data_size)
 {
 	UndoRecPtr begin = reserve_physical_undo(urs, data_size);
-	UndoRecPtr urp;
 	size_t chunk_header_size = 0;
 	size_t type_header_size = 0;
 	size_t total_size;
 	RelFileNode rnode;
+	BlockNumber block;
+	int offset;
 
 	/* Figure out the total range we need to pin. */
 	/* TODO: erm, reserve_physical_undo did this too! */
@@ -540,14 +541,13 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 	Assert(urs->nbuffers == 0);
 
 	/* Figure out which undo log we're in. */
-	urp = begin;
-	UndoRecPtrAssignRelFileNode(rnode, urp);
+	UndoRecPtrAssignRelFileNode(rnode, begin);
+	block = UndoRecPtrGetBlockNum(begin);
+	offset = UndoRecPtrGetPageOffset(begin);
 
 	/* Loop, pinning buffers. */
 	while (total_size > 0)
 	{
-		BlockNumber block = UndoRecPtrGetBlockNum(urp);
-		int offset = UndoRecPtrGetPageOffset(urp);
 		int bytes_on_this_page;
 		ReadBufferMode rbm;
 		Buffer buffer;
@@ -555,7 +555,7 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 		/*
 		 * If we are writing the first data into this page, we don't need to
 		 * read it from disk.  We can just get a zeroed buffer and initialize
-		 * it.  This is the usual case.
+		 * it.
 		 */
 		if (offset == UndoLogBlockHeaderSize)
 			rbm = RBM_ZERO;
@@ -593,6 +593,10 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 		/* How much to go? */
 		bytes_on_this_page = Min(BLCKSZ - offset, total_size);
 		total_size -= bytes_on_this_page;
+
+		/* Advance to start of next page. */
+		++block;
+		offset = UndoLogBlockHeaderSize;
 	}
 
 	/*
