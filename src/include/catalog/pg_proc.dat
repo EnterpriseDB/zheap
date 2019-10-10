@@ -10750,6 +10750,7 @@
   proargtypes => 'text',
   proargnames => '{message}',
   proargmodes => '{i}',
+  provolatile => 'v',
   prokind => 'f' },
 { oid => '8843',
   descr => 'foo_createwriteclose', proname => 'foo_createwriteclose', prosrc => 'foo_createwriteclose',
@@ -10757,6 +10758,7 @@
   proargtypes => 'text',
   proargnames => '{message}',
   proargmodes => '{i}',
+  provolatile => 'v',
   prokind => 'f' },
 
 # undo logs
