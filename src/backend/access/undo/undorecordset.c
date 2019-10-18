@@ -786,10 +786,10 @@ UndoInsert(UndoRecordSet *urs,
 UndoRecPtr
 UndoInsertInRecovery(XLogReaderState *xlog_record, void *data, size_t data_size)
 {
-	uint8 *ops;
+	uint8 *ops = NULL;
 	size_t ops_size = 0;
 	size_t header_size = 0;
-	UndoLogSlot *slot;
+	UndoLogSlot *slot = NULL;
 	Buffer *buffers;
 	int nbuffers;
 	UndoInsertState state;

@@ -237,7 +237,6 @@ merge_undo_logs(void)
 	{
 		UndoLogMetaData	meta_data;
 		UndoLogInfo	*info = &logs[i];
-		UndoLogOffset end;
 
 		memset(&meta_data, 0, sizeof(meta_data));
 		meta_data.logno = info->logno;
@@ -247,14 +246,11 @@ merge_undo_logs(void)
 		 * first byte in the next segment.  That means there is no logical
 		 * data and no physical files are expected to exist.
 		 */
-		end = ((info->discard + UndoLogSegmentSize - 1) / UndoLogSegmentSize)
-			* UndoLogSegmentSize;
 		meta_data.insert = meta_data.discard =
 			((meta_data.insert / UndoLogSegmentSize) + 1) *
 			UndoLogSegmentSize;
 
-		/* TODO full? */
-
+		/* TODO handle full? */
 
 		if (write(new_fd, &meta_data, sizeof(meta_data)) != sizeof(meta_data))
 			pg_fatal("could not write to file \"%s\": %m", new_pg_undo_path);

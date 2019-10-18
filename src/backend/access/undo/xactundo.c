@@ -661,6 +661,9 @@ AtSubAbort_XactUndo(int level, bool *perform_foreground_undo)
 	has_temporary_undo =
 		UndoRecPtrIsValid(XactUndo.subxact->start_location[UNDOPERSISTENCE_TEMP]);
 
+	if (has_temporary_undo)
+		 /* experience_intense_sadness */ ;
+
 	/*
 	 * Regrettably, we seem to have failed when attempting to perform undo
 	 * actions. It's impossible to continue with the parent (sub)transaction

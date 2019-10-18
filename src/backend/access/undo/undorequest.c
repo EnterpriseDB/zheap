@@ -527,7 +527,7 @@ GetNextUndoRequest(UndoRequestManager *urm, Oid dbid,
 	/* Some might have no work, so loop until all are checked. */
 	for (nloops = 0; nloops < 3; ++nloops)
 	{
-		RBTree	   *rbt;
+		RBTree	   *rbt = NULL;
 		UndoRequestSource source = urm->source;
 		UndoRequestNode *node;
 
