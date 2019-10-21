@@ -397,89 +397,78 @@ reserve_buffer_array(UndoRecordSet *urs, size_t capacity)
 }
 
 /*
- * Return a pointer to an undo log span that is guaranteed to be backed by
- * enough physical space for the given number of usable byte, plus various
- * types of headers.  Returns a pointer to the first byte, but the caller is
- * responsible for checking urs->need_chunk_header and adjusting the pointer.
+ * Attach to a new undo log so that we can begin a new chunk.
  */
-static UndoRecPtr
-reserve_physical_undo(UndoRecordSet *urs, size_t data_size)
+static void
+create_new_chunk(UndoRecordSet *urs)
 {
-	for (;;)
+	/* Make sure there is book-keeping space for one more chunk. */
+	if (urs->nchunks == urs->max_chunks)
 	{
-		/* Try to use the active undo log, if there is one. */
-		if (urs->slot)
-		{
-			UndoLogOffset new_insert;
-			size_t chunk_header_size = 0;
-			size_t type_header_size = urs->type_header_size;
-			size_t total_size;
-
-			Assert(urs->nchunks >= 1);
-			Assert(urs->chunks);
-
-			/* Allow space for a chunk header, we need one. */
-			if (urs->need_chunk_header)
-				chunk_header_size = sizeof(UndoRecordSetChunkHeader);
-
-			total_size = data_size + chunk_header_size + type_header_size;
-			new_insert = UndoLogOffsetPlusUsableBytes(urs->slot->meta.insert,
-													  total_size);
-
-			/* The fast case: we already know there is enough space. */
-			if (new_insert <= urs->recent_end)
-				return MakeUndoRecPtr(urs->slot->logno, urs->slot->meta.insert);
-
-			/*
-			 * Another backend might have advanced 'end' while discarding,
-			 * since we last updated it.
-			 */
-			LWLockAcquire(&urs->slot->meta_lock, LW_SHARED);
-			urs->recent_end = urs->slot->end;
-			LWLockRelease(&urs->slot->meta_lock);
-			if (new_insert <= urs->recent_end)
-				return MakeUndoRecPtr(urs->slot->logno, urs->slot->meta.insert);
-
-			/*
-			 * Can we extend this undo log to make space?  Again, it's possible
-			 * for end to advance concurrently, but adjust_physical_range() can
-			 * deal with that.
-			 */
-			if (new_insert <= UndoLogMaxSize)
-			{
-				UndoLogAdjustPhysicalRange(urs->slot->logno, 0, new_insert);
-				return MakeUndoRecPtr(urs->slot->logno, urs->slot->meta.insert);
-			}
-
-			/*
-			 * Mark it full, so that we stop trying to allocate new space
-			 * here, and a checkpoint will eventually give up its slot for
-			 * reuse.
-			 */
-			UndoLogMarkFull(urs->slot);
-			urs->slot = NULL;
-		}
-
-		/* Make sure there is book-keeping space for one more chunk. */
-		if (urs->nchunks == urs->max_chunks)
-		{
-			urs->chunks = repalloc(urs->chunks,
-								   sizeof(urs->chunks[0]) * urs->max_chunks * 2);
-			urs->max_chunks *= 2;
-		}
-
-		/* Get our hands on a new undo log, and go around again. */
-		urs->need_chunk_header = true;
-		urs->recent_end = 0;
-		urs->slot = UndoLogGetForPersistence(urs->persistence);
-		urs->chunks[urs->nchunks].slot = urs->slot;
-		urs->chunks[urs->nchunks].chunk_header_offset = urs->slot->meta.insert;
-		urs->chunks[urs->nchunks].chunk_header_buffer_index[0] = -1;
-		urs->chunks[urs->nchunks].chunk_header_buffer_index[1] = -1;
-		urs->nchunks++;
+		urs->chunks = repalloc(urs->chunks,
+							   sizeof(urs->chunks[0]) * urs->max_chunks * 2);
+		urs->max_chunks *= 2;
 	}
 
-	return 0;			/* unreachable */
+	/* Get our hands on a new undo log, and go around again. */
+	urs->need_chunk_header = true;
+	urs->recent_end = 0;
+	urs->slot = UndoLogGetForPersistence(urs->persistence);
+	urs->chunks[urs->nchunks].slot = urs->slot;
+	urs->chunks[urs->nchunks].chunk_header_offset = urs->slot->meta.insert;
+	urs->chunks[urs->nchunks].chunk_header_buffer_index[0] = -1;
+	urs->chunks[urs->nchunks].chunk_header_buffer_index[1] = -1;
+	urs->nchunks++;
+}
+
+/*
+ * Return a pointer to an undo log span that is guaranteed to be backed by
+ * enough physical space for the given number of bytes.
+ */
+static UndoRecPtr
+reserve_physical_undo(UndoRecordSet *urs, size_t total_size)
+{
+	UndoLogOffset new_insert;
+
+	Assert(urs->nchunks >= 1);
+	Assert(urs->chunks);
+
+	new_insert = UndoLogOffsetPlusUsableBytes(urs->slot->meta.insert,
+											  total_size);
+
+	/* The fast case: we already know there is enough space. */
+	if (new_insert <= urs->recent_end)
+		return MakeUndoRecPtr(urs->slot->logno, urs->slot->meta.insert);
+
+	/*
+	 * Another backend might have advanced 'end' while discarding,
+	 * since we last updated it.
+	 */
+	LWLockAcquire(&urs->slot->meta_lock, LW_SHARED);
+	urs->recent_end = urs->slot->end;
+	LWLockRelease(&urs->slot->meta_lock);
+	if (new_insert <= urs->recent_end)
+		return MakeUndoRecPtr(urs->slot->logno, urs->slot->meta.insert);
+
+	/*
+	 * Can we extend this undo log to make space?  Again, it's possible
+	 * for end to advance concurrently, but adjust_physical_range() can
+	 * deal with that.
+	 */
+	if (new_insert <= UndoLogMaxSize)
+	{
+		UndoLogAdjustPhysicalRange(urs->slot->logno, 0, new_insert);
+		return MakeUndoRecPtr(urs->slot->logno, urs->slot->meta.insert);
+	}
+
+	/*
+	 * Mark it full, so that we stop trying to allocate new space
+	 * here, and a checkpoint will eventually give up its slot for
+	 * reuse.
+	 */
+	UndoLogMarkFull(urs->slot);
+	urs->slot = NULL;
+	return InvalidUndoRecPtr;
 }
 
 /*
@@ -489,18 +478,33 @@ reserve_physical_undo(UndoRecordSet *urs, size_t data_size)
 UndoRecPtr
 UndoAllocate(UndoRecordSet *urs, size_t data_size)
 {
-	UndoRecPtr begin = reserve_physical_undo(urs, data_size);
-	size_t chunk_header_size = 0;
+	UndoRecPtr begin;
+	size_t header_size;
 	size_t total_size;
 	RelFileNode rnode;
 	BlockNumber block;
 	int offset;
 
-	/* Figure out the total range we need to pin. */
-	/* TODO: erm, reserve_physical_undo did this too! */
-	if (urs->need_chunk_header)
-		chunk_header_size = UndoRecordSetChunkHeaderSize;
-	total_size = data_size + chunk_header_size + urs->type_header_size;
+	for (;;)
+	{
+		/* Figure out the total range we need to pin. */
+		if (urs->need_chunk_header)
+			header_size = UndoRecordSetChunkHeaderSize + urs->type_header_size;
+		else
+			header_size = 0;
+		total_size = data_size + header_size;
+
+		/* Try to use the active undo log, if there is one. */
+		if (urs->slot)
+		{
+			begin = reserve_physical_undo(urs, total_size);
+			if (begin != InvalidUndoRecPtr)
+				break;
+		}
+
+		/* We need to attach to a new undo log. */
+		create_new_chunk(urs);
+	}
 
 	/* Make sure our buffer array is large enough. */
 	reserve_buffer_array(urs, total_size / BLCKSZ + 2);
@@ -579,8 +583,7 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 		LockBuffer(urs->buffers[i], BUFFER_LOCK_EXCLUSIVE);
 
 	/* Return the URP for the first byte of the caller's data. */
-	return UndoRecPtrPlusUsableBytes(begin,
-									 chunk_header_size + urs->type_header_size);
+	return UndoRecPtrPlusUsableBytes(begin, header_size);
 }
 
 typedef struct UndoInsertState
