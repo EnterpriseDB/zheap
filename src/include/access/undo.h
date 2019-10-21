@@ -16,6 +16,7 @@
 
 #include "access/undodefs.h"
 #include "access/xlogdefs.h"
+#include "utils/palloc.h"
 
 /* Shared memory initialization. */
 extern Size UndoShmemSize(void);
