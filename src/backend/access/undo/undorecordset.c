@@ -78,7 +78,6 @@ struct UndoRecordSet
 	/* UndoAllocate's decision on headers for the in-progress insertion. */
 	UndoRecPtr		previous_chunk;
 	bool			need_chunk_header;
-	bool			need_type_header;
 	UndoRecordSetChunkHeader chunk_header;
 	char			type_header[64];
 	uint8			type_header_size;
@@ -133,7 +132,6 @@ UndoCreate(UndoRecordSetType type, char persistence, int nestingLevel,
 	urs->max_chunks = 1;
 	urs->buffers = palloc(sizeof(urs->buffers[0]));
 	urs->max_buffers = 1;
-	urs->need_type_header = true;
 	urs->type_header_size = type_header_size;
 
 	/* XXX Why do we have a fixed-size buffer here? */
@@ -402,8 +400,7 @@ reserve_buffer_array(UndoRecordSet *urs, size_t capacity)
  * Return a pointer to an undo log span that is guaranteed to be backed by
  * enough physical space for the given number of usable byte, plus various
  * types of headers.  Returns a pointer to the first byte, but the caller is
- * responsible for checking urs->need_chunk_header and urs->need_type_header
- * and adjusting the pointer.
+ * responsible for checking urs->need_chunk_header and adjusting the pointer.
  */
 static UndoRecPtr
 reserve_physical_undo(UndoRecordSet *urs, size_t data_size)
@@ -415,19 +412,15 @@ reserve_physical_undo(UndoRecordSet *urs, size_t data_size)
 		{
 			UndoLogOffset new_insert;
 			size_t chunk_header_size = 0;
-			size_t type_header_size = 0;
+			size_t type_header_size = urs->type_header_size;
 			size_t total_size;
 
 			Assert(urs->nchunks >= 1);
 			Assert(urs->chunks);
 
-			/* Each chunk has a chunk header. */
+			/* Allow space for a chunk header, we need one. */
 			if (urs->need_chunk_header)
 				chunk_header_size = sizeof(UndoRecordSetChunkHeader);
-
-			/* The first chunk has a type-specific header. */
-			if (urs->need_type_header)
-				type_header_size = urs->type_header_size;
 
 			total_size = data_size + chunk_header_size + type_header_size;
 			new_insert = UndoLogOffsetPlusUsableBytes(urs->slot->meta.insert,
@@ -498,7 +491,6 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 {
 	UndoRecPtr begin = reserve_physical_undo(urs, data_size);
 	size_t chunk_header_size = 0;
-	size_t type_header_size = 0;
 	size_t total_size;
 	RelFileNode rnode;
 	BlockNumber block;
@@ -508,9 +500,7 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 	/* TODO: erm, reserve_physical_undo did this too! */
 	if (urs->need_chunk_header)
 		chunk_header_size = UndoRecordSetChunkHeaderSize;
-	if (urs->need_type_header)
-		type_header_size = urs->type_header_size;
-	total_size = data_size + chunk_header_size + type_header_size;
+	total_size = data_size + chunk_header_size + urs->type_header_size;
 
 	/* Make sure our buffer array is large enough. */
 	reserve_buffer_array(urs, total_size / BLCKSZ + 2);
@@ -590,7 +580,7 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 
 	/* Return the URP for the first byte of the caller's data. */
 	return UndoRecPtrPlusUsableBytes(begin,
-									 chunk_header_size + type_header_size);
+									 chunk_header_size + urs->type_header_size);
 }
 
 typedef struct UndoInsertState
@@ -699,7 +689,7 @@ UndoInsert(UndoRecordSet *urs,
 				 urs->slot->meta.insert);
 	urs->state = URS_STATE_DIRTY;
 
-	/* Do we need to write a chunk header? */
+	/* Write any required chunk header. */
 	if (urs->need_chunk_header)
 	{
 		urs->chunk_header.type = urs->type;
@@ -723,8 +713,8 @@ UndoInsert(UndoRecordSet *urs,
 							UndoRecordSetChunkHeaderSize);
 	}
 
-	/* To we need to write a type header? */
-	if (urs->need_type_header)
+	/* Write the type header, if we have one. */
+	if (urs->type_header_size != 0)
 	{
 		append_bytes(&state, urs->type_header, urs->type_header_size);
 
@@ -746,12 +736,14 @@ UndoInsert(UndoRecordSet *urs,
 	urs->slot->meta.insert = state.insert;
 	LWLockRelease(&urs->slot->meta_lock);
 
-	/*
-	 * We won't need headers for future allocations, until we eventually spill
-	 * into another chunk and need a new chunk header.
-	 */
+	/* Don't need another chunk header unless we switch undo logs. */
 	urs->need_chunk_header = false;
-	urs->need_type_header = false;
+
+	/*
+	 * Once the type-specific header has been written, we can forget about it
+	 * forever.
+	 */
+	urs->type_header_size = 0;
 }
 
 /*
