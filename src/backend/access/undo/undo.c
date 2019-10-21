@@ -84,8 +84,14 @@ UndoShmemInit(void)
 
 	/* Initialize memory context. */
 	Assert(UndoContext == NULL);
-	UndoContext = AllocSetContextCreate(TopMemoryContext, "Undo",
-										ALLOCSET_DEFAULT_SIZES);
+
+	/*
+	 * The postmaster doesn't need an undo memory context, but regular child
+	 * processes and standalone processes do.
+	 */
+	if (IsUnderPostmaster == IsPostmasterEnvironment)
+		UndoContext = AllocSetContextCreate(TopMemoryContext, "Undo",
+											ALLOCSET_DEFAULT_SIZES);
 
 	/* Now give various undo subsystems a chance to initialize. */
 	UndoLogShmemInit();
