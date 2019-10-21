@@ -82,14 +82,15 @@ UndoShmemInit(void)
 	/* First, make sure we can properly clean up on process exit. */
 	on_shmem_exit(AtProcExit_Undo, 0);
 
-	/* Initialize memory context. */
-	Assert(UndoContext == NULL);
-
 	/*
-	 * The postmaster doesn't need an undo memory context, but regular child
-	 * processes and standalone processes do.
+	 * Initialize memory context.
+	 * XXX: As a band-aid solution looking for a better idea: if is exists
+	 * already, this must be a crash restart (reset_shared()).  Reset the
+	 * memory context instead.
 	 */
-	if (IsUnderPostmaster == IsPostmasterEnvironment)
+	if (UndoContext)
+		MemoryContextReset(UndoContext);
+	else
 		UndoContext = AllocSetContextCreate(TopMemoryContext, "Undo",
 											ALLOCSET_DEFAULT_SIZES);
 

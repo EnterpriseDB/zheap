@@ -141,11 +141,15 @@ UndoLogShmemInit(void)
 		Assert(found);
 
 	/* Regular backends and standlone processes need a per-backend cache. */
-	Assert(undologtable_cache == NULL);
-	if (IsUnderPostmaster == IsPostmasterEnvironment)
-		undologtable_cache = undologtable_create(UndoContext,
-												 UndoLogNumSlots(),
-												 NULL);
+	/*
+	 * XXX: If if appears to exist already, then we much be in a crash restart
+	 * and the memory context that contains the old one has already been reset.
+	 * So proceed to create a new one.  This is horrible.
+	 */
+	//Assert(undologtable_cache == NULL);
+	undologtable_cache = undologtable_create(UndoContext,
+											 UndoLogNumSlots(),
+											 NULL);
 
 	/*
 	 * Each backend has its own idea of the lowest undo log number in
