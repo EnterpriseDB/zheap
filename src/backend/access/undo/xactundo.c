@@ -192,6 +192,7 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 {
 	int			nestingLevel = GetCurrentTransactionNestLevel();
 	UndoPersistenceLevel plevel = GetUndoPersistenceLevel(persistence);
+	FullTransactionId	fxid = GetTopFullTransactionId();
 	UndoRecPtr	result;
 	UndoRecPtr *sub_start_location;
 	UndoRecordSet *urs;
@@ -235,9 +236,8 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 	 */
 	if (XactUndo.my_request == NULL && (plevel == UNDOPERSISTENCE_PERMANENT ||
 		 plevel == UNDOPERSISTENCE_UNLOGGED))
-		XactUndo.my_request = RegisterUndoRequest(XactUndo.manager,
-												   GetTopFullTransactionId(),
-												   MyDatabaseId);
+		XactUndo.my_request = RegisterUndoRequest(XactUndo.manager, fxid,
+												  MyDatabaseId);
 
 	/*
 	 * Make sure we have an UndoRecordSet of the appropriate type open for
@@ -249,7 +249,8 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 	urs = XactUndo.record_set[plevel];
 	if (urs == NULL)
 	{
-		urs = UndoCreate(URST_TRANSACTION, persistence, 1);
+		urs = UndoCreate(URST_TRANSACTION, persistence, 1,
+						 sizeof(FullTransactionId), (char *) &fxid);
 		XactUndo.record_set[plevel] = urs;
 	}
 

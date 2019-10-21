@@ -34,6 +34,7 @@ static bool xact_callbacks_registered = false;
 Datum
 foo_create(PG_FUNCTION_ARGS)
 {
+	char	urs_header[] = "Foo1";
 	const char *persistence;
 	MemoryContext old_context;
 
@@ -59,7 +60,8 @@ foo_create(PG_FUNCTION_ARGS)
 
 	old_context = MemoryContextSwitchTo(TopMemoryContext);
 	current_urs = UndoCreate(URST_FOO, *persistence,
-							 GetCurrentTransactionNestLevel());
+							 GetCurrentTransactionNestLevel(),
+							 4, urs_header);
 	current_urs_subid = GetCurrentSubTransactionId();
 	MemoryContextSwitchTo(old_context);
 
@@ -160,10 +162,12 @@ foo_createwriteclose(PG_FUNCTION_ARGS)
 	UndoRecPtr urp;
 	XLogRecPtr lsn;
 	UndoRecordSet *urs;
+	char	urs_header[] = "Foo2";
 
 	/* We can do all of these things with a single WAL record. */
 
-	urs = UndoCreate(URST_FOO, 'p', GetCurrentTransactionNestLevel());
+	urs = UndoCreate(URST_FOO, 'p', GetCurrentTransactionNestLevel(),
+					 4, urs_header);
 	urp = UndoAllocate(urs, length + 1);
 	UndoPrepareToMarkClosed(urs);
 

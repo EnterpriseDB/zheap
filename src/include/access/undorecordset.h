@@ -22,7 +22,8 @@ typedef enum UndoRecordSetType
 } UndoRecordSetType;
 
 extern UndoRecordSet *UndoCreate(UndoRecordSetType type, char presistence,
-								 int nestingLevel);
+								 int nestingLevel, Size type_header_size,
+								 char *type_header);
 extern bool UndoPrepareToMarkClosed(UndoRecordSet *urs);
 extern void UndoMarkClosed(UndoRecordSet *urs);
 extern UndoRecPtr UndoAllocate(UndoRecordSet *urs, size_t size);

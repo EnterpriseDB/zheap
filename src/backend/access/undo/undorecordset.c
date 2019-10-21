@@ -97,7 +97,6 @@ struct UndoRecordSet
 /* TODO: should perhaps make type a char and not include the padding */
 #define UndoRecordSetChunkHeaderSize sizeof(UndoRecordSetChunkHeader)
 
-static size_t urst_header_size(UndoRecordSetType type);
 static inline void reserve_buffer_array(UndoRecordSet *urs, size_t capacity);
 
 /* Every UndoRecordSet created and not yet destroyed in this backend. */
@@ -118,7 +117,8 @@ static slist_head UndoRecordSetList = SLIST_STATIC_INIT(UndoRecordSetList);
  * the UndoRecordSet is closed even in case of ERROR or FATAL.
  */
 UndoRecordSet *
-UndoCreate(UndoRecordSetType type, char persistence, int nestingLevel)
+UndoCreate(UndoRecordSetType type, char persistence, int nestingLevel,
+		   Size type_header_size, char *type_header)
 {
 	UndoRecordSet *urs;
 	MemoryContext	oldcontext;
@@ -134,8 +134,12 @@ UndoCreate(UndoRecordSetType type, char persistence, int nestingLevel)
 	urs->buffers = palloc(sizeof(urs->buffers[0]));
 	urs->max_buffers = 1;
 	urs->need_type_header = true;
-	urs->type_header_size = urst_header_size(type);
+	urs->type_header_size = type_header_size;
+
+	/* XXX Why do we have a fixed-size buffer here? */
 	Assert(urs->type_header_size <= sizeof(urs->type_header));
+	memcpy(urs->type_header, type_header, urs->type_header_size);
+
 	slist_push_head(&UndoRecordSetList, &urs->link);
 	urs->nestingLevel = nestingLevel;
 	MemoryContextSwitchTo(oldcontext);
@@ -380,32 +384,6 @@ UndoUpdateInRecovery(XLogReaderState *xlog_record)
 	}
 }
 
-static size_t
-urst_header_size(UndoRecordSetType type)
-{
-	switch (type)
-	{
-		case URST_TRANSACTION:
-			return 42;
-		case URST_FOO:
-			return 8;
-		default:
-			elog(ERROR, "unknown UndoRecordSetType");
-			return 0;
-	}
-}
-
-static void
-urst_header(UndoRecordSet *urs, void *data)
-{
-	switch (urs->type)
-	{
-		default:
-			;
-	}
-}
-
-
 /*
  * Make sure we have enough space to hold a buffer array of a given size.
  */
@@ -449,7 +427,7 @@ reserve_physical_undo(UndoRecordSet *urs, size_t data_size)
 
 			/* The first chunk has a type-specific header. */
 			if (urs->need_type_header)
-				type_header_size = urst_header_size(urs->type);
+				type_header_size = urs->type_header_size;
 
 			total_size = data_size + chunk_header_size + type_header_size;
 			new_insert = UndoLogOffsetPlusUsableBytes(urs->slot->meta.insert,
@@ -531,7 +509,7 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 	if (urs->need_chunk_header)
 		chunk_header_size = UndoRecordSetChunkHeaderSize;
 	if (urs->need_type_header)
-		type_header_size = urst_header_size(urs->type);
+		type_header_size = urs->type_header_size;
 	total_size = data_size + chunk_header_size + type_header_size;
 
 	/* Make sure our buffer array is large enough. */
@@ -748,8 +726,6 @@ UndoInsert(UndoRecordSet *urs,
 	/* To we need to write a type header? */
 	if (urs->need_type_header)
 	{
-		memset(urs->type_header, 0, urs->type_header_size);
-		urst_header(urs, &urs->type_header);
 		append_bytes(&state, urs->type_header, urs->type_header_size);
 
 		/*
