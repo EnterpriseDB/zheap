@@ -25,6 +25,7 @@
 #include "access/xloginsert.h"
 #include "access/xlogreader.h"
 #include "access/xlogutils.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_control.h"
 #include "miscadmin.h"
 #include "storage/buf.h"
@@ -72,6 +73,7 @@ struct UndoRecordSet
 	/* Management of currently pinned and locked buffers. */
 	uint8			first_block_id;
 	Buffer		   *buffers;
+	uint8		   *buffer_flag;
 	int				nbuffers;
 	int				max_buffers;
 
@@ -81,6 +83,7 @@ struct UndoRecordSet
 	UndoRecordSetChunkHeader chunk_header;
 	char			type_header[64];
 	uint8			type_header_size;
+	bool			need_type_header;
 
 	/* Currently active slot for insertion. */
 	UndoLogSlot *slot;
@@ -92,6 +95,11 @@ struct UndoRecordSet
 	slist_node		link;
 	int				nestingLevel;
 };
+
+#define URS_BUFFER_IS_NEW			0x01
+#define URS_BUFFER_NEEDS_INIT		0x02
+#define URS_BUFFER_NEEDS_DIRTY		0x04
+#define URS_BUFFER_NEEDS_XLOGBUF	0x08
 
 /* TODO: should perhaps make type a char and not include the padding */
 #define UndoRecordSetChunkHeaderSize sizeof(UndoRecordSetChunkHeader)
@@ -131,8 +139,10 @@ UndoCreate(UndoRecordSetType type, char persistence, int nestingLevel,
 	urs->chunks = palloc(sizeof(urs->chunks[0]));
 	urs->max_chunks = 1;
 	urs->buffers = palloc(sizeof(urs->buffers[0]));
+	urs->buffer_flag = palloc(sizeof(urs->buffer_flag[0]));
 	urs->max_buffers = 1;
 	urs->type_header_size = type_header_size;
+	urs->need_type_header = true;
 
 	/* XXX Why do we have a fixed-size buffer here? */
 	Assert(urs->type_header_size <= sizeof(urs->type_header));
@@ -174,6 +184,9 @@ find_or_read_buffer(UndoRecordSet *urs, UndoLogNumber logno, BlockNumber block)
 								  RBM_NORMAL,
 								  NULL,
 								  urs->persistence);
+	urs->buffer_flag[urs->nbuffers] = URS_BUFFER_NEEDS_DIRTY;
+	if (urs->persistence == RELPERSISTENCE_PERMANENT)
+		urs->buffer_flag[urs->nbuffers] |= URS_BUFFER_NEEDS_XLOGBUF;
 	LockBuffer(urs->buffers[urs->nbuffers], BUFFER_LOCK_EXCLUSIVE);	
 
 	return urs->nbuffers++;
@@ -257,25 +270,37 @@ UndoMarkClosed(UndoRecordSet *urs)
 		int header_offset = header % BLCKSZ;
 		int bytes_on_first_page = Min(BLCKSZ - header_offset, sizeof(size));
 		Buffer buffer;
-		int buffer_index;
+		int index;
 
 		/* Put as many bytes as we can on the first page. */
-		buffer_index = chunk->chunk_header_buffer_index[0];
-		buffer = urs->buffers[buffer_index];
-		MarkBufferDirty(buffer);
+		index = chunk->chunk_header_buffer_index[0];
+		buffer = urs->buffers[index];
 		memcpy((char *) BufferGetPage(buffer) + header_offset,
 			   &size,
 			   bytes_on_first_page);
 
+		/* Mark the buffer dirty, if not yet done. */
+		if ((urs->buffer_flag[index] & URS_BUFFER_NEEDS_DIRTY) != 0)
+		{
+			MarkBufferDirty(buffer);
+			urs->buffer_flag[index] &= ~URS_BUFFER_NEEDS_DIRTY;
+		}
+
+		/* Register the buffer with XLOG system, if needed and not yet done. */
+		if ((urs->buffer_flag[index] & URS_BUFFER_NEEDS_XLOGBUF) != 0)
+		{
+			XLogRegisterBuffer(urs->first_block_id + index, buffer, 0);
+			urs->buffer_flag[index] &= ~URS_BUFFER_NEEDS_XLOGBUF;
+		}
+
 		/* Capture this edit as buffer data. */
-		XLogRegisterBuffer(urs->first_block_id + buffer_index, buffer, 0);
 		write_update_ops_header(chunk->chunk_header_ops[0],
 								header_offset,
 								bytes_on_first_page);
-		XLogRegisterBufData(urs->first_block_id + buffer_index,
+		XLogRegisterBufData(urs->first_block_id + index,
 							(char *) chunk->chunk_header_ops[0],
 							sizeof(chunk->chunk_header_ops[0]));
-		XLogRegisterBufData(urs->first_block_id + buffer_index,
+		XLogRegisterBufData(urs->first_block_id + index,
 							BufferGetPage(buffer) + header_offset,
 							bytes_on_first_page);
 
@@ -283,22 +308,34 @@ UndoMarkClosed(UndoRecordSet *urs)
 		if (bytes_on_first_page < sizeof(size))
 		{
 			/* Put the rest on the next page, if necessary. */
-			buffer_index = chunk->chunk_header_buffer_index[1];
-			buffer = urs->buffers[buffer_index];
-			MarkBufferDirty(buffer);
+			index = chunk->chunk_header_buffer_index[1];
+			buffer = urs->buffers[index];
 			memcpy(BufferGetPage(buffer),
 				   ((char *) &size) + bytes_on_first_page,
 				   sizeof(size) - bytes_on_first_page);
 
+			/* Mark the buffer dirty, if not yet done. */
+			if ((urs->buffer_flag[index] & URS_BUFFER_NEEDS_DIRTY) != 0)
+			{
+				MarkBufferDirty(buffer);
+				urs->buffer_flag[index] &= ~URS_BUFFER_NEEDS_DIRTY;
+			}
+
+			/* Register the buffer with XLOG system, if needed and not done. */
+			if ((urs->buffer_flag[index] & URS_BUFFER_NEEDS_XLOGBUF) != 0)
+			{
+				XLogRegisterBuffer(urs->first_block_id + index, buffer, 0);
+				urs->buffer_flag[index] &= ~URS_BUFFER_NEEDS_XLOGBUF;
+			}
+
 			/* Capture this edit as buffer data. */
-			XLogRegisterBuffer(urs->first_block_id + buffer_index, buffer, 0);
 			write_update_ops_header(chunk->chunk_header_ops[1],
 									header_offset,
 									bytes_on_first_page);
-			XLogRegisterBufData(urs->first_block_id + buffer_index,
+			XLogRegisterBufData(urs->first_block_id + index,
 								(char *) chunk->chunk_header_ops[1],
 								sizeof(chunk->chunk_header_ops[1]));
-			XLogRegisterBufData(urs->first_block_id + buffer_index,
+			XLogRegisterBufData(urs->first_block_id + index,
 								BufferGetPage(buffer) + header_offset,
 								bytes_on_first_page);
 		}
@@ -390,8 +427,10 @@ reserve_buffer_array(UndoRecordSet *urs, size_t capacity)
 {
 	if (unlikely(urs->max_buffers < capacity))
 	{
-		urs->buffers =
-			repalloc(urs->buffers, sizeof(urs->buffers[0]) * capacity);
+		urs->buffers = repalloc(urs->buffers,
+								sizeof(urs->buffers[0]) * capacity);
+		urs->buffer_flag = repalloc(urs->buffer_flag,
+									sizeof(urs->buffer_flag) * capacity);
 		urs->max_buffers = capacity;
 	}
 }
@@ -488,10 +527,12 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 	for (;;)
 	{
 		/* Figure out the total range we need to pin. */
-		if (urs->need_chunk_header)
-			header_size = UndoRecordSetChunkHeaderSize + urs->type_header_size;
-		else
+		if (!urs->need_chunk_header)
 			header_size = 0;
+		else if (!urs->need_type_header)
+			header_size = UndoRecordSetChunkHeaderSize;
+		else
+			header_size = UndoRecordSetChunkHeaderSize + urs->type_header_size;
 		total_size = data_size + header_size;
 
 		/* Try to use the active undo log, if there is one. */
@@ -525,12 +566,25 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 		Buffer buffer;
 
 		/*
+		 * We always need to mark the buffer dirty when we first modify it.
+		 * If this is a permanent relation, we also need to register it with
+		 * the XLOG machinery.
+		 */
+		urs->buffer_flag[urs->nbuffers] = URS_BUFFER_NEEDS_DIRTY;
+		if (urs->persistence == RELPERSISTENCE_PERMANENT)
+			urs->buffer_flag[urs->nbuffers] |= URS_BUFFER_NEEDS_XLOGBUF;
+
+		/*
 		 * If we are writing the first data into this page, we don't need to
 		 * read it from disk.  We can just get a zeroed buffer and initialize
 		 * it.
 		 */
 		if (offset == UndoLogBlockHeaderSize)
+		{
 			rbm = RBM_ZERO;
+			urs->buffer_flag[urs->nbuffers] |=
+				URS_BUFFER_IS_NEW | URS_BUFFER_NEEDS_INIT;
+		}
 		else
 			rbm = RBM_NORMAL;
 
@@ -550,17 +604,6 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 									  rbm,
 									  NULL,
 									  urs->persistence);
-		/*
-		 * TODO we don't hold the content lock yet so PageInit() is probably
-		 * not OK yet.
-		 *
-		 * XXX: Also, it seems like a bad idea for us to be actually
-		 * peforming any modifications at all at this stage. It's possible
-		 * that we could ERROR out before completing UndoInsert(), in which
-		 * case it's best if nothing has actually happened yet.
-		 */
-		if (rbm == RBM_ZERO)
-			PageInit(BufferGetPage(buffer), BufferGetPageSize(buffer), 0);
 
 		/* How much to go? */
 		bytes_on_this_page = Min(BLCKSZ - offset, total_size);
@@ -589,19 +632,19 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 typedef struct UndoInsertState
 {
 	Buffer	   *buffers;
+	uint8	   *buffer_flag;
 	uint8		first_block_id;
-	int			last_buffer_index;
 	int			buffer_index;
 	UndoRecPtr	insert;
 } UndoInsertState;
 
 static void
-begin_append(UndoInsertState *state, Buffer *buffers, uint8 first_block_id,
-			 UndoRecPtr urp)
+begin_append(UndoInsertState *state, Buffer *buffers, uint8 *buffer_flag,
+			 uint8 first_block_id, UndoRecPtr urp)
 {
 	state->buffers = buffers;
+	state->buffer_flag = buffer_flag;
 	state->first_block_id = first_block_id;
-	state->last_buffer_index = -1;
 	state->buffer_index = 0;
 	state->insert = urp;
 }
@@ -611,12 +654,29 @@ append_bytes(UndoInsertState *state, void *data, size_t size)
 {
 	while (size > 0)
 	{
-		Page page = BufferGetPage(state->buffers[state->buffer_index]);
+		int index = state->buffer_index;
+		Buffer buffer = state->buffers[index];
+		Page page = BufferGetPage(buffer);
 		PageHeader header = (PageHeader) page;
 		int offset = UndoRecPtrGetPageOffset(state->insert);
 		int bytes_on_this_page = Min(BLCKSZ - offset, size);
 
-		if (state->last_buffer_index != state->buffer_index)
+		/* Initialize the page, if needed and not yet done. */
+		if ((state->buffer_flag[index] & URS_BUFFER_NEEDS_INIT) != 0)
+		{
+			PageInit(page, BufferGetPageSize(buffer), 0);
+			state->buffer_flag[index] &= ~URS_BUFFER_NEEDS_INIT;
+		}
+
+		/* Mark the buffer dirty, if not yet done. */
+		if ((state->buffer_flag[index] & URS_BUFFER_NEEDS_DIRTY) != 0)
+		{
+			MarkBufferDirty(buffer);
+			state->buffer_flag[index] &= ~URS_BUFFER_NEEDS_DIRTY;
+		}
+
+		/* Register the buffer with XLOG system, if needed and not yet done. */
+		if ((state->buffer_flag[index] & URS_BUFFER_NEEDS_XLOGBUF) != 0)
 		{
 			/*
 			 * We don't use REGBUF_STANDARD because we use pd_lower in a way
@@ -628,18 +688,13 @@ append_bytes(UndoInsertState *state, void *data, size_t size)
 			 * No need for a full page image to be logged or a page to be read
 			 * in if it will be empty.
 			 */
-			if (offset == UndoLogBlockHeaderSize)
+			if ((state->buffer_flag[index] & URS_BUFFER_IS_NEW) != 0)
 				flags |= REGBUF_WILL_INIT;
 
 			/* TODO: make sure that FPIs can't be turned off for undo pages */
 
-			MarkBufferDirty(state->buffers[state->buffer_index]);
-			if (!InRecovery)
-				XLogRegisterBuffer(state->first_block_id + state->buffer_index,
-								   state->buffers[state->buffer_index],
-								   flags);
-
-			state->last_buffer_index = state->buffer_index;
+			XLogRegisterBuffer(state->first_block_id + index, buffer, flags);
+			state->buffer_flag[index] &= ~URS_BUFFER_NEEDS_XLOGBUF;
 		}
 
 		/*
@@ -686,10 +741,8 @@ UndoInsert(UndoRecordSet *urs,
 
 	Assert(!InRecovery);
 
-	begin_append(&state,
-				 urs->buffers,
-				 first_block_id,
-				 urs->slot->meta.insert);
+	begin_append(&state, urs->buffers, urs->buffer_flag,
+				 first_block_id, urs->slot->meta.insert);
 	urs->state = URS_STATE_DIRTY;
 
 	/* Write any required chunk header. */
@@ -717,7 +770,7 @@ UndoInsert(UndoRecordSet *urs,
 	}
 
 	/* Write the type header, if we have one. */
-	if (urs->type_header_size != 0)
+	if (urs->need_type_header)
 	{
 		append_bytes(&state, urs->type_header, urs->type_header_size);
 
@@ -742,11 +795,8 @@ UndoInsert(UndoRecordSet *urs,
 	/* Don't need another chunk header unless we switch undo logs. */
 	urs->need_chunk_header = false;
 
-	/*
-	 * Once the type-specific header has been written, we can forget about it
-	 * forever.
-	 */
-	urs->type_header_size = 0;
+	/* Don't ever need another type header. */
+	urs->need_type_header = false;
 }
 
 /*
@@ -762,6 +812,7 @@ UndoInsertInRecovery(XLogReaderState *xlog_record, void *data, size_t data_size)
 	size_t header_size = 0;
 	UndoLogSlot *slot = NULL;
 	Buffer *buffers;
+	uint8 *buffer_flag;
 	int nbuffers;
 	UndoInsertState state;
 	UndoRecPtr result;
@@ -772,6 +823,8 @@ UndoInsertInRecovery(XLogReaderState *xlog_record, void *data, size_t data_size)
 	/* Make an array big enough to hold all registered blocks. */
 	nbuffers = 0;
 	buffers = palloc(sizeof(*buffers) * (xlog_record->max_block_id + 1));
+	buffer_flag =
+		palloc0(sizeof(*buffer_flag) * (xlog_record->max_block_id + 1));
 
 	/* Read and lock all referenced undo log buffers. */
 	for (uint8 block_id = 0; block_id <= xlog_record->max_block_id; ++block_id)
@@ -798,6 +851,9 @@ UndoInsertInRecovery(XLogReaderState *xlog_record, void *data, size_t data_size)
 			if (slot->end < past_this_block)
 				UndoLogAdjustPhysicalRange(slot->logno, 0, past_this_block);
 
+			/* Buffer will need to be dirtied when modified. */
+			buffer_flag[nbuffers] |= URS_BUFFER_NEEDS_DIRTY;
+
 			/*
 			 * We can't yet say if we think it'll be zeroed or not, because we
 			 * don't trust our own insert pointer until we've checked whether
@@ -805,7 +861,11 @@ UndoInsertInRecovery(XLogReaderState *xlog_record, void *data, size_t data_size)
 			 * RBM_ZERO_AND_LOCK is needed.
 			 */
 			if ((block->flags & BKPBLOCK_WILL_INIT) != 0)
+			{
 				rbm = RBM_ZERO_AND_LOCK;
+				buffer_flag[nbuffers] |=
+					URS_BUFFER_IS_NEW | URS_BUFFER_NEEDS_INIT;
+			}
 			else
 				rbm = RBM_NORMAL;
 
@@ -852,11 +912,6 @@ UndoInsertInRecovery(XLogReaderState *xlog_record, void *data, size_t data_size)
 				skip = true;
 			}
 
-			if (rbm == RBM_ZERO_AND_LOCK)
-				PageInit(BufferGetPage(buffers[nbuffers]),
-						 BufferGetPageSize(buffers[nbuffers]),
-						 0);
-
 			/* TODO: Why does pd_flags finish up different in recovery? */
 
 			/*
@@ -875,7 +930,7 @@ UndoInsertInRecovery(XLogReaderState *xlog_record, void *data, size_t data_size)
 
 	/* Append the data. */
 	if (!skip)
-		begin_append(&state, buffers, -1,
+		begin_append(&state, buffers, buffer_flag, -1,
 					 MakeUndoRecPtr(slot->logno, slot->meta.insert));
 
 	/* Were any insertions recorded for this buffer? */
@@ -974,6 +1029,7 @@ UndoDestroy(UndoRecordSet *urs)
 	/* Free memory. */
 	pfree(urs->chunks);
 	pfree(urs->buffers);
+	pfree(urs->buffer_flag);
 	pfree(urs);
 }
 
