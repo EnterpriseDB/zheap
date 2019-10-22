@@ -1252,15 +1252,21 @@ find_undo_log_slot(UndoLogNumber logno, bool locked)
 		if (result == NULL && logno >= undologtable_low_logno)
 		{
 			/*
-			 * Sanity check: the caller should not be asking about undo logs
-			 * that have never existed.
+			 * Sanity check: except during recovery, the caller should not be
+			 * asking about undo logs that have never existed.
 			 */
 			if (logno >= UndoLogShared->next_logno)
-				elog(ERROR, "undo log %u hasn't been created yet", logno);
-			entry = undologtable_insert(undologtable_cache, logno, &found);
-			entry->number = logno;
-			entry->slot = NULL;
-			entry->tablespace = 0;
+			{
+				if (!InRecovery)
+					elog(ERROR, "undo log %u hasn't been created yet", logno);
+			}
+			else
+			{
+				entry = undologtable_insert(undologtable_cache, logno, &found);
+				entry->number = logno;
+				entry->slot = NULL;
+				entry->tablespace = 0;
+			}
 		}
 		if (!locked)
 			LWLockRelease(UndoLogLock);

@@ -6717,9 +6717,6 @@ StartupXLOG(void)
 	 */
 	restoreTwoPhaseData();
 
-	/* Recover undo log meta data corresponding to this checkpoint. */
-	StartupUndo(ControlFile->checkPointCopy.redo);
-
 	lastFullPageWrites = checkPoint.fullPageWrites;
 
 	RedoRecPtr = XLogCtl->RedoRecPtr = XLogCtl->Insert.RedoRecPtr = checkPoint.redo;
@@ -6748,6 +6745,12 @@ StartupXLOG(void)
 		/* force recovery due to presence of recovery signal file */
 		InRecovery = true;
 	}
+
+	/*
+	 * Recover undo log meta data corresponding to this checkpoint.  We must
+	 * do this after setting the correct value of InRecovery.
+	 */
+	StartupUndo(ControlFile->checkPointCopy.redo);
 
 	/* REDO */
 	if (InRecovery)
