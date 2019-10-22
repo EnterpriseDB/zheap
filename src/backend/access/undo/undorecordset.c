@@ -330,14 +330,14 @@ UndoMarkClosed(UndoRecordSet *urs)
 
 			/* Capture this edit as buffer data. */
 			write_update_ops_header(chunk->chunk_header_ops[1],
-									header_offset,
-									bytes_on_first_page);
+									UndoLogBlockHeaderSize,
+									sizeof(size) - bytes_on_first_page);
 			XLogRegisterBufData(urs->first_block_id + index,
 								(char *) chunk->chunk_header_ops[1],
 								sizeof(chunk->chunk_header_ops[1]));
 			XLogRegisterBufData(urs->first_block_id + index,
-								BufferGetPage(buffer) + header_offset,
-								bytes_on_first_page);
+								BufferGetPage(buffer) + UndoLogBlockHeaderSize,
+								sizeof(size) - bytes_on_first_page);
 		}
 	}
 
