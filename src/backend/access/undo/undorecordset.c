@@ -32,6 +32,8 @@
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 
+#define OPS_HEADER_SIZE		4
+
 /*
  * Per-chunk bookkeeping.
  */
@@ -40,7 +42,7 @@ typedef struct UndoRecordSetChunk
 	UndoLogSlot	   *slot;
 	UndoLogOffset	chunk_header_offset;
 	int				chunk_header_buffer_index[2];
-	uint8			chunk_header_ops[2][4];
+	uint8			chunk_header_ops[2][OPS_HEADER_SIZE];
 } UndoRecordSetChunk;
 
 /*
@@ -247,6 +249,54 @@ write_update_ops_header(uint8 *ops, uint16 offset, uint16 size)
 }
 
 /*
+ * Do the per-page work associated with marking an UndoRecordSet closed.
+ */
+static int
+UndoMarkPageClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk, int chbidx,
+				   int page_offset, int data_offset, UndoLogOffset size)
+{
+	int		index = chunk->chunk_header_buffer_index[chbidx];
+	Buffer	buffer = urs->buffers[index];
+	uint8  *ops = chunk->chunk_header_ops[chbidx];
+	int		bytes_on_this_page;
+
+	/* Compute the number of bytes on this page. */
+	bytes_on_this_page = Min(BLCKSZ - page_offset, sizeof(size) - data_offset);
+
+	/* Update the page. */
+	memcpy((char *) BufferGetPage(buffer) + page_offset,
+		   (char *) &size + data_offset,
+		   bytes_on_this_page);
+
+	/* Mark the buffer dirty, if not yet done. */
+	if ((urs->buffer_flag[index] & URS_BUFFER_NEEDS_DIRTY) != 0)
+	{
+		MarkBufferDirty(buffer);
+		urs->buffer_flag[index] &= ~URS_BUFFER_NEEDS_DIRTY;
+	}
+
+	/* Register the buffer with XLOG system, if needed and not yet done. */
+	if ((urs->buffer_flag[index] & URS_BUFFER_NEEDS_XLOGBUF) != 0)
+	{
+		XLogRegisterBuffer(urs->first_block_id + index, buffer, 0);
+		urs->buffer_flag[index] &= ~URS_BUFFER_NEEDS_XLOGBUF;
+	}
+
+	/* Capture this edit as buffer data. */
+	if (urs->persistence == RELPERSISTENCE_PERMANENT)
+	{
+		write_update_ops_header(ops, page_offset, bytes_on_this_page);
+		XLogRegisterBufData(urs->first_block_id + index, (char *) ops,
+							OPS_HEADER_SIZE);
+		XLogRegisterBufData(urs->first_block_id + index,
+							BufferGetPage(buffer) + page_offset,
+							bytes_on_this_page);
+	}
+
+	return bytes_on_this_page;
+}
+
+/*
  * TODO: Currently, all opened URSs *must* be closed, because otherwise they
  * may hold an UndoLogSlot that is never returned to the appropriate shared
  * memory freelist, and so it won't be reused.
@@ -267,77 +317,15 @@ UndoMarkClosed(UndoRecordSet *urs)
 		UndoLogOffset header = chunk->chunk_header_offset;
 		UndoLogOffset insert = chunk->slot->meta.insert;
 		UndoLogOffset size = insert - header;
-		int header_offset = header % BLCKSZ;
-		int bytes_on_first_page = Min(BLCKSZ - header_offset, sizeof(size));
-		Buffer buffer;
-		int index;
+		int page_offset = header % BLCKSZ;
+		int data_offset = 0;
+		int	chbidx = 0;
 
-		/* Put as many bytes as we can on the first page. */
-		index = chunk->chunk_header_buffer_index[0];
-		buffer = urs->buffers[index];
-		memcpy((char *) BufferGetPage(buffer) + header_offset,
-			   &size,
-			   bytes_on_first_page);
-
-		/* Mark the buffer dirty, if not yet done. */
-		if ((urs->buffer_flag[index] & URS_BUFFER_NEEDS_DIRTY) != 0)
+		while (data_offset < sizeof(size))
 		{
-			MarkBufferDirty(buffer);
-			urs->buffer_flag[index] &= ~URS_BUFFER_NEEDS_DIRTY;
-		}
-
-		/* Register the buffer with XLOG system, if needed and not yet done. */
-		if ((urs->buffer_flag[index] & URS_BUFFER_NEEDS_XLOGBUF) != 0)
-		{
-			XLogRegisterBuffer(urs->first_block_id + index, buffer, 0);
-			urs->buffer_flag[index] &= ~URS_BUFFER_NEEDS_XLOGBUF;
-		}
-
-		/* Capture this edit as buffer data. */
-		write_update_ops_header(chunk->chunk_header_ops[0],
-								header_offset,
-								bytes_on_first_page);
-		XLogRegisterBufData(urs->first_block_id + index,
-							(char *) chunk->chunk_header_ops[0],
-							sizeof(chunk->chunk_header_ops[0]));
-		XLogRegisterBufData(urs->first_block_id + index,
-							BufferGetPage(buffer) + header_offset,
-							bytes_on_first_page);
-
-		/* We might need to spill onto the next pace. */
-		if (bytes_on_first_page < sizeof(size))
-		{
-			/* Put the rest on the next page, if necessary. */
-			index = chunk->chunk_header_buffer_index[1];
-			buffer = urs->buffers[index];
-			memcpy(BufferGetPage(buffer),
-				   ((char *) &size) + bytes_on_first_page,
-				   sizeof(size) - bytes_on_first_page);
-
-			/* Mark the buffer dirty, if not yet done. */
-			if ((urs->buffer_flag[index] & URS_BUFFER_NEEDS_DIRTY) != 0)
-			{
-				MarkBufferDirty(buffer);
-				urs->buffer_flag[index] &= ~URS_BUFFER_NEEDS_DIRTY;
-			}
-
-			/* Register the buffer with XLOG system, if needed and not done. */
-			if ((urs->buffer_flag[index] & URS_BUFFER_NEEDS_XLOGBUF) != 0)
-			{
-				XLogRegisterBuffer(urs->first_block_id + index, buffer, 0);
-				urs->buffer_flag[index] &= ~URS_BUFFER_NEEDS_XLOGBUF;
-			}
-
-			/* Capture this edit as buffer data. */
-			write_update_ops_header(chunk->chunk_header_ops[1],
-									UndoLogBlockHeaderSize,
-									sizeof(size) - bytes_on_first_page);
-			XLogRegisterBufData(urs->first_block_id + index,
-								(char *) chunk->chunk_header_ops[1],
-								sizeof(chunk->chunk_header_ops[1]));
-			XLogRegisterBufData(urs->first_block_id + index,
-								BufferGetPage(buffer) + UndoLogBlockHeaderSize,
-								sizeof(size) - bytes_on_first_page);
+			data_offset += UndoMarkPageClosed(urs, chunk, chbidx++,
+											  page_offset, data_offset, size);
+			page_offset = UndoLogBlockHeaderSize;
 		}
 	}
 
@@ -397,11 +385,11 @@ UndoUpdateInRecovery(XLogReaderState *xlog_record)
 					}
 
 					/* We have an update.  Apply it. */
-					if (ops + 4 >= ops_end)
+					if (ops + OPS_HEADER_SIZE >= ops_end)
 						elog(ERROR, "corrupted undo update instruction");
 					offset = ((ops[0] & 0x7f) << 8) | ops[1];
 					size = (ops[2] << 8) | ops[3];
-					ops += 4;
+					ops += OPS_HEADER_SIZE;
 
 					if (ops + size > ops_end)
 						elog(ERROR, "corrupted undo update instruction");
