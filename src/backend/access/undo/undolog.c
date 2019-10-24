@@ -27,6 +27,7 @@
 #include "access/undo.h"
 #include "access/undolog.h"
 #include "access/undolog_xlog.h"
+#include "access/undopage.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
@@ -741,8 +742,8 @@ UndoLogGetForPersistence(char persistence)
 						   UndoLogNumSlots()),
 				 errhint("Consider increasing max_connections.")));
 	slot->logno = UndoLogShared->next_logno;
-	slot->meta.insert = UndoLogBlockHeaderSize;
-	slot->meta.discard = UndoLogBlockHeaderSize;
+	slot->meta.insert = SizeOfUndoPageHeaderData;
+	slot->meta.discard = SizeOfUndoPageHeaderData;
 	slot->meta.logno = UndoLogShared->next_logno;
 	slot->meta.tablespace = tablespace;
 	slot->meta.persistence = persistence;
@@ -1705,7 +1706,7 @@ ResetUndoLogs(char persistence)
 		 * unreferenced address space?
 		 */
 		slot->meta.insert = slot->meta.discard = slot->end +
-			UndoLogBlockHeaderSize;
+			SizeOfUndoPageHeaderData;
 	}
 }
 
@@ -1934,8 +1935,8 @@ undolog_xlog_create(XLogReaderState *record)
 	slot->meta.full = UndoLogSegmentSize;
 	slot->meta.persistence = xlrec->persistence;
 	slot->meta.tablespace = xlrec->tablespace;
-	slot->meta.insert = UndoLogBlockHeaderSize;
-	slot->meta.discard = UndoLogBlockHeaderSize;
+	slot->meta.insert = SizeOfUndoPageHeaderData;
+	slot->meta.discard = SizeOfUndoPageHeaderData;
 	LWLockRelease(&slot->meta_lock);
 	UndoLogShared->next_logno = Max(xlrec->logno + 1, UndoLogShared->next_logno);
 	LWLockRelease(UndoLogLock);

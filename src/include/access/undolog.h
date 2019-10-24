@@ -19,7 +19,6 @@
 #include "access/undodefs.h"
 #include "catalog/database_internal.h"
 #include "lib/ilist.h"
-#include "storage/bufpage.h"
 
 #ifndef FRONTEND
 #include "storage/lwlock.h"
@@ -67,12 +66,6 @@
 #define MakeUndoRecPtr(logno, offset)			\
 	(((uint64) (logno) << UndoLogOffsetBits) | (offset))
 
-/* The number of unusable bytes in the header of each block. */
-#define UndoLogBlockHeaderSize SizeOfPageHeaderData
-
-/* The number of usable bytes we can store per block. */
-#define UndoLogUsableBytesPerPage (BLCKSZ - UndoLogBlockHeaderSize)
-
 /* Length of undo checkpoint filename */
 #define UNDO_CHECKPOINT_FILENAME_LENGTH	16
 
@@ -94,25 +87,6 @@
 /* Compare two undo checkpoint files to find the oldest file. */
 #define UndoCheckPointFilenamePrecedes(file1, file2)	\
 	(strcmp(file1, file2) < 0)
-
-/* What is the offset of the i'th non-header byte? */
-#define UndoLogOffsetFromUsableByteNo(i)								\
-	(((i) / UndoLogUsableBytesPerPage) * BLCKSZ +						\
-	 UndoLogBlockHeaderSize +											\
-	 ((i) % UndoLogUsableBytesPerPage))
-
-/* How many non-header bytes are there before a given offset? */
-#define UndoLogOffsetToUsableByteNo(offset)				\
-	(((offset) % BLCKSZ - UndoLogBlockHeaderSize) +		\
-	 ((offset) / BLCKSZ) * UndoLogUsableBytesPerPage)
-
-/* Add 'n' usable bytes to offset stepping over headers to find new offset. */
-#define UndoLogOffsetPlusUsableBytes(offset, n)							\
-	UndoLogOffsetFromUsableByteNo(UndoLogOffsetToUsableByteNo(offset) + (n))
-
-/* Add 'n' usable bytes to an UndoRecPtr, stepping over headers. */
-#define UndoRecPtrPlusUsableBytes(ptr, n)							\
-	UndoLogOffsetPlusUsableBytes(ptr, n)
 
 /* Populate a RelFileNode from an UndoRecPtr. */
 #define UndoRecPtrAssignRelFileNode(rfn, urp)								 \

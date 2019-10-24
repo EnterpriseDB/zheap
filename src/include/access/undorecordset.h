@@ -15,11 +15,32 @@
 #include "access/undodefs.h"
 #include "access/xlogreader.h"
 
+/*
+ * Possible undo record set types. These are stored as 1-byte values on disk;
+ * changing the values is an on-disk format break.
+ */
 typedef enum UndoRecordSetType
 {
-	URST_TRANSACTION,
-	URST_FOO				/* THROWAWAY TEST VALUE */
+	URST_INVALID = 0,			/* Placeholder when there's no record set. */
+	URST_TRANSACTION = 'T',		/* Normal xact undo; apply on abort. */
+	URST_MULTI = 'M',			/* Informational undo; lives until every xact
+								 * is all-visible or aborted and undone. */
+	URST_EPHEMERAL = 'E',		/* Ephemeral data for testing purposes. */
+	URST_FOO = 'F'				/* XXX. Crude hack; replace me. */
 } UndoRecordSetType;
+
+/*
+ * The header that appears at the start of each 'chunk'.
+ */
+typedef struct UndoRecordSetChunkHeader
+{
+	UndoLogOffset	size;
+	UndoRecPtr		previous_chunk;
+	uint8			type;
+} UndoRecordSetChunkHeader;
+
+#define SizeOfUndoRecordSetChunkHeader \
+	offsetof(UndoRecordSetChunkHeader, type) + sizeof(uint8)
 
 extern UndoRecordSet *UndoCreate(UndoRecordSetType type, char presistence,
 								 int nestingLevel, Size type_header_size,

@@ -9,6 +9,8 @@
 
 #include "postgres_fe.h"
 
+#include <fcntl.h>
+
 #include "access/undo.h"
 #include "access/undolog.h"
 #include "pg_upgrade.h"

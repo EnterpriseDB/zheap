@@ -20,6 +20,7 @@
 
 #include "access/undo.h"
 #include "access/undolog.h"
+#include "access/undopage.h"
 #include "access/undorecordset.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -44,16 +45,6 @@ typedef struct UndoRecordSetChunk
 	int				chunk_header_buffer_index[2];
 	uint8			chunk_header_ops[2][OPS_HEADER_SIZE];
 } UndoRecordSetChunk;
-
-/*
- * The header that appears at the start of each 'chunk'.
- */
-typedef struct UndoRecordSetChunkHeader
-{
-	UndoLogOffset	size;
-	UndoRecPtr		previous_chunk;
-	UndoRecordSetType type;
-} UndoRecordSetChunkHeader;
 
 typedef enum UndoRecordSetState
 {
@@ -240,7 +231,7 @@ write_update_ops_header(uint8 *ops, uint16 offset, uint16 size)
 	Assert(BLCKSZ <= 0x8000);
 	Assert(offset < BLCKSZ);
 	Assert((offset + size) <= BLCKSZ);
-	Assert(offset >= UndoLogBlockHeaderSize);
+	Assert(offset >= SizeOfUndoPageHeaderData);
 
 	ops[0] = 0x80 | (offset >> 8);
 	ops[1] = offset & 0xff;
@@ -325,7 +316,7 @@ UndoMarkClosed(UndoRecordSet *urs)
 		{
 			data_offset += UndoMarkPageClosed(urs, chunk, chbidx++,
 											  page_offset, data_offset, size);
-			page_offset = UndoLogBlockHeaderSize;
+			page_offset = SizeOfUndoPageHeaderData;
 		}
 	}
 
@@ -567,7 +558,7 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 		 * read it from disk.  We can just get a zeroed buffer and initialize
 		 * it.
 		 */
-		if (offset == UndoLogBlockHeaderSize)
+		if (offset == SizeOfUndoPageHeaderData)
 		{
 			rbm = RBM_ZERO;
 			urs->buffer_flag[urs->nbuffers] |=
@@ -599,7 +590,7 @@ UndoAllocate(UndoRecordSet *urs, size_t data_size)
 
 		/* Advance to start of next page. */
 		++block;
-		offset = UndoLogBlockHeaderSize;
+		offset = SizeOfUndoPageHeaderData;
 	}
 
 	/*
@@ -652,7 +643,7 @@ append_bytes(UndoInsertState *state, void *data, size_t size)
 		/* Initialize the page, if needed and not yet done. */
 		if ((state->buffer_flag[index] & URS_BUFFER_NEEDS_INIT) != 0)
 		{
-			PageInit(page, BufferGetPageSize(buffer), 0);
+			UndoPageInit(BufferGetPage(buffer));
 			state->buffer_flag[index] &= ~URS_BUFFER_NEEDS_INIT;
 		}
 
@@ -705,7 +696,7 @@ append_bytes(UndoInsertState *state, void *data, size_t size)
 		if (offset == BLCKSZ)
 		{
 			state->buffer_index++;
-			state->insert += UndoLogBlockHeaderSize;
+			state->insert += SizeOfUndoPageHeaderData;
 		}
 	}
 }
@@ -876,7 +867,7 @@ UndoInsertInRecovery(XLogReaderState *xlog_record, void *data, size_t data_size)
 
 				/* Step over page header. */
 				if (header->pd_lower == 0)
-					header->pd_lower = UndoLogBlockHeaderSize;
+					header->pd_lower = SizeOfUndoPageHeaderData;
 
 				slot->meta.insert = BLCKSZ * block->blkno + header->pd_lower;
 			}

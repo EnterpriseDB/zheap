@@ -40,6 +40,7 @@
 
 #include "access/undo.h"
 #include "access/undolog.h"
+#include "access/undopage.h"
 #include "access/undorecordset.h"
 #include "access/undorequest.h"
 #include "access/xact.h"
@@ -104,8 +105,8 @@ typedef struct XactUndoData
 	bool		has_undo;
 	UndoSubTransaction *subxact;
 	UndoRecPtr	last_location[NUndoPersistenceLevels];
-	Size		last_size[NUndoPersistenceLevels];
-	Size		total_size[NUndoPersistenceLevels];
+	uint64		last_size[NUndoPersistenceLevels];
+	uint64		total_size[NUndoPersistenceLevels];
 	UndoRecordSet *record_set[NUndoPersistenceLevels];
 } XactUndoData;
 
@@ -113,7 +114,7 @@ XactUndoData XactUndo;
 UndoSubTransaction UndoTopState;
 
 static void ResetXactUndo(void);
-static UndoRecPtr GetUndoRecordEndPtr(UndoRecPtr start_location, Size size);
+static UndoRecPtr XactUndoEndLocation(UndoPersistenceLevel plevel);
 
 /*
  * How much shared memory do we need for undo state management?
@@ -554,12 +555,8 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 	 */
 	request_size = XactUndo.total_size[UNDOPERSISTENCE_PERMANENT] +
 		XactUndo.total_size[UNDOPERSISTENCE_UNLOGGED];
-	end_location_logged =
-		GetUndoRecordEndPtr(XactUndo.last_location[UNDOPERSISTENCE_PERMANENT],
-							XactUndo.last_size[UNDOPERSISTENCE_PERMANENT]);
-	end_location_unlogged =
-		GetUndoRecordEndPtr(XactUndo.last_location[UNDOPERSISTENCE_UNLOGGED],
-							XactUndo.last_size[UNDOPERSISTENCE_UNLOGGED]);
+	end_location_logged = XactUndoEndLocation(UNDOPERSISTENCE_PERMANENT);
+	end_location_unlogged = XactUndoEndLocation(UNDOPERSISTENCE_UNLOGGED);
 	FinalizeUndoRequest(XactUndo.manager, XactUndo.my_request, request_size,
 						XactUndo.subxact->start_location[UNDOPERSISTENCE_PERMANENT],
 						XactUndo.subxact->start_location[UNDOPERSISTENCE_UNLOGGED],
@@ -716,15 +713,18 @@ ResetXactUndo(void)
 }
 
 /*
- * Add the size of an undo record to the location where it starts to find the
- * end location.
+ * Get end location for a persistence level by adding the last size to
+ * the last location.
+ *
+ * NB: This supposes that a single record never spans two separate undo logs.
  */
 static UndoRecPtr
-GetUndoRecordEndPtr(UndoRecPtr start_location, Size size)
+XactUndoEndLocation(UndoPersistenceLevel plevel)
 {
-	UndoLogNumber logno = UndoRecPtrGetLogNo(start_location);
-	UndoLogOffset offset = UndoRecPtrGetOffset(start_location);
+	UndoRecPtr	last_location;
+	uint64		last_size;
 
-	offset = UndoLogOffsetPlusUsableBytes(offset, size);
-	return MakeUndoRecPtr(logno, offset);
+	last_location = XactUndo.last_location[plevel];
+	last_size = XactUndo.last_size[plevel];
+	return UndoRecPtrPlusUsableBytes(last_location, last_size);
 }
