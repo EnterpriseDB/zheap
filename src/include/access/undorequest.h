@@ -15,6 +15,7 @@
 
 #include "access/transam.h"
 #include "access/undodefs.h"
+#include "datatype/timestamp.h"
 #include "storage/lwlock.h"
 
 struct UndoRequest;
@@ -49,7 +50,10 @@ extern void UnregisterUndoRequest(UndoRequestManager *urm, UndoRequest *req);
 extern bool PerformUndoInBackground(UndoRequestManager *urm, UndoRequest *req,
 									bool force);
 
-/* Interfaces for undo background work. */
+/* Check how long a worker would need to wait for an UndoRequest. */
+extern long UndoRequestWaitTime(UndoRequestManager *urm, TimestampTz when);
+
+/* Get work for background undo process. */
 extern UndoRequest *GetNextUndoRequest(UndoRequestManager *urm, Oid dbid,
 									   bool minimum_runtime_reached,
 									   Oid *out_dbid, FullTransactionId *fxid,

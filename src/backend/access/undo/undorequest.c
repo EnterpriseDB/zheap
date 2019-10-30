@@ -485,6 +485,47 @@ PerformUndoInBackground(UndoRequestManager *urm, UndoRequest *req, bool force)
 }
 
 /*
+ * Return the amount of time until GetNextUndoRequest can return something.
+ *
+ * If there are no LISTED undo requests, the return value is -1. If there's
+ * is at least 1 that GetNextUndoRequest() could return if called at time
+ * 'when', the return value is 0.  Otherwise, the return value is the number
+ * of milliseconds which must elapse, starting at 'when', before
+ * GetNextUndoRequest() can return one.
+ */
+long
+UndoRequestWaitTime(UndoRequestManager *urm, TimestampTz when)
+{
+	long	result;
+
+	LWLockAcquire(urm->lock, LW_SHARED);
+	if (rbt_leftmost(&urm->requests_by_fxid) != NULL)
+		result = 0;
+	else
+	{
+		UndoRequestNode *node;
+
+		node = (UndoRequestNode *) rbt_leftmost(&urm->requests_by_retry_time);
+
+		if (node == NULL)
+			result = -1;
+		else
+		{
+			TimestampTz		retry_time = node->req->retry_time;
+			long	secs;
+			int		microsecs;
+
+			TimestampDifference(when, retry_time, &secs, &microsecs);
+			result = (secs * 1000) + (microsecs / 1000);
+			Assert(result >= 0);
+		}
+	}
+	LWLockRelease(urm->lock);
+
+	return result;
+}
+
+/*
  * Get an undo request that needs background processing.
  *
  * Unless dbid is InvalidOid, any request returned must be from the indicated
