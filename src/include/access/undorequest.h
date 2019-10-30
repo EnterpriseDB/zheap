@@ -23,10 +23,10 @@ typedef struct UndoRequest UndoRequest;
 typedef struct UndoRequestManager UndoRequestManager;
 
 /* Initialization functions. */
-extern Size EstimateUndoRequestManagerSize(Size capacity);
+extern Size EstimateUndoRequestManagerSize(unsigned capacity);
 extern void InitializeUndoRequestManager(UndoRequestManager *urm,
-										 LWLock *lock, Size capacity,
-										 Size soft_limit);
+										 LWLock *lock, unsigned capacity,
+										 unsigned soft_limit);
 
 /* Call this before inserting undo records. */
 extern UndoRequest *RegisterUndoRequest(UndoRequestManager *urm,
@@ -49,7 +49,7 @@ extern void UnregisterUndoRequest(UndoRequestManager *urm, UndoRequest *req);
 extern bool PerformUndoInBackground(UndoRequestManager *urm, UndoRequest *req,
 									bool force);
 
-/* Get work for background undo process. */
+/* Interfaces for undo background work. */
 extern UndoRequest *GetNextUndoRequest(UndoRequestManager *urm, Oid dbid,
 									   bool minimum_runtime_reached,
 									   Oid *out_dbid, FullTransactionId *fxid,

@@ -153,9 +153,9 @@ typedef enum UndoRequestSource
 struct UndoRequestManager
 {
 	LWLock	   *lock;			/* for synchronization */
-	Size		capacity;		/* max # of UndoRequests */
-	Size		utilization;	/* # of non-FREE UndoRequests */
-	Size		soft_size_limit;	/* threshold to not background */
+	unsigned	capacity;		/* max # of UndoRequests */
+	unsigned	utilization;	/* # of non-FREE UndoRequests */
+	unsigned	soft_size_limit;	/* threshold to not background */
 	UndoRequestSource source;	/* which RBTree to check next? */
 	RBTree		requests_by_fxid;	/* lower FXIDs first */
 	RBTree		requests_by_size;	/* bigger sizes first */
@@ -198,7 +198,7 @@ static UndoRequest *FindUndoRequest(UndoRequestManager *urm,
  * requests are stored only in requests_by_retry_time.
  */
 Size
-EstimateUndoRequestManagerSize(Size capacity)
+EstimateUndoRequestManagerSize(unsigned capacity)
 {
 	Size		s = MAXALIGN(sizeof(UndoRequestManager));
 
@@ -224,7 +224,7 @@ EstimateUndoRequestManagerSize(Size capacity)
  */
 void
 InitializeUndoRequestManager(UndoRequestManager *urm, LWLock *lock,
-							 Size capacity, Size soft_limit)
+							 unsigned capacity, unsigned soft_limit)
 {
 	UndoRequest *reqs;
 	UndoRequestNode *nodes;
@@ -769,7 +769,7 @@ void
 RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes, char *data)
 {
 	UndoRequestData *darray = (UndoRequestData *) data;
-	int			nrequests;
+	unsigned	nrequests;
 	int			i;
 
 	/* Caller should have ensured a sane size, but let's double-check. */
@@ -781,7 +781,7 @@ RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes, char *data)
 	if (nrequests > urm->capacity)
 		ereport(ERROR,
 				(errmsg("too many undo requests"),
-				 errdetail("There are %d outstanding undo requests, but only enough shared memory for %zu requests.",
+				 errdetail("There are %u outstanding undo requests, but only enough shared memory for %u requests.",
 						   nrequests, urm->capacity),
 				 errhint("Consider increasing max_connctions.")));
 
