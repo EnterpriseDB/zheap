@@ -44,7 +44,7 @@ extern void CleanupXactUndoInsertion(XactUndoContext *ctx);
 
 extern long XactUndoWaitTime(TimestampTz now);
 extern Oid InitializeBackgroundXactUndo(bool minimum_runtime_reached);
-extern void FinishBackgroundUndo(void);
+extern void FinishBackgroundXactUndo(void);
 
 extern void PerformUndoActions(int nestingLevel);
 

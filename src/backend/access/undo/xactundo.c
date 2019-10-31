@@ -355,7 +355,7 @@ XactUndoWaitTime(TimestampTz now)
  * will reschedule the UndoRequest for later reprocessing, and it's no longer
  * this backend's responsibility. However, a transaction commit does not
  * automatically unregister the request as successfully completed; to do that,
- * call FinishBackgroundUndo.
+ * call FinishBackgroundXactUndo.
  *
  * The minimum_runtime_reached parameter is passed to GetNextUndoRequest, q.v.
  */
@@ -406,7 +406,7 @@ InitializeBackgroundXactUndo(bool minimum_runtime_reached)
  * It will unregister the undo request.
  */
 void
-FinishBackgroundUndo(void)
+FinishBackgroundXactUndo(void)
 {
 	Assert(XactUndo.is_background_undo);
 	Assert(XactUndo.my_request != NULL);
@@ -438,7 +438,7 @@ PerformUndoActions(int nestingLevel)
 	 * In the case of subtransaction undo, this also needs to tear down the
 	 * relevant UndoSubTransaction (or else we need a separate entrypoint for
 	 * that). For a top-level transaction, AtCommit_XactUndo() or
-	 * FinishBackgroundUndo() will take care of it.
+	 * FinishBackgroundXactUndo() will take care of it.
 	 */
 }
 
@@ -455,7 +455,7 @@ AtCommit_XactUndo(void)
 	 * For background undo processing, the fact that the transaction is
 	 * committing doesn't necessarily mean we're done.  For example, we might
 	 * have just been connecting to the database or something of that sort.
-	 * Client code must call FinishBackgroundUndo() to report successful
+	 * Client code must call FinishBackgroundXactUndo() to report successful
 	 * completion. So, do nothing in that case.
 	 */
 	if (XactUndo.is_background_undo)
