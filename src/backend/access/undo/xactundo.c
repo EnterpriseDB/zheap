@@ -43,6 +43,7 @@
 #include "access/undopage.h"
 #include "access/undorecordset.h"
 #include "access/undorequest.h"
+#include "access/undoworker.h"
 #include "access/xact.h"
 #include "access/xactundo.h"
 #include "miscadmin.h"
@@ -327,6 +328,23 @@ CleanupXactUndoInsertion(XactUndoContext *ctx)
 }
 
 /*
+ * Return the amount of time until InitializeBackgroundXactUndo can obtain
+ * an undo request.
+ *
+ * If there are no undo requests, returns -1. If there are undo requests
+ * available for processing immediately, returns 0. Otherwise, returns the
+ * number of milliseconds until an undo request is available for processing.
+ *
+ * The caller should pass the current time, as returned by GetCurrentTimestamp.
+ */
+long
+XactUndoWaitTime(TimestampTz now)
+{
+	Assert(XactUndo.manager != NULL);
+	return UndoRequestWaitTime(XactUndo.manager, now);
+}
+
+/*
  * Attempt to obtain an UndoRequest for background processing.
  *
  * If there is no work to be done right now, returns InvalidOid.  Otherwise,
@@ -576,22 +594,30 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 		{
 			/* No temporary undo, and everything else in the background. */
 			ResetXactUndo();
-			return;
+		}
+		else
+		{
+			/*
+			 * Permanent and unlogged undo in the background, but temporary
+			 * undo is still our problem.
+			 */
+			XactUndo.my_request = NULL;
+			XactUndo.subxact->start_location[UNDOPERSISTENCE_PERMANENT] =
+				InvalidUndoRecPtr;
+			XactUndo.subxact->start_location[UNDOPERSISTENCE_UNLOGGED] =
+				InvalidUndoRecPtr;
+			XactUndo.last_location[UNDOPERSISTENCE_PERMANENT] =
+				InvalidUndoRecPtr;
+			XactUndo.last_location[UNDOPERSISTENCE_UNLOGGED] =
+				InvalidUndoRecPtr;
+			XactUndo.last_size[UNDOPERSISTENCE_PERMANENT] = 0;
+			XactUndo.last_size[UNDOPERSISTENCE_UNLOGGED] = 0;
+			XactUndo.total_size[UNDOPERSISTENCE_PERMANENT] = 0;
+			XactUndo.total_size[UNDOPERSISTENCE_UNLOGGED] = 0;
 		}
 
-		/*
-		 * Permanent and unloged undo in the background, but temporary undo is
-		 * still our problem.
-		 */
-		XactUndo.my_request = NULL;
-		XactUndo.subxact->start_location[UNDOPERSISTENCE_PERMANENT] = InvalidUndoRecPtr;
-		XactUndo.subxact->start_location[UNDOPERSISTENCE_UNLOGGED] = InvalidUndoRecPtr;
-		XactUndo.last_location[UNDOPERSISTENCE_PERMANENT] = InvalidUndoRecPtr;
-		XactUndo.last_location[UNDOPERSISTENCE_UNLOGGED] = InvalidUndoRecPtr;
-		XactUndo.last_size[UNDOPERSISTENCE_PERMANENT] = 0;
-		XactUndo.last_size[UNDOPERSISTENCE_UNLOGGED] = 0;
-		XactUndo.total_size[UNDOPERSISTENCE_PERMANENT] = 0;
-		XactUndo.total_size[UNDOPERSISTENCE_UNLOGGED] = 0;
+		/* Poke the undo launcher, if it's hibernating. */
+		DisturbUndoLauncherHibernation();
 	}
 
 	/* Instruct caller to perform foreground undo, if possible. */

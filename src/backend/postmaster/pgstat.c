@@ -3670,6 +3670,9 @@ pgstat_get_wait_activity(WaitEventActivity w)
 		case WAIT_EVENT_SYSLOGGER_MAIN:
 			event_name = "SysLoggerMain";
 			break;
+		case WAIT_EVENT_UNDO_LAUNCHER_MAIN:
+			event_name = "UndoLauncherMain";
+			break;
 		case WAIT_EVENT_WAL_RECEIVER_MAIN:
 			event_name = "WalReceiverMain";
 			break;

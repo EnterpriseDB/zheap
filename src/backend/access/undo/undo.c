@@ -24,6 +24,7 @@
 #include "access/undo.h"
 #include "access/undolog.h"
 #include "access/undorecordset.h"
+#include "access/undoworker.h"
 #include "access/xactundo.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -67,6 +68,7 @@ UndoShmemSize(void)
 
 	size = UndoLogShmemSize();
 	size = add_size(size, XactUndoShmemSize());
+	size = add_size(size, UndoWorkerShmemSize());
 
 	return size;
 }
@@ -97,6 +99,7 @@ UndoShmemInit(void)
 	/* Now give various undo subsystems a chance to initialize. */
 	UndoLogShmemInit();
 	XactUndoShmemInit();
+	UndoWorkerShmemInit();
 }
 
 /*

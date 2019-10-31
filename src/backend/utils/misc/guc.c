@@ -32,6 +32,7 @@
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undoworker.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "catalog/namespace.h"
@@ -3193,6 +3194,27 @@ static struct config_int ConfigureNamesInt[] =
 		&tcp_user_timeout,
 		0, 0, INT_MAX,
 		NULL, assign_tcp_user_timeout, show_tcp_user_timeout
+	},
+
+	{
+		{"undo_naptime", PGC_SIGHUP, UNDO_OPTIONS,
+			gettext_noop("Minimum time before a new undo apply worker is launched."),
+			NULL,
+			GUC_UNIT_S
+		},
+		&undo_naptime,
+		5, 1, INT_MAX / 1000,
+		NULL, NULL, NULL
+	},
+	{
+		{"max_undo_workers", PGC_SIGHUP, UNDO_OPTIONS,
+			gettext_noop("Maximum number of undo apply workers."),
+			NULL,
+			GUC_UNIT_S
+		},
+		&max_undo_workers,
+		3, 1, MAX_UNDO_WORKER_LIMIT,
+		NULL, NULL, NULL
 	},
 
 	/* End-of-list marker */

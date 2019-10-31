@@ -59,12 +59,13 @@
 #define BGWORKER_BACKEND_DATABASE_CONNECTION		0x0002
 
 /*
- * This class is used internally for parallel queries, to keep track of the
- * number of active parallel workers and make sure we never launch more than
- * max_parallel_workers parallel workers at the same time.  Third party
- * background workers should not use this class.
+ * These classes are used internally; they let us keep track of the number
+ * of workers that are active for particular purposes, so that we never launch
+ * too many workers at the same time.  Third party background workers should
+ * not specify a class.
  */
 #define BGWORKER_CLASS_PARALLEL					0x0010
+#define BGWORKER_CLASS_UNDO						0x0020
 /* add additional bgworker classes here */
 
 

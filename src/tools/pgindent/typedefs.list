@@ -2540,6 +2540,7 @@ ULONG
 ULONG_PTR
 UV
 UVersionInfo
+UndoLauncherData
 UndoRecPtr
 UndoRequest
 UndoRequestManager

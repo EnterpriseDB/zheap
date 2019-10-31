@@ -600,6 +600,12 @@
 					# autovacuum, -1 means use
 					# vacuum_cost_limit
 
+#------------------------------------------------------------------------------
+# UNDO
+#------------------------------------------------------------------------------
+
+#undo_naptime = '5s'			# minimum time between undo worker launches
+#max_undo_workers = 3			# maximum number of undo workers
 
 #------------------------------------------------------------------------------
 # CLIENT CONNECTION DEFAULTS

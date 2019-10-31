@@ -16,6 +16,7 @@
 
 #include "libpq/pqsignal.h"
 #include "access/parallel.h"
+#include "access/undoworker.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "port/atomics.h"
@@ -85,12 +86,13 @@ typedef struct BackgroundWorkerSlot
 
 /*
  * In order to limit the total number of parallel workers (according to
- * max_parallel_workers GUC), we maintain the number of active parallel
- * workers.  Since the postmaster cannot take locks, two variables are used for
- * this purpose: the number of registered parallel workers (modified by the
- * backends, protected by BackgroundWorkerLock) and the number of terminated
- * parallel workers (modified only by the postmaster, lockless).  The active
- * number of parallel workers is the number of registered workers minus the
+ * max_parallel_workers GUC) and similarly the number of undo workers
+ * (according to the max_undo_workers GUC), we maintain the number of active
+ * workers in each class. Since the postmaster cannot take locks, two variables
+ * per class are used for this purpose: the number of registered workers
+ * (modified by the backends, protected by BackgroundWorkerLock) and the number
+ * of terminated workers (modified only by the postmaster, lockless).  The
+ * active number of workers is the number of registered workers minus the
  * terminated ones.  These counters can of course overflow, but it's not
  * important here since the subtraction will still give the right number.
  */
@@ -99,6 +101,8 @@ typedef struct BackgroundWorkerArray
 	int			total_slots;
 	uint32		parallel_register_count;
 	uint32		parallel_terminate_count;
+	uint32		undo_register_count;
+	uint32		undo_terminate_count;
 	BackgroundWorkerSlot slot[FLEXIBLE_ARRAY_MEMBER];
 } BackgroundWorkerArray;
 
@@ -129,6 +133,12 @@ static const struct
 	},
 	{
 		"ApplyWorkerMain", ApplyWorkerMain
+	},
+	{
+		"UndoLauncherMain", UndoLauncherMain
+	},
+	{
+		"UndoWorkerMain", UndoWorkerMain
 	}
 };
 
@@ -311,12 +321,14 @@ BackgroundWorkerStateChange(void)
 
 			/*
 			 * We need a memory barrier here to make sure that the load of
-			 * bgw_notify_pid and the update of parallel_terminate_count
+			 * bgw_notify_pid and the updates of any terminate counts
 			 * complete before the store to in_use.
 			 */
 			notify_pid = slot->worker.bgw_notify_pid;
 			if ((slot->worker.bgw_flags & BGWORKER_CLASS_PARALLEL) != 0)
 				BackgroundWorkerData->parallel_terminate_count++;
+			if ((slot->worker.bgw_flags & BGWORKER_CLASS_UNDO) != 0)
+				BackgroundWorkerData->undo_terminate_count++;
 			pg_memory_barrier();
 			slot->pid = 0;
 			slot->in_use = false;
@@ -420,6 +432,8 @@ ForgetBackgroundWorker(slist_mutable_iter *cur)
 	slot = &BackgroundWorkerData->slot[rw->rw_shmem_slot];
 	if ((rw->rw_worker.bgw_flags & BGWORKER_CLASS_PARALLEL) != 0)
 		BackgroundWorkerData->parallel_terminate_count++;
+	if ((rw->rw_worker.bgw_flags & BGWORKER_CLASS_UNDO) != 0)
+		BackgroundWorkerData->undo_terminate_count++;
 
 	slot->in_use = false;
 
@@ -536,13 +550,14 @@ ResetBackgroundWorkerCrashTimes(void)
 		else
 		{
 			/*
-			 * The accounting which we do via parallel_register_count and
-			 * parallel_terminate_count would get messed up if a worker marked
-			 * parallel could survive a crash and restart cycle. All such
-			 * workers should be marked BGW_NEVER_RESTART, and thus control
-			 * should never reach this branch.
+			 * The accounting which we do to avoid launching too many parallel
+			 * or undo workers would get messed up if a worker launched for one
+			 * of those purposes could survive a crash and restart cycle. All
+			 * such workers should be marked BGW_NEVER_RESTART, and thus
+			 * control should never reach this branch.
 			 */
 			Assert((rw->rw_worker.bgw_flags & BGWORKER_CLASS_PARALLEL) == 0);
+			Assert((rw->rw_worker.bgw_flags & BGWORKER_CLASS_UNDO) == 0);
 
 			/*
 			 * Allow this worker to be restarted immediately after we finish
@@ -618,18 +633,28 @@ SanityCheckBackgroundWorker(BackgroundWorker *worker, int elevel)
 	}
 
 	/*
-	 * Parallel workers may not be configured for restart, because the
-	 * parallel_register_count/parallel_terminate_count accounting can't
-	 * handle parallel workers lasting through a crash-and-restart cycle.
+	 * Parallel or undo workers may not be configured for restart, because the
+	 * accounting that tries to avoid launching more of them than permitted
+	 * can't handle such workers lasting through a crash-and-restart cycle.
 	 */
-	if (worker->bgw_restart_time != BGW_NEVER_RESTART &&
-		(worker->bgw_flags & BGWORKER_CLASS_PARALLEL) != 0)
+	if (worker->bgw_restart_time != BGW_NEVER_RESTART)
 	{
-		ereport(elevel,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("background worker \"%s\": parallel workers may not be configured for restart",
-						worker->bgw_name)));
-		return false;
+		if ((worker->bgw_flags & BGWORKER_CLASS_PARALLEL) != 0)
+		{
+			ereport(elevel,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("background worker \"%s\": parallel workers may not be configured for restart",
+							worker->bgw_name)));
+			return false;
+		}
+		if ((worker->bgw_flags & BGWORKER_CLASS_UNDO) != 0)
+		{
+			ereport(elevel,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("background worker \"%s\": undo workers may not be configured for restart",
+							worker->bgw_name)));
+			return false;
+		}
 	}
 
 	/*
@@ -935,6 +960,7 @@ RegisterDynamicBackgroundWorker(BackgroundWorker *worker,
 	int			slotno;
 	bool		success = false;
 	bool		parallel;
+	bool		undo;
 	uint64		generation = 0;
 
 	/*
@@ -952,6 +978,7 @@ RegisterDynamicBackgroundWorker(BackgroundWorker *worker,
 		return false;
 
 	parallel = (worker->bgw_flags & BGWORKER_CLASS_PARALLEL) != 0;
+	undo = (worker->bgw_flags & BGWORKER_CLASS_UNDO) != 0;
 
 	LWLockAcquire(BackgroundWorkerLock, LW_EXCLUSIVE);
 
@@ -976,6 +1003,21 @@ RegisterDynamicBackgroundWorker(BackgroundWorker *worker,
 	}
 
 	/*
+	 * If this is an undo worker, similarly check whether it's OK to launch
+	 * another one.
+	 */
+	if (undo && (BackgroundWorkerData->undo_register_count -
+				 BackgroundWorkerData->undo_terminate_count) >=
+		max_undo_workers)
+	{
+		Assert(BackgroundWorkerData->undo_register_count -
+			   BackgroundWorkerData->undo_terminate_count <=
+			   MAX_UNDO_WORKER_LIMIT);
+		LWLockRelease(BackgroundWorkerLock);
+		return false;
+	}
+
+	/*
 	 * Look for an unused slot.  If we find one, grab it.
 	 */
 	for (slotno = 0; slotno < BackgroundWorkerData->total_slots; ++slotno)
@@ -991,6 +1033,8 @@ RegisterDynamicBackgroundWorker(BackgroundWorker *worker,
 			generation = slot->generation;
 			if (parallel)
 				BackgroundWorkerData->parallel_register_count++;
+			if (undo)
+				BackgroundWorkerData->undo_register_count++;
 
 			/*
 			 * Make sure postmaster doesn't see the slot as in use before it

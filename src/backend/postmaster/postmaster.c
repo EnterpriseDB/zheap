@@ -94,6 +94,7 @@
 #endif
 
 #include "access/transam.h"
+#include "access/undoworker.h"
 #include "access/xlog.h"
 #include "bootstrap/bootstrap.h"
 #include "catalog/pg_control.h"
@@ -981,6 +982,9 @@ PostmasterMain(int argc, char *argv[])
 	 * background worker slots.
 	 */
 	ApplyLauncherRegister();
+
+	/* Similarly for the undo launcher. */
+	RegisterUndoLauncher();
 
 	/*
 	 * process any libraries that should be preloaded at postmaster start

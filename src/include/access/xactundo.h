@@ -13,7 +13,9 @@
 #define XACTUNDO_H
 
 #include "access/undodefs.h"
+#include "access/xactundo.h"
 #include "access/xlogdefs.h"
+#include "datatype/timestamp.h"
 #include "lib/stringinfo.h"
 
 typedef struct XactUndoContext
@@ -40,6 +42,7 @@ extern void InsertXactUndoData(XactUndoContext *ctx, uint8 first_block_id);
 extern void SetXactUndoPageLSNs(XactUndoContext *ctx, XLogRecPtr lsn);
 extern void CleanupXactUndoInsertion(XactUndoContext *ctx);
 
+extern long XactUndoWaitTime(TimestampTz now);
 extern Oid InitializeBackgroundXactUndo(bool minimum_runtime_reached);
 extern void FinishBackgroundUndo(void);
 
