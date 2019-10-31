@@ -14,6 +14,7 @@
 #include "postgres.h"
 
 #include "access/undoworker.h"
+#include "access/xact.h"
 #include "access/xactundo.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -153,8 +154,7 @@ UndoLauncherMain(Datum main_arg)
 	TimestampTz	sleep_until_time;
 
 	/* Announce that we are running. */
-	ereport(DEBUG1,
-			(errmsg("undo launcher started")));
+	elog(DEBUG1, "undo launcher started");
 
 	/* Configure appropriate signal handling. */
 	pqsignal(SIGHUP, PostgresSigHupHandler);
@@ -184,13 +184,7 @@ UndoLauncherMain(Datum main_arg)
 		ResetLatch(MyLatch);
 		CHECK_FOR_INTERRUPTS();
 
-		/*
-		 * Reload configuration, if required.
-		 *
-		 * If we do reload the configuration, recompute the earliest and
-		 * latest possible worker launch times, since undo_minimum_naptime or
-		 * undo_naptime might have changed.
-		 */
+		/* Reload configuration, if required. */
 		if (ConfigReloadPending)
 		{
 			ConfigReloadPending = false;
@@ -350,9 +344,83 @@ UndoLaunchWorker(void)
 void
 UndoWorkerMain(Datum main_arg)
 {
-	/* XXX. Perhaps we should really do some work. */
-	elog(LOG, "pretending to perform undo work");
+	TimestampTz		start_time = GetCurrentTimestamp();
+	bool			minimum_runtime_reached = false;
 
+	/* Announce that we are running. */
+	elog(DEBUG2, "undo worker started");
+
+	/* Configure appropriate signal handling. */
+	pqsignal(SIGHUP, PostgresSigHupHandler);
+	pqsignal(SIGTERM, die);
+	BackgroundWorkerUnblockSignals();
+
+	/* Main loop. */
+	for (;;)
+	{
+		Oid		dbid;
+
+		CHECK_FOR_INTERRUPTS();
+
+		/* Reload configuration, if required. */
+		if (ConfigReloadPending)
+		{
+			ConfigReloadPending = false;
+			ProcessConfigFile(PGC_SIGHUP);
+		}
+
+		/* Try to acquire an undo request for processing. */
+		dbid = InitializeBackgroundXactUndo(minimum_runtime_reached);
+		if (!OidIsValid(dbid))
+			break;
+
+		/*
+		 * If this is the first undo request we've acquired, we need to
+		 * connect to the appropriate database. (InitializeBackgroundXactUndo
+		 * will never give us a request from a database other than the one
+		 * to which we are connected, but the first request is unconstrained
+		 * because we don't have a database connection yet.)
+		 */
+		if (!OidIsValid(MyDatabaseId))
+			BackgroundWorkerInitializeConnectionByOid(dbid, InvalidOid, 0);
+
+		/* Sanity check. */
+		Assert(dbid == MyDatabaseId);
+
+		/* Now do the work. */
+		PerformBackgroundUndo();
+
+		/* Job's done! */
+		FinishBackgroundXactUndo();
+
+		/*
+		 * See whether we've reached the minimum runtime. If so, future
+		 * calls to InitializeBackgroundXactUndo won't acquire a new request
+		 * unless one of the next requests in priority order is for this
+		 * database.
+		 *
+		 * For now, the minimum runtime is just the same as undo_naptime.
+		 * The point here is to avoid starting and stopping workers at high
+		 * speed if the undo requests are small in terms of processing time
+		 * and spread across multiple databases. So, when we've only run for
+		 * a short time, we're willing to work harder to find a request from
+		 * the current database. When we've run for a longer time, it's
+		 * better to exit so that a new worker can be launched and connect
+		 * to the database in which the highest-priority request is to be
+		 * found.
+		 */
+		if (!minimum_runtime_reached)
+		{
+			TimestampTz	now = GetCurrentTimestamp();
+
+			if (TimestampDifferenceExceeds(start_time, now,
+										   undo_naptime * 1000L))
+				minimum_runtime_reached = true;
+			elog(DEBUG4, "undo worker has reached minimum runtime");
+		}
+	}
+
+	elog(DEBUG2, "undo worker exiting");
 	proc_exit(0);
 }
 

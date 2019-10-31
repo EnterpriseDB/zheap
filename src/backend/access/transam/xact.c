@@ -5303,6 +5303,23 @@ PerformForegroundUndo(void)
 }
 
 /*
+ * PerformBackgroundUndo
+ *
+ * This is much simpler than PerformForegroundUndo because we're not in the
+ * middle of an abort; indeed, we shouldn't be in a transaction at all.
+ */
+void
+PerformBackgroundUndo(void)
+{
+	TransactionState s = CurrentTransactionState;
+
+	StartTransaction();
+	s->state = TRANS_UNDO;
+	PerformUndoActions(s->nestingLevel);
+	CommitTransaction();
+}
+
+/*
  * BeginUndoTransactionContext
  *
  * Before we try to apply undo, we need to establish a safe environment

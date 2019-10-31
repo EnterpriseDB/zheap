@@ -397,6 +397,7 @@ extern Size EstimateTransactionStateSpace(void);
 extern void SerializeTransactionState(Size maxsize, char *start_address);
 extern void StartParallelWorkerTransaction(char *tstatespace);
 extern void EndParallelWorkerTransaction(void);
+extern void PerformBackgroundUndo(void);
 extern bool IsTransactionBlock(void);
 extern bool IsTransactionOrTransactionBlock(void);
 extern char TransactionBlockStatusCode(void);
