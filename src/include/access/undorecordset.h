@@ -47,17 +47,19 @@ extern UndoRecordSet *UndoCreate(UndoRecordSetType type, char presistence,
 								 char *type_header);
 extern bool UndoPrepareToMarkClosed(UndoRecordSet *urs);
 extern void UndoMarkClosed(UndoRecordSet *urs);
-extern UndoRecPtr UndoAllocate(UndoRecordSet *urs, size_t size);
-extern void UndoInsert(UndoRecordSet *urs, uint8 first_block_id, void *data,
-					   size_t size);
+extern UndoRecPtr UndoPrepareToInsert(UndoRecordSet *urs, size_t record_size);
+extern void UndoInsert(UndoRecordSet *urs,
+					   uint8 first_block_id,
+					   void *record_data,
+					   size_t record_size);
 extern void UndoPageSetLSN(UndoRecordSet *urs, XLogRecPtr lsn);
 extern void UndoRelease(UndoRecordSet *urs);
 extern void UndoDestroy(UndoRecordSet *urs);
 
 /* recovery */
-extern void UndoUpdateInRecovery(XLogReaderState *xlog_record);
-extern UndoRecPtr UndoInsertInRecovery(XLogReaderState *xlog_record,
-									   void *data, size_t size);
+extern UndoRecPtr UndoReplay(XLogReaderState *xlog_record,
+							 void *record_data,
+							 size_t record_size);
 
 /* transaction integration */
 extern void UndoResetInsertion(void);

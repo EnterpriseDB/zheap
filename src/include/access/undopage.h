@@ -118,4 +118,9 @@ extern int UndoPageInsertRecord(Page page, int page_offset, int data_offset,
 extern int UndoPageOverwrite(Page page, int page_offset, int data_offset,
 							 Size data_size, char *data);
 
+extern int UndoPageSkipHeader(int page_offset, int header_offset,
+							  size_t type_header_size);
+extern int UndoPageSkipRecord(int page_offset, int data_offset,
+							  size_t data_size);
+
 #endif

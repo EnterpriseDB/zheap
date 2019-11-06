@@ -268,7 +268,7 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 	 * Find sufficient space for this undo insertion and lock the necessary
 	 * buffers.
 	 */
-	result = UndoAllocate(urs, size);
+	result = UndoPrepareToInsert(urs, size);
 
 	/*
 	 * If this is the first undo for this persistence level in this
