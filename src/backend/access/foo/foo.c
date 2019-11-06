@@ -95,6 +95,7 @@ foo_close(PG_FUNCTION_ARGS)
 		START_CRIT_SECTION();
 		XLogBeginInsert();
 		UndoMarkClosed(current_urs);
+		UndoXLogRegisterBuffers(current_urs);
 		XLogRegisterData((char *) &record, sizeof(record));
 		lsn = XLogInsert(RM_FOO_ID, XLOG_FOO_PING);
 		UndoPageSetLSN(current_urs, lsn);
@@ -135,9 +136,11 @@ foo_write(PG_FUNCTION_ARGS)
 	 * because it registers the undo buffers with the following WAL record.
 	 */
 	UndoInsert(current_urs, 0, string, length + 1);
+	UndoXLogRegisterBuffers(current_urs);
 
 	/* Write the string into the WAL so we can replay this. */
 	XLogRegisterData((char *) string, length + 1);
+
 	lsn = XLogInsert(RM_FOO_ID, XLOG_FOO_STRING);
 
 	/* Update the undo pages' LSN so that the WAL will be flushed first. */
@@ -176,6 +179,7 @@ foo_createwriteclose(PG_FUNCTION_ARGS)
 	XLogBeginInsert();
 	UndoInsert(urs, 0, string, length + 1);
 	UndoMarkClosed(urs);
+	UndoXLogRegisterBuffers(urs);
 	XLogRegisterData((char *) string, length + 1);
 	lsn = XLogInsert(RM_FOO_ID, XLOG_FOO_CREATEWRITECLOSE);
 	UndoPageSetLSN(urs, lsn);

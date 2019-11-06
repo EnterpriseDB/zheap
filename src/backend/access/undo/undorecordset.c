@@ -58,8 +58,10 @@ typedef struct UndoBuffer
 	Buffer			buffer;
 	bool			is_new;
 	bool			needs_init;
+	/*
 	bool			needs_dirty;
 	bool			needs_xlog_reg;
+	*/
 	UndoRecordSetXLogBufData bufdata;
 } UndoBuffer;
 
@@ -192,9 +194,6 @@ find_or_read_buffer(UndoRecordSet *urs, UndoLogNumber logno, BlockNumber block)
 								  RBM_NORMAL,
 								  NULL,
 								  urs->persistence);
-	urs->buffers[urs->nbuffers].needs_dirty = true;
-	if (URSNeedsWAL(urs))
-		urs->buffers[urs->nbuffers].needs_xlog_reg = true;
 	LockBuffer(urs->buffers[urs->nbuffers].buffer, BUFFER_LOCK_EXCLUSIVE);
 
 	return urs->nbuffers++;
@@ -263,20 +262,6 @@ UndoMarkPageClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk, int chbidx,
 	memcpy((char *) BufferGetPage(buffer) + page_offset,
 		   (char *) &size + data_offset,
 		   bytes_on_this_page);
-
-	/* Mark the buffer dirty, if not yet done. */
-	if (urs->buffers[index].needs_dirty)
-	{
-		MarkBufferDirty(buffer);
-		urs->buffers[index].needs_dirty = false;
-	}
-
-	/* Register the buffer with XLOG system, if needed and not yet done. */
-	if (urs->buffers[index].needs_xlog_reg)
-	{
-		XLogRegisterBuffer(urs->first_block_id + index, buffer, 0);
-		urs->buffers[index].needs_xlog_reg = false;
-	}
 
 	return bytes_on_this_page;
 }
@@ -505,15 +490,6 @@ UndoPrepareToInsert(UndoRecordSet *urs, size_t record_size)
 		memset(&urs->buffers[urs->nbuffers], 0, sizeof(urs->buffers[0]));
 
 		/*
-		 * We always need to mark the buffer dirty when we first modify it.
-		 * If this is a permanent relation, we also need to register it with
-		 * the XLOG machinery.
-		 */
-		urs->buffers[urs->nbuffers].needs_dirty = true;
-		if (URSNeedsWAL(urs))
-			urs->buffers[urs->nbuffers].needs_xlog_reg = true;
-
-		/*
 		 * If we are writing the first data into this page, we don't need to
 		 * read it from disk.  We can just get a zeroed buffer and initialize
 		 * it.
@@ -589,38 +565,6 @@ init_if_needed(UndoBuffer *ubuf)
 }
 
 static void
-mark_dirty_if_needed(UndoBuffer *ubuf)
-{
-	if (ubuf->needs_dirty)
-	{
-		MarkBufferDirty(ubuf->buffer);
-		ubuf->needs_dirty = false;
-	}
-}
-
-static void
-register_buffer_if_needed(UndoBuffer *ubuf,
-						  uint8 first_block_id,
-						  int buffer_index)
-{
-	if (ubuf->needs_xlog_reg)
-	{
-		XLogRegisterBuffer(first_block_id + buffer_index,
-						   ubuf->buffer,
-						   ubuf->is_new ? REGBUF_WILL_INIT : 0);
-		ubuf->needs_xlog_reg = false;
-	}
-}
-
-static void
-register_bufdata(UndoBuffer *ubuf, uint8 first_block_id, int buffer_index)
-{
-	if (ubuf->bufdata.flags != 0)
-		EncodeUndoRecordSetXLogBufData(&ubuf->bufdata,
-									   first_block_id + buffer_index);
-}
-
-static void
 register_insertion_point_if_needed(UndoBuffer *ubuf, uint16 insertion_point)
 {
 	/*
@@ -632,7 +576,6 @@ register_insertion_point_if_needed(UndoBuffer *ubuf, uint16 insertion_point)
 	{
 		ubuf->bufdata.insertion_point = insertion_point;
 		ubuf->bufdata.flags |= URS_XLOG_INSERTION;
-		elog(NOTICE, "registered insertion point %d", (int) insertion_point);
 	}
 }
 
@@ -656,7 +599,6 @@ UndoInsert(UndoRecordSet *urs,
 	int type_header_size = urs->need_type_header ? urs->type_header_size : 0;
 	int chunk_header_size = urs->need_chunk_header ? SizeOfUndoRecordSetChunkHeader : 0;
 	int all_header_size = type_header_size + chunk_header_size;
-	bool registered_bufdata = false;
 
 	Assert(!InRecovery);
 	Assert(CritSectionCount > 0);
@@ -720,16 +662,6 @@ UndoInsert(UndoRecordSet *urs,
 									 urs->need_type_header ? type_header_size : 0,
 									 urs->need_type_header ? urs->type_header : NULL,
 									 urs->chunk_start);
-			mark_dirty_if_needed(ubuf);
-			register_buffer_if_needed(ubuf, first_block_id, buffer_index);
-			if (URSNeedsWAL(urs))
-			{
-				/* TODO: we need to defer this, because a later
-				 * UndoMarkClosed() needs to be able to add some more
-				 * information to it! */
-				register_bufdata(ubuf, first_block_id, buffer_index);
-				registered_bufdata = true;
-			}
 			page_offset += bytes_written;
 			input_offset += bytes_written;
 			if (page_offset == BLCKSZ)
@@ -760,10 +692,6 @@ UndoInsert(UndoRecordSet *urs,
 								 record_data,
 								 urs->chunk_start,
 								 urs->type);
-		mark_dirty_if_needed(ubuf);
-		register_buffer_if_needed(ubuf, first_block_id, buffer_index);
-		if (URSNeedsWAL(urs) && !registered_bufdata)
-			register_bufdata(ubuf, first_block_id, buffer_index);
 		page_offset += bytes_written;
 		input_offset += bytes_written;
 		if (page_offset == BLCKSZ)
@@ -1055,6 +983,40 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 	pfree(buffers);
 
 	return result;
+}
+
+/*
+ * Register all undo buffers touched by a single WAL record.  This must be
+ * done after an UndoInsert() and any UndoMarkClosed() calls, but before
+ * calling XLogInsert().
+ *
+ * This should be called even for non-permanent persistence levels, because
+ * it's also used to mark buffers dirty.
+ */
+void
+UndoXLogRegisterBuffers(UndoRecordSet *urs)
+{
+
+	for (int i = 0; i < urs->nbuffers; ++i)
+	{
+		UndoBuffer *ubuf = &urs->buffers[i];
+
+		/*
+		 * It's OK that we waited until now to mark the buffers as dirty,
+		 * because they're all locked.
+		 */
+		MarkBufferDirty(ubuf->buffer);
+
+		if (URSNeedsWAL(urs))
+		{
+			XLogRegisterBuffer(urs->first_block_id + i,
+							   ubuf->buffer,
+							   ubuf->is_new ? REGBUF_WILL_INIT : 0);
+			if (ubuf->bufdata.flags != 0)
+				EncodeUndoRecordSetXLogBufData(&ubuf->bufdata,
+											   urs->first_block_id + i);
+		}
+	}
 }
 
 /*

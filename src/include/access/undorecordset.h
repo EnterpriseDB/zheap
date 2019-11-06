@@ -55,6 +55,7 @@ extern void UndoInsert(UndoRecordSet *urs,
 extern void UndoPageSetLSN(UndoRecordSet *urs, XLogRecPtr lsn);
 extern void UndoRelease(UndoRecordSet *urs);
 extern void UndoDestroy(UndoRecordSet *urs);
+extern void UndoXLogRegisterBuffers(UndoRecordSet *urs);
 
 /* recovery */
 extern UndoRecPtr UndoReplay(XLogReaderState *xlog_record,
