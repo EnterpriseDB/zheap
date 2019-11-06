@@ -8,6 +8,7 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = pg_waldump.o compat.o xlogreader.o rmgrdesc.o \
+	undorecordset_xlog.o \
 	$(RMGRDESCOBJS) $(WIN32RES)
 
 override CPPFLAGS := -DFRONTEND $(CPPFLAGS)
@@ -22,6 +23,9 @@ pg_waldump: $(OBJS) | submake-libpgport
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)
 
 xlogreader.c: % : $(top_srcdir)/src/backend/access/transam/%
+	rm -f $@ && $(LN_S) $< .
+
+undorecordset_xlog.c: % : $(top_srcdir)/src/backend/access/undo/%
 	rm -f $@ && $(LN_S) $< .
 
 $(RMGRDESCSOURCES): % : $(top_srcdir)/src/backend/access/rmgrdesc/%

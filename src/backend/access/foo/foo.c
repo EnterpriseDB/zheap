@@ -62,6 +62,7 @@ foo_create(PG_FUNCTION_ARGS)
 	current_urs = UndoCreate(URST_FOO, *persistence,
 							 GetCurrentTransactionNestLevel(),
 							 4, urs_header);
+	elog(INFO, "XXX %p", current_urs);
 	current_urs_subid = GetCurrentSubTransactionId();
 	MemoryContextSwitchTo(old_context);
 
@@ -123,15 +124,15 @@ foo_write(PG_FUNCTION_ARGS)
 	 * runs, physical space is reserved and the buffers we need are all
 	 * pinned and locked.
 	 */
-	urp = UndoAllocate(current_urs, length + 1);
+	urp = UndoPrepareToInsert(current_urs, length + 1);
 
 	START_CRIT_SECTION();
 
 	XLogBeginInsert();
 
 	/*
-	 * Write the string into the undo log.  We do this first, because it
-	 * registers the undo buffers with the following WAL record.
+	 * Write the string into the undo log as a "record".  We do this first,
+	 * because it registers the undo buffers with the following WAL record.
 	 */
 	UndoInsert(current_urs, 0, string, length + 1);
 
@@ -168,7 +169,7 @@ foo_createwriteclose(PG_FUNCTION_ARGS)
 
 	urs = UndoCreate(URST_FOO, 'p', GetCurrentTransactionNestLevel(),
 					 4, urs_header);
-	urp = UndoAllocate(urs, length + 1);
+	urp = UndoPrepareToInsert(urs, length + 1);
 	UndoPrepareToMarkClosed(urs);
 
 	START_CRIT_SECTION();
@@ -190,13 +191,13 @@ foo_xlog_string(XLogReaderState *record)
 {
 	char *string = XLogRecGetData(record);
 
-	UndoInsertInRecovery(record, string, strlen(string) + 1);
+	UndoReplay(record, string, strlen(string) + 1);
 }
 
 static void
 foo_xlog_ping(XLogReaderState *record)
 {
-	UndoUpdateInRecovery(record);
+	UndoReplay(record, NULL, 0);
 }
 
 static void
@@ -204,8 +205,7 @@ foo_xlog_createwriteclose(XLogReaderState *record)
 {
 	char *string = XLogRecGetData(record);
 
-	UndoInsertInRecovery(record, string, strlen(string) + 1);
-	UndoUpdateInRecovery(record);
+	UndoReplay(record, string, strlen(string) + 1);
 }
 
 void

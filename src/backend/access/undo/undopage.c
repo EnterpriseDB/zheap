@@ -113,7 +113,7 @@ UndoPageInsertHeader(Page page, int page_offset, int header_offset,
 	}
 
 	/* New insertion point follows the data we've written. */
-	uph->ud_insertion_point = page_offset;
+	uph->ud_insertion_point += data_bytes;
 
 	/*
 	 * If the header we're writing starts on this page, and this page doesn't
@@ -248,4 +248,30 @@ UndoPageOverwrite(Page page, int page_offset, int data_offset, Size data_size,
 	memcpy(page + page_offset, data + data_offset, data_bytes);
 
 	return data_bytes;
+}
+
+int
+UndoPageSkipHeader(int page_offset, int header_offset, size_t type_header_size)
+{
+	size_t all_header_size = SizeOfUndoRecordSetChunkHeader + type_header_size;
+
+	/* Must not overwrite the page header. */
+	Assert(page_offset >= SizeOfUndoPageHeaderData);
+
+	/* Must not overrun the end of the page. */
+	Assert(page_offset < BLCKSZ);
+
+	return Min(BLCKSZ - page_offset, all_header_size);
+}
+
+int
+UndoPageSkipRecord(int page_offset, int data_offset, size_t data_size)
+{
+	/* Must not overwrite the page header. */
+	Assert(page_offset >= SizeOfUndoPageHeaderData);
+
+	/* Must not overrun the end of the page. */
+	Assert(page_offset < BLCKSZ);
+
+	return Min(BLCKSZ - page_offset, data_size);
 }

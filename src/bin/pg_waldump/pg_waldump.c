@@ -16,10 +16,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "access/undorecordset.h"
+#include "access/undorecordset_xlog.h"
 #include "access/xlogreader.h"
 #include "access/xlogrecord.h"
 #include "access/xlog_internal.h"
 #include "access/transam.h"
+#include "catalog/database_internal.h"
 #include "common/fe_memutils.h"
 #include "common/logging.h"
 #include "getopt_long.h"
@@ -461,6 +464,31 @@ XLogDumpRecordLen(XLogReaderState *record, uint32 *rec_len, uint32 *fpi_len)
 	*rec_len = XLogRecGetTotalLen(record) - *fpi_len;
 }
 
+static void
+PrintUndoBufData(XLogReaderState *record, uint8 block_id)
+{
+	DecodedBkpBlock *block = &record->blocks[block_id];
+	UndoRecordSetXLogBufData bufdata;
+
+	if (!block->in_use || block->rnode.dbNode != UndoDbOid)
+		return;
+
+	if (!DecodeUndoRecordSetXLogBufData(&bufdata, record, block_id))
+	{
+		printf(" [error decoding undo buf data]");
+		return;
+	}
+
+	if (bufdata.flags & URS_XLOG_CREATE)
+		printf(" URS_XLOG_CREATE");
+	if (bufdata.flags & URS_XLOG_INSERTION)
+		printf(" URS_XLOG_INSERTION (%d)", (int) bufdata.insertion_point);
+	if (bufdata.flags & URS_XLOG_ADD_CHUNK)
+		printf(" URS_XLOG_ADD_CHUNK");
+	if (bufdata.flags & URS_XLOG_CLOSE_CHUNK)
+		printf(" URS_XLOG_CLOSE");
+}
+
 /*
  * Store per-rmgr and per-record statistics for a given record.
  */
@@ -560,6 +588,7 @@ XLogDumpDisplayRecord(XLogDumpConfig *config, XLogReaderState *record)
 				else
 					printf(" FPW for WAL verification");
 			}
+			PrintUndoBufData(record, block_id);
 		}
 		putchar('\n');
 	}
@@ -602,6 +631,7 @@ XLogDumpDisplayRecord(XLogDumpConfig *config, XLogReaderState *record)
 						   record->blocks[block_id].hole_length);
 				}
 			}
+			PrintUndoBufData(record, block_id);
 			putchar('\n');
 		}
 	}
