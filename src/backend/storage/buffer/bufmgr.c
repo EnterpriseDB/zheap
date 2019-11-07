@@ -36,6 +36,7 @@
 #include "access/tableam.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
+#include "catalog/database_internal.h"
 #include "catalog/storage.h"
 #include "executor/instrument.h"
 #include "lib/binaryheap.h"
@@ -917,7 +918,12 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			}
 
 			/* check for garbage data */
-			if (!PageIsVerified((Page) bufBlock, blockNum))
+			// Cannot check undo pages using PageIsVerified(), it assumes a
+			// standard page header.
+			// AFIXME: this needs to be moved into PageIsVerified() and check
+			// the undo header instead.
+			if (smgr->smgr_rnode.node.dbNode != UndoDbOid &&
+				!PageIsVerified((Page) bufBlock, blockNum))
 			{
 				if (mode == RBM_ZERO_ON_ERROR || zero_damaged_pages)
 				{
