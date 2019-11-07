@@ -1140,6 +1140,27 @@ UndoMarkClosedForXactLevel(int nestingLevel)
 }
 
 /*
+ * Register XLog buffers for all UndoRecordSets for this transaction level.
+ *
+ * This should be called from within the critical section, during WAL record
+ * construction.
+ */
+void
+UndoXLogRegisterBuffersForXactLevel(int nestingLevel)
+{
+	slist_iter	iter;
+
+	slist_foreach(iter, &UndoRecordSetList)
+	{
+		UndoRecordSet *urs = slist_container(UndoRecordSet, link, iter.cur);
+
+		if (nestingLevel <= urs->nestingLevel &&
+			urs->state == URS_STATE_DIRTY)
+			UndoXLogRegisterBuffers(urs);
+	}
+}
+
+/*
  * Set page LSNs for all UndoRecordSets for this transaction level.
  *
  * Like UndoPageSetLSN, this should be called just after XLogInsert.
@@ -1236,9 +1257,13 @@ UndoCloseAndDestroyForXactLevel(int nestingLevel)
 
 	if (needs_work)
 	{
+		char dummy[24] = { '\0' };
+
 		START_CRIT_SECTION();
 		XLogBeginInsert();
 		UndoMarkClosedForXactLevel(nestingLevel);
+		UndoXLogRegisterBuffersForXactLevel(nestingLevel);
+		XLogRegisterData(dummy, 24); /* TODO remove me */
 		lsn = XLogInsert(RM_XLOG_ID, XLOG_NOOP);
 		UndoPageSetLSNForXactLevel(nestingLevel, lsn);
 		END_CRIT_SECTION();

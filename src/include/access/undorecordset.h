@@ -66,6 +66,7 @@ extern UndoRecPtr UndoReplay(XLogReaderState *xlog_record,
 extern void UndoResetInsertion(void);
 extern bool UndoPrepareToMarkClosedForXactLevel(int nestingLevel);
 extern void UndoMarkClosedForXactLevel(int nestingLevel);
+extern void UndoXLogRegisterBuffersForXactLevel(int nestingLevel);
 extern void UndoPageSetLSNForXactLevel(int nestingLevel, XLogRecPtr lsn);
 extern void UndoDestroyForXactLevel(int nestingLevel);
 extern bool UndoCloseAndDestroyForXactLevel(int nestingLevel);
