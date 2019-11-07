@@ -6215,8 +6215,12 @@ xact_redo(XLogReaderState *record)
 {
 	uint8		info = XLogRecGetInfo(record) & XLOG_XACT_OPMASK;
 
+	// AFIXME: Can no longer assert that there are no backup block references,
+	// due to the included undo record set close indicators. Obviously the
+	// right fix is to process those references, rather than just ignore them.
+
 	/* Backup blocks are not used in xact records */
-	Assert(!XLogRecHasAnyBlockRefs(record));
+	//Assert(!XLogRecHasAnyBlockRefs(record));
 
 	if (info == XLOG_XACT_COMMIT)
 	{
