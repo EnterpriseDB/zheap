@@ -751,6 +751,9 @@ XactUndoEndLocation(UndoPersistenceLevel plevel)
 	UndoRecPtr	last_location;
 	uint64		last_size;
 
+	if (!XactUndo.record_set[plevel])
+		return InvalidUndoRecPtr;
+
 	last_location = XactUndo.last_location[plevel];
 	last_size = XactUndo.last_size[plevel];
 	return UndoRecPtrPlusUsableBytes(last_location, last_size);
