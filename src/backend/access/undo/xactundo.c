@@ -614,15 +614,21 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 			XactUndo.last_size[UNDOPERSISTENCE_UNLOGGED] = 0;
 			XactUndo.total_size[UNDOPERSISTENCE_PERMANENT] = 0;
 			XactUndo.total_size[UNDOPERSISTENCE_UNLOGGED] = 0;
+
+			/* Instruct caller to perform foreground undo, if possible. */
+			if (perform_foreground_undo)
+				*perform_foreground_undo = true;
 		}
 
 		/* Poke the undo launcher, if it's hibernating. */
 		DisturbUndoLauncherHibernation();
 	}
-
-	/* Instruct caller to perform foreground undo, if possible. */
-	if (perform_foreground_undo)
-		*perform_foreground_undo = true;
+	else
+	{
+		/* Instruct caller to perform foreground undo, if possible. */
+		if (perform_foreground_undo)
+			*perform_foreground_undo = true;
+	}
 }
 
 /*
