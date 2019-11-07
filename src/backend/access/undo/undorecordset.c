@@ -289,37 +289,37 @@ UndoMarkClosed(UndoRecordSet *urs)
 	Assert(urs->state != URS_STATE_CLOSED);
 	Assert(urs->state == URS_STATE_CLEAN || urs->nchunks != 0);
 
-	/* Locate the active chunk. */
-	chunk = &urs->chunks[urs->nchunks - 1];
-	header = chunk->chunk_header_offset;
-	insert = chunk->slot->meta.insert;
-	size = insert - header;
-	page_offset = header % BLCKSZ;
-	data_offset = 0;
-	chbidx = 0;
-
-	/* Record the close as bufdata on the first affected page. */
-	if (URSNeedsWAL(urs))
-	{
-		UndoBuffer *ubuf;
-
-		ubuf = &urs->buffers[chunk->chunk_header_buffer_index[0]];
-		ubuf->bufdata.flags |= URS_XLOG_CLOSE_CHUNK;
-		ubuf->bufdata.chunk_size_location = page_offset;
-		ubuf->bufdata.chunk_size = size;
-	}
-
-	/* TODO: use UndoPageOverwrite()! */
-	while (data_offset < sizeof(size))
-	{
-		data_offset += UndoMarkPageClosed(urs, chunk, chbidx++,
-										  page_offset, data_offset, size);
-		page_offset = SizeOfUndoPageHeaderData;
-	}
-
-	/* If it was dirty, mark it closed. */
 	if (urs->state == URS_STATE_DIRTY)
+	{
+		/* Locate the active chunk. */
+		chunk = &urs->chunks[urs->nchunks - 1];
+		header = chunk->chunk_header_offset;
+		insert = chunk->slot->meta.insert;
+		size = insert - header;
+		page_offset = header % BLCKSZ;
+		data_offset = 0;
+		chbidx = 0;
+
+		/* Record the close as bufdata on the first affected page. */
+		if (URSNeedsWAL(urs))
+		{
+			UndoBuffer *ubuf;
+
+			ubuf = &urs->buffers[chunk->chunk_header_buffer_index[0]];
+			ubuf->bufdata.flags |= URS_XLOG_CLOSE_CHUNK;
+			ubuf->bufdata.chunk_size_location = page_offset;
+			ubuf->bufdata.chunk_size = size;
+		}
+
+		/* TODO: use UndoPageOverwrite()! */
+		while (data_offset < sizeof(size))
+		{
+			data_offset += UndoMarkPageClosed(urs, chunk, chbidx++,
+											  page_offset, data_offset, size);
+			page_offset = SizeOfUndoPageHeaderData;
+		}
 		urs->state = URS_STATE_CLOSED;
+	}
 }
 
 /*
