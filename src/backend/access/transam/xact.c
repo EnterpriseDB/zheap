@@ -2806,6 +2806,8 @@ AbortTransaction(bool *perform_foreground_undo)
 		AtEOXact_ApplyLauncher(false);
 		pgstat_report_xact_timestamp(0);
 	}
+	else
+		*perform_foreground_undo = false;
 
 	/*
 	 * State remains TRANS_ABORT until CleanupTransaction().
@@ -5144,6 +5146,8 @@ AbortSubTransaction(bool *perform_foreground_undo)
 		AtEOSubXact_ApplyLauncher(false, s->nestingLevel);
 		/* XXX need to do something with perform_foreground_undo */
 	}
+	else
+		*perform_foreground_undo = false;
 
 	/*
 	 * Restore the upper transaction's read-only state, too.  This should be
