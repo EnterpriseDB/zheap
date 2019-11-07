@@ -735,6 +735,7 @@ ResetXactUndo(void)
 		XactUndo.last_location[i] = InvalidUndoRecPtr;
 		XactUndo.last_size[i] = 0;
 		XactUndo.total_size[i] = 0;
+		XactUndo.record_set[i] = NULL;
 	}
 }
 
