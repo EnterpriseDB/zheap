@@ -5317,10 +5317,16 @@ PerformBackgroundUndo(void)
 {
 	TransactionState s = CurrentTransactionState;
 
-	StartTransaction();
+	// AFIXME: I kind somewhat made this work, but this doesn't look like the
+	// right to way to do this.
+	StartTransactionCommand();
 	s->state = TRANS_UNDO;
+
 	PerformUndoActions(s->nestingLevel);
+
 	CommitTransaction();
+	CleanupTransaction();
+	s->blockState = TBLOCK_DEFAULT;
 }
 
 /*
