@@ -327,7 +327,9 @@ UndoLaunchWorker(void)
 	BackgroundWorker bgw;
 
 	memset(&bgw, 0, sizeof(BackgroundWorker));
-	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_CLASS_UNDO;
+	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
+		BGWORKER_BACKEND_DATABASE_CONNECTION |
+		BGWORKER_CLASS_UNDO;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	snprintf(bgw.bgw_library_name, BGW_MAXLEN, "postgres");
 	snprintf(bgw.bgw_function_name, BGW_MAXLEN, "UndoWorkerMain");
