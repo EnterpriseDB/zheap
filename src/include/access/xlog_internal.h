@@ -286,6 +286,7 @@ typedef enum
  *
  * RmgrTable[] is indexed by RmgrId values (see rmgrlist.h).
  */
+typedef struct RmgrUndoHandler RmgrUndoHandler;
 typedef struct RmgrData
 {
 	const char *rm_name;
@@ -295,6 +296,7 @@ typedef struct RmgrData
 	void		(*rm_startup) (void);
 	void		(*rm_cleanup) (void);
 	void		(*rm_mask) (char *pagedata, BlockNumber blkno);
+	RmgrUndoHandler	* (*rm_undo) (void);
 } RmgrData;
 
 extern const RmgrData RmgrTable[];
