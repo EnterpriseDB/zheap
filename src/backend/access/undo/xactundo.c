@@ -84,8 +84,10 @@
 static void
 SerializeUndoData(StringInfo buf, UndoNode *undo_node)
 {
-	// DUMMY: replace with magic stuff from Andres
-	appendStringInfo(buf, "hi mom");
+	/* TODO: replace with actual serialization */
+	appendBinaryStringInfo(buf, (char *) &undo_node->length, sizeof(((UndoNode*) NULL)->length));
+	appendBinaryStringInfo(buf, (char *) &undo_node->type, sizeof(((UndoNode*) NULL)->type));
+	appendBinaryStringInfo(buf, undo_node->data, undo_node->length);
 }
 
 /* Per-subtransaction backend-private undo state. */

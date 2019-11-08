@@ -26,13 +26,20 @@ typedef struct XactUndoContext
 
 typedef struct UndoNode
 {
-	// XXX replace this with magic stuff from Andres
-	int	dummy;
+	/*
+	 * TODO: replace with actual serialization format - to unblock development,
+	 * have an absolutely dumb format, for now.
+	 */
+	uint16		length;
+	uint8		type;
+	char	   *data;
 } UndoNode;
 
+/* initialization */
 extern Size XactUndoShmemSize(void);
 extern void XactUndoShmemInit(void);
 
+/* undo insertion */
 extern void StartupXactUndo(UndoCheckpointContext *ctx);
 extern void CheckPointXactUndo(UndoCheckpointContext *ctx);
 
@@ -42,12 +49,15 @@ extern void InsertXactUndoData(XactUndoContext *ctx, uint8 first_block_id);
 extern void SetXactUndoPageLSNs(XactUndoContext *ctx, XLogRecPtr lsn);
 extern void CleanupXactUndoInsertion(XactUndoContext *ctx);
 
+/* undo worker infrastructure */
 extern long XactUndoWaitTime(TimestampTz now);
 extern Oid InitializeBackgroundXactUndo(bool minimum_runtime_reached);
 extern void FinishBackgroundXactUndo(void);
 
+/* undo execution */
 extern void PerformUndoActions(int nestingLevel);
 
+/* transaction integration */
 extern void AtCommit_XactUndo(void);
 extern void AtAbort_XactUndo(bool *perform_foreground_undo);
 extern void AtSubCommit_XactUndo(int level);
