@@ -118,6 +118,7 @@ UndoSubTransaction UndoTopState;
 
 static void ResetXactUndo(void);
 static UndoRecPtr XactUndoEndLocation(UndoPersistenceLevel plevel);
+static const char *UndoPersistenceLevelString(UndoPersistenceLevel plevel);
 
 /*
  * How much shared memory do we need for undo state management?
@@ -460,6 +461,41 @@ PerformUndoActions(int nestingLevel)
 	 * that). For a top-level transaction, AtCommit_XactUndo() or
 	 * FinishBackgroundXactUndo() will take care of it.
 	 */
+
+	Assert(XactUndo.has_undo);
+	Assert(XactUndo.subxact != NULL);
+
+	if (nestingLevel != 1)
+		elog(ERROR, "don't know how to handle that yet");
+
+	for (UndoPersistenceLevel p = UNDOPERSISTENCE_PERMANENT;
+		 p < NUndoPersistenceLevels; p++)
+	{
+		UndoRecordSet *urs = XactUndo.record_set[p];
+		UndoRecPtr start_location;
+		UndoRecPtr end_location;
+
+		if (urs == NULL)
+			continue;
+
+		start_location = XactUndo.subxact->start_location[p];
+		end_location = XactUndoEndLocation(p);
+
+		Assert(start_location != InvalidUndoRecPtr);
+
+		/*
+		 * AFIXME: until we can show the actual effects of undo processing,
+		 * show a debug message showing when undo is being executed.
+		 *
+		 * To make it possible to write regression tests, only show values
+		 * that won't change from run to run.
+		 */
+		elog(WARNING, "executing undo: persistence: %s, nestingLevel: %d, bytes: %lu",
+			 UndoPersistenceLevelString(p),
+			 nestingLevel,
+			 end_location - start_location
+			);
+	}
 }
 
 /*
@@ -783,4 +819,20 @@ XactUndoEndLocation(UndoPersistenceLevel plevel)
 	last_location = XactUndo.last_location[plevel];
 	last_size = XactUndo.last_size[plevel];
 	return UndoRecPtrPlusUsableBytes(last_location, last_size);
+}
+
+static const char *
+UndoPersistenceLevelString(UndoPersistenceLevel plevel)
+{
+	switch (plevel)
+	{
+		case UNDOPERSISTENCE_PERMANENT:
+			return "permanent";
+		case UNDOPERSISTENCE_UNLOGGED:
+			return "permanent";
+		case UNDOPERSISTENCE_TEMP:
+			return "permanent";
+	}
+
+	pg_unreachable();
 }
