@@ -300,7 +300,8 @@ InsertXactUndoData(XactUndoContext *ctx, uint8 first_block_id)
 	UndoRecordSet *urs = XactUndo.record_set[ctx->plevel];
 
 	Assert(urs != NULL);
-	UndoInsert(urs, first_block_id, ctx->data.data, ctx->data.len);
+	UndoInsert(urs, ctx->data.data, ctx->data.len);
+	UndoXLogRegisterBuffers(urs, first_block_id);
 }
 
 /*

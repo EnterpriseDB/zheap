@@ -95,7 +95,7 @@ foo_close(PG_FUNCTION_ARGS)
 		START_CRIT_SECTION();
 		XLogBeginInsert();
 		UndoMarkClosed(current_urs);
-		UndoXLogRegisterBuffers(current_urs);
+		UndoXLogRegisterBuffers(current_urs, 0);
 		XLogRegisterData((char *) &record, sizeof(record));
 		lsn = XLogInsert(RM_FOO_ID, XLOG_FOO_PING);
 		UndoPageSetLSN(current_urs, lsn);
@@ -135,8 +135,8 @@ foo_write(PG_FUNCTION_ARGS)
 	 * Write the string into the undo log as a "record".  We do this first,
 	 * because it registers the undo buffers with the following WAL record.
 	 */
-	UndoInsert(current_urs, 0, string, length + 1);
-	UndoXLogRegisterBuffers(current_urs);
+	UndoInsert(current_urs, string, length + 1);
+	UndoXLogRegisterBuffers(current_urs, 0);
 
 	/* Write the string into the WAL so we can replay this. */
 	XLogRegisterData((char *) string, length + 1);
@@ -177,9 +177,9 @@ foo_createwriteclose(PG_FUNCTION_ARGS)
 
 	START_CRIT_SECTION();
 	XLogBeginInsert();
-	UndoInsert(urs, 0, string, length + 1);
+	UndoInsert(urs, string, length + 1);
 	UndoMarkClosed(urs);
-	UndoXLogRegisterBuffers(urs);
+	UndoXLogRegisterBuffers(urs, 0);
 	XLogRegisterData((char *) string, length + 1);
 	lsn = XLogInsert(RM_FOO_ID, XLOG_FOO_CREATEWRITECLOSE);
 	UndoPageSetLSN(urs, lsn);

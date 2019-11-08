@@ -80,7 +80,6 @@ struct UndoRecordSet
 	int				max_chunks;
 
 	/* Management of currently pinned and locked buffers. */
-	uint8			first_block_id;
 	UndoBuffer	   *buffers;
 	int				nbuffers;
 	int				max_buffers;
@@ -581,14 +580,10 @@ register_insertion_point_if_needed(UndoBuffer *ubuf, uint16 insertion_point)
 
 /*
  * Append data to an undo log.  The space must previously have been allocated
- * with UndoPrepareToInsert().  The caller must have called XLogBeginInsert()
- * for a WAL record.  This function will register all dirtied buffers, but the
- * caller must provide the first block ID to use, to avoid collisions with any
- * other block IDs registered by the caller.
+ * with UndoPrepareToInsert().
  */
 void
 UndoInsert(UndoRecordSet *urs,
-		   uint8 first_block_id,
 		   void *record_data,
 		   size_t record_size)
 {
@@ -990,11 +985,15 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
  * done after an UndoInsert() and any UndoMarkClosed() calls, but before
  * calling XLogInsert().
  *
+ * The caller must have called XLogBeginInsert() for a WAL record, and
+ * must provide the first block ID to use, to avoid collisions with any
+ * other block IDs registered by the caller.
+ *
  * This should be called even for non-permanent persistence levels, because
- * it's also used to mark buffers dirty.
+ * it's also used to mark buffers dirty. (XXX Why not do that in UndoInsert?)
  */
 void
-UndoXLogRegisterBuffers(UndoRecordSet *urs)
+UndoXLogRegisterBuffers(UndoRecordSet *urs, uint8 first_block_id)
 {
 
 	for (int i = 0; i < urs->nbuffers; ++i)
@@ -1009,12 +1008,12 @@ UndoXLogRegisterBuffers(UndoRecordSet *urs)
 
 		if (URSNeedsWAL(urs))
 		{
-			XLogRegisterBuffer(urs->first_block_id + i,
+			XLogRegisterBuffer(first_block_id + i,
 							   ubuf->buffer,
 							   ubuf->is_new ? REGBUF_WILL_INIT : 0);
 			if (ubuf->bufdata.flags != 0)
 				EncodeUndoRecordSetXLogBufData(&ubuf->bufdata,
-											   urs->first_block_id + i);
+											   first_block_id + i);
 		}
 	}
 }
@@ -1146,7 +1145,7 @@ UndoMarkClosedForXactLevel(int nestingLevel)
  * construction.
  */
 void
-UndoXLogRegisterBuffersForXactLevel(int nestingLevel)
+UndoXLogRegisterBuffersForXactLevel(int nestingLevel, uint8 first_block_id)
 {
 	slist_iter	iter;
 
@@ -1156,7 +1155,7 @@ UndoXLogRegisterBuffersForXactLevel(int nestingLevel)
 
 		if (nestingLevel <= urs->nestingLevel &&
 			urs->state == URS_STATE_DIRTY)
-			UndoXLogRegisterBuffers(urs);
+			UndoXLogRegisterBuffers(urs, first_block_id);
 	}
 }
 
@@ -1262,7 +1261,7 @@ UndoCloseAndDestroyForXactLevel(int nestingLevel)
 		START_CRIT_SECTION();
 		XLogBeginInsert();
 		UndoMarkClosedForXactLevel(nestingLevel);
-		UndoXLogRegisterBuffersForXactLevel(nestingLevel);
+		UndoXLogRegisterBuffersForXactLevel(nestingLevel, 0);
 		XLogRegisterData(dummy, 24); /* TODO remove me */
 		lsn = XLogInsert(RM_XLOG_ID, XLOG_NOOP);
 		UndoPageSetLSNForXactLevel(nestingLevel, lsn);

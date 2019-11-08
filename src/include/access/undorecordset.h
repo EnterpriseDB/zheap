@@ -49,13 +49,12 @@ extern bool UndoPrepareToMarkClosed(UndoRecordSet *urs);
 extern void UndoMarkClosed(UndoRecordSet *urs);
 extern UndoRecPtr UndoPrepareToInsert(UndoRecordSet *urs, size_t record_size);
 extern void UndoInsert(UndoRecordSet *urs,
-					   uint8 first_block_id,
 					   void *record_data,
 					   size_t record_size);
 extern void UndoPageSetLSN(UndoRecordSet *urs, XLogRecPtr lsn);
 extern void UndoRelease(UndoRecordSet *urs);
 extern void UndoDestroy(UndoRecordSet *urs);
-extern void UndoXLogRegisterBuffers(UndoRecordSet *urs);
+extern void UndoXLogRegisterBuffers(UndoRecordSet *urs, uint8 first_block_id);
 
 /* recovery */
 extern UndoRecPtr UndoReplay(XLogReaderState *xlog_record,
@@ -66,7 +65,8 @@ extern UndoRecPtr UndoReplay(XLogReaderState *xlog_record,
 extern void UndoResetInsertion(void);
 extern bool UndoPrepareToMarkClosedForXactLevel(int nestingLevel);
 extern void UndoMarkClosedForXactLevel(int nestingLevel);
-extern void UndoXLogRegisterBuffersForXactLevel(int nestingLevel);
+extern void UndoXLogRegisterBuffersForXactLevel(int nestingLevel,
+												uint8 first_block_id);
 extern void UndoPageSetLSNForXactLevel(int nestingLevel, XLogRecPtr lsn);
 extern void UndoDestroyForXactLevel(int nestingLevel);
 extern bool UndoCloseAndDestroyForXactLevel(int nestingLevel);
