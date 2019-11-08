@@ -32,6 +32,7 @@
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undorequest.h"
 #include "access/undoworker.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
@@ -1950,6 +1951,17 @@ static struct config_bool ConfigureNamesBool[] =
 			gettext_noop("Whether to continue running after a failure to sync data files."),
 		},
 		&data_sync_retry,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"undo_force_foreground", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Force UNDO execution to happen in foreground."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&undo_force_foreground,
 		false,
 		NULL, NULL, NULL
 	},

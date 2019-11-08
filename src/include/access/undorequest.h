@@ -23,6 +23,9 @@ struct UndoRequestManager;
 typedef struct UndoRequest UndoRequest;
 typedef struct UndoRequestManager UndoRequestManager;
 
+/* GUCs */
+extern bool undo_force_foreground;
+
 /* Initialization functions. */
 extern Size EstimateUndoRequestManagerSize(unsigned capacity);
 extern void InitializeUndoRequestManager(UndoRequestManager *urm,

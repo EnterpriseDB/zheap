@@ -188,6 +188,11 @@ static void RemoveUndoRequest(RBTree *rbt, UndoRequest *req);
 static UndoRequest *FindUndoRequest(UndoRequestManager *urm,
 									FullTransactionId fxid);
 
+
+/* GUCs */
+bool undo_force_foreground;
+
+
 /*
  * Compute the amount of space that will be needed by an undo request manager.
  *
@@ -990,6 +995,9 @@ FindUndoRequestForDatabase(UndoRequestManager *urm, Oid dbid)
 static bool
 BackgroundUndoOK(UndoRequestManager *urm, UndoRequest *req)
 {
+	if (undo_force_foreground)
+		return false;
+
 	/*
 	 * If we've passed the soft size limit, it's not OK to background it.
 	 */
