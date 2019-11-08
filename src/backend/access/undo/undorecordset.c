@@ -793,7 +793,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 			action = XLogReadBufferForRedoExtended(xlog_record,
 												   block_id,
 												   rbm,
-												   false,												   
+												   false,
 												   &buffers[nbuffers].buffer);
 
 			/*
@@ -895,7 +895,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				chunk_header.type = bufdata->type;
 
 				/*
-				 * It it's an initial chunk (new URS) then there may also be a 
+				 * It it's an initial chunk (new URS) then there may also be a
 				 */
 				type_header = bufdata->type_header;
 				type_header_size = bufdata->type_header_size;
