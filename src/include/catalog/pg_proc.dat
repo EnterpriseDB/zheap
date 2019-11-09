@@ -10778,3 +10778,25 @@
   proparallel => 'u', prorettype => 'void', proargtypes => 'int4',
   prosrc => 'pg_simulate_full_undo' },
 ]
+
+# undoxacttest
+
+{ oid => '8905', descr => 'initialize rel for undo testing',
+  proname => 'undoxacttest_init_rel', provolatile => 'v',
+  proparallel => 'u', prorettype => 'void', proargtypes => 'regclass',
+  prosrc => 'undoxacttest_init_rel' },
+
+{ oid => '8906', descr => 'undoxacttest: increment counter, return previous',
+  proname => 'undoxacttest_fetch_and_inc', provolatile => 'v',
+  proparallel => 'u', prorettype => 'int8', proargtypes => 'regclass int8',
+  prosrc => 'undoxacttest_fetch_and_inc' },
+
+{ oid => '8907', descr => 'undoxacttest: decrement counter, return previous',
+  proname => 'undoxacttest_fetch_and_dec', provolatile => 'v',
+  proparallel => 'u', prorettype => 'int8', proargtypes => 'regclass int8',
+  prosrc => 'undoxacttest_fetch_and_dec' },
+
+{ oid => '8908', descr => 'undoxacttest: read counter',
+  proname => 'undoxacttest_read', provolatile => 'v',
+  proparallel => 'u', prorettype => 'int8', proargtypes => 'regclass',
+  prosrc => 'undoxacttest_read' },
