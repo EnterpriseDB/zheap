@@ -331,6 +331,23 @@ CleanupXactUndoInsertion(XactUndoContext *ctx)
 }
 
 /*
+ * Recreate UNDO during WAL replay.
+ *
+ * XXX: Should this live here? Or somewhere around the serialization code?
+ */
+UndoRecPtr
+UndoXactReplay(XLogReaderState *xlog_record, UndoNode *undo_node)
+{
+	StringInfoData data;
+
+	/* Prepare serialized undo data. */
+	initStringInfo(&data);
+	SerializeUndoData(&data, undo_node);
+
+	return UndoReplay(xlog_record, data.data, data.len);
+}
+
+/*
  * Return the amount of time until InitializeBackgroundXactUndo can obtain
  * an undo request.
  *

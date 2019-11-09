@@ -15,6 +15,7 @@
 #include "access/undodefs.h"
 #include "access/xactundo.h"
 #include "access/xlogdefs.h"
+#include "access/xlogreader.h"
 #include "datatype/timestamp.h"
 #include "lib/stringinfo.h"
 
@@ -48,6 +49,10 @@ extern UndoRecPtr PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 extern void InsertXactUndoData(XactUndoContext *ctx, uint8 first_block_id);
 extern void SetXactUndoPageLSNs(XactUndoContext *ctx, XLogRecPtr lsn);
 extern void CleanupXactUndoInsertion(XactUndoContext *ctx);
+
+/* undo re-insertion during recovery */
+extern UndoRecPtr UndoXactReplay(XLogReaderState *xlog_record,
+								 UndoNode *undo_node);
 
 /* undo worker infrastructure */
 extern long XactUndoWaitTime(TimestampTz now);
