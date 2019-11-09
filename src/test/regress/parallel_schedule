@@ -5,6 +5,10 @@
 # this limits the number of connections needed to run the tests.
 # ----------
 
+# XXX: This should obviously not live here in the long run. But while
+# we're developing it's nice not having to wait for the other tests.
+test: undoxacttest
+
 # run tablespace by itself, and first, because it forces a checkpoint;
 # we'd prefer not to have checkpoints later in the tests because that
 # interferes with crash-recovery testing.
