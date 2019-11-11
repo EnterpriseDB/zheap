@@ -5128,6 +5128,7 @@ AbortSubTransaction(bool *perform_foreground_undo)
 							 s->parent->subTransactionId);
 
 		AtSubAbort_XactUndo(s->nestingLevel, perform_foreground_undo);
+		/* XXX need to do something with perform_foreground_undo */
 
 		ResourceOwnerRelease(s->curTransactionOwner,
 							 RESOURCE_RELEASE_BEFORE_LOCKS,
@@ -5155,7 +5156,6 @@ AbortSubTransaction(bool *perform_foreground_undo)
 		AtEOSubXact_PgStat(false, s->nestingLevel);
 		AtSubAbort_Snapshot(s->nestingLevel);
 		AtEOSubXact_ApplyLauncher(false, s->nestingLevel);
-		/* XXX need to do something with perform_foreground_undo */
 	}
 	else
 		*perform_foreground_undo = false;
