@@ -1,12 +1,12 @@
 /*
  *-------------------------------------------------------------------------
  *
- * undopage.h
+ * undopage.c
  *
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
- * src/include/access/undopage.h
+ * src/backend/access/undo/undopage.c
  *
  *-------------------------------------------------------------------------
  */
@@ -39,8 +39,8 @@ UndoPageInit(Page page)
  * written; header_offset is the byte-offset within the data that should
  * begin at that location.
  *
- * If we're not writing a type-specific header, pass type_header_size as 0
- * and type_header as NULL; otherwise, they describe the type-specific
+ * If we're not writing a type-specific header, pass type_header_size as 0;
+ * otherwise, type_header_size and type_header describe the type-specific
  * header to be written.
  *
  * chunk_start is the UndoRecPtr where the chunk starts.  If this chunk is
@@ -66,7 +66,6 @@ UndoPageInsertHeader(Page page, int page_offset, int header_offset,
 
 	/* Must not overrun the end of the page. */
 	Assert(page_offset < BLCKSZ);
-	Assert(page_offset + total_bytes - header_offset <= BLCKSZ);
 
 	/* Must not overrun the end of the new data, either. */
 	Assert(header_offset < total_bytes);
@@ -170,7 +169,6 @@ UndoPageInsertRecord(Page page, int page_offset, int data_offset,
 
 	/* Must not overrun the end of the page. */
 	Assert(page_offset < BLCKSZ);
-	Assert(page_offset + data_size - data_offset <= BLCKSZ);
 
 	/* Must not overrun the end of the new data, either. */
 	Assert(data_offset < data_size);
