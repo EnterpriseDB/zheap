@@ -47,6 +47,7 @@
 #include "access/xact.h"
 #include "access/xactundo.h"
 #include "miscadmin.h"
+#include "storage/ipc.h"
 #include "storage/shmem.h"
 
 /*
@@ -113,8 +114,8 @@ typedef struct XactUndoData
 	UndoRecordSet *record_set[NUndoPersistenceLevels];
 } XactUndoData;
 
-XactUndoData XactUndo;
-UndoSubTransaction UndoTopState;
+static XactUndoData XactUndo;
+static UndoSubTransaction XactUndoTopState;
 
 static void ResetXactUndo(void);
 static UndoRecPtr XactUndoEndLocation(UndoPersistenceLevel plevel);
@@ -223,6 +224,7 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 									 sizeof(UndoSubTransaction));
 		subxact->nestingLevel = nestingLevel;
 		subxact->next = XactUndo.subxact;
+		XactUndo.subxact = subxact;
 
 		for (i = 0; i < NUndoPersistenceLevels; ++i)
 			subxact->start_location[i] = InvalidUndoRecPtr;
@@ -450,23 +452,20 @@ FinishBackgroundXactUndo(void)
 void
 PerformUndoActions(int nestingLevel)
 {
+	UndoSubTransaction *mysubxact = XactUndo.subxact;
+
+	/* Sanity checks. */
+	Assert(XactUndo.has_undo);
+	Assert(mysubxact != NULL);
+	Assert(mysubxact->nestingLevel == nestingLevel);
+
 	/*
 	 * XXX. NOT IMPLEMENTED.
 	 *
 	 * Invoke facilities to actually apply undo actions from here, passing the
 	 * relevant information from the XactUndo so that they know what to do.
 	 *
-	 * In the case of subtransaction undo, this also needs to tear down the
-	 * relevant UndoSubTransaction (or else we need a separate entrypoint for
-	 * that). For a top-level transaction, AtCommit_XactUndo() or
-	 * FinishBackgroundXactUndo() will take care of it.
 	 */
-
-	Assert(XactUndo.has_undo);
-	Assert(XactUndo.subxact != NULL);
-
-	if (nestingLevel != 1)
-		elog(ERROR, "don't know how to handle that yet");
 
 	for (UndoPersistenceLevel p = UNDOPERSISTENCE_PERMANENT;
 		 p < NUndoPersistenceLevels; p++)
@@ -478,7 +477,7 @@ PerformUndoActions(int nestingLevel)
 		if (urs == NULL)
 			continue;
 
-		start_location = XactUndo.subxact->start_location[p];
+		start_location = mysubxact->start_location[p];
 		end_location = XactUndoEndLocation(p);
 
 		Assert(start_location != InvalidUndoRecPtr);
@@ -517,17 +516,14 @@ AtCommit_XactUndo(void)
 	if (XactUndo.is_background_undo)
 		return;
 
-	/* Shouldn't commit after beginning foreground undo. */
-	Assert(!XactUndo.is_undo);
-
 	/* Also exit quickly if we never did anything undo-related. */
 	if (!XactUndo.has_undo)
 		return;
 
 	/*
-	 * Since our (foreground) transaction committed, we know that no undo
-	 * actions for any undo we wrote will need to be performed, and can
-	 * therefore unregister our UndoRequest, if any.
+	 * We could arrive at this point either because a foreground transaction
+	 * committed, or because a foreground transaction successfully completed
+	 * undo. Either way, it's appropriate to releas our UndoReuqest, if any.
 	 */
 	if (XactUndo.my_request != NULL)
 	{
@@ -617,7 +613,10 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 		if (!has_temporary_undo)
 			ResetXactUndo();
 		else if (perform_foreground_undo != NULL)
+		{
 			*perform_foreground_undo = true;
+			XactUndo.is_undo = true;
+		}
 		return;
 	}
 
@@ -673,7 +672,10 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 
 			/* Instruct caller to perform foreground undo, if possible. */
 			if (perform_foreground_undo)
+			{
 				*perform_foreground_undo = true;
+				XactUndo.is_undo = true;
+			}
 		}
 
 		/* Poke the undo launcher, if it's hibernating. */
@@ -683,7 +685,10 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 	{
 		/* Instruct caller to perform foreground undo, if possible. */
 		if (perform_foreground_undo)
+		{
 			*perform_foreground_undo = true;
+			XactUndo.is_undo = true;
+		}
 	}
 }
 
@@ -710,6 +715,20 @@ AtSubCommit_XactUndo(int level)
 	Assert(nextsubxact->nestingLevel < cursubxact->nestingLevel);
 
 	/*
+	 * We might reach here after performing undo for a subtransaction that
+	 * previously aborted. If so, it's time to discard the UndoSubTransaction
+	 * which we were keeping around for that purpose.
+	 */
+	if (XactUndo.is_undo)
+	{
+		XactUndo.subxact = cursubxact->next;
+		pfree(cursubxact);
+		Assert(XactUndo.subxact->nestingLevel < level);
+		XactUndo.is_undo = false;
+		return;
+	}
+
+	/*
 	 * If we have undo but our parent subtransaction doesn't, we can just
 	 * adjust the nesting level of the current UndoSubTransaction.
 	 */
@@ -729,12 +748,23 @@ AtSubCommit_XactUndo(int level)
 
 /*
  * Clean up of the undo state following a subtransaction abort.
+ *
+ * If the caller is unable or unwilling to perform foreground undo, it is
+ * possible to pass NULL to this function.  In that case, any undo for this
+ * subtransaction level processed.  It can't even be scheduled for future
+ * processing, since that only works for entire transactions. Consequently,
+ * such an approach should only taken if some parent subtransaction or the
+ * toplevel transaction will be aborted afterwards.
+ *
+ * XXX. We need to avoid doing foreground undo for things that have
+ * already been successfully undone as a result of previous subtransaction
+ * aborts. That's not really this function's problem but we need to deal with
+ * it somewhere.
  */
 void
 AtSubAbort_XactUndo(int level, bool *perform_foreground_undo)
 {
 	UndoSubTransaction *cursubxact = XactUndo.subxact;
-	bool		has_temporary_undo = false;
 
 	if (perform_foreground_undo)
 		*perform_foreground_undo = false;
@@ -743,26 +773,53 @@ AtSubAbort_XactUndo(int level, bool *perform_foreground_undo)
 	if (!XactUndo.has_undo || cursubxact->nestingLevel < level)
 		return;
 
-	/* Figure out whether there any relevant temporary undo. */
-	has_temporary_undo =
-		UndoRecPtrIsValid(XactUndo.subxact->start_location[UNDOPERSISTENCE_TEMP]);
+	/*
+	 * If we fail when attempting to perform undo actions, it's impossible to
+	 * continue with the parent (sub)transaction. We currently handle this by
+	 * killing off the entire backend.
+	 *
+	 * Note that we need a defense here against reentering this function from
+	 * within proc_exit and failing again.
+	 */
+	if (XactUndo.is_undo && !proc_exit_inprogress)
+	{
+		/*
+		 * XXX. This is non-optimal.
+		 *
+		 * We don't necessarily need to kill the entire backend; it
+		 * would probably be good enough to kill off the top-level transaction,
+		 * maybe by somehow (how?) forcing the parent subtransaction to also
+		 * fail (and thus retry our undo) and so forth until we either succeed
+		 * during undo or get to the outermost level. Or perhaps we should
+		 * force all of the transactions up to the top level into a failed
+		 * state immediately (again, how?).
+		 *
+		 * Another thing that sucks about this is that throwing FATAL here
+		 * will probably lose the original error message that might give the
+		 * user some hint as to the cause of the failure. We probably need
+		 * to improve that somehow.
+		 */
+		ereport(FATAL,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("unable to continue transaction after undo failure")));
+	}
 
-	if (has_temporary_undo)
-		 /* experience_intense_sadness */ ;
+	/* Instruct caller to perform foreground undo, if possible. */
+	if (perform_foreground_undo)
+	{
+		*perform_foreground_undo = true;
+		XactUndo.is_undo = true;
+		return;
+	}
 
 	/*
-	 * Regrettably, we seem to have failed when attempting to perform undo
-	 * actions. It's impossible to continue with the parent (sub)transaction
-	 * without completing undo.
+	 * Since the caller is unable or unwilling to perform foreground undo
+	 * for this subtransaction, we can and should discard the state that would
+	 * be used for that purpose at this stage.
 	 */
-	if (XactUndo.is_undo)
-		 /* XXX. How do we fail the parent subtransaction, exactly? */ ;
-
-	/*
-	 * XXX. We need to avoid doing foreground undo for things that have
-	 * already been successfully undone as a result of previous subtransaction
-	 * aborts.
-	 */
+	XactUndo.subxact = cursubxact->next;
+	pfree(cursubxact);
+	Assert(XactUndo.subxact->nestingLevel < level);
 }
 
 /*
@@ -787,13 +844,13 @@ ResetXactUndo(void)
 	XactUndo.is_undo = false;
 	XactUndo.is_background_undo = false;
 	XactUndo.has_undo = false;
-	XactUndo.subxact = &UndoTopState;
-	UndoTopState.nestingLevel = 1;
-	UndoTopState.next = NULL;
+	XactUndo.subxact = &XactUndoTopState;
+	XactUndoTopState.nestingLevel = 1;
+	XactUndoTopState.next = NULL;
 
 	for (i = 0; i < NUndoPersistenceLevels; ++i)
 	{
-		UndoTopState.start_location[i] = InvalidUndoRecPtr;
+		XactUndoTopState.start_location[i] = InvalidUndoRecPtr;
 		XactUndo.last_location[i] = InvalidUndoRecPtr;
 		XactUndo.last_size[i] = 0;
 		XactUndo.total_size[i] = 0;
