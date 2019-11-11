@@ -618,7 +618,7 @@ UndoInsert(UndoRecordSet *urs,
 		UndoRecordSetChunkHeader chunk_header;
 
 		input_offset = 0;
-		do
+		for (;;)
 		{
 			UndoBuffer *ubuf = &urs->buffers[buffer_index];
 
@@ -654,28 +654,28 @@ UndoInsert(UndoRecordSet *urs,
 									 page_offset,
 									 input_offset,
 									 &chunk_header,
-									 urs->need_type_header ? type_header_size : 0,
-									 urs->need_type_header ? urs->type_header : NULL,
+									 type_header_size,
+									 urs->type_header,
 									 urs->chunk_start);
 			page_offset += bytes_written;
 			input_offset += bytes_written;
-			if (page_offset == BLCKSZ)
-			{
-				/* Spill over onto the next page. */
-				++buffer_index;
-				page_offset = SizeOfUndoPageHeaderData;
-			}
-		} while (input_offset < all_header_size);
+			if (input_offset >= all_header_size)
+				break;
+
+			/* Any remaining bytes go onto the next page. */
+			page_offset = SizeOfUndoPageHeaderData;
+			++buffer_index;
+		}
 	}
 
 	/* Write out the record. */
 	input_offset = 0;
-	do
+	for (;;)
 	{
 		UndoBuffer *ubuf = &urs->buffers[buffer_index];
 
 		if (buffer_index >= urs->nbuffers)
-			elog(ERROR, "ran out of buffers while inserting undo record header");
+			elog(ERROR, "ran out of buffers while inserting undo record");
 		init_if_needed(ubuf);
 		if (URSNeedsWAL(urs))
 			register_insertion_point_if_needed(ubuf, page_offset);
@@ -689,13 +689,13 @@ UndoInsert(UndoRecordSet *urs,
 								 urs->type);
 		page_offset += bytes_written;
 		input_offset += bytes_written;
-		if (page_offset == BLCKSZ)
-		{
-			/* Spill over onto the next page. */
-			++buffer_index;
-			page_offset = SizeOfUndoPageHeaderData;
-		}
-	} while (input_offset < record_size);
+		if (input_offset >= record_size)
+			break;
+
+		/* Any remaining bytes go onto the next page. */
+		page_offset = SizeOfUndoPageHeaderData;
+		++buffer_index;
+	}
 
 	urs->state = URS_STATE_DIRTY;
 
