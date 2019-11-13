@@ -1,0 +1,15 @@
+* things that worked before the URS refactor but need to be fully restored to working order
+** undo logs not getting recycled properly when you exit!
+** support for unlogged and temporary tables
+** support for tablespaces
+** simulate undo log full, so that multi-chunk URS can be tested
+
+* fix up chunk headers after recovery
+* recreate undo requests after recovery
+* mark buffer dirty happening at the wrong time (should be before page LSN)
+* crash recovery not working properly in some cases
+* multi-chunk URSs are not fully implemented yet
+* let's use functions instead of procedures for the new pg_proc stuff
+
+* xid8_undo_status() -- committed, undo needed, ...?
+* design a new discard worker
