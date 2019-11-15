@@ -81,9 +81,6 @@ UndoShmemSize(void)
 void
 UndoShmemInit(void)
 {
-	/* First, make sure we can properly clean up on process exit. */
-	on_shmem_exit(AtProcExit_Undo, 0);
-
 	/*
 	 * Initialize memory context.
 	 * XXX: As a band-aid solution looking for a better idea: if is exists
@@ -214,6 +211,15 @@ WriteUndoCheckpointData(UndoCheckpointContext *ctx, void *buffer, Size nbytes)
 {
 	WriteRawUndoCheckpointData(ctx, buffer, nbytes);
 	COMP_CRC32C(ctx->crc, buffer, nbytes);
+}
+
+/*
+ * Per-backend initialization for the undo subsystem.
+ */
+void
+InitializeUndo(void)
+{
+	on_shmem_exit(AtProcExit_Undo, 0);
 }
 
 /*

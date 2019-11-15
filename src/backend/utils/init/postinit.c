@@ -25,6 +25,7 @@
 #include "access/session.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
+#include "access/undo.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
@@ -1071,6 +1072,9 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 
 	/* Initialize this backend's session state. */
 	InitializeSession();
+
+	/* Initialize this backend's undo state. */
+	InitializeUndo();
 
 	/* report this backend in the PgBackendStatus array */
 	if (!bootstrap)

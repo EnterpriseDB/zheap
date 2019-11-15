@@ -1,5 +1,4 @@
 * things that worked before the URS refactor but need to be fully restored to working order
-** undo logs not getting recycled properly when you exit!
 ** support for unlogged and temporary tables
 ** support for tablespaces
 ** simulate undo log full, so that multi-chunk URS can be tested

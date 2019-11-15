@@ -31,6 +31,9 @@ extern void ReadUndoCheckpointData(UndoCheckpointContext *ctx,
 extern void WriteUndoCheckpointData(UndoCheckpointContext *ctx,
 									void *buffer, Size nbytes);
 
+/* Initialization for normal backends. */
+extern void InitializeUndo(void);
+
 /* Context for undo-related data. */
 extern MemoryContext UndoContext;
 
