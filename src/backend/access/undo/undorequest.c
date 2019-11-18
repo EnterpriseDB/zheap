@@ -47,6 +47,35 @@
 #include "utils/timestamp.h"
 
 /*
+ * FREE means that the UndoRequest object is not in use. It is available
+ * to be allocated.
+ *
+ * ALLOCATED means that the UndoRequest object has been allocated but the
+ * contents may not be valid yet (except for status, fxid, and dbid). It is
+ * used for transactions that are still in progress.
+ *
+ * READY means that the UndoRequest object has valid contents but is not
+ * eligible to be processed. It is used for prepared transactions, because
+ * we don't know whether or not we'll actually need to process the undo
+ * until they either commit or are rolled back.
+ *
+ * WAITING means that the UndoRequest object needs to be processed but is
+ * not yet being processed. It is only used for transacions that have
+ * aborted (including abort prepared)
+ *
+ * IN_PROGRESS means that the UndoRequest object is currently being
+ * processed. Like WAITING, the transaction must have aborted.
+ */
+typedef enum UndoRequestStatus
+{
+	UNDO_REQUEST_FREE,
+	UNDO_REQUEST_ALLOCATED,
+	UNDO_REQUEST_READY,
+	UNDO_REQUEST_WAITING,
+	UNDO_REQUEST_IN_PROGRESS
+} UndoRequestStatus;
+
+/*
  * An UndoRequestData object stores the information that we must have in order
  * to perform background undo for a transaction. It may be stored in memory or
  * serialized to disk.
@@ -77,25 +106,7 @@ typedef struct UndoRequestData
 	UndoRecPtr	end_location_unlogged;
 } UndoRequestData;
 
-typedef enum UndoRequestStatus
-{
-	UNDO_REQUEST_FREE,
-	UNDO_REQUEST_ALLOCATED,
-	UNDO_REQUEST_READY,
-	UNDO_REQUEST_WAITING,
-	UNDO_REQUEST_IN_PROGRESS
-} UndoRequestStatus;
-
 /*
- * At any given time, an UndoRequest managed by an UndoRequestManager is in
- * one of five states -- FREE, ALLOCATED, READY, WAITING, or IN_PROGRESS
- * -- as indicated by the status field. A FREE request is unallocted; an
- * ALLOCATED request corresponds to an in-progress transaction; a READY
- * request corresponds to a prepared transaction; a WAITING request
- * corresponds to an aborted transaction for which undo is not yet in progress;
- * and an IN_PROGRESS request corresponds to an aborted transaction for which
- * undo is currently in progress.
- *
  * When a request is FREE, d.fxid is InvalidFullTransactionId; otherwise
  * d.fxid identifies the transction to which it has been allocated.
  *
