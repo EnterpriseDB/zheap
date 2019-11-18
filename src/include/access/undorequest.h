@@ -44,7 +44,8 @@ extern void FinalizeUndoRequest(UndoRequestManager *urm,
 								UndoRecPtr start_location_logged,
 								UndoRecPtr start_location_unlogged,
 								UndoRecPtr end_location_logged,
-								UndoRecPtr end_location_unlogged);
+								UndoRecPtr end_location_unlogged,
+								bool mark_as_ready);
 
 /* Forget about an UndoRequest we don't need any more. */
 extern void UnregisterUndoRequest(UndoRequestManager *urm, UndoRequest *req);

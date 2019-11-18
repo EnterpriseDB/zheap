@@ -104,7 +104,8 @@ urm_simple_test(PG_FUNCTION_ARGS)
 							SomeValidUndoRecPtr,
 							InvalidUndoRecPtr,
 							SomeValidUndoRecPtr,
-							InvalidUndoRecPtr);
+							InvalidUndoRecPtr,
+							false);
 		if (!PerformUndoInBackground(urm, req, false))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),

@@ -634,7 +634,8 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 						XactUndo.subxact->start_location[UNDOPERSISTENCE_PERMANENT],
 						XactUndo.subxact->start_location[UNDOPERSISTENCE_UNLOGGED],
 						end_location_logged,
-						end_location_unlogged);
+						end_location_unlogged,
+						false);
 
 	/*
 	 * We have generated undo for permanent and/or unlogged tables.  If the
