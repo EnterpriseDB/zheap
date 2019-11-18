@@ -41,6 +41,7 @@
 #include "postgres.h"
 
 #include "access/undorequest.h"
+#include "lib/ilist.h"
 #include "lib/rbtree.h"
 #include "storage/shmem.h"
 #include "utils/timestamp.h"
@@ -88,7 +89,12 @@ typedef enum UndoRequestStatus
 /*
  * At any given time, an UndoRequest managed by an UndoRequestManager is in
  * one of five states -- FREE, ALLOCATED, READY, WAITING, or IN_PROGRESS
- * -- as indicated by the status field.
+ * -- as indicated by the status field. A FREE request is unallocted; an
+ * ALLOCATED request corresponds to an in-progress transaction; a READY
+ * request corresponds to a prepared transaction; a WAITING request
+ * corresponds to an aborted transaction for which undo is not yet in progress;
+ * and an IN_PROGRESS request corresponds to an aborted transaction for which
+ * undo is currently in progress.
  *
  * When a request is FREE, d.fxid is InvalidFullTransactionId; otherwise
  * d.fxid identifies the transction to which it has been allocated.
@@ -100,12 +106,12 @@ typedef enum UndoRequestStatus
  *
  * When an UndoRequest is in any state other than ALLOCATED, all changes to it
  * require the UndoRequestManager's lock. When it is ALLOCATED, changes be made
- * without taking the lock, except to status, d.fxid, d.dbid, and
- * next_retry_time, which still require it. Most code should ignore requests
+ * without taking the lock, except to status, d.fxid, d.dbid, next_retry_time,
+ * and next_request, which still require it. Most code should ignore requests
  * in the ALLOCATED state, and should definitely ignore the values of fields
  * that could be modified without a lock at any time, as they are likely to
- * contain incorrect data. Conceptually, an ALLOCATED request corresponds to a
- * transaction which is still running, for which the final values of fields in
+ * contain incorrect data. Since an ALLOCATED request corresponds to a
+ * transaction which is still running, the final values of fields in
  * the UndoRequestData are not yet known.
  *
  * Generally, if a request is in the FREE or WAITING state, it should not
@@ -120,13 +126,17 @@ typedef enum UndoRequestStatus
  * leaked. An entry that is FREE can be reallocated by this module, while one
  * that is WAITING should eventually become IN_PROGRESS and then, after the
  * work is completed, FREE.
+ *
+ * Each UndoRequest is either in a list of free requests or a list of used
+ * requests, depending on whether the state is FREE or otherwise. The link
+ * field is used for this purpose.
  */
 struct UndoRequest
 {
 	UndoRequestStatus status;
 	UndoRequestData	d;
 	TimestampTz retry_time;
-	UndoRequest *next_free_request;
+	dlist_node	link;
 };
 
 /*
@@ -168,8 +178,8 @@ struct UndoRequestManager
 	RBTree		requests_by_retry_time; /* sooner retry times first */
 	bool		oldest_fxid_valid;	/* true if next field is valid */
 	FullTransactionId oldest_fxid;	/* oldest FXID of any UndoRequest */
-	UndoRequest *all_requests;
-	UndoRequest *first_free_request;
+	dlist_head	free_requests;
+	dlist_head	used_requests;
 	UndoRequestNode *first_free_request_node;
 };
 
@@ -258,26 +268,23 @@ InitializeUndoRequestManager(UndoRequestManager *urm, LWLock *lock,
 				   UndoRequestNodeAllocate, UndoRequestNodeFree, urm);
 	urm->oldest_fxid_valid = true;
 	urm->oldest_fxid = InvalidFullTransactionId;
+	dlist_init(&urm->free_requests);
+	dlist_init(&urm->used_requests);
 
 	/* Find memory for UndoRequest and UndoRequestNode arenas. */
 	reqs = (UndoRequest *)
 		(((char *) urm) + MAXALIGN(sizeof(UndoRequestManager)));
-	urm->all_requests = reqs;
 	nodes = (UndoRequestNode *)
 		(((char *) reqs) + MAXALIGN(capacity * sizeof(UndoRequest)));
 
 	/* Build a free list of UndoRequest objects.  */
-	urm->first_free_request = reqs;
-	for (i = 0; i < capacity - 1; ++i)
+	for (i = 0; i < capacity; ++i)
 	{
-		UndoRequest *current = &reqs[i];
-		UndoRequest *next = &reqs[i + 1];
+		UndoRequest *req = &reqs[i];
 
-		current->status = UNDO_REQUEST_FREE;
-		current->next_free_request = next;
+		req->status = UNDO_REQUEST_FREE;
+		dlist_push_tail(&urm->free_requests, &req->link);
 	}
-	reqs[capacity - 1].status = UNDO_REQUEST_FREE;
-	reqs[capacity - 1].next_free_request = NULL;
 
 	/*
 	 * Similarly, build a free list of UndoRequestNode objects.  In this case,
@@ -312,16 +319,18 @@ InitializeUndoRequestManager(UndoRequestManager *urm, LWLock *lock,
 UndoRequest *
 RegisterUndoRequest(UndoRequestManager *urm, FullTransactionId fxid, Oid dbid)
 {
-	UndoRequest *req;
+	UndoRequest *req = NULL;
 
 	LWLockAcquire(urm->lock, LW_EXCLUSIVE);
 
-	req = urm->first_free_request;
-	if (req != NULL)
+	if (!dlist_is_empty(&urm->free_requests))
 	{
-		/* Pop free list. */
-		urm->first_free_request = req->next_free_request;
-		req->next_free_request = NULL;
+		dlist_node *dnode;
+
+		/* Allocate a request. */
+		dnode = dlist_pop_head_node(&urm->free_requests);
+		req = dlist_container(UndoRequest, link, dnode);
+		dlist_push_head(&urm->used_requests, &req->link);
 
 		/* Increase utilization. */
 		++urm->utilization;
@@ -373,10 +382,9 @@ RegisterUndoRequest(UndoRequestManager *urm, FullTransactionId fxid, Oid dbid)
  * passes mark_as_ready = false, the request will remain in that state; if
  * the called passes mark_as_ready = true, the request will be moved to the
  * READY state. In the latter case, we need the lock to change the state.
- * The advantage of marking the request as READY is that it allows other
- * processes to examine the state of the request; but if we're about to
- * make it WAITING or IN_PROGRESS via a call to PerformUndoInBackground,
- * then there's no point in changing the state twice in quick succession.
+ * (It is expected that prepared transactions will pass mark_as_ready = true,
+ * but that other transactions would not, since another state change would
+ * follow immediately.)
  */
 void
 FinalizeUndoRequest(UndoRequestManager *urm, UndoRequest *req, Size size,
@@ -446,9 +454,9 @@ UnregisterUndoRequest(UndoRequestManager *urm, UndoRequest *req)
 	if (FullTransactionIdEquals(req->d.fxid, urm->oldest_fxid))
 		urm->oldest_fxid_valid = false;
 
-	/* Push onto freelist. */
-	req->next_free_request = urm->first_free_request;
-	urm->first_free_request = req;
+	/* Move to freelist. */
+	dlist_delete(&req->link);
+	dlist_push_head(&urm->free_requests, &req->link);
 
 	/* Set status and clear FullTransactionId. */
 	req->status = UNDO_REQUEST_FREE;
@@ -813,8 +821,8 @@ SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes)
 {
 	UndoRequestData *darray;
 	int		nrequests = 0;
-	int		i = 0,
-			j = 0;
+	int		i = 0;
+	dlist_iter	iter;
 
 	LWLockAcquire(urm->lock, LW_EXCLUSIVE);
 
@@ -826,11 +834,12 @@ SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes)
 		return NULL;
 	}
 
-	/* Count the number of requests. */
-	for (i = 0; i < urm->capacity; ++i)
+	/* Count the number of requests in interesting states. */
+	dlist_foreach(iter, &urm->used_requests)
 	{
-		UndoRequest *req = &urm->all_requests[i];
+		UndoRequest *req = dlist_container(UndoRequest, link, iter.cur);
 
+		Assert(req->status != UNDO_REQUEST_FREE);
 		if (req->status == UNDO_REQUEST_READY ||
 			req->status == UNDO_REQUEST_WAITING ||
 			req->status == UNDO_REQUEST_IN_PROGRESS)
@@ -850,14 +859,15 @@ SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes)
 	darray = palloc(*nbytes);
 
 	/* Save requests. */
-	for (i = 0; i < urm->capacity; ++i)
+	dlist_foreach(iter, &urm->used_requests)
 	{
-		UndoRequest *req = &urm->all_requests[i];
+		UndoRequest *req = dlist_container(UndoRequest, link, iter.cur);
 
+		Assert(req->status != UNDO_REQUEST_FREE);
 		if (req->status == UNDO_REQUEST_READY ||
 			req->status == UNDO_REQUEST_WAITING ||
 			req->status == UNDO_REQUEST_IN_PROGRESS)
-			memcpy(&darray[j++], &req->d, sizeof(UndoRequestData));
+			memcpy(&darray[i++], &req->d, sizeof(UndoRequestData));
 	}
 	Assert(i == nrequests);
 
@@ -900,11 +910,13 @@ RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes, char *data)
 	{
 		UndoRequestData	   *d = &darray[i];
 		UndoRequest		   *req;
+		dlist_node *dnode;
 
 		/* Allocate a request. */
-		Assert(urm->first_free_request != NULL);
-		req = urm->first_free_request;
-		urm->first_free_request = req->next_free_request;
+		Assert(!dlist_is_empty(&urm->free_requests));
+		dnode = dlist_pop_head_node(&urm->free_requests);
+		req = dlist_container(UndoRequest, link, dnode);
+		dlist_push_head(&urm->used_requests, &req->link);
 
 		/* Increase utilization. */
 		++urm->utilization;
@@ -915,9 +927,10 @@ RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes, char *data)
 		Assert(d->size != 0);
 
 		/*
-		 * Populate data and list the request.
+		 * Populate request data and add to RBTrees.
 		 *
-		 * List this request so that undo workers will see it.  Note that we
+		 * We want undo workers to see this request, so it has to be placed
+		 * in a WAITING state and added to relevant RBTrees. Note that we
 		 * assume that these are new aborts, but it's possible that there are
 		 * actually a whole series of previous undo failures before the
 		 * shutdown or crash. If we had the information about whether this
@@ -931,7 +944,6 @@ RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes, char *data)
 		memcpy(&req->d, d, sizeof(UndoRequestData));
 		req->status = UNDO_REQUEST_WAITING;
 		req->retry_time = DT_NOBEGIN;
-		req->next_free_request = NULL;
 		InsertUndoRequest(&urm->requests_by_fxid, req);
 		InsertUndoRequest(&urm->requests_by_size, req);
 	}
@@ -990,15 +1002,17 @@ UndoRequestManagerOldestFXID(UndoRequestManager *urm)
 		result = urm->oldest_fxid;
 	else
 	{
-		int			i;
+		dlist_iter	iter;
 
-		for (i = 0; i < urm->capacity; ++i)
+		dlist_foreach(iter, &urm->used_requests)
 		{
-			UndoRequest *req = &urm->all_requests[i];
+			UndoRequest *req = dlist_container(UndoRequest, link, iter.cur);
 
-			if (FullTransactionIdIsValid(req->d.fxid) &&
-				(!FullTransactionIdIsValid(result) ||
-				 FullTransactionIdPrecedes(req->d.fxid, result)))
+			Assert(req->status != UNDO_REQUEST_FREE);
+			Assert(FullTransactionIdIsValid(req->d.fxid));
+
+			if (!FullTransactionIdIsValid(result) ||
+				FullTransactionIdPrecedes(req->d.fxid, result))
 				result = req->d.fxid;
 		}
 
