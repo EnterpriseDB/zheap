@@ -73,8 +73,6 @@ extern void RescheduleUndoRequest(UndoRequestManager *urm, UndoRequest *req);
 extern char *SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes);
 extern void RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes,
 								   char *data);
-extern UndoRequest *SuspendPreparedUndoRequest(UndoRequestManager *urm,
-											   FullTransactionId fxid);
 
 /* Get oldest registered FXID. */
 extern FullTransactionId UndoRequestManagerOldestFXID(UndoRequestManager *urm);

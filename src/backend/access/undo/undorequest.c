@@ -80,10 +80,15 @@ typedef enum UndoRequestStatus
  * to perform background undo for a transaction. It may be stored in memory or
  * serialized to disk.
  *
- * We won't have all of this information while the transaction is still
- * runnning and need not ever collect it if the transaction commits, but if
- * the transaction aborts or is prepared, we need to remember all of these
- * details at that point.
+ * However, a request should never be serialized to disk if the status is
+ * UNDO_REQUEST_FREE or UNDO_REQUEST_ALLOCATED. That's because a FREE request
+ * object doesn't need to be saved, and an ALLOCATED request won't valid
+ * contents. We don't have all of this information while the transaction is
+ * still runnning.
+ *
+ * If the transaction commits, we need never collect all of these details and
+ * can just free the UndoRequest; but if it aborts or is prepared, we need to
+ * remember all of these details at that point.
  *
  * If the transaction is aborted by a crash, we need to reconstruct these
  * details after restarting.
@@ -94,9 +99,14 @@ typedef enum UndoRequestStatus
  * be performed at some later point, but the same principle does not apply
  * to temporary undo. All temporary objects disappear with the session that
  * owned them, making the undo irrelevant.
+ *
+ * fxid should be InvalidTransactionId if and only if the status is set to
+ * UNDO_REQUEST_FREE. It identifies the transaction to which this
+ * UndoRequestData has been allocated.
  */
 typedef struct UndoRequestData
 {
+	UndoRequestStatus	status;
 	FullTransactionId fxid;
 	Oid			dbid;
 	Size		size;
@@ -107,44 +117,12 @@ typedef struct UndoRequestData
 } UndoRequestData;
 
 /*
- * When a request is FREE, d.fxid is InvalidFullTransactionId; otherwise
- * d.fxid identifies the transction to which it has been allocated.
- *
- * When a request is in a state other than WAITING, it is not present in any
- * RBTree. When WAITING, if retry_time is DT_NOBEGIN, it is present in both
- * requests_by_fxid and requests_by_size.  When WAITING with some other value
- * for retry_time, it is present in requests_by_retry_time.
- *
- * When an UndoRequest is in any state other than ALLOCATED, all changes to it
- * require the UndoRequestManager's lock. When it is ALLOCATED, changes be made
- * without taking the lock, except to status, d.fxid, d.dbid, next_retry_time,
- * and next_request, which still require it. Most code should ignore requests
- * in the ALLOCATED state, and should definitely ignore the values of fields
- * that could be modified without a lock at any time, as they are likely to
- * contain incorrect data. Since an ALLOCATED request corresponds to a
- * transaction which is still running, the final values of fields in
- * the UndoRequestData are not yet known.
- *
- * Generally, if a request is in the FREE or WAITING state, it should not
- * be examined in any way without holding the lock. In other states, it is
- * safe if it is known that the state can't change. For example, it's fine to
- * examine an IN_PROGRESS request that is owned by the current process without
- * holding the lock, but it would be unsafe to examine some other processes's
- * IN_PROGRESS request without the lock.
- *
- * Callers must be careful never to lose track of an entry that is in the
- * ALLOCATED, READY, or IN_PROGRESS state; such entries will be permanently
- * leaked. An entry that is FREE can be reallocated by this module, while one
- * that is WAITING should eventually become IN_PROGRESS and then, after the
- * work is completed, FREE.
- *
- * Each UndoRequest is either in a list of free requests or a list of used
- * requests, depending on whether the state is FREE or otherwise. The link
- * field is used for this purpose.
+ * An UndoRequest is a container for an UndoRequestData object, with the
+ * addition of some details that are only part of the in-memory representation,
+ * and not serialized to disk.
  */
 struct UndoRequest
 {
-	UndoRequestStatus status;
 	UndoRequestData	d;
 	TimestampTz retry_time;
 	dlist_node	link;
@@ -176,6 +154,39 @@ typedef enum UndoRequestSource
  * UndoRequestNode objects. Typically, there would only be one such object
  * for the whole system, but it's possible to create others for testing
  * purposes.
+ *
+ * When an UndoRequest managed by an UndoRequestManager is in a state other
+ * than WAITING, it is not present in any RBTree. When WAITING, if retry_time
+ * is DT_NOBEGIN, it is present in both requests_by_fxid and requests_by_size.
+ * When WAITING with some other value for retry_time, it is present in
+ * requests_by_retry_time.
+ *
+ * When an UndoRequest is in any state other than ALLOCATED, all changes to it
+ * require the UndoRequestManager's lock. When it is ALLOCATED, changes be made
+ * without taking the lock, except to status, d.fxid, d.dbid, next_retry_time,
+ * and next_request, which still require it. Most code should ignore requests
+ * in the ALLOCATED state, and should definitely ignore the values of fields
+ * that could be modified without a lock at any time, as they are likely to
+ * contain incorrect data. Since an ALLOCATED request corresponds to a
+ * transaction which is still running, the final values of fields in
+ * the UndoRequestData are not yet known.
+ *
+ * Generally, if a request is in the FREE or WAITING state, it should not
+ * be examined in any way without holding the lock. In other states, it is
+ * safe if it is known that the state can't change. For example, it's fine to
+ * examine an IN_PROGRESS request that is owned by the current process without
+ * holding the lock, but it would be unsafe to examine some other processes's
+ * IN_PROGRESS request without the lock.
+ *
+ * Callers must be careful never to lose track of an entry that is in the
+ * ALLOCATED, READY, or IN_PROGRESS state; such entries will be permanently
+ * leaked. An entry that is FREE can be reallocated by this module, while one
+ * that is WAITING should eventually become IN_PROGRESS and then, after the
+ * work is completed, FREE.
+ *
+ * Each UndoRequest is either in a list of free requests or a list of used
+ * requests, depending on whether the state is FREE or otherwise. The link
+ * field is used for this purpose.
  */
 struct UndoRequestManager
 {
@@ -212,8 +223,6 @@ static int	UndoRequestNodeCompareSize(const RBTNode *a, const RBTNode *b,
 									   void *arg);
 static void InsertUndoRequest(RBTree *rbt, UndoRequest *req);
 static void RemoveUndoRequest(RBTree *rbt, UndoRequest *req);
-static UndoRequest *FindUndoRequest(UndoRequestManager *urm,
-									FullTransactionId fxid);
 
 
 /* GUCs */
@@ -293,7 +302,7 @@ InitializeUndoRequestManager(UndoRequestManager *urm, LWLock *lock,
 	{
 		UndoRequest *req = &reqs[i];
 
-		req->status = UNDO_REQUEST_FREE;
+		req->d.status = UNDO_REQUEST_FREE;
 		dlist_push_tail(&urm->free_requests, &req->link);
 	}
 
@@ -347,8 +356,8 @@ RegisterUndoRequest(UndoRequestManager *urm, FullTransactionId fxid, Oid dbid)
 		++urm->utilization;
 
 		/* Initialize request object. */
-		Assert(req->status == UNDO_REQUEST_FREE);
-		req->status = UNDO_REQUEST_ALLOCATED;
+		Assert(req->d.status == UNDO_REQUEST_FREE);
+		req->d.status = UNDO_REQUEST_ALLOCATED;
 		req->d.fxid = fxid;
 		req->d.dbid = dbid;
 		req->d.size = 0;
@@ -405,7 +414,7 @@ FinalizeUndoRequest(UndoRequestManager *urm, UndoRequest *req, Size size,
 					UndoRecPtr end_location_unlogged,
 					bool mark_as_ready)
 {
-	Assert(req->status == UNDO_REQUEST_ALLOCATED);
+	Assert(req->d.status == UNDO_REQUEST_ALLOCATED);
 	Assert(size != 0);
 	Assert(UndoRecPtrIsValid(end_location_logged) ||
 		   UndoRecPtrIsValid(end_location_unlogged));
@@ -422,7 +431,7 @@ FinalizeUndoRequest(UndoRequestManager *urm, UndoRequest *req, Size size,
 	if (mark_as_ready)
 	{
 		LWLockAcquire(urm->lock, LW_EXCLUSIVE);
-		req->status = UNDO_REQUEST_READY;
+		req->d.status = UNDO_REQUEST_READY;
 		LWLockRelease(urm->lock);
 	}
 }
@@ -443,7 +452,7 @@ FinalizeUndoRequest(UndoRequestManager *urm, UndoRequest *req, Size size,
 void
 UnregisterUndoRequest(UndoRequestManager *urm, UndoRequest *req)
 {
-	Assert(req->status != UNDO_REQUEST_FREE);
+	Assert(req->d.status != UNDO_REQUEST_FREE);
 
 	LWLockAcquire(urm->lock, LW_EXCLUSIVE);
 
@@ -469,8 +478,8 @@ UnregisterUndoRequest(UndoRequestManager *urm, UndoRequest *req)
 	dlist_delete(&req->link);
 	dlist_push_head(&urm->free_requests, &req->link);
 
-	/* Set status and clear FullTransactionId. */
-	req->status = UNDO_REQUEST_FREE;
+	/* Set status to FREE and clear FullTransactionId. */
+	req->d.status = UNDO_REQUEST_FREE;
 	req->d.fxid = InvalidFullTransactionId;
 
 	/* Decrease utilization. */
@@ -507,7 +516,7 @@ PerformUndoInBackground(UndoRequestManager *urm, UndoRequest *req, bool force)
 {
 	bool		background;
 
-	Assert(req->status == UNDO_REQUEST_ALLOCATED);
+	Assert(req->d.status == UNDO_REQUEST_ALLOCATED);
 
 	/*
 	 * If we failed after allocating an UndoRequest but before setting any
@@ -536,12 +545,12 @@ PerformUndoInBackground(UndoRequestManager *urm, UndoRequest *req, bool force)
 		 * requests_by_fxid and requests_by_size, so that GetNextUndoRequest
 		 * can find it.
 		 */
-		req->status = UNDO_REQUEST_WAITING;
+		req->d.status = UNDO_REQUEST_WAITING;
 		InsertUndoRequest(&urm->requests_by_fxid, req);
 		InsertUndoRequest(&urm->requests_by_size, req);
 	}
 	else
-		req->status = UNDO_REQUEST_IN_PROGRESS;
+		req->d.status = UNDO_REQUEST_IN_PROGRESS;
 	LWLockRelease(urm->lock);
 
 	return background;
@@ -566,7 +575,7 @@ UndoRequestWaitTime(UndoRequestManager *urm, TimestampTz when)
 	node = (UndoRequestNode *) rbt_leftmost(&urm->requests_by_fxid);
 	if (node != NULL)
 	{
-		Assert(node->req->status == UNDO_REQUEST_WAITING);
+		Assert(node->req->d.status == UNDO_REQUEST_WAITING);
 		result = 0;
 	}
 	else
@@ -581,7 +590,7 @@ UndoRequestWaitTime(UndoRequestManager *urm, TimestampTz when)
 			long	secs;
 			int		microsecs;
 
-			Assert(node->req->status == UNDO_REQUEST_WAITING);
+			Assert(node->req->d.status == UNDO_REQUEST_WAITING);
 			TimestampDifference(when, retry_time, &secs, &microsecs);
 			result = (secs * 1000) + (microsecs / 1000);
 			Assert(result >= 0);
@@ -686,7 +695,7 @@ GetNextUndoRequest(UndoRequestManager *urm, Oid dbid,
 		node = (UndoRequestNode *) rbt_leftmost(rbt);
 		if (node == NULL)
 			continue;
-		Assert(node->req->status == UNDO_REQUEST_WAITING);
+		Assert(node->req->d.status == UNDO_REQUEST_WAITING);
 
 		/*
 		 * We can only take an item from the retry time RBTree if the retry
@@ -724,7 +733,7 @@ GetNextUndoRequest(UndoRequestManager *urm, Oid dbid,
 	if (req == NULL && saw_db_mismatch && !minimum_runtime_reached)
 	{
 		req = FindUndoRequestForDatabase(urm, dbid);
-		Assert(req->status == UNDO_REQUEST_WAITING);
+		Assert(req->d.status == UNDO_REQUEST_WAITING);
 	}
 
 	/*
@@ -740,7 +749,7 @@ GetNextUndoRequest(UndoRequestManager *urm, Oid dbid,
 			RemoveUndoRequest(&urm->requests_by_fxid, req);
 			RemoveUndoRequest(&urm->requests_by_size, req);
 		}
-		req->status = UNDO_REQUEST_IN_PROGRESS;
+		req->d.status = UNDO_REQUEST_IN_PROGRESS;
 	}
 
 	LWLockRelease(urm->lock);
@@ -792,7 +801,7 @@ void
 RescheduleUndoRequest(UndoRequestManager *urm, UndoRequest *req)
 {
 	LWLockAcquire(urm->lock, LW_EXCLUSIVE);
-	Assert(req->status == UNDO_REQUEST_IN_PROGRESS);
+	Assert(req->d.status == UNDO_REQUEST_IN_PROGRESS);
 
 	/*
 	 * This algorithm for determining the next retry time is fairly
@@ -809,7 +818,7 @@ RescheduleUndoRequest(UndoRequestManager *urm, UndoRequest *req)
 			TimestampTzPlusMilliseconds(GetCurrentTimestamp(), 30 * 1000);
 
 	InsertUndoRequest(&urm->requests_by_retry_time, req);
-	req->status = UNDO_REQUEST_WAITING;
+	req->d.status = UNDO_REQUEST_WAITING;
 	LWLockRelease(urm->lock);
 }
 
@@ -850,10 +859,10 @@ SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes)
 	{
 		UndoRequest *req = dlist_container(UndoRequest, link, iter.cur);
 
-		Assert(req->status != UNDO_REQUEST_FREE);
-		if (req->status == UNDO_REQUEST_READY ||
-			req->status == UNDO_REQUEST_WAITING ||
-			req->status == UNDO_REQUEST_IN_PROGRESS)
+		Assert(req->d.status != UNDO_REQUEST_FREE);
+		if (req->d.status == UNDO_REQUEST_READY ||
+			req->d.status == UNDO_REQUEST_WAITING ||
+			req->d.status == UNDO_REQUEST_IN_PROGRESS)
 			++nrequests;
 	}
 
@@ -874,10 +883,10 @@ SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes)
 	{
 		UndoRequest *req = dlist_container(UndoRequest, link, iter.cur);
 
-		Assert(req->status != UNDO_REQUEST_FREE);
-		if (req->status == UNDO_REQUEST_READY ||
-			req->status == UNDO_REQUEST_WAITING ||
-			req->status == UNDO_REQUEST_IN_PROGRESS)
+		Assert(req->d.status != UNDO_REQUEST_FREE);
+		if (req->d.status == UNDO_REQUEST_READY ||
+			req->d.status == UNDO_REQUEST_WAITING ||
+			req->d.status == UNDO_REQUEST_IN_PROGRESS)
 			memcpy(&darray[i++], &req->d, sizeof(UndoRequestData));
 	}
 	Assert(i == nrequests);
@@ -889,10 +898,6 @@ SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes)
 
 /*
  * Restore state previously saved by RestoreUndoRequestData.
- *
- * Note that any requests that were READY will be restored as WAITING requests;
- * caller must invoke SuspendPreparedUndoRequest on such requests to move them
- * back to the READY state before allowing undo processing to commence.
  */
 void
 RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes, char *data)
@@ -940,60 +945,42 @@ RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes, char *data)
 		/*
 		 * Populate request data and add to RBTrees.
 		 *
-		 * We want undo workers to see this request, so it has to be placed
-		 * in a WAITING state and added to relevant RBTrees. Note that we
-		 * assume that these are new aborts, but it's possible that there are
-		 * actually a whole series of previous undo failures before the
-		 * shutdown or crash. If we had the information about whether this
-		 * request had failed previously, we could set req->retry_time and
-		 * insert it into requests_by_retry_time rather than requests_by_fxid
-		 * and requests_by_size, but it doesn't seem important to retain
-		 * information about undo failure across crashes or shutdowns, because
-		 * we're just trying to guarantee that we don't busy-loop or starve
-		 * other requests. (FindUndoRequest would get confused, too.)
+		 * We should only have serialized a request that was WAITING, IN
+		 * PROGRESS, or READY. If the request was READY, leave it in that
+		 * state; otherwise, set the state back to WAITING, since whether
+		 * or not the request was being processed at the time of shut down,
+		 * it won't still be being processed after a restart.
+		 *
+		 * Note that we don't bother to try to maintain retry_time across
+		 * restarts; it wouldn't be very relevant anyway. Maybe it would
+		 * be interesting to at least keep track of requests which had
+		 * previously failed vs. those that had not, but for now we don't.
+		 * The whole point of requests_by_retry_time is just to avoid
+		 * busy-looping, and also starvation of other requests, so it's
+		 * not critical to immediately get a useful value here.
 		 */
 		memcpy(&req->d, d, sizeof(UndoRequestData));
-		req->status = UNDO_REQUEST_WAITING;
-		req->retry_time = DT_NOBEGIN;
-		InsertUndoRequest(&urm->requests_by_fxid, req);
-		InsertUndoRequest(&urm->requests_by_size, req);
+		switch (req->d.status)
+		{
+			case UNDO_REQUEST_WAITING:
+			case UNDO_REQUEST_IN_PROGRESS:
+				req->d.status = UNDO_REQUEST_WAITING;
+				req->retry_time = DT_NOBEGIN;
+				InsertUndoRequest(&urm->requests_by_fxid, req);
+				InsertUndoRequest(&urm->requests_by_size, req);
+				break;
+			case UNDO_REQUEST_READY:
+				break;
+			default:
+				/* Don't just Assert(), in case on-disk state is corrupt. */
+				elog(ERROR, "undo request state %d is not valid",
+					 (int) req->d.status);
+				break;
+		}
 	}
 
 	/* All done. */
 	LWLockRelease(urm->lock);
-}
-
-/*
- * Adjust UndoRequestManager state for prepared transactions.
- *
- * After a restart, once all calls to RecreateUndoRequest have been completed
- * and before the first call to GetNextUndoRequest, this function should
- * be called for each prepared transaction. That's necessary to avoid
- * prematurely executed undo actions for transactions that haven't aborted
- * yet and might go on to commit. The UndoRequest for the indicated fxid is
- * made READY (as defined above) so that GetNextUndoRequest does not find
- * them.
- *
- * The caller should retain a pointer to the returned UndoRequest and, when
- * the prepared transaction is eventually committed or rolled back, should
- * invoke UnregisterUndoRequest on commit or FinalizeUndoRequest on abort.
- */
-UndoRequest *
-SuspendPreparedUndoRequest(UndoRequestManager *urm, FullTransactionId fxid)
-{
-	UndoRequest *req;
-
-	LWLockAcquire(urm->lock, LW_EXCLUSIVE);
-	req = FindUndoRequest(urm, fxid);
-	Assert(req != NULL);
-	Assert(req->d.size != 0);
-	Assert(req->status == UNDO_REQUEST_WAITING);
-	RemoveUndoRequest(&urm->requests_by_fxid, req);
-	RemoveUndoRequest(&urm->requests_by_size, req);
-	req->status = UNDO_REQUEST_READY;
-	LWLockRelease(urm->lock);
-
-	return req;
 }
 
 /*
@@ -1019,7 +1006,7 @@ UndoRequestManagerOldestFXID(UndoRequestManager *urm)
 		{
 			UndoRequest *req = dlist_container(UndoRequest, link, iter.cur);
 
-			Assert(req->status != UNDO_REQUEST_FREE);
+			Assert(req->d.status != UNDO_REQUEST_FREE);
 			Assert(FullTransactionIdIsValid(req->d.fxid));
 
 			if (!FullTransactionIdIsValid(result) ||
@@ -1269,37 +1256,4 @@ RemoveUndoRequest(RBTree *rbt, UndoRequest *req)
 	dummy.req = req;
 	node = rbt_find(rbt, &dummy.rbtnode);
 	rbt_delete(rbt, node);
-}
-
-/*
- * Find an UndoRequest by FXID.
- *
- * If we needed to do this frequently, it might be worth maintaining a hash
- * table mapping FXID -> UndoRequest, but since we only need it after a system
- * restart, RBTree's O(lg n) performance seems good enough.
- *
- * Note that this can only find an UndoRequest that has not failed and is not
- * yet being processed, because a failed UndoRequest would be in
- * requests_by_retry_time, not requests_by_fxid, and an in-progress
- * UndoRequest wouldn't be in either data structure. That restriction, too,
- * is OK for current uses.
- */
-static UndoRequest *
-FindUndoRequest(UndoRequestManager *urm, FullTransactionId fxid)
-{
-	UndoRequest dummy_request;
-	UndoRequestNode dummy_node;
-	RBTNode    *node;
-
-	/*
-	 * Here we need both a dummy UndoRequest and a dummy UndoRequestNode; only
-	 * the comparator will look at the dummy UndoRequestNode, and it will only
-	 * look at UndoRequest, and specifically its FXID.
-	 */
-	dummy_request.d.fxid = fxid;
-	dummy_node.req = &dummy_request;
-	node = rbt_find(&urm->requests_by_fxid, &dummy_node.rbtnode);
-	if (node == NULL)
-		return NULL;
-	return ((UndoRequestNode *) node)->req;
 }
