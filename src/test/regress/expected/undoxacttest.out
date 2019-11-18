@@ -1,0 +1,2387 @@
+-- Notes:
+--
+-- - Obviously needs to show that UNDO is correctly being executed
+-- - where applicable.
+--
+-- - it'd probably better to not use increasing numbers like I did
+--   here, makes it harder to add new tests, and causes cascading
+--   failures
+--
+-- - It'd be nice to find a way to test background undo
+--
+-- initialize
+DROP TABLE IF EXISTS undoxacttest_perm;
+NOTICE:  table "undoxacttest_perm" does not exist, skipping
+CREATE TABLE undoxacttest_perm(data bytea not null);
+ALTER TABLE undoxacttest_perm ALTER COLUMN data SET STORAGE plain;
+SELECT undoxacttest_init_rel('undoxacttest_perm'::regclass);
+ undoxacttest_init_rel 
+-----------------------
+ 
+(1 row)
+
+-- want to show all undo in foreground, for testability
+SET undo_force_foreground = true;
+-- helper functions
+CREATE OR REPLACE FUNCTION raise_error() RETURNS void VOLATILE LANGUAGE plpgsql AS
+$p$
+BEGIN
+    RAISE 'you wanted me to fail';
+END
+$p$;
+-- implicit xact: single undo generating statement, statement succeeds
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 1);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                          0
+(1 row)
+
+-- implicit xact: single undo generating  statement, statement fails
+-- FIXME: this shows a WARNING indicating a bug
+SELECT CASE WHEN undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 1) IS NOT NULL THEN raise_error() END;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 11
+ERROR:  you wanted me to fail
+CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
+-- explicit xact: single undo generating statement, statement succeeds, followed by COMMIT
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 3);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                          2
+(1 row)
+
+COMMIT;
+-- explicit xact: single undo generating statement, statement succeeds, followed by ROLLBACK
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 4);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                          5
+(1 row)
+
+ROLLBACK;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 11
+-- explicit xact: single undo generating statement, statement fails, followed by COMMIT
+BEGIN;
+SELECT CASE WHEN undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 5) IS NOT NULL THEN raise_error() END;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 11
+ERROR:  you wanted me to fail
+CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
+COMMIT;
+-- explicit xact: single undo generating statement, statement fails, followed by ROLLBACK
+BEGIN;
+SELECT CASE WHEN undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 6) IS NOT NULL THEN raise_error() END;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 11
+ERROR:  you wanted me to fail
+CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
+COMMIT;
+-- implicit xact: two undo generating statements, both succeed
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 7)\;SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 8);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                         27
+(1 row)
+
+-- implicit xact: two undo generating statements, both succeed, followed by erroring statement
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 9)\;SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 10);SELECT raise_error();
+ undoxacttest_fetch_and_inc 
+----------------------------
+                         44
+(1 row)
+
+ERROR:  you wanted me to fail
+CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
+-- implicit xact: two undo generating statements, first succeeds, second fails
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 11)\;SELECT CASE WHEN undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 12) IS NOT NULL THEN raise_error() END;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 15
+ERROR:  you wanted me to fail
+CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
+-- explicit xact: two undo generating statements, both succeed, followed by COMMIT
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 13);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                         77
+(1 row)
+
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 14);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                         90
+(1 row)
+
+COMMIT;
+-- explicit xact: two undo generating statements, both succeed, followed by ROLLBACK
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 13);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        104
+(1 row)
+
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 14);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        117
+(1 row)
+
+ROLLBACK;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 15
+-- explicit xact: two undo generating statements, both succeed, followed by errror, followed by COMMIT
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 15);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        131
+(1 row)
+
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 16);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        146
+(1 row)
+
+SELECT raise_error();
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 15
+ERROR:  you wanted me to fail
+CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
+COMMIT;
+-- explicit xact: two undo generating statements, both succeed, followed by errror, followed by ROLLBACK
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 17);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        162
+(1 row)
+
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 18);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        179
+(1 row)
+
+SELECT raise_error();
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 15
+ERROR:  you wanted me to fail
+CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
+ROLLBACK;
+-- explicit xact: undo, savepoint, undo, rollback to savepoint, undo; commit;
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 19);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        197
+(1 row)
+
+SAVEPOINT foo;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 20);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        216
+(1 row)
+
+ROLLBACK TO SAVEPOINT foo;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 11
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 21);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        236
+(1 row)
+
+COMMIT;
+-- explicit xact: undo, savepoint, undo, rollback to savepoint, undo; rollback;
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 22);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        257
+(1 row)
+
+SAVEPOINT foo;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 23);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        279
+(1 row)
+
+ROLLBACK TO SAVEPOINT foo;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 11
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 24);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        302
+(1 row)
+
+ROLLBACK;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 11
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 26
+-- explicit xact: undo, savepoint, undo, error, rollback to savepoint, undo; commit;
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 25);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        326
+(1 row)
+
+SAVEPOINT foo;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 26);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        351
+(1 row)
+
+SELECT raise_error();
+WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 11
+ERROR:  you wanted me to fail
+CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
+ROLLBACK TO SAVEPOINT foo;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 27);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        377
+(1 row)
+
+COMMIT;
+-- explicit xact: undo, savepoint, undo, error, rollback to savepoint, undo; rollback;
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 25);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        404
+(1 row)
+
+SAVEPOINT foo;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 26);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        429
+(1 row)
+
+SELECT raise_error();
+WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 11
+ERROR:  you wanted me to fail
+CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
+ROLLBACK TO SAVEPOINT foo;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 27);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        455
+(1 row)
+
+ROLLBACK;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 11
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 26
+-- explicit xact: undo, savepoint, undo, commit;
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 29);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        482
+(1 row)
+
+SAVEPOINT foo;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 29);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        511
+(1 row)
+
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 30);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        540
+(1 row)
+
+ROLLBACK;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 22
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 26
+-- explicit xact: undo, savepoint, undo, rollback;
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 31);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        570
+(1 row)
+
+SAVEPOINT foo;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 32);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        601
+(1 row)
+
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 33);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        633
+(1 row)
+
+ROLLBACK;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 22
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 26
+-- explicit xact: undo, savepoint, undo, rollback;
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 31);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        666
+(1 row)
+
+SAVEPOINT foo;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 32);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        697
+(1 row)
+
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 33);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        729
+(1 row)
+
+ROLLBACK;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 22
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 26
+-- implicit xact: create a fair bit of undo
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, g.i) FROM generate_series(1, 1000) g(i);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                        762
+                        763
+                        765
+                        768
+                        772
+                        777
+                        783
+                        790
+                        798
+                        807
+                        817
+                        828
+                        840
+                        853
+                        867
+                        882
+                        898
+                        915
+                        933
+                        952
+                        972
+                        993
+                       1015
+                       1038
+                       1062
+                       1087
+                       1113
+                       1140
+                       1168
+                       1197
+                       1227
+                       1258
+                       1290
+                       1323
+                       1357
+                       1392
+                       1428
+                       1465
+                       1503
+                       1542
+                       1582
+                       1623
+                       1665
+                       1708
+                       1752
+                       1797
+                       1843
+                       1890
+                       1938
+                       1987
+                       2037
+                       2088
+                       2140
+                       2193
+                       2247
+                       2302
+                       2358
+                       2415
+                       2473
+                       2532
+                       2592
+                       2653
+                       2715
+                       2778
+                       2842
+                       2907
+                       2973
+                       3040
+                       3108
+                       3177
+                       3247
+                       3318
+                       3390
+                       3463
+                       3537
+                       3612
+                       3688
+                       3765
+                       3843
+                       3922
+                       4002
+                       4083
+                       4165
+                       4248
+                       4332
+                       4417
+                       4503
+                       4590
+                       4678
+                       4767
+                       4857
+                       4948
+                       5040
+                       5133
+                       5227
+                       5322
+                       5418
+                       5515
+                       5613
+                       5712
+                       5812
+                       5913
+                       6015
+                       6118
+                       6222
+                       6327
+                       6433
+                       6540
+                       6648
+                       6757
+                       6867
+                       6978
+                       7090
+                       7203
+                       7317
+                       7432
+                       7548
+                       7665
+                       7783
+                       7902
+                       8022
+                       8143
+                       8265
+                       8388
+                       8512
+                       8637
+                       8763
+                       8890
+                       9018
+                       9147
+                       9277
+                       9408
+                       9540
+                       9673
+                       9807
+                       9942
+                      10078
+                      10215
+                      10353
+                      10492
+                      10632
+                      10773
+                      10915
+                      11058
+                      11202
+                      11347
+                      11493
+                      11640
+                      11788
+                      11937
+                      12087
+                      12238
+                      12390
+                      12543
+                      12697
+                      12852
+                      13008
+                      13165
+                      13323
+                      13482
+                      13642
+                      13803
+                      13965
+                      14128
+                      14292
+                      14457
+                      14623
+                      14790
+                      14958
+                      15127
+                      15297
+                      15468
+                      15640
+                      15813
+                      15987
+                      16162
+                      16338
+                      16515
+                      16693
+                      16872
+                      17052
+                      17233
+                      17415
+                      17598
+                      17782
+                      17967
+                      18153
+                      18340
+                      18528
+                      18717
+                      18907
+                      19098
+                      19290
+                      19483
+                      19677
+                      19872
+                      20068
+                      20265
+                      20463
+                      20662
+                      20862
+                      21063
+                      21265
+                      21468
+                      21672
+                      21877
+                      22083
+                      22290
+                      22498
+                      22707
+                      22917
+                      23128
+                      23340
+                      23553
+                      23767
+                      23982
+                      24198
+                      24415
+                      24633
+                      24852
+                      25072
+                      25293
+                      25515
+                      25738
+                      25962
+                      26187
+                      26413
+                      26640
+                      26868
+                      27097
+                      27327
+                      27558
+                      27790
+                      28023
+                      28257
+                      28492
+                      28728
+                      28965
+                      29203
+                      29442
+                      29682
+                      29923
+                      30165
+                      30408
+                      30652
+                      30897
+                      31143
+                      31390
+                      31638
+                      31887
+                      32137
+                      32388
+                      32640
+                      32893
+                      33147
+                      33402
+                      33658
+                      33915
+                      34173
+                      34432
+                      34692
+                      34953
+                      35215
+                      35478
+                      35742
+                      36007
+                      36273
+                      36540
+                      36808
+                      37077
+                      37347
+                      37618
+                      37890
+                      38163
+                      38437
+                      38712
+                      38988
+                      39265
+                      39543
+                      39822
+                      40102
+                      40383
+                      40665
+                      40948
+                      41232
+                      41517
+                      41803
+                      42090
+                      42378
+                      42667
+                      42957
+                      43248
+                      43540
+                      43833
+                      44127
+                      44422
+                      44718
+                      45015
+                      45313
+                      45612
+                      45912
+                      46213
+                      46515
+                      46818
+                      47122
+                      47427
+                      47733
+                      48040
+                      48348
+                      48657
+                      48967
+                      49278
+                      49590
+                      49903
+                      50217
+                      50532
+                      50848
+                      51165
+                      51483
+                      51802
+                      52122
+                      52443
+                      52765
+                      53088
+                      53412
+                      53737
+                      54063
+                      54390
+                      54718
+                      55047
+                      55377
+                      55708
+                      56040
+                      56373
+                      56707
+                      57042
+                      57378
+                      57715
+                      58053
+                      58392
+                      58732
+                      59073
+                      59415
+                      59758
+                      60102
+                      60447
+                      60793
+                      61140
+                      61488
+                      61837
+                      62187
+                      62538
+                      62890
+                      63243
+                      63597
+                      63952
+                      64308
+                      64665
+                      65023
+                      65382
+                      65742
+                      66103
+                      66465
+                      66828
+                      67192
+                      67557
+                      67923
+                      68290
+                      68658
+                      69027
+                      69397
+                      69768
+                      70140
+                      70513
+                      70887
+                      71262
+                      71638
+                      72015
+                      72393
+                      72772
+                      73152
+                      73533
+                      73915
+                      74298
+                      74682
+                      75067
+                      75453
+                      75840
+                      76228
+                      76617
+                      77007
+                      77398
+                      77790
+                      78183
+                      78577
+                      78972
+                      79368
+                      79765
+                      80163
+                      80562
+                      80962
+                      81363
+                      81765
+                      82168
+                      82572
+                      82977
+                      83383
+                      83790
+                      84198
+                      84607
+                      85017
+                      85428
+                      85840
+                      86253
+                      86667
+                      87082
+                      87498
+                      87915
+                      88333
+                      88752
+                      89172
+                      89593
+                      90015
+                      90438
+                      90862
+                      91287
+                      91713
+                      92140
+                      92568
+                      92997
+                      93427
+                      93858
+                      94290
+                      94723
+                      95157
+                      95592
+                      96028
+                      96465
+                      96903
+                      97342
+                      97782
+                      98223
+                      98665
+                      99108
+                      99552
+                      99997
+                     100443
+                     100890
+                     101338
+                     101787
+                     102237
+                     102688
+                     103140
+                     103593
+                     104047
+                     104502
+                     104958
+                     105415
+                     105873
+                     106332
+                     106792
+                     107253
+                     107715
+                     108178
+                     108642
+                     109107
+                     109573
+                     110040
+                     110508
+                     110977
+                     111447
+                     111918
+                     112390
+                     112863
+                     113337
+                     113812
+                     114288
+                     114765
+                     115243
+                     115722
+                     116202
+                     116683
+                     117165
+                     117648
+                     118132
+                     118617
+                     119103
+                     119590
+                     120078
+                     120567
+                     121057
+                     121548
+                     122040
+                     122533
+                     123027
+                     123522
+                     124018
+                     124515
+                     125013
+                     125512
+                     126012
+                     126513
+                     127015
+                     127518
+                     128022
+                     128527
+                     129033
+                     129540
+                     130048
+                     130557
+                     131067
+                     131578
+                     132090
+                     132603
+                     133117
+                     133632
+                     134148
+                     134665
+                     135183
+                     135702
+                     136222
+                     136743
+                     137265
+                     137788
+                     138312
+                     138837
+                     139363
+                     139890
+                     140418
+                     140947
+                     141477
+                     142008
+                     142540
+                     143073
+                     143607
+                     144142
+                     144678
+                     145215
+                     145753
+                     146292
+                     146832
+                     147373
+                     147915
+                     148458
+                     149002
+                     149547
+                     150093
+                     150640
+                     151188
+                     151737
+                     152287
+                     152838
+                     153390
+                     153943
+                     154497
+                     155052
+                     155608
+                     156165
+                     156723
+                     157282
+                     157842
+                     158403
+                     158965
+                     159528
+                     160092
+                     160657
+                     161223
+                     161790
+                     162358
+                     162927
+                     163497
+                     164068
+                     164640
+                     165213
+                     165787
+                     166362
+                     166938
+                     167515
+                     168093
+                     168672
+                     169252
+                     169833
+                     170415
+                     170998
+                     171582
+                     172167
+                     172753
+                     173340
+                     173928
+                     174517
+                     175107
+                     175698
+                     176290
+                     176883
+                     177477
+                     178072
+                     178668
+                     179265
+                     179863
+                     180462
+                     181062
+                     181663
+                     182265
+                     182868
+                     183472
+                     184077
+                     184683
+                     185290
+                     185898
+                     186507
+                     187117
+                     187728
+                     188340
+                     188953
+                     189567
+                     190182
+                     190798
+                     191415
+                     192033
+                     192652
+                     193272
+                     193893
+                     194515
+                     195138
+                     195762
+                     196387
+                     197013
+                     197640
+                     198268
+                     198897
+                     199527
+                     200158
+                     200790
+                     201423
+                     202057
+                     202692
+                     203328
+                     203965
+                     204603
+                     205242
+                     205882
+                     206523
+                     207165
+                     207808
+                     208452
+                     209097
+                     209743
+                     210390
+                     211038
+                     211687
+                     212337
+                     212988
+                     213640
+                     214293
+                     214947
+                     215602
+                     216258
+                     216915
+                     217573
+                     218232
+                     218892
+                     219553
+                     220215
+                     220878
+                     221542
+                     222207
+                     222873
+                     223540
+                     224208
+                     224877
+                     225547
+                     226218
+                     226890
+                     227563
+                     228237
+                     228912
+                     229588
+                     230265
+                     230943
+                     231622
+                     232302
+                     232983
+                     233665
+                     234348
+                     235032
+                     235717
+                     236403
+                     237090
+                     237778
+                     238467
+                     239157
+                     239848
+                     240540
+                     241233
+                     241927
+                     242622
+                     243318
+                     244015
+                     244713
+                     245412
+                     246112
+                     246813
+                     247515
+                     248218
+                     248922
+                     249627
+                     250333
+                     251040
+                     251748
+                     252457
+                     253167
+                     253878
+                     254590
+                     255303
+                     256017
+                     256732
+                     257448
+                     258165
+                     258883
+                     259602
+                     260322
+                     261043
+                     261765
+                     262488
+                     263212
+                     263937
+                     264663
+                     265390
+                     266118
+                     266847
+                     267577
+                     268308
+                     269040
+                     269773
+                     270507
+                     271242
+                     271978
+                     272715
+                     273453
+                     274192
+                     274932
+                     275673
+                     276415
+                     277158
+                     277902
+                     278647
+                     279393
+                     280140
+                     280888
+                     281637
+                     282387
+                     283138
+                     283890
+                     284643
+                     285397
+                     286152
+                     286908
+                     287665
+                     288423
+                     289182
+                     289942
+                     290703
+                     291465
+                     292228
+                     292992
+                     293757
+                     294523
+                     295290
+                     296058
+                     296827
+                     297597
+                     298368
+                     299140
+                     299913
+                     300687
+                     301462
+                     302238
+                     303015
+                     303793
+                     304572
+                     305352
+                     306133
+                     306915
+                     307698
+                     308482
+                     309267
+                     310053
+                     310840
+                     311628
+                     312417
+                     313207
+                     313998
+                     314790
+                     315583
+                     316377
+                     317172
+                     317968
+                     318765
+                     319563
+                     320362
+                     321162
+                     321963
+                     322765
+                     323568
+                     324372
+                     325177
+                     325983
+                     326790
+                     327598
+                     328407
+                     329217
+                     330028
+                     330840
+                     331653
+                     332467
+                     333282
+                     334098
+                     334915
+                     335733
+                     336552
+                     337372
+                     338193
+                     339015
+                     339838
+                     340662
+                     341487
+                     342313
+                     343140
+                     343968
+                     344797
+                     345627
+                     346458
+                     347290
+                     348123
+                     348957
+                     349792
+                     350628
+                     351465
+                     352303
+                     353142
+                     353982
+                     354823
+                     355665
+                     356508
+                     357352
+                     358197
+                     359043
+                     359890
+                     360738
+                     361587
+                     362437
+                     363288
+                     364140
+                     364993
+                     365847
+                     366702
+                     367558
+                     368415
+                     369273
+                     370132
+                     370992
+                     371853
+                     372715
+                     373578
+                     374442
+                     375307
+                     376173
+                     377040
+                     377908
+                     378777
+                     379647
+                     380518
+                     381390
+                     382263
+                     383137
+                     384012
+                     384888
+                     385765
+                     386643
+                     387522
+                     388402
+                     389283
+                     390165
+                     391048
+                     391932
+                     392817
+                     393703
+                     394590
+                     395478
+                     396367
+                     397257
+                     398148
+                     399040
+                     399933
+                     400827
+                     401722
+                     402618
+                     403515
+                     404413
+                     405312
+                     406212
+                     407113
+                     408015
+                     408918
+                     409822
+                     410727
+                     411633
+                     412540
+                     413448
+                     414357
+                     415267
+                     416178
+                     417090
+                     418003
+                     418917
+                     419832
+                     420748
+                     421665
+                     422583
+                     423502
+                     424422
+                     425343
+                     426265
+                     427188
+                     428112
+                     429037
+                     429963
+                     430890
+                     431818
+                     432747
+                     433677
+                     434608
+                     435540
+                     436473
+                     437407
+                     438342
+                     439278
+                     440215
+                     441153
+                     442092
+                     443032
+                     443973
+                     444915
+                     445858
+                     446802
+                     447747
+                     448693
+                     449640
+                     450588
+                     451537
+                     452487
+                     453438
+                     454390
+                     455343
+                     456297
+                     457252
+                     458208
+                     459165
+                     460123
+                     461082
+                     462042
+                     463003
+                     463965
+                     464928
+                     465892
+                     466857
+                     467823
+                     468790
+                     469758
+                     470727
+                     471697
+                     472668
+                     473640
+                     474613
+                     475587
+                     476562
+                     477538
+                     478515
+                     479493
+                     480472
+                     481452
+                     482433
+                     483415
+                     484398
+                     485382
+                     486367
+                     487353
+                     488340
+                     489328
+                     490317
+                     491307
+                     492298
+                     493290
+                     494283
+                     495277
+                     496272
+                     497268
+                     498265
+                     499263
+                     500262
+(1000 rows)
+
+-- explicit xact: create a fair bit of undo, rollback
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, g.i) FROM generate_series(1, 1000) g(i);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                     501262
+                     501263
+                     501265
+                     501268
+                     501272
+                     501277
+                     501283
+                     501290
+                     501298
+                     501307
+                     501317
+                     501328
+                     501340
+                     501353
+                     501367
+                     501382
+                     501398
+                     501415
+                     501433
+                     501452
+                     501472
+                     501493
+                     501515
+                     501538
+                     501562
+                     501587
+                     501613
+                     501640
+                     501668
+                     501697
+                     501727
+                     501758
+                     501790
+                     501823
+                     501857
+                     501892
+                     501928
+                     501965
+                     502003
+                     502042
+                     502082
+                     502123
+                     502165
+                     502208
+                     502252
+                     502297
+                     502343
+                     502390
+                     502438
+                     502487
+                     502537
+                     502588
+                     502640
+                     502693
+                     502747
+                     502802
+                     502858
+                     502915
+                     502973
+                     503032
+                     503092
+                     503153
+                     503215
+                     503278
+                     503342
+                     503407
+                     503473
+                     503540
+                     503608
+                     503677
+                     503747
+                     503818
+                     503890
+                     503963
+                     504037
+                     504112
+                     504188
+                     504265
+                     504343
+                     504422
+                     504502
+                     504583
+                     504665
+                     504748
+                     504832
+                     504917
+                     505003
+                     505090
+                     505178
+                     505267
+                     505357
+                     505448
+                     505540
+                     505633
+                     505727
+                     505822
+                     505918
+                     506015
+                     506113
+                     506212
+                     506312
+                     506413
+                     506515
+                     506618
+                     506722
+                     506827
+                     506933
+                     507040
+                     507148
+                     507257
+                     507367
+                     507478
+                     507590
+                     507703
+                     507817
+                     507932
+                     508048
+                     508165
+                     508283
+                     508402
+                     508522
+                     508643
+                     508765
+                     508888
+                     509012
+                     509137
+                     509263
+                     509390
+                     509518
+                     509647
+                     509777
+                     509908
+                     510040
+                     510173
+                     510307
+                     510442
+                     510578
+                     510715
+                     510853
+                     510992
+                     511132
+                     511273
+                     511415
+                     511558
+                     511702
+                     511847
+                     511993
+                     512140
+                     512288
+                     512437
+                     512587
+                     512738
+                     512890
+                     513043
+                     513197
+                     513352
+                     513508
+                     513665
+                     513823
+                     513982
+                     514142
+                     514303
+                     514465
+                     514628
+                     514792
+                     514957
+                     515123
+                     515290
+                     515458
+                     515627
+                     515797
+                     515968
+                     516140
+                     516313
+                     516487
+                     516662
+                     516838
+                     517015
+                     517193
+                     517372
+                     517552
+                     517733
+                     517915
+                     518098
+                     518282
+                     518467
+                     518653
+                     518840
+                     519028
+                     519217
+                     519407
+                     519598
+                     519790
+                     519983
+                     520177
+                     520372
+                     520568
+                     520765
+                     520963
+                     521162
+                     521362
+                     521563
+                     521765
+                     521968
+                     522172
+                     522377
+                     522583
+                     522790
+                     522998
+                     523207
+                     523417
+                     523628
+                     523840
+                     524053
+                     524267
+                     524482
+                     524698
+                     524915
+                     525133
+                     525352
+                     525572
+                     525793
+                     526015
+                     526238
+                     526462
+                     526687
+                     526913
+                     527140
+                     527368
+                     527597
+                     527827
+                     528058
+                     528290
+                     528523
+                     528757
+                     528992
+                     529228
+                     529465
+                     529703
+                     529942
+                     530182
+                     530423
+                     530665
+                     530908
+                     531152
+                     531397
+                     531643
+                     531890
+                     532138
+                     532387
+                     532637
+                     532888
+                     533140
+                     533393
+                     533647
+                     533902
+                     534158
+                     534415
+                     534673
+                     534932
+                     535192
+                     535453
+                     535715
+                     535978
+                     536242
+                     536507
+                     536773
+                     537040
+                     537308
+                     537577
+                     537847
+                     538118
+                     538390
+                     538663
+                     538937
+                     539212
+                     539488
+                     539765
+                     540043
+                     540322
+                     540602
+                     540883
+                     541165
+                     541448
+                     541732
+                     542017
+                     542303
+                     542590
+                     542878
+                     543167
+                     543457
+                     543748
+                     544040
+                     544333
+                     544627
+                     544922
+                     545218
+                     545515
+                     545813
+                     546112
+                     546412
+                     546713
+                     547015
+                     547318
+                     547622
+                     547927
+                     548233
+                     548540
+                     548848
+                     549157
+                     549467
+                     549778
+                     550090
+                     550403
+                     550717
+                     551032
+                     551348
+                     551665
+                     551983
+                     552302
+                     552622
+                     552943
+                     553265
+                     553588
+                     553912
+                     554237
+                     554563
+                     554890
+                     555218
+                     555547
+                     555877
+                     556208
+                     556540
+                     556873
+                     557207
+                     557542
+                     557878
+                     558215
+                     558553
+                     558892
+                     559232
+                     559573
+                     559915
+                     560258
+                     560602
+                     560947
+                     561293
+                     561640
+                     561988
+                     562337
+                     562687
+                     563038
+                     563390
+                     563743
+                     564097
+                     564452
+                     564808
+                     565165
+                     565523
+                     565882
+                     566242
+                     566603
+                     566965
+                     567328
+                     567692
+                     568057
+                     568423
+                     568790
+                     569158
+                     569527
+                     569897
+                     570268
+                     570640
+                     571013
+                     571387
+                     571762
+                     572138
+                     572515
+                     572893
+                     573272
+                     573652
+                     574033
+                     574415
+                     574798
+                     575182
+                     575567
+                     575953
+                     576340
+                     576728
+                     577117
+                     577507
+                     577898
+                     578290
+                     578683
+                     579077
+                     579472
+                     579868
+                     580265
+                     580663
+                     581062
+                     581462
+                     581863
+                     582265
+                     582668
+                     583072
+                     583477
+                     583883
+                     584290
+                     584698
+                     585107
+                     585517
+                     585928
+                     586340
+                     586753
+                     587167
+                     587582
+                     587998
+                     588415
+                     588833
+                     589252
+                     589672
+                     590093
+                     590515
+                     590938
+                     591362
+                     591787
+                     592213
+                     592640
+                     593068
+                     593497
+                     593927
+                     594358
+                     594790
+                     595223
+                     595657
+                     596092
+                     596528
+                     596965
+                     597403
+                     597842
+                     598282
+                     598723
+                     599165
+                     599608
+                     600052
+                     600497
+                     600943
+                     601390
+                     601838
+                     602287
+                     602737
+                     603188
+                     603640
+                     604093
+                     604547
+                     605002
+                     605458
+                     605915
+                     606373
+                     606832
+                     607292
+                     607753
+                     608215
+                     608678
+                     609142
+                     609607
+                     610073
+                     610540
+                     611008
+                     611477
+                     611947
+                     612418
+                     612890
+                     613363
+                     613837
+                     614312
+                     614788
+                     615265
+                     615743
+                     616222
+                     616702
+                     617183
+                     617665
+                     618148
+                     618632
+                     619117
+                     619603
+                     620090
+                     620578
+                     621067
+                     621557
+                     622048
+                     622540
+                     623033
+                     623527
+                     624022
+                     624518
+                     625015
+                     625513
+                     626012
+                     626512
+                     627013
+                     627515
+                     628018
+                     628522
+                     629027
+                     629533
+                     630040
+                     630548
+                     631057
+                     631567
+                     632078
+                     632590
+                     633103
+                     633617
+                     634132
+                     634648
+                     635165
+                     635683
+                     636202
+                     636722
+                     637243
+                     637765
+                     638288
+                     638812
+                     639337
+                     639863
+                     640390
+                     640918
+                     641447
+                     641977
+                     642508
+                     643040
+                     643573
+                     644107
+                     644642
+                     645178
+                     645715
+                     646253
+                     646792
+                     647332
+                     647873
+                     648415
+                     648958
+                     649502
+                     650047
+                     650593
+                     651140
+                     651688
+                     652237
+                     652787
+                     653338
+                     653890
+                     654443
+                     654997
+                     655552
+                     656108
+                     656665
+                     657223
+                     657782
+                     658342
+                     658903
+                     659465
+                     660028
+                     660592
+                     661157
+                     661723
+                     662290
+                     662858
+                     663427
+                     663997
+                     664568
+                     665140
+                     665713
+                     666287
+                     666862
+                     667438
+                     668015
+                     668593
+                     669172
+                     669752
+                     670333
+                     670915
+                     671498
+                     672082
+                     672667
+                     673253
+                     673840
+                     674428
+                     675017
+                     675607
+                     676198
+                     676790
+                     677383
+                     677977
+                     678572
+                     679168
+                     679765
+                     680363
+                     680962
+                     681562
+                     682163
+                     682765
+                     683368
+                     683972
+                     684577
+                     685183
+                     685790
+                     686398
+                     687007
+                     687617
+                     688228
+                     688840
+                     689453
+                     690067
+                     690682
+                     691298
+                     691915
+                     692533
+                     693152
+                     693772
+                     694393
+                     695015
+                     695638
+                     696262
+                     696887
+                     697513
+                     698140
+                     698768
+                     699397
+                     700027
+                     700658
+                     701290
+                     701923
+                     702557
+                     703192
+                     703828
+                     704465
+                     705103
+                     705742
+                     706382
+                     707023
+                     707665
+                     708308
+                     708952
+                     709597
+                     710243
+                     710890
+                     711538
+                     712187
+                     712837
+                     713488
+                     714140
+                     714793
+                     715447
+                     716102
+                     716758
+                     717415
+                     718073
+                     718732
+                     719392
+                     720053
+                     720715
+                     721378
+                     722042
+                     722707
+                     723373
+                     724040
+                     724708
+                     725377
+                     726047
+                     726718
+                     727390
+                     728063
+                     728737
+                     729412
+                     730088
+                     730765
+                     731443
+                     732122
+                     732802
+                     733483
+                     734165
+                     734848
+                     735532
+                     736217
+                     736903
+                     737590
+                     738278
+                     738967
+                     739657
+                     740348
+                     741040
+                     741733
+                     742427
+                     743122
+                     743818
+                     744515
+                     745213
+                     745912
+                     746612
+                     747313
+                     748015
+                     748718
+                     749422
+                     750127
+                     750833
+                     751540
+                     752248
+                     752957
+                     753667
+                     754378
+                     755090
+                     755803
+                     756517
+                     757232
+                     757948
+                     758665
+                     759383
+                     760102
+                     760822
+                     761543
+                     762265
+                     762988
+                     763712
+                     764437
+                     765163
+                     765890
+                     766618
+                     767347
+                     768077
+                     768808
+                     769540
+                     770273
+                     771007
+                     771742
+                     772478
+                     773215
+                     773953
+                     774692
+                     775432
+                     776173
+                     776915
+                     777658
+                     778402
+                     779147
+                     779893
+                     780640
+                     781388
+                     782137
+                     782887
+                     783638
+                     784390
+                     785143
+                     785897
+                     786652
+                     787408
+                     788165
+                     788923
+                     789682
+                     790442
+                     791203
+                     791965
+                     792728
+                     793492
+                     794257
+                     795023
+                     795790
+                     796558
+                     797327
+                     798097
+                     798868
+                     799640
+                     800413
+                     801187
+                     801962
+                     802738
+                     803515
+                     804293
+                     805072
+                     805852
+                     806633
+                     807415
+                     808198
+                     808982
+                     809767
+                     810553
+                     811340
+                     812128
+                     812917
+                     813707
+                     814498
+                     815290
+                     816083
+                     816877
+                     817672
+                     818468
+                     819265
+                     820063
+                     820862
+                     821662
+                     822463
+                     823265
+                     824068
+                     824872
+                     825677
+                     826483
+                     827290
+                     828098
+                     828907
+                     829717
+                     830528
+                     831340
+                     832153
+                     832967
+                     833782
+                     834598
+                     835415
+                     836233
+                     837052
+                     837872
+                     838693
+                     839515
+                     840338
+                     841162
+                     841987
+                     842813
+                     843640
+                     844468
+                     845297
+                     846127
+                     846958
+                     847790
+                     848623
+                     849457
+                     850292
+                     851128
+                     851965
+                     852803
+                     853642
+                     854482
+                     855323
+                     856165
+                     857008
+                     857852
+                     858697
+                     859543
+                     860390
+                     861238
+                     862087
+                     862937
+                     863788
+                     864640
+                     865493
+                     866347
+                     867202
+                     868058
+                     868915
+                     869773
+                     870632
+                     871492
+                     872353
+                     873215
+                     874078
+                     874942
+                     875807
+                     876673
+                     877540
+                     878408
+                     879277
+                     880147
+                     881018
+                     881890
+                     882763
+                     883637
+                     884512
+                     885388
+                     886265
+                     887143
+                     888022
+                     888902
+                     889783
+                     890665
+                     891548
+                     892432
+                     893317
+                     894203
+                     895090
+                     895978
+                     896867
+                     897757
+                     898648
+                     899540
+                     900433
+                     901327
+                     902222
+                     903118
+                     904015
+                     904913
+                     905812
+                     906712
+                     907613
+                     908515
+                     909418
+                     910322
+                     911227
+                     912133
+                     913040
+                     913948
+                     914857
+                     915767
+                     916678
+                     917590
+                     918503
+                     919417
+                     920332
+                     921248
+                     922165
+                     923083
+                     924002
+                     924922
+                     925843
+                     926765
+                     927688
+                     928612
+                     929537
+                     930463
+                     931390
+                     932318
+                     933247
+                     934177
+                     935108
+                     936040
+                     936973
+                     937907
+                     938842
+                     939778
+                     940715
+                     941653
+                     942592
+                     943532
+                     944473
+                     945415
+                     946358
+                     947302
+                     948247
+                     949193
+                     950140
+                     951088
+                     952037
+                     952987
+                     953938
+                     954890
+                     955843
+                     956797
+                     957752
+                     958708
+                     959665
+                     960623
+                     961582
+                     962542
+                     963503
+                     964465
+                     965428
+                     966392
+                     967357
+                     968323
+                     969290
+                     970258
+                     971227
+                     972197
+                     973168
+                     974140
+                     975113
+                     976087
+                     977062
+                     978038
+                     979015
+                     979993
+                     980972
+                     981952
+                     982933
+                     983915
+                     984898
+                     985882
+                     986867
+                     987853
+                     988840
+                     989828
+                     990817
+                     991807
+                     992798
+                     993790
+                     994783
+                     995777
+                     996772
+                     997768
+                     998765
+                     999763
+                    1000762
+(1000 rows)
+
+ROLLBACK;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 11025
+-- explicit xact: undo record set spanning logs, ROLLBACK
+-- FIXME: test with commit, once hack below not needed
+-- FIXME: this currently crashes
+BEGIN;
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 35);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                    1001762
+(1 row)
+
+-- yikes, this the ugliest hack ever. But should probably not be a procedure
+UPDATE pg_proc SET prokind = 'f' WHERE oid = 'pg_simulate_full_undo'::regproc;
+SELECT pg_simulate_full_undo(logno::int) FROM pg_stat_get_undo_logs() WHERE pid = pg_backend_pid();
+ pg_simulate_full_undo 
+-----------------------
+ 
+(1 row)
+
+SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 36);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                    1001797
+(1 row)
+
+ROLLBACK;
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 15
+DROP TABLE undoxacttest_perm;
