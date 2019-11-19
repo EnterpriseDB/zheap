@@ -408,16 +408,18 @@ InitializeBackgroundXactUndo(bool minimum_runtime_reached)
 	XactUndo.my_request =
 		GetNextUndoRequest(XactUndo.manager, MyDatabaseId,
 						   minimum_runtime_reached, &dbid, &fxid,
-						   &start_location_logged, &start_location_unlogged,
-						   &end_location_logged, &end_location_unlogged);
+						   &start_location_logged, &end_location_logged,
+						   &start_location_unlogged, &end_location_unlogged);
 	if (XactUndo.my_request == NULL)
 		return InvalidOid;
 
 	XactUndo.has_undo = true;
 	XactUndo.is_undo = true;
 	XactUndo.is_background_undo = true;
-	XactUndo.subxact->start_location[UNDOPERSISTENCE_PERMANENT] = start_location_logged;
-	XactUndo.subxact->start_location[UNDOPERSISTENCE_UNLOGGED] = start_location_unlogged;
+	XactUndo.subxact->start_location[UNDOPERSISTENCE_PERMANENT] =
+		start_location_logged;
+	XactUndo.subxact->start_location[UNDOPERSISTENCE_UNLOGGED] =
+		start_location_unlogged;
 
 	/*
 	 * The "last location" and "last size" data we set up here isn't really
@@ -475,22 +477,21 @@ PerformUndoActions(int nestingLevel)
 	 * Invoke facilities to actually apply undo actions from here, passing the
 	 * relevant information from the XactUndo so that they know what to do.
 	 *
+	 * NOTE: No code called from this function can use rely on
+	 * XactUndo.record_set being set, because that will be true only in
+	 * foreground undo paths.
 	 */
 
 	for (UndoPersistenceLevel p = UNDOPERSISTENCE_PERMANENT;
 		 p < NUndoPersistenceLevels; p++)
 	{
-		UndoRecordSet *urs = XactUndo.record_set[p];
 		UndoRecPtr start_location;
 		UndoRecPtr end_location;
 
-		if (urs == NULL)
-			continue;
-
 		start_location = mysubxact->start_location[p];
+		if (!UndoRecPtrIsValid(start_location))
+			continue;
 		end_location = XactUndoEndLocation(p);
-
-		Assert(start_location != InvalidUndoRecPtr);
 
 		/*
 		 * AFIXME: until we can show the actual effects of undo processing,
@@ -881,10 +882,9 @@ XactUndoEndLocation(UndoPersistenceLevel plevel)
 	UndoRecPtr	last_location;
 	uint64		last_size;
 
-	if (!XactUndo.record_set[plevel])
-		return InvalidUndoRecPtr;
-
 	last_location = XactUndo.last_location[plevel];
+	if (!UndoRecPtrIsValid(last_location))
+		return InvalidUndoRecPtr;
 	last_size = XactUndo.last_size[plevel];
 	return UndoRecPtrPlusUsableBytes(last_location, last_size);
 }
