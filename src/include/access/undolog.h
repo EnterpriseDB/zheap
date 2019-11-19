@@ -27,6 +27,9 @@
 /* printf-family format string for UndoRecPtr. */
 #define UndoRecPtrFormat "%016" INT64_MODIFIER "X"
 
+/* how large a buffer do we need for that format string? */
+#define UndoRecPtrFormatBufferLength	17
+
 /* printf-family format string for UndoLogOffset. */
 #define UndoLogOffsetFormat UINT64_FORMAT
 

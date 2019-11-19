@@ -10761,12 +10761,17 @@
   provolatile => 'v',
   prokind => 'f' },
 
-# undo logs
+# undo
 { oid => '8472', descr => 'list undo logs',
   proname => 'pg_stat_get_undo_logs', procost => '1', prorows => '10', proretset => 't',
   prorettype => 'record', proargtypes => '',
   proallargtypes => '{oid,text,text,text,text,text,text,xid,int4}', proargmodes => '{o,o,o,o,o,o,o,o,o}',
   proargnames => '{logno,category,tablespace,begin,discard,insert,end,xid,pid}', prosrc => 'pg_stat_get_undo_logs' },
+{ oid => '8475', descr => 'transactional undo state',
+  proname => 'pg_xact_undo_status', procost => '1', prorows => '10', proretset => 't',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{text,xid,oid,int8,text,text,text,text}', proargmodes => '{o,o,o,o,o,o,o,o}',
+  proargnames => '{status,xid,dbid,size,start_location_logged,end_location_logged,start_location_unlogged,end_location_unlogged}', prosrc => 'pg_xact_undo_status' },
 { oid => '8473', descr => 'forcibly discard undo data',
   prokind => 'p',
   proname => 'pg_force_discard_undo', provolatile => 'v',

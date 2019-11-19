@@ -10,5 +10,4 @@
 * multi-chunk URSs are not fully implemented yet
 * let's use functions instead of procedures for the new pg_proc stuff
 
-* xid8_undo_status() -- committed, undo needed, ...?
 * design a new discard worker

@@ -40,10 +40,14 @@
 
 #include "postgres.h"
 
+#include "access/undolog.h"
 #include "access/undorequest.h"
+#include "catalog/pg_type_d.h"
+#include "funcapi.h"
 #include "lib/ilist.h"
 #include "lib/rbtree.h"
 #include "storage/shmem.h"
+#include "utils/builtins.h"
 #include "utils/timestamp.h"
 
 /*
@@ -104,7 +108,7 @@ typedef enum UndoRequestStatus
  * UNDO_REQUEST_FREE. It identifies the transaction to which this
  * UndoRequestData has been allocated.
  */
-typedef struct UndoRequestData
+struct UndoRequestData
 {
 	UndoRequestStatus	status;
 	FullTransactionId fxid;
@@ -114,7 +118,10 @@ typedef struct UndoRequestData
 	UndoRecPtr	end_location_logged;
 	UndoRecPtr	start_location_unlogged;
 	UndoRecPtr	end_location_unlogged;
-} UndoRequestData;
+};
+
+/* Same as number of rows in the structure definition above. */
+#define NUM_UNDO_REQUEST_DATA_COLUMNS 8
 
 /*
  * An UndoRequest is a container for an UndoRequestData object, with the
@@ -981,6 +988,130 @@ RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes, char *data)
 
 	/* All done. */
 	LWLockRelease(urm->lock);
+}
+
+/*
+ * Create a TupleDesc for status information about an UndoRequestData.
+ */
+TupleDesc
+MakeUndoRequestDataTupleDesc(void)
+{
+	TupleDesc	tupdesc;
+
+	tupdesc = CreateTemplateTupleDesc(NUM_UNDO_REQUEST_DATA_COLUMNS);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "status", TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "xid", XIDOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "dbid", OIDOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 4, "size", INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 5, "start_location_logged",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 6, "end_location_logged",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 7, "start_location_unlogged",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 8, "end_location_unlogged",
+					   TEXTOID, -1, 0);
+	return BlessTupleDesc(tupdesc);
+}
+
+/*
+ * Convert an UndoRequestData to HeapTuple format.
+ */
+HeapTuple
+MakeUndoRequestDataTuple(TupleDesc tupdesc, UndoRequestData *d,
+						 unsigned index)
+{
+	Datum	values[NUM_UNDO_REQUEST_DATA_COLUMNS];
+	bool	nulls[NUM_UNDO_REQUEST_DATA_COLUMNS];
+	char   *status;
+
+	d += index;
+
+	switch (d->status)
+	{
+		case UNDO_REQUEST_FREE:
+			Assert(false);
+			status = "free";
+			break;
+		case UNDO_REQUEST_ALLOCATED:
+			status = "allocated";
+			break;
+		case UNDO_REQUEST_READY:
+			status = "ready";
+			break;
+		case UNDO_REQUEST_WAITING:
+			status = "waiting";
+			break;
+		case UNDO_REQUEST_IN_PROGRESS:
+			status = "in progress";
+			break;
+	}
+
+	memset(nulls, 0, sizeof(nulls));
+
+	values[0] = CStringGetTextDatum(status);
+	values[1] = TransactionIdGetDatum(XidFromFullTransactionId(d->fxid));
+	values[2] = ObjectIdGetDatum(d->dbid);
+
+	if (d->status == UNDO_REQUEST_ALLOCATED)
+	{
+		nulls[3] = true;
+		nulls[4] = true;
+		nulls[5] = true;
+		nulls[6] = true;
+		nulls[7] = true;
+	}
+	else
+	{
+		char	buffer[UndoRecPtrFormatBufferLength];
+
+		values[3] = Int64GetDatum(d->size);
+		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
+				 d->start_location_logged);
+		values[4] = CStringGetTextDatum(buffer);
+		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
+				 d->end_location_logged);
+		values[5] = CStringGetTextDatum(buffer);
+		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
+				 d->start_location_unlogged);
+		values[6] = CStringGetTextDatum(buffer);
+		snprintf(buffer, sizeof(buffer), UndoRecPtrFormat,
+				 d->end_location_unlogged);
+		values[7] = CStringGetTextDatum(buffer);
+	}
+
+	return heap_form_tuple(tupdesc, values, nulls);
+}
+
+/*
+ * Make a copy of every UndoRequestData currently in use.
+ */
+unsigned
+SnapshotActiveUndoRequests(UndoRequestManager *urm, UndoRequestData **darrayp)
+{
+	unsigned	nrequests;
+	UndoRequestData *darray = NULL;
+
+	LWLockAcquire(urm->lock, LW_EXCLUSIVE);
+	nrequests = urm->utilization;
+	if (nrequests != 0)
+	{
+		dlist_iter	iter;
+		int			i = 0;
+
+		darray = palloc(sizeof(UndoRequestData) * nrequests);
+		dlist_foreach(iter, &urm->used_requests)
+		{
+			UndoRequest *req = dlist_container(UndoRequest, link, iter.cur);
+
+			memcpy(&darray[i++], &req->d, sizeof(UndoRequestData));
+		}
+		Assert(i == nrequests);
+	}
+	LWLockRelease(urm->lock);
+
+	*darrayp = darray;
+	return nrequests;
 }
 
 /*

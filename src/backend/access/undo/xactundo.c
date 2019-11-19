@@ -46,9 +46,11 @@
 #include "access/undoworker.h"
 #include "access/xact.h"
 #include "access/xactundo.h"
+#include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/ipc.h"
 #include "storage/shmem.h"
+#include "utils/builtins.h"
 
 /*
  * The capacity of the UndoRequestManager represents the maximum number of
@@ -90,6 +92,14 @@ SerializeUndoData(StringInfo buf, UndoNode *undo_node)
 	appendBinaryStringInfo(buf, (char *) &undo_node->type, sizeof(((UndoNode*) NULL)->type));
 	appendBinaryStringInfo(buf, undo_node->data, undo_node->length);
 }
+
+/* Saved state for pg_xact_undo_status. */
+typedef struct
+{
+	unsigned	nrequests;
+	unsigned	index;
+	UndoRequestData *request_data;
+} XactUndoStatusData;
 
 /* Per-subtransaction backend-private undo state. */
 typedef struct UndoSubTransaction
@@ -879,6 +889,50 @@ XactUndoEndLocation(UndoPersistenceLevel plevel)
 	return UndoRecPtrPlusUsableBytes(last_location, last_size);
 }
 
+/*
+ * Set-returning, SQL-callable function to display transaction undo status.
+ */
+Datum
+pg_xact_undo_status(PG_FUNCTION_ARGS)
+{
+	FuncCallContext *funcctx;
+	XactUndoStatusData *mystatus;
+
+	if (SRF_IS_FIRSTCALL())
+	{
+		MemoryContext	oldcontext;
+
+		funcctx = SRF_FIRSTCALL_INIT();
+		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+		mystatus = palloc(sizeof(XactUndoStatusData));
+		mystatus->nrequests =
+			SnapshotActiveUndoRequests(XactUndo.manager,
+									   &mystatus->request_data);
+		mystatus->index = 0;
+		funcctx->user_fctx = mystatus;
+		funcctx->tuple_desc = MakeUndoRequestDataTupleDesc();
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	funcctx = SRF_PERCALL_SETUP();
+	mystatus = (XactUndoStatusData *) funcctx->user_fctx;
+
+	while (mystatus->index < mystatus->nrequests)
+	{
+		HeapTuple	tuple;
+
+		tuple = MakeUndoRequestDataTuple(funcctx->tuple_desc,
+										 mystatus->request_data,
+										 mystatus->index++);
+		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+	}
+
+	SRF_RETURN_DONE(funcctx);
+}
+
+/*
+ * Get undo persistence level as a C string.
+ */
 static const char *
 UndoPersistenceLevelString(UndoPersistenceLevel plevel)
 {

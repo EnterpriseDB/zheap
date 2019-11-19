@@ -1752,7 +1752,7 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
 	for (i = 0; i < UndoLogShared->nslots; ++i)
 	{
 		UndoLogSlot *slot = &UndoLogShared->slots[i];
-		char buffer[17];
+		char buffer[UndoRecPtrFormatBufferLength];
 		Datum values[PG_STAT_GET_UNDO_LOGS_COLS];
 		bool nulls[PG_STAT_GET_UNDO_LOGS_COLS] = { false };
 		Oid tablespace;

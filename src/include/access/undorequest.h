@@ -13,14 +13,18 @@
 #ifndef UNDOREQUEST_H
 #define UNDOREQUEST_H
 
+#include "access/htup.h"
 #include "access/transam.h"
+#include "access/tupdesc.h"
 #include "access/undodefs.h"
 #include "datatype/timestamp.h"
 #include "storage/lwlock.h"
 
 struct UndoRequest;
+struct UndoRequestData;
 struct UndoRequestManager;
 typedef struct UndoRequest UndoRequest;
+typedef struct UndoRequestData UndoRequestData;
 typedef struct UndoRequestManager UndoRequestManager;
 
 /* GUCs */
@@ -73,6 +77,12 @@ extern void RescheduleUndoRequest(UndoRequestManager *urm, UndoRequest *req);
 extern char *SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes);
 extern void RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes,
 								   char *data);
+
+/* Introspection. */
+unsigned SnapshotActiveUndoRequests(UndoRequestManager *, UndoRequestData **);
+extern TupleDesc MakeUndoRequestDataTupleDesc(void);
+extern HeapTuple MakeUndoRequestDataTuple(TupleDesc, UndoRequestData *,
+										  unsigned index);
 
 /* Get oldest registered FXID. */
 extern FullTransactionId UndoRequestManagerOldestFXID(UndoRequestManager *urm);
