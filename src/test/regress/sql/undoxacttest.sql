@@ -169,8 +169,6 @@ ROLLBACK;
 BEGIN;
 SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 35);
 
--- yikes, this the ugliest hack ever. But should probably not be a procedure
-UPDATE pg_proc SET prokind = 'f' WHERE oid = 'pg_simulate_full_undo'::regproc;
 SELECT pg_simulate_full_undo(logno::int) FROM pg_stat_get_undo_logs() WHERE pid = pg_backend_pid();
 
 SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 36);

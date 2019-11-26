@@ -7,6 +7,5 @@
 * recreate undo requests after recovery
 * crash recovery not working properly in some cases
 * multi-chunk URSs are not fully implemented yet
-* let's use functions instead of procedures for the new pg_proc stuff
 
 * design a new discard worker
