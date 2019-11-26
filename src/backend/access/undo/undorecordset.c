@@ -58,10 +58,6 @@ typedef struct UndoBuffer
 	Buffer			buffer;
 	bool			is_new;
 	bool			needs_init;
-	/*
-	bool			needs_dirty;
-	bool			needs_xlog_reg;
-	*/
 	UndoRecordSetXLogBufData bufdata;
 } UndoBuffer;
 
