@@ -369,6 +369,7 @@ static UndoRecPtr
 reserve_physical_undo(UndoRecordSet *urs, size_t total_size)
 {
 	UndoLogOffset new_insert;
+	UndoLogOffset size;
 
 	Assert(urs->nchunks >= 1);
 	Assert(urs->chunks);
@@ -386,27 +387,28 @@ reserve_physical_undo(UndoRecordSet *urs, size_t total_size)
 	 */
 	LWLockAcquire(&urs->slot->meta_lock, LW_SHARED);
 	urs->recent_end = urs->slot->end;
+	size = urs->slot->meta.size;
 	LWLockRelease(&urs->slot->meta_lock);
 	if (new_insert <= urs->recent_end)
 		return MakeUndoRecPtr(urs->slot->logno, urs->slot->meta.insert);
 
 	/*
-	 * Can we extend this undo log to make space?  Again, it's possible
-	 * for end to advance concurrently, but adjust_physical_range() can
-	 * deal with that.
+	 * Can we extend this undo log to make space?  Again, it's possible for
+	 * end to advance concurrently, but UndoLogAdjustPhysicalRange() can deal
+	 * with that.
 	 */
-	if (new_insert <= UndoLogMaxSize)
+	if (new_insert <= size)
 	{
 		UndoLogAdjustPhysicalRange(urs->slot->logno, 0, new_insert);
 		return MakeUndoRecPtr(urs->slot->logno, urs->slot->meta.insert);
 	}
 
 	/*
-	 * Mark it full, so that we stop trying to allocate new space
-	 * here, and a checkpoint will eventually give up its slot for
-	 * reuse.
+	 * There is not enough space left for this record.  Truncate any remaining
+	 * space, so that we stop trying to reuse this undo log, and a checkpoint
+	 * will eventually give up its slot for reuse.
 	 */
-	UndoLogMarkFull(urs->slot);
+	UndoLogTruncate(urs->slot);
 	urs->slot = NULL;
 	return InvalidUndoRecPtr;
 }

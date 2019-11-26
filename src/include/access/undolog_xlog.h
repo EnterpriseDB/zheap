@@ -20,7 +20,7 @@
 /* XLOG records */
 #define XLOG_UNDOLOG_CREATE		0x00
 #define XLOG_UNDOLOG_DISCARD	0x10
-#define XLOG_UNDOLOG_MARK_FULL	0x20
+#define XLOG_UNDOLOG_TRUNCATE	0x20
 
 /* Create a new undo log. */
 typedef struct xl_undolog_create
@@ -44,14 +44,14 @@ typedef struct xl_undolog_discard
 #define SizeOfUndologDiscard \
 	(offsetof(xl_undolog_discard, entirely_discarded) + sizeof(bool))
 
-/* Mark an undo log as full. */
-typedef struct xl_undolog_mark_full
+/* Adjust the size of an undo log, once it is determined to be full. */
+typedef struct xl_undolog_truncate
 {
 	UndoLogNumber logno;
-	UndoLogOffset full;
-} xl_undolog_mark_full;
+	UndoLogOffset size;
+} xl_undolog_truncate;
 
-#define SizeOfUndologMarkFull sizeof(xl_undolog_mark_full)
+#define SizeOfUndologTruncate sizeof(xl_undolog_truncate)
 
 extern void undolog_desc(StringInfo buf,XLogReaderState *record);
 extern void undolog_redo(XLogReaderState *record);

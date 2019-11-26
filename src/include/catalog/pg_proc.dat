@@ -10774,14 +10774,14 @@
   proargnames => '{status,xid,dbid,size,start_location_logged,end_location_logged,start_location_unlogged,end_location_unlogged}', prosrc => 'pg_xact_undo_status' },
 { oid => '8473', descr => 'forcibly discard undo data',
   prokind => 'f',
-  proname => 'pg_force_discard_undo', provolatile => 'v',
+  proname => 'pg_force_discard_undo_log', provolatile => 'v',
   proparallel => 'u', prorettype => 'void', proargtypes => 'int4',
-  prosrc => 'pg_force_discard_undo' },
+  prosrc => 'pg_force_discard_undo_log' },
 { oid => '8474', descr => 'simulate a full undo log, for testing',
   prokind => 'f',
-  proname => 'pg_simulate_full_undo', provolatile => 'v',
+  proname => 'pg_force_truncate_undo_log', provolatile => 'v',
   proparallel => 'u', prorettype => 'void', proargtypes => 'int4',
-  prosrc => 'pg_simulate_full_undo' },
+  prosrc => 'pg_force_truncate_undo_log' },
 ]
 
 # undoxacttest

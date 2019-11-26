@@ -169,7 +169,7 @@ ROLLBACK;
 BEGIN;
 SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 35);
 
-SELECT pg_simulate_full_undo(logno::int) FROM pg_stat_get_undo_logs() WHERE pid = pg_backend_pid();
+SELECT pg_force_truncate_undo_log(logno::int) FROM pg_stat_get_undo_logs() WHERE pid = pg_backend_pid();
 
 SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 36);
 ROLLBACK;

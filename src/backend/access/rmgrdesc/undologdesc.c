@@ -36,13 +36,13 @@ undolog_desc(StringInfo buf, XLogReaderState *record)
 		appendStringInfo(buf, "logno %u " "discard " UndoLogOffsetFormat,
 						 xlrec->logno, xlrec->discard);
 	}
-	else if (info == XLOG_UNDOLOG_MARK_FULL)
+	else if (info == XLOG_UNDOLOG_TRUNCATE)
 	{
-		xl_undolog_mark_full *xlrec = (xl_undolog_mark_full *) rec;
+		xl_undolog_truncate *xlrec = (xl_undolog_truncate *) rec;
 
-		appendStringInfo(buf, "logno %u full " UndoLogOffsetFormat,
+		appendStringInfo(buf, "logno %u size " UndoLogOffsetFormat,
 						 xlrec->logno,
-						 xlrec->full);
+						 xlrec->size);
 	}
 }
 
@@ -59,8 +59,8 @@ undolog_identify(uint8 info)
 		case XLOG_UNDOLOG_DISCARD:
 			id = "DISCARD";
 			break;
-		case XLOG_UNDOLOG_MARK_FULL:
-			id = "MARK_FULL";
+		case XLOG_UNDOLOG_TRUNCATE:
+			id = "TRUNCATE";
 			break;
 	}
 

@@ -112,7 +112,7 @@ typedef struct UndoLogMetaData
 
 	UndoLogOffset discard;			/* oldest data needed (tail) */
 	UndoLogOffset insert;			/* location of next insert (head) */
-	UndoLogOffset full;				/* If insert == full, the log is full. */
+	UndoLogOffset size;				/* If insert == size, the log is full. */
 } UndoLogMetaData;
 
 #ifndef FRONTEND
@@ -288,7 +288,7 @@ extern void UndoLogPut(UndoLogSlot *slot);
 extern void UndoLogAdjustPhysicalRange(UndoLogNumber logno,
 									   UndoLogOffset new_discard,
 									   UndoLogOffset new_isnert);
-extern void UndoLogMarkFull(UndoLogSlot *uls);
+extern void UndoLogTruncate(UndoLogSlot *uls);
 
 extern UndoPersistenceLevel GetUndoPersistenceLevel(char persistence);
 

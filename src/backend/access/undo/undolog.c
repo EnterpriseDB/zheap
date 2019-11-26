@@ -78,8 +78,8 @@ static void discard_undo_buffers(int logno, UndoLogOffset old_discard,
 static void scan_physical_range(void);
 
 PG_FUNCTION_INFO_V1(pg_stat_get_undo_logs);
-PG_FUNCTION_INFO_V1(pg_force_discard_undo);
-PG_FUNCTION_INFO_V1(pg_simulate_full_undo);
+PG_FUNCTION_INFO_V1(pg_force_discard_undo_log);
+PG_FUNCTION_INFO_V1(pg_force_truncate_undo_log);
 
 /*
  * How many undo logs can be active at a time?  This creates a theoretical
@@ -747,7 +747,7 @@ UndoLogGetForPersistence(char persistence)
 	slot->meta.logno = UndoLogShared->next_logno;
 	slot->meta.tablespace = tablespace;
 	slot->meta.persistence = persistence;
-	slot->meta.full = UndoLogSegmentSize;
+	slot->meta.size = UndoLogSegmentSize;
 	slot->pid = MyProcPid;
 	slot->xid = GetTopTransactionIdIfAny();
 
@@ -801,9 +801,16 @@ UndoLogPut(UndoLogSlot *slot)
 }
 
 void
-UndoLogMarkFull(UndoLogSlot *uls)
+UndoLogTruncate(UndoLogSlot *uls)
 {
-	/* TODO */
+	xl_undolog_truncate xlrec;
+
+	xlrec.logno = UndoLogShared->next_logno;
+	xlrec.size = uls->meta.insert;
+
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlrec, SizeOfUndologTruncate);
+	XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_CREATE);
 }
 
 /*
@@ -854,7 +861,7 @@ UndoDiscard(UndoRecPtr discard_point)
 	old_discard = slot->meta.discard;
 	insert = slot->meta.insert;
 	begin = slot->begin;
-	entirely_discarded = insert == slot->meta.full;
+	entirely_discarded = insert == slot->meta.size;
 	LWLockRelease(&slot->meta_lock);
 
 	/*
@@ -974,7 +981,7 @@ CheckPointUndoLogs(UndoCheckpointContext *ctx)
 	/*
 	 * While we're scanning all slots, look for those that can now be freed
 	 * because they hold no data (all discarded) and the insert pointer has
-	 * collided with the 'full' pointer.
+	 * reached 'size' (the end of this log).
 	 */
 	slots_to_free = palloc0(sizeof(UndoLogSlot *) * UndoLogNumSlots());
 	nslots_to_free = 0;
@@ -993,7 +1000,7 @@ CheckPointUndoLogs(UndoCheckpointContext *ctx)
 		LWLockAcquire(&slot->meta_lock, LW_SHARED);
 		serialized[num_logs++] = slot->meta;
 		if (slot->meta.discard == slot->meta.insert &&
-			slot->meta.discard == slot->meta.full)
+			slot->meta.discard == slot->meta.size)
 			slots_to_free[nslots_to_free++] = slot;
 		LWLockRelease(&slot->meta_lock);
 	}
@@ -1082,7 +1089,7 @@ StartupUndoLogs(UndoCheckpointContext *ctx)
 		slot->logno = slot->meta.logno;
 		slot->pid = InvalidPid;
 
-		if (slot->meta.insert < slot->meta.full ||
+		if (slot->meta.insert < slot->meta.size ||
 			slot->meta.discard < slot->meta.insert)
 			slist_push_head(&UndoLogShared->free_lists[GetUndoPersistenceLevel(slot->meta.persistence)],
 							&slot->next);
@@ -1585,7 +1592,7 @@ DropUndoLogsInTablespace(Oid tablespace)
 		 * but this is covered by WAL record for dropping the tablespace.
 		 */
 		LWLockAcquire(&slot->meta_lock, LW_EXCLUSIVE);
-		slot->meta.discard = slot->meta.full = slot->meta.insert;
+		slot->meta.discard = slot->meta.size = slot->meta.insert;
 		LWLockRelease(&slot->meta_lock);
 	}
 
@@ -1632,7 +1639,7 @@ DropUndoLogsInTablespace(Oid tablespace)
 
 			LWLockAcquire(&slot->meta_lock, LW_SHARED);
 			if (slot->meta.discard == slot->meta.insert &&
-				slot->meta.full == slot->meta.insert)
+				slot->meta.size == slot->meta.insert)
 			{
 				slist_delete_current(&iter);
 				dropped_lognos[ndropped] = slot->meta.logno;
@@ -1838,7 +1845,7 @@ pg_stat_get_undo_logs(PG_FUNCTION_ARGS)
  * committed).
  */
 Datum
-pg_force_discard_undo(PG_FUNCTION_ARGS)
+pg_force_discard_undo_log(PG_FUNCTION_ARGS)
 {
 	UndoLogNumber logno = PG_GETARG_INT32(0);
 	UndoLogSlot	*slot;
@@ -1875,7 +1882,7 @@ pg_force_discard_undo(PG_FUNCTION_ARGS)
  * insertion, for testing purposes.  This wastes undo log address space.
  */
 Datum
-pg_simulate_full_undo(PG_FUNCTION_ARGS)
+pg_force_truncate_undo_log(PG_FUNCTION_ARGS)
 {
 	UndoLogNumber logno = PG_GETARG_INT32(0);
 	UndoLogSlot	*slot;
@@ -1932,7 +1939,7 @@ undolog_xlog_create(XLogReaderState *record)
 	slot->logno = xlrec->logno;
 	slot->pid = InvalidPid;
 	slot->meta.logno = xlrec->logno;
-	slot->meta.full = UndoLogSegmentSize;
+	slot->meta.size = UndoLogSegmentSize;
 	slot->meta.persistence = xlrec->persistence;
 	slot->meta.tablespace = xlrec->tablespace;
 	slot->meta.insert = SizeOfUndoPageHeaderData;
@@ -1987,12 +1994,12 @@ undolog_xlog_discard(XLogReaderState *record)
 }
 
 /*
- * replay marking a log full.
+ * replay the truncation of an undo log.
  */
 static void
-undolog_xlog_mark_full(XLogReaderState *record)
+undolog_xlog_truncate(XLogReaderState *record)
 {
-	xl_undolog_mark_full *xlrec = (xl_undolog_mark_full *) XLogRecGetData(record);
+	xl_undolog_truncate *xlrec = (xl_undolog_truncate *) XLogRecGetData(record);
 	UndoLogSlot *slot;
 
 	slot = find_undo_log_slot(xlrec->logno, false);
@@ -2002,7 +2009,7 @@ undolog_xlog_mark_full(XLogReaderState *record)
 	 * end-of-log wraparound which would otherwise be very rare or require
 	 * recompiling with a small maximum undo log size.
 	 */
-	slot->meta.full = xlrec->full;
+	slot->meta.size = xlrec->size;
 }
 
 void
@@ -2018,8 +2025,8 @@ undolog_redo(XLogReaderState *record)
 		case XLOG_UNDOLOG_DISCARD:
 			undolog_xlog_discard(record);
 			break;
-		case XLOG_UNDOLOG_MARK_FULL:
-			undolog_xlog_mark_full(record);
+		case XLOG_UNDOLOG_TRUNCATE:
+			undolog_xlog_truncate(record);
 			break;
 		default:
 			elog(PANIC, "undo_redo: unknown op code %u", info);
