@@ -262,6 +262,8 @@ UndoMarkPageClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk, int chbidx,
 		   (char *) &size + data_offset,
 		   bytes_on_this_page);
 
+	MarkBufferDirty(buffer);
+
 	return bytes_on_this_page;
 }
 
@@ -657,6 +659,7 @@ UndoInsert(UndoRecordSet *urs,
 									 type_header_size,
 									 urs->type_header,
 									 urs->chunk_start);
+			MarkBufferDirty(ubuf->buffer);
 			page_offset += bytes_written;
 			input_offset += bytes_written;
 			if (input_offset >= all_header_size)
@@ -687,6 +690,7 @@ UndoInsert(UndoRecordSet *urs,
 								 record_data,
 								 urs->chunk_start,
 								 urs->type);
+		MarkBufferDirty(urs->buffers[buffer_index].buffer);
 		page_offset += bytes_written;
 		input_offset += bytes_written;
 		if (input_offset >= record_size)
@@ -824,6 +828,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 														header_offset,
 														type_header_size);
 				else
+				{
 					header_offset += UndoPageInsertHeader(page,
 														  SizeOfUndoPageHeaderData,
 														  header_offset,
@@ -831,6 +836,8 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 														  type_header_size,
 														  type_header,
 														  chunk_start);
+					MarkBufferDirty(buffers[nbuffers].buffer);
+				}
 				/* The shared memory insertion point must be after this fragment. */
 				/* TODO: consolidate the places we maintain meta.insert, fix the locking, and update shm just once at the end of the WAL record */
 				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
@@ -988,23 +995,16 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
  * The caller must have called XLogBeginInsert() for a WAL record, and
  * must provide the first block ID to use, to avoid collisions with any
  * other block IDs registered by the caller.
- *
- * This should be called even for non-permanent persistence levels, because
- * it's also used to mark buffers dirty. (XXX Why not do that in UndoInsert?)
  */
 void
 UndoXLogRegisterBuffers(UndoRecordSet *urs, uint8 first_block_id)
 {
+	if (!URSNeedsWAL(urs))
+		return;
 
 	for (int i = 0; i < urs->nbuffers; ++i)
 	{
 		UndoBuffer *ubuf = &urs->buffers[i];
-
-		/*
-		 * It's OK that we waited until now to mark the buffers as dirty,
-		 * because they're all locked.
-		 */
-		MarkBufferDirty(ubuf->buffer);
 
 		if (URSNeedsWAL(urs))
 		{
