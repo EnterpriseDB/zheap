@@ -805,12 +805,12 @@ UndoLogTruncate(UndoLogSlot *uls)
 {
 	xl_undolog_truncate xlrec;
 
-	xlrec.logno = UndoLogShared->next_logno;
+	xlrec.logno = uls->meta.logno;
 	xlrec.size = uls->meta.insert;
 
 	XLogBeginInsert();
 	XLogRegisterData((char *) &xlrec, SizeOfUndologTruncate);
-	XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_CREATE);
+	XLogInsert(RM_UNDOLOG_ID, XLOG_UNDOLOG_TRUNCATE);
 }
 
 /*
@@ -1902,7 +1902,9 @@ pg_force_truncate_undo_log(PG_FUNCTION_ARGS)
 	LWLockAcquire(&slot->meta_lock, LW_EXCLUSIVE);
 	if (slot->meta.logno != logno)
 		elog(ERROR, "undo log not found (slot recycled)");
-	slot->simulate_full = true;
+	if (slot->pid != MyProcPid)
+		elog(ERROR, "cannot truncate undo log that this backend is not attached to");
+	slot->force_truncate = true;
 	LWLockRelease(&slot->meta_lock);
 
 	return (Datum) 0;
@@ -2003,12 +2005,9 @@ undolog_xlog_truncate(XLogReaderState *record)
 	UndoLogSlot *slot;
 
 	slot = find_undo_log_slot(xlrec->logno, false);
+	if (!slot)
+		elog(ERROR, "could not find undo log %u", xlrec->logno);
 
-	/*
-	 * This is only used for pg_simulate_full_undo(), for developer testing of
-	 * end-of-log wraparound which would otherwise be very rare or require
-	 * recompiling with a small maximum undo log size.
-	 */
 	slot->meta.size = xlrec->size;
 }
 

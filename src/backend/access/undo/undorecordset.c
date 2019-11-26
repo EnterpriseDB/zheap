@@ -374,10 +374,23 @@ reserve_physical_undo(UndoRecordSet *urs, size_t total_size)
 	Assert(urs->nchunks >= 1);
 	Assert(urs->chunks);
 
+	/*
+	 * Although this is in shared memory, it can only be set (for testing) if
+	 * we are currently attached to it, so it's safe to read it without
+	 * locking.
+	 */
+	if (unlikely(urs->slot->force_truncate))
+	{
+		UndoLogTruncate(urs->slot);
+		urs->slot->force_truncate = false;
+		urs->slot = NULL;
+		return InvalidUndoRecPtr;
+	}
+
 	new_insert = UndoLogOffsetPlusUsableBytes(urs->slot->meta.insert,
 											  total_size);
 
-	/* The fast case: we already know there is enough space. */
+	/* The fast path: we already know there is enough space. */
 	if (new_insert <= urs->recent_end)
 		return MakeUndoRecPtr(urs->slot->logno, urs->slot->meta.insert);
 

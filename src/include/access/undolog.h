@@ -147,7 +147,7 @@ typedef struct UndoLogSlot
 
 	LWLock		meta_lock;			/* protects following members */
 	UndoLogMetaData meta;			/* current meta-data */
-	bool		simulate_full;		/* for testing only */
+	bool		force_truncate;		/* for testing only */
 	pid_t		pid;				/* InvalidPid for unattached */
 	TransactionId xid;
 	UndoLogOffset begin;			/* beginning of lowest segment file */
