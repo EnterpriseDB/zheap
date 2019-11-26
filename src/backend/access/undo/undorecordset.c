@@ -181,6 +181,7 @@ find_or_read_buffer(UndoRecordSet *urs, UndoLogNumber logno, BlockNumber block)
 
 	/* Pin it and lock it. */
 	reserve_buffer_array(urs, urs->nbuffers + 1);
+	memset(&urs->buffers[urs->nbuffers], 0, sizeof(urs->buffers[0]));
 	UndoRecPtrAssignRelFileNode(rnode, MakeUndoRecPtr(logno, 0));
 	urs->buffers[urs->nbuffers].buffer =
 		ReadBufferWithoutRelcache(rnode,
@@ -591,6 +592,16 @@ register_insertion_point_if_needed(UndoBuffer *ubuf, uint16 insertion_point)
 	}
 }
 
+static void
+register_new_page(UndoBuffer *ubuf,
+				  UndoRecordSetType chunk_type,
+				  UndoRecPtr chunk_header_location)
+{
+	ubuf->bufdata.flags |= URS_XLOG_ADD_PAGE;
+	ubuf->bufdata.chunk_header_location = chunk_header_location;
+	ubuf->bufdata.chunk_type = chunk_type;
+}
+
 /*
  * Append data to an undo log.  The space must previously have been allocated
  * with UndoPrepareToInsert().
@@ -662,6 +673,8 @@ UndoInsert(UndoRecordSet *urs,
 					ubuf->bufdata.previous_chunk = 0; /* TODO whence? */
 				}
 			}
+			if (page_offset == SizeOfUndoPageHeaderData)
+				register_new_page(ubuf, urs->type, urs->chunk_start);
 			bytes_written =
 				UndoPageInsertHeader(BufferGetPage(ubuf->buffer),
 									 page_offset,
@@ -693,6 +706,8 @@ UndoInsert(UndoRecordSet *urs,
 		init_if_needed(ubuf);
 		if (URSNeedsWAL(urs))
 			register_insertion_point_if_needed(ubuf, page_offset);
+		if (page_offset == SizeOfUndoPageHeaderData)
+			register_new_page(ubuf, urs->type, urs->chunk_start);
 		bytes_written =
 			UndoPageInsertRecord(BufferGetPage(urs->buffers[buffer_index].buffer),
 								 page_offset,
@@ -752,7 +767,6 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 	int header_offset = 0;
 	char *type_header = NULL;
 	int type_header_size = 0;
-	UndoRecPtr chunk_start = InvalidUndoRecPtr;		/* whence? */
 
 	Assert(InRecovery);
 
@@ -846,7 +860,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 														  &chunk_header,
 														  type_header_size,
 														  type_header,
-														  chunk_start);
+														  bufdata->chunk_header_location);
 					MarkBufferDirty(buffers[nbuffers].buffer);
 				}
 				/* The shared memory insertion point must be after this fragment. */
@@ -873,8 +887,8 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 														  record_offset,
 														  record_size,
 														  record_data,
-														  chunk_start,
-														  bufdata->type);
+														  bufdata->chunk_header_location,
+														  bufdata->chunk_type);
 				/* The shared memory insertion point must be after this fragment. */
 				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
 				/* Do we need to go around again, on the next page? */
@@ -910,7 +924,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 			{
 				chunk_header.size = 0;
 				chunk_header.previous_chunk = InvalidUndoRecPtr;
-				chunk_header.type = bufdata->type;
+				chunk_header.type = bufdata->chunk_type;
 
 				/*
 				 * It it's an initial chunk (new URS) then there may also be a
@@ -923,7 +937,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 													 &chunk_header,
 													 type_header_size,
 													 type_header,
-													 chunk_start);
+													 0);
 				/* The shared memory insertion point must be after this fragment. */
 				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
 				/* Do we need to go around again, on the next page? */
@@ -951,8 +965,8 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 													 0,
 													 record_size,
 													 record_data,
-													 chunk_start,
-													 bufdata->type);
+													 bufdata->chunk_header_location,
+													 bufdata->chunk_type);
 				/* The shared memory insertion point must be after this fragment. */
 				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
 				/* Do we need to go around again, on the next page? */

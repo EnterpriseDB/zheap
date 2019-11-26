@@ -55,6 +55,9 @@ DecodeUndoRecordSetXLogBufData(UndoRecordSetXLogBufData *out,
 	} while (0)
 
 	DESERIALIZE_FIXED(&out->flags);
+	if ((out->flags & URS_XLOG_CREATE) ||
+		(out->flags & URS_XLOG_ADD_PAGE))
+		DESERIALIZE_FIXED(&out->chunk_type);
 	if (out->flags & URS_XLOG_CREATE)
 	{
 		DESERIALIZE_FIXED(&out->type_header_size);
@@ -69,6 +72,8 @@ DecodeUndoRecordSetXLogBufData(UndoRecordSetXLogBufData *out,
 	}
 	if (out->flags & URS_XLOG_INSERTION)
 		DESERIALIZE_FIXED(&out->insertion_point);
+	if (out->flags & URS_XLOG_ADD_PAGE)
+		DESERIALIZE_FIXED(&out->chunk_header_location);
 
 	/* If there is still data left over, there is a format error. */
 	if (size != 0)
@@ -92,6 +97,9 @@ EncodeUndoRecordSetXLogBufData(const UndoRecordSetXLogBufData *in,
 	SERIALIZE((src), sizeof(*(src)))
 
 	SERIALIZE_FIXED(&in->flags);
+	if ((in->flags & URS_XLOG_CREATE) ||
+		(in->flags & URS_XLOG_ADD_PAGE))
+		SERIALIZE_FIXED(&in->chunk_type);
 	if (in->flags & URS_XLOG_CREATE)
 	{
 		SERIALIZE_FIXED(&in->type_header_size);
@@ -106,5 +114,7 @@ EncodeUndoRecordSetXLogBufData(const UndoRecordSetXLogBufData *in,
 	}
 	if (in->flags & URS_XLOG_INSERTION)
 		SERIALIZE_FIXED(&in->insertion_point);
+	if (in->flags & URS_XLOG_ADD_PAGE)
+		SERIALIZE_FIXED(&in->chunk_header_location);
 }
 #endif

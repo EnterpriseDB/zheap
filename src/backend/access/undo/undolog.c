@@ -805,6 +805,8 @@ UndoLogTruncate(UndoLogSlot *uls)
 {
 	xl_undolog_truncate xlrec;
 
+	/* TODO thinking about timing problems with checkpoints */
+
 	xlrec.logno = uls->meta.logno;
 	xlrec.size = uls->meta.insert;
 

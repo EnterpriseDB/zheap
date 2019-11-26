@@ -30,6 +30,7 @@
 #define URS_XLOG_ADD_CHUNK		0x02
 #define URS_XLOG_CLOSE_CHUNK	0x04
 #define URS_XLOG_INSERTION		0x08
+#define URS_XLOG_ADD_PAGE	  	0x10
 
 /*
  * A lightly decoded representation of the data associated with an undo
@@ -37,14 +38,14 @@
  */
 typedef struct UndoRecordSetXLogBufData
 {
-	UndoRecordSetType type;		/* The type of UndoRecordSet. */
 	uint8		flags;			/* Flags indicating which members are set. */
 
 	/*
 	 * If URS_XLOG_CREATE is set, then the following members point to an
 	 * unaligned type-specific header that should be inserted into the
-	 * initial chunk.
+	 * initial chunk.  Note: URS_ADD_PAGE also sets chunk_type.
 	 */
+	UndoRecordSetType chunk_type;
 	char	   *type_header;
 	size_t		type_header_size;
 
@@ -68,9 +69,18 @@ typedef struct UndoRecordSetXLogBufData
 	/*
 	 * If URS_XLOG_INSERTION is set, then the following member contains the
 	 * offset within the page of an undo record insertion.  The actual data is
-	 * not captured in the WAL.
+	 * not captured in the WAL.  We also need to know the start of the chunk,
+	 * for the page header.
 	 */
 	uint16		insertion_point;
+
+	/*
+	 * If URS_XLOG_ADD_PAGE is set, then we're inserting the first data on a
+	 * page and we need to supply the location of the chunk header and the URS
+	 * type, to go in the page header.  Note: chunk_type is used for this and
+	 * also URS_XLOG_CREATE.
+	 */
+	UndoRecPtr	chunk_header_location;
 } UndoRecordSetXLogBufData;
 
 extern bool

@@ -480,13 +480,22 @@ PrintUndoBufData(XLogReaderState *record, uint8 block_id)
 	}
 
 	if (bufdata.flags & URS_XLOG_CREATE)
-		printf(" URS_XLOG_CREATE");
-	if (bufdata.flags & URS_XLOG_INSERTION)
-		printf(" URS_XLOG_INSERTION (%d)", (int) bufdata.insertion_point);
+		printf(" URS_XLOG_CREATE(chunk_type = %d)",
+			   (int) bufdata.chunk_type);
 	if (bufdata.flags & URS_XLOG_ADD_CHUNK)
-		printf(" URS_XLOG_ADD_CHUNK");
+		printf(" URS_XLOG_ADD_CHUNK(previous_chunk = %zx)",
+			   (size_t) bufdata.previous_chunk);
+	if (bufdata.flags & URS_XLOG_ADD_PAGE)
+		printf(" URS_XLOG_ADD_PAGE(chunk_type = %d, chunk_header_location = %zx)",
+			   (int) bufdata.chunk_type,
+			   (size_t) bufdata.chunk_header_location);
+	if (bufdata.flags & URS_XLOG_INSERTION)
+		printf(" URS_XLOG_INSERTION(insertion_point = %d)",
+			   (int) bufdata.insertion_point);
 	if (bufdata.flags & URS_XLOG_CLOSE_CHUNK)
-		printf(" URS_XLOG_CLOSE");
+		printf(" URS_XLOG_CLOSE_CHUNK(chunk_size_location = %zx, chunk_size = %zu)",
+			   (size_t) bufdata.chunk_size_location,
+			   (size_t) bufdata.chunk_size);
 }
 
 /*
