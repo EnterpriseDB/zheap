@@ -480,8 +480,9 @@ PrintUndoBufData(XLogReaderState *record, uint8 block_id)
 	}
 
 	if (bufdata.flags & URS_XLOG_CREATE)
-		printf(" URS_XLOG_CREATE(chunk_type = %d)",
-			   (int) bufdata.chunk_type);
+		printf(" URS_XLOG_CREATE(chunk_type = %d, type_header_size = %zu)",
+			   (int) bufdata.chunk_type,
+			   bufdata.type_header_size);
 	if (bufdata.flags & URS_XLOG_ADD_CHUNK)
 		printf(" URS_XLOG_ADD_CHUNK(previous_chunk = %zx)",
 			   (size_t) bufdata.previous_chunk);
@@ -575,6 +576,8 @@ XLogDumpDisplayRecord(XLogDumpConfig *config, XLogReaderState *record)
 		/* print block references (short format) */
 		for (block_id = 0; block_id <= record->max_block_id; block_id++)
 		{
+			size_t		bufdata_len;
+
 			if (!XLogRecHasBlockRef(record, block_id))
 				continue;
 
@@ -597,6 +600,11 @@ XLogDumpDisplayRecord(XLogDumpConfig *config, XLogReaderState *record)
 				else
 					printf(" FPW for WAL verification");
 			}
+
+			XLogRecGetBlockData(record, block_id, &bufdata_len);
+			if (bufdata_len > 0)
+				printf(" bufdata len %zu", bufdata_len);
+
 			PrintUndoBufData(record, block_id);
 		}
 		putchar('\n');
