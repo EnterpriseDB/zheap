@@ -40,6 +40,7 @@
 typedef struct UndoRecordSetChunk
 {
 	UndoLogSlot	   *slot;
+	bool			chunk_header_written;
 	/* The offset of the chunk header. */
 	UndoLogOffset	chunk_header_offset;
 	/* The index of the one or two buffers that hold the size. */
@@ -195,28 +196,14 @@ find_or_read_buffer(UndoRecordSet *urs, UndoLogNumber logno, BlockNumber block)
 	return urs->nbuffers++;
 }
 
-/*
- * Pin and lock the buffers that hold the active chunk's header, in
- * preparation for marking it closed.
- *
- * Returns 'true' if work needs to be done and 'false' if not. If the return
- * value is 'false', it is acceptable to call UndoDestroy without doing
- * anything further.
- */
-bool
-UndoPrepareToMarkClosed(UndoRecordSet *urs)
+static void
+UndoPrepareToMarkChunkClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk)
 {
-	UndoRecordSetChunk *chunk;
 	UndoLogOffset header;
 	BlockNumber header_block;
 	int header_offset;
 
-	if (urs->nchunks == 0)
-		return false;
-
-
-	/* Find the header of the active chunk. */
-	chunk = &urs->chunks[urs->nchunks - 1];
+	/* Find the header of this chunk. */
 	header = chunk->chunk_header_offset;
 	header_block = header / BLCKSZ;
 	header_offset = header % BLCKSZ;
@@ -234,6 +221,23 @@ UndoPrepareToMarkClosed(UndoRecordSet *urs)
 	else
 		chunk->chunk_header_buffer_index[1] =
 			find_or_read_buffer(urs, chunk->slot->logno, header_block + 1);
+}
+
+/*
+ * Pin and lock the buffers that hold the active chunk's header, in
+ * preparation for marking it closed.
+ *
+ * Returns 'true' if work needs to be done and 'false' if not. If the return
+ * value is 'false', it is acceptable to call UndoDestroy without doing
+ * anything further.
+ */
+bool
+UndoPrepareToMarkClosed(UndoRecordSet *urs)
+{
+	if (urs->nchunks == 0)
+		return false;
+
+	UndoPrepareToMarkChunkClosed(urs, &urs->chunks[urs->nchunks - 1]);
 
 	return true;
 }
@@ -264,15 +268,9 @@ UndoMarkPageClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk, int chbidx,
 	return bytes_on_this_page;
 }
 
-/*
- * TODO: Currently, all opened URSs *must* be closed, because otherwise they
- * may hold an UndoLogSlot that is never returned to the appropriate shared
- * memory freelist, and so it won't be reused.
- */
-void
-UndoMarkClosed(UndoRecordSet *urs)
+static void
+UndoMarkChunkClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk)
 {
-	UndoRecordSetChunk *chunk;
 	UndoLogOffset header;
 	UndoLogOffset insert;
 	UndoLogOffset size;
@@ -283,6 +281,46 @@ UndoMarkClosed(UndoRecordSet *urs)
 	/* Must be in a critical section. */
 	Assert(CritSectionCount > 0);
 
+	/* Must have prepared the buffers for this. */
+	Assert(chunk->chunk_header_buffer_index[0] != -1);
+
+	header = chunk->chunk_header_offset;
+	insert = chunk->slot->meta.insert;
+	size = insert - header;
+	page_offset = header % BLCKSZ;
+	data_offset = 0;
+	chbidx = 0;
+
+	/* Record the close as bufdata on the first affected page. */
+	if (URSNeedsWAL(urs))
+	{
+		UndoBuffer *ubuf;
+
+		ubuf = &urs->buffers[chunk->chunk_header_buffer_index[0]];
+		ubuf->bufdata.flags |= URS_XLOG_CLOSE_CHUNK;
+		ubuf->bufdata.chunk_size_location = page_offset;
+		ubuf->bufdata.chunk_size = size;
+	}
+
+	/* TODO: use UndoPageOverwrite()! */
+	while (data_offset < sizeof(size))
+	{
+		data_offset += UndoMarkPageClosed(urs, chunk, chbidx++,
+										  page_offset, data_offset, size);
+		page_offset = SizeOfUndoPageHeaderData;
+	}
+}
+
+/*
+ * TODO: Currently, all opened URSs *must* be closed, because otherwise they
+ * may hold an UndoLogSlot that is never returned to the appropriate shared
+ * memory freelist, and so it won't be reused.
+ */
+void
+UndoMarkClosed(UndoRecordSet *urs)
+{
+	UndoRecordSetChunk *chunk;
+
 	/* Shouldn't already be closed, and should have chunks if it's dirty. */
 	Assert(urs->state != URS_STATE_CLOSED);
 	Assert(urs->state == URS_STATE_CLEAN || urs->nchunks != 0);
@@ -291,31 +329,8 @@ UndoMarkClosed(UndoRecordSet *urs)
 	{
 		/* Locate the active chunk. */
 		chunk = &urs->chunks[urs->nchunks - 1];
-		header = chunk->chunk_header_offset;
-		insert = chunk->slot->meta.insert;
-		size = insert - header;
-		page_offset = header % BLCKSZ;
-		data_offset = 0;
-		chbidx = 0;
+		UndoMarkChunkClosed(urs, chunk);
 
-		/* Record the close as bufdata on the first affected page. */
-		if (URSNeedsWAL(urs))
-		{
-			UndoBuffer *ubuf;
-
-			ubuf = &urs->buffers[chunk->chunk_header_buffer_index[0]];
-			ubuf->bufdata.flags |= URS_XLOG_CLOSE_CHUNK;
-			ubuf->bufdata.chunk_size_location = page_offset;
-			ubuf->bufdata.chunk_size = size;
-		}
-
-		/* TODO: use UndoPageOverwrite()! */
-		while (data_offset < sizeof(size))
-		{
-			data_offset += UndoMarkPageClosed(urs, chunk, chbidx++,
-											  page_offset, data_offset, size);
-			page_offset = SizeOfUndoPageHeaderData;
-		}
 		urs->state = URS_STATE_CLOSED;
 	}
 }
@@ -444,6 +459,7 @@ UndoPrepareToInsert(UndoRecordSet *urs, size_t record_size)
 	RelFileNode rnode;
 	BlockNumber block;
 	int offset;
+	int chunk_number_to_close = -1;
 
 	for (;;)
 	{
@@ -466,16 +482,11 @@ UndoPrepareToInsert(UndoRecordSet *urs, size_t record_size)
 			/*
 			 * The active chunk is full.  We will prepare to mark it closed,
 			 * if we had already written a chunk header.  It's possible that
-			 * we havent' written anything in there at all, in which case
+			 * we haven't written anything in there at all, in which case
 			 * there is nothing to update.
 			 */
-			/*
-			 * TODO:TM we will prepare to mark it closed, but we won't do it
-			 * until after we've finished dealing with the insertion.  The
-			 * insertion code assumes that the lower-numbered block IDs are
-			 * the consecutive pages of the header/record insertion, so any
-			 * incidental close-marking will have to come after.
-			 */
+			if (urs->chunks[urs->nchunks - 1].chunk_header_written)
+				chunk_number_to_close = urs->nchunks - 1;
 		}
 
 		/* We need to create a new chunk in a new undo log. */
@@ -559,6 +570,16 @@ UndoPrepareToInsert(UndoRecordSet *urs, size_t record_size)
 	 * header).
 	 */
 	urs->begin = begin;
+
+	/*
+	 * If we determined that we had to close an existing chunk, do so now.  It
+	 * was important to deal with the insertion first, because UndoReplay()
+	 * assumes that the blocks used for inserting headers and record data are
+	 * registered before blocks touched by incidental work like marking chunks
+	 * closed.
+	 */
+	if (chunk_number_to_close >= 0)
+		UndoPrepareToMarkChunkClosed(urs, &urs->chunks[chunk_number_to_close]);
 
 	/*
 	 * Tell the caller where the first byte it where it can write record data
@@ -691,6 +712,7 @@ UndoInsert(UndoRecordSet *urs,
 									 urs->type_header,
 									 urs->chunk_start);
 			MarkBufferDirty(ubuf->buffer);
+			urs->chunks[urs->nchunks - 1].chunk_header_written = true;
 			page_offset += bytes_written;
 			input_offset += bytes_written;
 			if (input_offset >= all_header_size)
@@ -742,6 +764,15 @@ UndoInsert(UndoRecordSet *urs,
 		UndoLogOffsetPlusUsableBytes(urs->slot->meta.insert,
 									 all_header_size + record_size);
 	LWLockRelease(&urs->slot->meta_lock);
+
+	/*
+	 * If we created a new chunk, we may also need to mark the previous chunk
+	 * closed.  In that case, UndoPrepareToInsert() will have locked the
+	 * relevant buffers for us.
+	 */
+	if (urs->nchunks > 1 &&
+		urs->chunks[urs->nchunks - 2].chunk_header_buffer_index[0] != -1)
+		UndoMarkChunkClosed(urs, &urs->chunks[urs->nchunks - 2]);
 
 	/* We don't need another chunk header unless we switch undo logs. */
 	urs->need_chunk_header = false;
