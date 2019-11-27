@@ -1179,7 +1179,7 @@ UndoXLogRegisterBuffersForXactLevel(int nestingLevel, uint8 first_block_id)
 		UndoRecordSet *urs = slist_container(UndoRecordSet, link, iter.cur);
 
 		if (nestingLevel <= urs->nestingLevel &&
-			urs->state == URS_STATE_DIRTY)
+			urs->state != URS_STATE_CLEAN) /* TODO: can we get rid of the state test here? */
 			UndoXLogRegisterBuffers(urs, first_block_id);
 	}
 }

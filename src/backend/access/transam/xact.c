@@ -1330,6 +1330,8 @@ RecordTransactionCommit(void)
 
 		SetCurrentTransactionStopTimestamp();
 
+		UndoMarkClosedForXactLevel(1);
+
 		lsn = XactLogCommitRecord(xactStopTimestamp, nchildren, children,
 								  nrels, rels, nmsgs, invalMessages,
 								  RelcacheInitFileInval, forceSyncCommit,
@@ -5879,7 +5881,10 @@ XactLogCommitRecord(TimestampTz commit_time,
 		XLogRegisterData((char *) (&xl_origin), sizeof(xl_xact_origin));
 
 	if (twophase_gid == NULL)
+	{
 		UndoMarkClosedForXactLevel(1);
+		UndoXLogRegisterBuffersForXactLevel(1, 0);
+	}
 
 	/* we allow filtering by xacts */
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
