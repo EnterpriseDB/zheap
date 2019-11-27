@@ -681,6 +681,7 @@ UndoInsert(UndoRecordSet *urs,
 					 * capture an image of the type header.
 					 */
 					ubuf->bufdata.flags |= URS_XLOG_CREATE;
+					ubuf->bufdata.chunk_type = urs->type;
 					ubuf->bufdata.type_header = urs->type_header;
 					ubuf->bufdata.type_header_size = urs->type_header_size;
 				}
