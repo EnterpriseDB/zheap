@@ -665,12 +665,19 @@ UndoInsert(UndoRecordSet *urs,
 				}
 				else
 				{
+					UndoRecordSetChunk *prev_chunk;
+
+					/* Get our handles on the previous chunk. */
+					prev_chunk = &urs->chunks[urs->nchunks - 2];
+
 					/*
 					 * We'll need to add a new chunk to an existing URS in
 					 * recovery.
 					 */
 					ubuf->bufdata.flags |= URS_XLOG_ADD_CHUNK;
-					ubuf->bufdata.previous_chunk = 0; /* TODO whence? */
+					ubuf->bufdata.previous_chunk =
+						MakeUndoRecPtr(prev_chunk->slot->logno,
+									   prev_chunk->chunk_header_offset);
 				}
 			}
 			if (page_offset == SizeOfUndoPageHeaderData)
