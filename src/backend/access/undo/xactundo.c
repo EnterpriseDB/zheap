@@ -127,8 +127,10 @@ typedef struct XactUndoData
 static XactUndoData XactUndo;
 static UndoSubTransaction XactUndoTopState;
 
+static void CollapseXactUndoSubTransactions(void);
 static void ResetXactUndo(void);
 static UndoRecPtr XactUndoEndLocation(UndoPersistenceLevel plevel);
+static void XactUndoFinalizeRequest(bool mark_as_ready);
 static const char *UndoPersistenceLevelString(UndoPersistenceLevel plevel);
 
 /*
@@ -561,9 +563,6 @@ void
 AtAbort_XactUndo(bool *perform_foreground_undo)
 {
 	bool		has_temporary_undo = false;
-	Size		request_size;
-	UndoRecPtr	end_location_logged;
-	UndoRecPtr	end_location_unlogged;
 
 	if (perform_foreground_undo)
 		*perform_foreground_undo = false;
@@ -573,18 +572,7 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 		return;
 
 	/* This is a toplevel abort, so collapse all subtransaction state. */
-	while (XactUndo.subxact->next != NULL)
-	{
-		UndoSubTransaction *cursubxact = XactUndo.subxact;
-		UndoSubTransaction *nextsubxact = cursubxact->next;
-		int			i;
-
-		for (i = 0; i < NUndoPersistenceLevels; ++i)
-			if (!UndoRecPtrIsValid(nextsubxact->start_location[i]))
-				nextsubxact->start_location[i] = cursubxact->start_location[i];
-		pfree(cursubxact);
-		XactUndo.subxact = nextsubxact;
-	}
+	CollapseXactUndoSubTransactions();
 
 	/* Figure out whether there any relevant temporary undo. */
 	has_temporary_undo =
@@ -631,22 +619,8 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 		return;
 	}
 
-	/*
-	 * Update UndoRequest details.
-	 *
-	 * NB: Background processing facilities don't care about our temporary
-	 * undo.
-	 */
-	request_size = XactUndo.total_size[UNDOPERSISTENCE_PERMANENT] +
-		XactUndo.total_size[UNDOPERSISTENCE_UNLOGGED];
-	end_location_logged = XactUndoEndLocation(UNDOPERSISTENCE_PERMANENT);
-	end_location_unlogged = XactUndoEndLocation(UNDOPERSISTENCE_UNLOGGED);
-	FinalizeUndoRequest(XactUndo.manager, XactUndo.my_request, request_size,
-						XactUndo.subxact->start_location[UNDOPERSISTENCE_PERMANENT],
-						XactUndo.subxact->start_location[UNDOPERSISTENCE_UNLOGGED],
-						end_location_logged,
-						end_location_unlogged,
-						false);
+	/* Finalize UndoRequest details. */
+	XactUndoFinalizeRequest(false);
 
 	/*
 	 * We have generated undo for permanent and/or unlogged tables.  If the
@@ -835,6 +809,68 @@ AtSubAbort_XactUndo(int level, bool *perform_foreground_undo)
 }
 
 /*
+ * Get ready to PREPARE a transaction that has undo. Any errors must be
+ * thrown at this stage.
+ */
+void
+AtPrepare_XactUndo(void)
+{
+	UndoRecPtr	temp_undo_start;
+
+	/* Exit quickly if this transaction generated no undo. */
+	if (!XactUndo.has_undo)
+		return;
+
+	/*
+	 * Whether PREPARE succeeds or fails, this session will no longer be in a
+	 * transaction, so collapse all subtransaction state. This simplifies the
+	 * check for temporary undo which follows.
+	 */
+	CollapseXactUndoSubTransactions();
+
+	/*
+	 * If we have temporary undo, we cannot PREPARE.
+	 *
+	 * The earlier check for operations on temporary objects will presumaby
+	 * catch most problems, but there might be corner cases where temporary
+	 * undo exists but those checks don't trip. So, to be safe, add another
+	 * check here.
+	 */
+	temp_undo_start = XactUndo.subxact->start_location[UNDOPERSISTENCE_TEMP];
+	if (UndoRecPtrIsValid(temp_undo_start))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot PREPARE a transaction that has temporary undo")));
+}
+
+/*
+ * Post-PREPARE resource cleanup.
+ *
+ * It's too late for an ERROR at this point, so everything we do here must
+ * be guaranteed to succeed.
+ */
+void
+PostPrepare_XactUndo(void)
+{
+	/* Exit quickly if this transaction generated no undo. */
+	if (!XactUndo.has_undo)
+		return;
+
+	/* Finalize the undo request details. */
+	XactUndoFinalizeRequest(true);
+
+	/*
+	 * XXX. There's something missing here, because we haven't actually
+	 * done anything with the UndoRequest pointer. COMMIT TRANSACTION
+	 * needs to free the UndoRequest, and ROLLBACK TRANSACTION needs to
+	 * change the status of it.
+	 */
+
+	/* And clear the undo state for the next transaction. */
+	ResetXactUndo();
+}
+
+/*
  * Make sure we're not leaking an UndoRequest.
  */
 void
@@ -842,6 +878,30 @@ AtProcExit_XactUndo(void)
 {
 	if (XactUndo.my_request != NULL)
 		elog(PANIC, "undo request not handled before backend exit");
+}
+
+/*
+ * Collapse the subtransaction stack.
+ *
+ * In effect, we're pretending that all subtransactions has committed, in
+ * preparation for making some decision about the fate of the top-level
+ * transaction.
+ */
+static void
+CollapseXactUndoSubTransactions(void)
+{
+	while (XactUndo.subxact->next != NULL)
+	{
+		UndoSubTransaction *cursubxact = XactUndo.subxact;
+		UndoSubTransaction *nextsubxact = cursubxact->next;
+		int			i;
+
+		for (i = 0; i < NUndoPersistenceLevels; ++i)
+			if (!UndoRecPtrIsValid(nextsubxact->start_location[i]))
+				nextsubxact->start_location[i] = cursubxact->start_location[i];
+		pfree(cursubxact);
+		XactUndo.subxact = nextsubxact;
+	}
 }
 
 /*
@@ -887,6 +947,39 @@ XactUndoEndLocation(UndoPersistenceLevel plevel)
 		return InvalidUndoRecPtr;
 	last_size = XactUndo.last_size[plevel];
 	return UndoRecPtrPlusUsableBytes(last_location, last_size);
+}
+
+/*
+ * Store the final start and end locations for an UndoRequest.
+ *
+ * We've been updating the information in backend-private memory, but must
+ * copy it into shared memory.
+ *
+ * If the transaction is being prepared, we should also mark it as ready,
+ * so that other sessions know that the details within are valid. We can
+ * skip that if this is an aborted transaction, since we'll change the
+ * status again momentarily.
+ *
+ * NB: Background processing facilities don't care about our temporary
+ * undo.
+ */
+static void
+XactUndoFinalizeRequest(bool mark_as_ready)
+{
+	Size		request_size;
+	UndoRecPtr	end_location_logged;
+	UndoRecPtr	end_location_unlogged;
+
+	request_size = XactUndo.total_size[UNDOPERSISTENCE_PERMANENT] +
+		XactUndo.total_size[UNDOPERSISTENCE_UNLOGGED];
+	end_location_logged = XactUndoEndLocation(UNDOPERSISTENCE_PERMANENT);
+	end_location_unlogged = XactUndoEndLocation(UNDOPERSISTENCE_UNLOGGED);
+	FinalizeUndoRequest(XactUndo.manager, XactUndo.my_request, request_size,
+						XactUndo.subxact->start_location[UNDOPERSISTENCE_PERMANENT],
+						XactUndo.subxact->start_location[UNDOPERSISTENCE_UNLOGGED],
+						end_location_logged,
+						end_location_unlogged,
+						mark_as_ready);
 }
 
 /*

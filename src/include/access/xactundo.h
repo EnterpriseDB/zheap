@@ -68,7 +68,7 @@ extern void AtAbort_XactUndo(bool *perform_foreground_undo);
 extern void AtSubCommit_XactUndo(int level);
 extern void AtSubAbort_XactUndo(int level, bool *perform_foreground_undo);
 extern void AtProcExit_XactUndo(void);
-
-/* XXX what about prepare? */
+extern void AtPrepare_XactUndo(void);
+extern void PostPrepare_XactUndo(void);
 
 #endif

@@ -2514,6 +2514,7 @@ PrepareTransaction(void)
 	AtPrepare_PgStat();
 	AtPrepare_MultiXact();
 	AtPrepare_RelationMap();
+	AtPrepare_XactUndo();
 
 	/*
 	 * Here is where we really truly prepare.
@@ -2569,6 +2570,8 @@ PrepareTransaction(void)
 	PostPrepare_smgr();
 
 	PostPrepare_MultiXact(xid);
+
+	PostPrepare_XactUndo();
 
 	PostPrepare_Locks(xid);
 	PostPrepare_PredicateLocks(xid);
