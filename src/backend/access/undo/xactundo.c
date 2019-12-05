@@ -813,7 +813,7 @@ AtSubAbort_XactUndo(int level, bool *perform_foreground_undo)
  * thrown at this stage.
  */
 void
-AtPrepare_XactUndo(void)
+AtPrepare_XactUndo(GlobalTransaction gxact)
 {
 	UndoRecPtr	temp_undo_start;
 
@@ -841,6 +841,11 @@ AtPrepare_XactUndo(void)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot PREPARE a transaction that has temporary undo")));
+
+	/*
+	 * Store a pointer to our UndoRequest in the GlobalTransaction.
+	 */
+	SetPreparedUndoRequest(gxact, XactUndo.my_request);
 }
 
 /*
@@ -859,15 +864,30 @@ PostPrepare_XactUndo(void)
 	/* Finalize the undo request details. */
 	XactUndoFinalizeRequest(true);
 
-	/*
-	 * XXX. There's something missing here, because we haven't actually
-	 * done anything with the UndoRequest pointer. COMMIT TRANSACTION
-	 * needs to free the UndoRequest, and ROLLBACK TRANSACTION needs to
-	 * change the status of it.
-	 */
-
 	/* And clear the undo state for the next transaction. */
 	ResetXactUndo();
+}
+
+/*
+ * Change UndoRequest state at COMMIT PREPARED or ROLLBACK PREPARED.
+ *
+ * Currently, we never attempt to perform foreground undo for prepared
+ * transactions. That might be a liability: if someone uses many prepared
+ * transactions that all use undo and then abort, they could potentially
+ * fill up the UndoRequestManager faster than the undo apply workers can
+ * handle the request stream, leading eventually to failures when attempting
+ * to use undo. If this proves to be a problem, the solution would be to
+ * force a backend executing ROLLBACK PREPARED to apply undo in the
+ * foreground under the same conditions that would have applied to a regular
+ * ROLLBACK.
+ */
+void
+XactUndoTwoPhaseFinish(UndoRequest *req, bool isCommit)
+{
+	if (isCommit)
+		UnregisterUndoRequest(XactUndo.manager, req);
+	else
+		PerformUndoInBackground(XactUndo.manager, req, true);
 }
 
 /*

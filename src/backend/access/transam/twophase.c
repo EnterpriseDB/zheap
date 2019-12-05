@@ -83,6 +83,8 @@
 #include "access/twophase.h"
 #include "access/twophase_rmgr.h"
 #include "access/undorecordset.h"
+#include "access/undorequest.h"
+#include "access/xactundo.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -154,6 +156,7 @@ typedef struct GlobalTransactionData
 	int			pgprocno;		/* ID of associated dummy PGPROC */
 	BackendId	dummyBackendId; /* similar to backend id for backends */
 	TimestampTz prepared_at;	/* time of preparation */
+	UndoRequest *undo_request;	/* undo request */
 
 	/*
 	 * Note that we need to keep track of two LSNs for each GXACT. We keep
@@ -485,6 +488,7 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	pgxact->overflowed = false;
 	pgxact->nxids = 0;
 
+	gxact->undo_request = NULL;
 	gxact->prepared_at = prepared_at;
 	gxact->xid = xid;
 	gxact->owner = owner;
@@ -498,6 +502,17 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	 * abort after this, we must release it.
 	 */
 	MyLockedGxact = gxact;
+}
+
+/*
+ * SetPreparedUndoRequest
+ *		Associate an UndoRequest with a prepared transaction.
+ */
+void
+SetPreparedUndoRequest(GlobalTransaction gxact, UndoRequest *undo_request)
+{
+	Assert(gxact->undo_request == NULL);
+	gxact->undo_request = undo_request;
 }
 
 /*
@@ -1609,6 +1624,8 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 		ProcessRecords(bufptr, xid, twophase_postabort_callbacks);
 
 	PredicateLockTwoPhaseFinish(xid, isCommit);
+	if (gxact->undo_request != NULL)
+		XactUndoTwoPhaseFinish(gxact->undo_request, isCommit);
 
 	/* Clear shared memory state */
 	RemoveGXact(gxact);

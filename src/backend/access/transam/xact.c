@@ -2514,7 +2514,7 @@ PrepareTransaction(void)
 	AtPrepare_PgStat();
 	AtPrepare_MultiXact();
 	AtPrepare_RelationMap();
-	AtPrepare_XactUndo();
+	AtPrepare_XactUndo(gxact);
 
 	/*
 	 * Here is where we really truly prepare.

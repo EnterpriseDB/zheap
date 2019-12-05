@@ -20,10 +20,8 @@
 #include "datatype/timestamp.h"
 #include "storage/lwlock.h"
 
-struct UndoRequest;
 struct UndoRequestData;
 struct UndoRequestManager;
-typedef struct UndoRequest UndoRequest;
 typedef struct UndoRequestData UndoRequestData;
 typedef struct UndoRequestManager UndoRequestManager;
 

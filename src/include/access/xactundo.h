@@ -12,8 +12,8 @@
 #ifndef XACTUNDO_H
 #define XACTUNDO_H
 
+#include "access/twophase.h"
 #include "access/undodefs.h"
-#include "access/xactundo.h"
 #include "access/xlogdefs.h"
 #include "access/xlogreader.h"
 #include "datatype/timestamp.h"
@@ -67,8 +67,9 @@ extern void AtCommit_XactUndo(void);
 extern void AtAbort_XactUndo(bool *perform_foreground_undo);
 extern void AtSubCommit_XactUndo(int level);
 extern void AtSubAbort_XactUndo(int level, bool *perform_foreground_undo);
-extern void AtProcExit_XactUndo(void);
-extern void AtPrepare_XactUndo(void);
+extern void AtPrepare_XactUndo(GlobalTransaction);
 extern void PostPrepare_XactUndo(void);
+extern void	XactUndoTwoPhaseFinish(UndoRequest *, bool isCommit);
+extern void AtProcExit_XactUndo(void);
 
 #endif

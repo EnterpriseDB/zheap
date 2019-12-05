@@ -52,7 +52,9 @@ typedef enum
 /* Opaque types. */
 struct UndoCheckpointContext;
 struct UndoRecordSet;
+struct UndoRequest;
 typedef struct UndoCheckpointContext UndoCheckpointContext;
 typedef struct UndoRecordSet UndoRecordSet;
+typedef struct UndoRequest UndoRequest;
 
 #endif

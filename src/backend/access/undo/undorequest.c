@@ -514,8 +514,8 @@ UnregisterUndoRequest(UndoRequestManager *urm, UndoRequest *req)
  * UndoRequestNodeAllocate which could ERROR if the freelist is empty, but
  * if that happens there's a bug someplace.
  *
- * On entry, the UndoRequest should be ALLOCATED; on exit, it is WAITING
- * if this function returns true, and IN_PROGRESS if this function
+ * On entry, the UndoRequest should be ALLOCATED or READY; on exit, it is
+ * WAITING if this function returns true, and IN_PROGRESS if this function
  * returns false (see above for definitions).
  */
 bool
@@ -523,7 +523,8 @@ PerformUndoInBackground(UndoRequestManager *urm, UndoRequest *req, bool force)
 {
 	bool		background;
 
-	Assert(req->d.status == UNDO_REQUEST_ALLOCATED);
+	Assert(req->d.status == UNDO_REQUEST_ALLOCATED ||
+		   req->d.status == UNDO_REQUEST_READY);
 
 	/*
 	 * If we failed after allocating an UndoRequest but before setting any

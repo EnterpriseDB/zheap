@@ -25,6 +25,9 @@
  */
 typedef struct GlobalTransactionData *GlobalTransaction;
 
+/* Forward declaration to minimize #include dependencies. */
+struct UndoRequest;
+
 /* GUC variable */
 extern PGDLLIMPORT int max_prepared_xacts;
 
@@ -40,6 +43,8 @@ extern BackendId TwoPhaseGetDummyBackendId(TransactionId xid, bool lock_held);
 extern GlobalTransaction MarkAsPreparing(TransactionId xid, const char *gid,
 										 TimestampTz prepared_at,
 										 Oid owner, Oid databaseid);
+extern void SetPreparedUndoRequest(GlobalTransaction gxact,
+								   struct UndoRequest *);
 
 extern void StartPrepare(GlobalTransaction gxact);
 extern void EndPrepare(GlobalTransaction gxact);
