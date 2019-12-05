@@ -1307,6 +1307,34 @@ UndoLogGetSlot(UndoLogNumber logno, bool missing_ok)
 	return slot;
 }
 
+/*
+ * Visit every undo log.  This is only exported for the use of
+ * CloseDanglingUndoRecordSets().
+ *
+ * XXX Find a better way to do this, I don't really like the way UndoLogSlot
+ * is exposed by this file at all
+ */
+UndoLogSlot *
+UndoLogGetNextSlot(UndoLogSlot *slot)
+{
+	/* Start at the beginning, or after the last value used. */
+	if (slot == NULL)
+		slot = &UndoLogShared->slots[0];
+	else
+		++slot;
+
+	/* Return the next occupied slot. */
+	while (slot != &UndoLogShared->slots[0] + UndoLogNumSlots())
+	{
+		if (slot->logno != InvalidUndoLogNumber)
+			return slot;
+		++slot;
+	}
+
+	/* No more slots. */
+	return NULL;
+}
+
 /* check_hook: validate new undo_tablespaces */
 bool
 check_undo_tablespaces(char **newval, void **extra, GucSource source)

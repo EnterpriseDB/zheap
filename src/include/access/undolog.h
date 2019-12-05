@@ -155,6 +155,7 @@ typedef struct UndoLogSlot
 } UndoLogSlot;
 
 extern UndoLogSlot *UndoLogGetSlot(UndoLogNumber logno, bool missing_ok);
+extern UndoLogSlot *UndoLogGetNextSlot(UndoLogSlot *slot);
 extern UndoRecPtr UndoLogGetOldestRecord(UndoLogNumber logno, bool *full);
 
 /*

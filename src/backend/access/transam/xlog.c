@@ -32,6 +32,7 @@
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/undo.h"
+#include "access/undorecordset.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "access/xloginsert.h"
@@ -7768,6 +7769,13 @@ StartupXLOG(void)
 	CompleteCommitTsInitialization();
 
 	/*
+	 * Now that WAL inserts are enabled, we can also probe all undo logs to
+	 * find out if there are any UndoRecordSet chunks that were left open by
+	 * an earlier crash, and tidy up.
+	 */
+	CloseDanglingUndoRecordSets();
+
+	/*
 	 * All done with end-of-recovery actions.
 	 *
 	 * Now allow backends to write WAL and update the control file status in
@@ -9616,10 +9624,6 @@ xlog_redo(XLogReaderState *record)
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 	XLogRecPtr	lsn = record->EndRecPtr;
 
-	/* in XLOG rmgr, backup blocks are only used by XLOG_FPI records */
-	Assert(info == XLOG_FPI || info == XLOG_FPI_FOR_HINT ||
-		   !XLogRecHasAnyBlockRefs(record));
-
 	if (info == XLOG_NEXTOID)
 	{
 		Oid			nextOid;
@@ -9807,7 +9811,8 @@ xlog_redo(XLogReaderState *record)
 	}
 	else if (info == XLOG_NOOP)
 	{
-		/* nothing to do here */
+		/* sometimes XLOG_NOOP is used to carry undo buffer data */
+		UndoReplay(record, NULL, 0);
 	}
 	else if (info == XLOG_SWITCH)
 	{

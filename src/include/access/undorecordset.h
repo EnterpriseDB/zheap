@@ -60,6 +60,7 @@ extern void UndoXLogRegisterBuffers(UndoRecordSet *urs, uint8 first_block_id);
 extern UndoRecPtr UndoReplay(XLogReaderState *xlog_record,
 							 void *record_data,
 							 size_t record_size);
+extern void CloseDanglingUndoRecordSets(void);
 
 /* transaction integration */
 extern void UndoResetInsertion(void);
