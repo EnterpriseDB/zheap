@@ -3,10 +3,48 @@
  * undorecordset.c
  *	  management of sets of records in undo logs
  *
- * An UndoRecordSet acts as a contained for zero or more undo records.
- * To allow for flexibility, an UndoRecordSet can be of any of a number
- * of types; for details and interfaces pertaining to the important
- * URST_TRANSACTION type, see xactundo.c/h.
+ * An UndoRecordSet object is used to manage the creation of a set of
+ * related undo records on disk. Typically, this corresponds to all the
+ * records written by a single transaction for a single persistence
+ * level (permanent, temporary, unlogged) but we don't assume that here,
+ * since other uses of the undo storage mechanism are possible.
+ *
+ * Multiple undo record sets may be written within a single undo log,
+ * and a single undo record set may span multiple undo logs. The latter
+ * is fairly uncommon, because undo logs are big (1TB) and most
+ * transactions will write far less than that amount of undo. A
+ * single undo record, however, cannot span multiple undo logs. An
+ * undo record set on disk therefore consists of a series of one or more
+ * chunks, each of which consists of a chunk header and one or more of
+ * records, and the first of which also has a type-specific header
+ * containing whatever data is needed for the particular type of record
+ * set that it is. For example, if it belongs to a transaction, the
+ * type-specific header will contain the transaction ID. The
+ * type-specific header and chunk header are written at the same time
+ * as the first record in the chunk so as to minimize WAL volume.
+ *
+ * Every undo record set that is created must be properly closed,
+ * for two principal reasons.  First, if any records have been written
+ * to disk, the final size of the last chunk must be set on disk; by
+ * convention, the last undo record set within an undo log may have
+ * a size of 0, indicating that data is still being written, but all
+ * previous ones must have a correct size. Second, while one backend
+ * is writing to an undo record set, no other backend can write to
+ * the same undo log, since record sets are not interleaved; closing
+ * the undo record set makes that undo log available for reuse.
+ * In the event of a crash, undolog.c will put all undo logs back on
+ * the free list. Also, the last chunk in each undo log will be inspected
+ * to see whether the size is 0; if so, the size will be set based on the
+ * insert pointer for that undo log. (XXX: this last is vaporware)
+ *
+ * Clients of this module are responsible for ensuring that undo record
+ * sets are closed in all cases that do not involve a system crash.
+ * If they fail to do so, this module will trigger a PANIC at backend
+ * exit; the crash recovery algorithm described above should get
+ * things back to a sane state.
+ *
+ * Code that wants to write transactional undo should interface with
+ * xactundo.c, q.v., rather than calling these interfaces directly.
  *
  * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -312,9 +350,10 @@ UndoMarkChunkClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk)
 }
 
 /*
- * TODO: Currently, all opened URSs *must* be closed, because otherwise they
- * may hold an UndoLogSlot that is never returned to the appropriate shared
- * memory freelist, and so it won't be reused.
+ * Mark an undo record set closed.
+ *
+ * This should be called from the critical section, after having first called
+ * UndoPrepareToMarkClosed before establishing the critical section.
  */
 void
 UndoMarkClosed(UndoRecordSet *urs)
