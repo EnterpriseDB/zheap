@@ -968,12 +968,12 @@ RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes, char *data)
 		 * not critical to immediately get a useful value here.
 		 */
 		memcpy(&req->d, d, sizeof(UndoRequestData));
+		req->retry_time = DT_NOBEGIN;
 		switch (req->d.status)
 		{
 			case UNDO_REQUEST_WAITING:
 			case UNDO_REQUEST_IN_PROGRESS:
 				req->d.status = UNDO_REQUEST_WAITING;
-				req->retry_time = DT_NOBEGIN;
 				InsertUndoRequest(&urm->requests_by_fxid, req);
 				InsertUndoRequest(&urm->requests_by_size, req);
 				break;
