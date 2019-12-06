@@ -998,6 +998,28 @@ RestoreUndoRequestData(UndoRequestManager *urm, Size nbytes, char *data)
 }
 
 /*
+ * Find the undo request for a given FXID, if there is one.
+ *
+ * This isn't very efficient, so use it sparingly. If necessary, we could
+ * add a more efficient lookup method.
+ */
+UndoRequest *
+FindUndoRequestByFXID(UndoRequestManager *urm, FullTransactionId fxid)
+{
+	dlist_iter	iter;
+
+	dlist_foreach(iter, &urm->used_requests)
+	{
+		UndoRequest *req = dlist_container(UndoRequest, link, iter.cur);
+
+		if (FullTransactionIdEquals(req->d.fxid, fxid))
+			return req;
+	}
+
+	return NULL;
+}
+
+/*
  * Create a TupleDesc for status information about an UndoRequestData.
  */
 TupleDesc

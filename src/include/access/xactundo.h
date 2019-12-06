@@ -70,6 +70,8 @@ extern void AtSubAbort_XactUndo(int level, bool *perform_foreground_undo);
 extern void AtPrepare_XactUndo(GlobalTransaction);
 extern void PostPrepare_XactUndo(void);
 extern void	XactUndoTwoPhaseFinish(UndoRequest *, bool isCommit);
+extern void XactUndoTwoPhaseRecover(FullTransactionId xid,
+									GlobalTransaction gxact);
 extern void AtProcExit_XactUndo(void);
 
 #endif

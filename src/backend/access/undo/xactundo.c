@@ -891,7 +891,20 @@ XactUndoTwoPhaseFinish(UndoRequest *req, bool isCommit)
 }
 
 /*
- * Make sure we're not leaking an UndoRequest.
+ * Reassociate a GlobalTransaction with the appropriate UndoRequest after
+ * a system restart.
+ */
+void
+XactUndoTwoPhaseRecover(FullTransactionId fxid, GlobalTransaction gxact)
+{
+	UndoRequest *req = FindUndoRequestByFXID(XactUndo.manager, fxid);
+
+	if (req != NULL)
+		SetPreparedUndoRequest(gxact, req);
+}
+
+/*
+ * Make sure that we never leak an UndoRequest.
  */
 void
 AtProcExit_XactUndo(void)
