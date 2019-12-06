@@ -883,7 +883,7 @@ SerializeUndoRequestData(UndoRequestManager *urm, Size *nbytes)
 	}
 
 	/* Allocate memory. */
-	*nbytes = sizeof(UndoRequestData) * urm->capacity;
+	*nbytes = sizeof(UndoRequestData) * nrequests;
 	darray = palloc(*nbytes);
 
 	/* Save requests. */
