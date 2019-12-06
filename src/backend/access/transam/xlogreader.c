@@ -1468,12 +1468,25 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 
 /*
  * Extract the FullTransactionId from a WAL record.
+ *
+ * This is safe provided that we never use more than ~2^32 XIDs within a
+ * single checkpoint cycle.
  */
 FullTransactionId
 XLogRecGetFullXid(XLogReaderState *record)
 {
-	TransactionId	xid,
-					next_xid;
+	TransactionId	xid = XLogRecGetXid(record);
+
+	return RedoGetFullXID(xid);
+}
+
+/*
+ * Promote a recent XID to a FullTransactionId during WAL replay.
+ */
+FullTransactionId
+RedoGetFullXID(TransactionId xid)
+{
+	TransactionId	next_xid;
 	uint32			epoch;
 
 	/*
@@ -1482,7 +1495,6 @@ XLogRecGetFullXid(XLogReaderState *record)
 	 */
 	Assert(AmStartupProcess() || !IsUnderPostmaster);
 
-	xid = XLogRecGetXid(record);
 	next_xid = XidFromFullTransactionId(ShmemVariableCache->nextFullXid);
 	epoch = EpochFromFullTransactionId(ShmemVariableCache->nextFullXid);
 

@@ -255,6 +255,7 @@ extern bool DecodeXLogRecord(XLogReaderState *state, XLogRecord *record,
 
 #ifndef FRONTEND
 extern FullTransactionId XLogRecGetFullXid(XLogReaderState *record);
+extern FullTransactionId RedoGetFullXID(TransactionId xid);
 #endif
 
 extern bool RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page);
