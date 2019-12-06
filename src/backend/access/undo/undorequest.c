@@ -464,17 +464,23 @@ UnregisterUndoRequest(UndoRequestManager *urm, UndoRequest *req)
 	LWLockAcquire(urm->lock, LW_EXCLUSIVE);
 
 	/*
-	 * Remove the UndoRequest from any RBTree that contains it.  If the retry
-	 * time is not DT_NOBEGIN, then the request has been finalized and undo
-	 * has subsequently failed.  If the size is 0, the request has not been
-	 * finalized yet, so it's not in any RBTree.
+	 * If we somehow get here with a request in the UNDO_REQUEST_WAITING state,
+	 * it is present in an RBTree -- or two of them -- and we must remove it.
 	 */
-	if (req->retry_time != DT_NOBEGIN)
-		RemoveUndoRequest(&urm->requests_by_retry_time, req);
-	else if (req->d.size != 0)
+	if (req->d.status == UNDO_REQUEST_WAITING)
 	{
-		RemoveUndoRequest(&urm->requests_by_fxid, req);
-		RemoveUndoRequest(&urm->requests_by_size, req);
+		/*
+		 * If the retry time is not DT_NOBEGIN, then the request has been
+		 * finalized and undo has subsequently failed.  If the size is 0, the
+		 * request has not been finalized yet, so it's not in any RBTree.
+		 */
+		if (req->retry_time != DT_NOBEGIN)
+			RemoveUndoRequest(&urm->requests_by_retry_time, req);
+		else if (req->d.size != 0)
+		{
+			RemoveUndoRequest(&urm->requests_by_fxid, req);
+			RemoveUndoRequest(&urm->requests_by_size, req);
+		}
 	}
 
 	/* Plan to recompute oldest_fxid, if necessary. */
@@ -1387,5 +1393,6 @@ RemoveUndoRequest(RBTree *rbt, UndoRequest *req)
 
 	dummy.req = req;
 	node = rbt_find(rbt, &dummy.rbtnode);
+	Assert(node != NULL && ((UndoRequestNode *) node)->req == req);
 	rbt_delete(rbt, node);
 }
