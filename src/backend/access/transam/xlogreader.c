@@ -1468,9 +1468,6 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 
 /*
  * Extract the FullTransactionId from a WAL record.
- *
- * This is safe provided that we never use more than ~2^32 XIDs within a
- * single checkpoint cycle.
  */
 FullTransactionId
 XLogRecGetFullXid(XLogReaderState *record)
@@ -1495,6 +1492,12 @@ RedoGetFullXID(TransactionId xid)
 	 */
 	Assert(AmStartupProcess() || !IsUnderPostmaster);
 
+	/*
+	 * nextFullXid is always advanced past the latest XID we've seen in an
+	 * xlog record, so this is safe. The number of active transaction IDs
+	 * is limited to ~2 billion, and we'd need to have it exceed 4 billion
+	 * for this to give the wrong answer.
+	 */
 	next_xid = XidFromFullTransactionId(ShmemVariableCache->nextFullXid);
 	epoch = EpochFromFullTransactionId(ShmemVariableCache->nextFullXid);
 
