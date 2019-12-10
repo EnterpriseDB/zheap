@@ -137,6 +137,26 @@ UndoPageInsertHeader(Page page, int page_offset, int header_offset,
 }
 
 /*
+ * Compute the number of header bytes that would have been written into a page.
+ *
+ * This function returns the same value that UndoPageInsertHeader would have
+ * returned given the same arguments, but without writing anything.
+ */
+int
+UndoPageSkipHeader(int page_offset, int header_offset, size_t type_header_size)
+{
+	size_t all_header_size = SizeOfUndoRecordSetChunkHeader + type_header_size;
+
+	/* Must not overwrite the page header. */
+	Assert(page_offset >= SizeOfUndoPageHeaderData);
+
+	/* Must not overrun the end of the page. */
+	Assert(page_offset < BLCKSZ);
+
+	return Min(BLCKSZ - page_offset, all_header_size);
+}
+
+/*
  * Insert all or part of a record into an undo page.  If the header is split
  * across multiple pages, call this once per page, with appropriate arguments.
  *
@@ -210,6 +230,24 @@ UndoPageInsertRecord(Page page, int page_offset, int data_offset,
 }
 
 /*
+ * Compute the number of data bytes that would have been written into a page.
+ *
+ * This function returns the same value that UndoPageInsertHeader would have
+ * returned given the same arguments, but without writing anything.
+ */
+int
+UndoPageSkipRecord(int page_offset, int data_offset, size_t data_size)
+{
+	/* Must not overwrite the page header. */
+	Assert(page_offset >= SizeOfUndoPageHeaderData);
+
+	/* Must not overrun the end of the page. */
+	Assert(page_offset < BLCKSZ);
+
+	return Min(BLCKSZ - page_offset, data_size);
+}
+
+/*
  * Overwrite previously-written undo data.
  *
  * page_offset is the byte-offset within the page to which data should be
@@ -246,30 +284,4 @@ UndoPageOverwrite(Page page, int page_offset, int data_offset, Size data_size,
 	memcpy(page + page_offset, data + data_offset, data_bytes);
 
 	return data_bytes;
-}
-
-int
-UndoPageSkipHeader(int page_offset, int header_offset, size_t type_header_size)
-{
-	size_t all_header_size = SizeOfUndoRecordSetChunkHeader + type_header_size;
-
-	/* Must not overwrite the page header. */
-	Assert(page_offset >= SizeOfUndoPageHeaderData);
-
-	/* Must not overrun the end of the page. */
-	Assert(page_offset < BLCKSZ);
-
-	return Min(BLCKSZ - page_offset, all_header_size);
-}
-
-int
-UndoPageSkipRecord(int page_offset, int data_offset, size_t data_size)
-{
-	/* Must not overwrite the page header. */
-	Assert(page_offset >= SizeOfUndoPageHeaderData);
-
-	/* Must not overrun the end of the page. */
-	Assert(page_offset < BLCKSZ);
-
-	return Min(BLCKSZ - page_offset, data_size);
 }
