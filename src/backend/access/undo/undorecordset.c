@@ -821,6 +821,11 @@ UndoInsert(UndoRecordSet *urs,
 	urs->need_type_header = false;
 }
 
+#if 0
+/*
+ * XXX. This deadlocks for the reasons which the comment for report_closed()
+ * speculates about.
+ */
 static void
 read_raw(char *data, size_t size, UndoRecPtr urp)
 {
@@ -856,6 +861,7 @@ read_raw(char *data, size_t size, UndoRecPtr urp)
 	}
 	while (bytes_copied < size);
 }
+#endif
 
 /*
  * If UndoReplay() or CloseDanglingUndoRecordSets() close a URS chunk, then we
@@ -869,6 +875,7 @@ read_raw(char *data, size_t size, UndoRecPtr urp)
 static void
 report_closed(UndoRecPtr begin, UndoRecPtr end)
 {
+#if 0
 	for (;;)
 	{
 		UndoRecordSetChunkHeader chunk_header;
@@ -884,6 +891,10 @@ report_closed(UndoRecPtr begin, UndoRecPtr end)
 		}
 		begin = chunk_header.previous_chunk;
 	}
+#else
+	elog(LOG, "XXX a URS has been closed, total range %zx -> %zx",
+		 begin, end);
+#endif
 }
 
 /*
