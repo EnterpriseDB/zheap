@@ -1163,6 +1163,7 @@ EndPrepare(GlobalTransaction gxact)
 		XLogRegisterData(record->data, record->len);
 
 	UndoMarkClosedForXactLevel(1);
+	UndoXLogRegisterBuffersForXactLevel(1, 0);
 
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 

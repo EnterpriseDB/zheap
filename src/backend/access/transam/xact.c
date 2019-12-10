@@ -1330,8 +1330,6 @@ RecordTransactionCommit(void)
 
 		SetCurrentTransactionStopTimestamp();
 
-		UndoMarkClosedForXactLevel(1);
-
 		lsn = XactLogCommitRecord(xactStopTimestamp, nchildren, children,
 								  nrels, rels, nmsgs, invalMessages,
 								  RelcacheInitFileInval, forceSyncCommit,
@@ -6026,7 +6024,10 @@ XactLogAbortRecord(int nestingLevel, TimestampTz abort_time,
 		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
 	if (nestingLevel >= 0)
+	{
 		UndoMarkClosedForXactLevel(nestingLevel);
+		UndoXLogRegisterBuffersForXactLevel(nestingLevel, 0);
+	}
 
 	return XLogInsert(RM_XACT_ID, info);
 }
