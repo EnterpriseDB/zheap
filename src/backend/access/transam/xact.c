@@ -6244,18 +6244,19 @@ xact_redo(XLogReaderState *record)
 {
 	uint8		info = XLogRecGetInfo(record) & XLOG_XACT_OPMASK;
 
-	// AFIXME: Can no longer assert that there are no backup block references,
-	// due to the included undo record set close indicators. Obviously the
-	// right fix is to process those references, rather than just ignore them.
-
-	/* Backup blocks are not used in xact records */
-	//Assert(!XLogRecHasAnyBlockRefs(record));
+	/*
+	 * XLOG_XACT_COMMIT, XLOG_XACT_ABORT, and XLOG_XACT_PREPARE records might
+	 * have backup blocks for the purpose of closing undo record sets, but the
+	 * other record types should not. For those types, we need to call
+	 * UndoReplay.
+	 */
 
 	if (info == XLOG_XACT_COMMIT)
 	{
 		xl_xact_commit *xlrec = (xl_xact_commit *) XLogRecGetData(record);
 		xl_xact_parsed_commit parsed;
 
+		UndoReplay(record, NULL, 0);
 		ParseCommitRecord(XLogRecGetInfo(record), xlrec, &parsed);
 		xact_redo_commit(&parsed, XLogRecGetXid(record),
 						 record->EndRecPtr, XLogRecGetOrigin(record));
@@ -6265,6 +6266,7 @@ xact_redo(XLogReaderState *record)
 		xl_xact_commit *xlrec = (xl_xact_commit *) XLogRecGetData(record);
 		xl_xact_parsed_commit parsed;
 
+		Assert(!XLogRecHasAnyBlockRefs(record));
 		ParseCommitRecord(XLogRecGetInfo(record), xlrec, &parsed);
 		xact_redo_commit(&parsed, parsed.twophase_xid,
 						 record->EndRecPtr, XLogRecGetOrigin(record));
@@ -6279,6 +6281,7 @@ xact_redo(XLogReaderState *record)
 		xl_xact_abort *xlrec = (xl_xact_abort *) XLogRecGetData(record);
 		xl_xact_parsed_abort parsed;
 
+		UndoReplay(record, NULL, 0);
 		ParseAbortRecord(XLogRecGetInfo(record), xlrec, &parsed);
 		xact_redo_abort(&parsed, XLogRecGetXid(record));
 	}
@@ -6287,6 +6290,7 @@ xact_redo(XLogReaderState *record)
 		xl_xact_abort *xlrec = (xl_xact_abort *) XLogRecGetData(record);
 		xl_xact_parsed_abort parsed;
 
+		Assert(!XLogRecHasAnyBlockRefs(record));
 		ParseAbortRecord(XLogRecGetInfo(record), xlrec, &parsed);
 		xact_redo_abort(&parsed, parsed.twophase_xid);
 
@@ -6301,6 +6305,7 @@ xact_redo(XLogReaderState *record)
 		 * Store xid and start/end pointers of the WAL record in TwoPhaseState
 		 * gxact entry.
 		 */
+		UndoReplay(record, NULL, 0);
 		LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
 		PrepareRedoAdd(XLogRecGetData(record),
 					   record->ReadRecPtr,
@@ -6312,6 +6317,7 @@ xact_redo(XLogReaderState *record)
 	{
 		xl_xact_assignment *xlrec = (xl_xact_assignment *) XLogRecGetData(record);
 
+		Assert(!XLogRecHasAnyBlockRefs(record));
 		if (standbyState >= STANDBY_INITIALIZED)
 			ProcArrayApplyXidAssignment(xlrec->xtop,
 										xlrec->nsubxacts, xlrec->xsub);
