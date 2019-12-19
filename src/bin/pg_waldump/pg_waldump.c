@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "access/undolog.h"
 #include "access/undorecordset.h"
 #include "access/undorecordset_xlog.h"
 #include "access/xlogreader.h"
@@ -480,23 +481,34 @@ PrintUndoBufData(XLogReaderState *record, uint8 block_id)
 	}
 
 	if (bufdata.flags & URS_XLOG_CREATE)
-		printf(" URS_XLOG_CREATE(chunk_type = %d, type_header_size = %zu)",
-			   (int) bufdata.chunk_type,
+		printf(" URS_XLOG_CREATE(urs_type = %d, type_header_size = %zu)",
+			   (int) bufdata.urs_type,
 			   bufdata.type_header_size);
 	if (bufdata.flags & URS_XLOG_ADD_CHUNK)
-		printf(" URS_XLOG_ADD_CHUNK(previous_chunk = %zx)",
-			   (size_t) bufdata.previous_chunk);
+		printf(" URS_XLOG_ADD_CHUNK(urs_type = %d, previous_chunk_header_location = " UndoRecPtrFormat ")",
+			   (int) bufdata.urs_type,
+			   (size_t) bufdata.previous_chunk_header_location);
 	if (bufdata.flags & URS_XLOG_ADD_PAGE)
-		printf(" URS_XLOG_ADD_PAGE(chunk_type = %d, chunk_header_location = %zx)",
-			   (int) bufdata.chunk_type,
-			   (size_t) bufdata.chunk_header_location);
-	if (bufdata.flags & URS_XLOG_INSERTION)
-		printf(" URS_XLOG_INSERTION(insertion_point = %d)",
-			   (int) bufdata.insertion_point);
+		printf(" URS_XLOG_ADD_PAGE(chunk_type = %d, chunk_header_location = " UndoRecPtrFormat ")",
+			   (int) bufdata.urs_type,
+			   bufdata.chunk_header_location);
+	if (bufdata.flags & URS_XLOG_INSERT)
+		printf(" URS_XLOG_INSERT(insert_page_offset = %d)",
+			   (int) bufdata.insert_page_offset);
 	if (bufdata.flags & URS_XLOG_CLOSE_CHUNK)
-		printf(" URS_XLOG_CLOSE_CHUNK(chunk_size_location = %zx, chunk_size = %zu)",
-			   (size_t) bufdata.chunk_size_location,
+		printf(" URS_XLOG_CLOSE_CHUNK(chunk_size_page_offset = %d, chunk_size = %zu)",
+			   (int) bufdata.chunk_size_page_offset,
 			   (size_t) bufdata.chunk_size);
+	if (bufdata.flags & URS_XLOG_CLOSE)
+	{
+		printf(" URS_XLOG_CLOSE(urs_type = %d, type_header_size = %zu",
+			   (int) bufdata.urs_type,
+			   bufdata.type_header_size);
+		if (bufdata.flags & URS_XLOG_CLOSE_MULTI_CHUNK)
+			printf(", first_chunk_header_location = " UndoRecPtrFormat,
+				   bufdata.first_chunk_header_location);
+		printf(")");
+	}
 }
 
 /*

@@ -363,6 +363,21 @@ UndoXactReplay(XLogReaderState *xlog_record, UndoNode *undo_node)
 }
 
 /*
+ * Handle a report that an UndoRecordSet was closed.
+ *
+ * XXX: Write me
+ */
+void
+UndoXactHandleClosedURS(UndoRecPtr begin, UndoRecPtr end, void *type_header)
+{
+	FullTransactionId fxid;
+
+	memcpy(&fxid, type_header, sizeof(fxid));
+	elog(LOG, "XXX UndoXactHandleClosedURS(%zx -> %zx, fxid = " UINT64_FORMAT ")",
+		 begin, end, U64FromFullTransactionId(fxid));
+}
+
+/*
  * Return the amount of time until InitializeBackgroundXactUndo can obtain
  * an undo request.
  *

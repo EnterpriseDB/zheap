@@ -35,7 +35,7 @@
  * In the event of a crash, undolog.c will put all undo logs back on
  * the free list. Also, the last chunk in each undo log will be inspected
  * to see whether the size is 0; if so, the size will be set based on the
- * insert pointer for that undo log. (XXX: this last is vaporware)
+ * insert pointer for that undo log.
  *
  * Clients of this module are responsible for ensuring that undo record
  * sets are closed in all cases that do not involve a system crash.
@@ -61,6 +61,7 @@
 #include "access/undopage.h"
 #include "access/undorecordset.h"
 #include "access/undorecordset_xlog.h"
+#include "access/xactundo.h"	/* XXX should we avoid this? */
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "access/xlogreader.h"
@@ -126,7 +127,7 @@ struct UndoRecordSet
 	UndoRecPtr		previous_chunk;
 	bool			need_chunk_header;
 	UndoRecordSetChunkHeader chunk_header;
-	char			type_header[64];
+	char		   *type_header;
 	uint8			type_header_size;
 	bool			need_type_header;
 	UndoRecPtr		begin;
@@ -187,15 +188,32 @@ UndoCreate(UndoRecordSetType type, char persistence, int nestingLevel,
 	urs->type_header_size = type_header_size;
 	urs->need_type_header = true;
 
-	/* XXX Why do we have a fixed-size buffer here? */
-	Assert(urs->type_header_size <= sizeof(urs->type_header));
-	memcpy(urs->type_header, type_header, urs->type_header_size);
+	urs->type_header = palloc(type_header_size);
+	memcpy(urs->type_header, type_header, type_header_size);
+	urs->type_header_size = type_header_size;
 
 	slist_push_head(&UndoRecordSetList, &urs->link);
 	urs->nestingLevel = nestingLevel;
 	MemoryContextSwitchTo(oldcontext);
 
 	return urs;
+}
+
+/*
+ * TODO: think about where this belongs.
+ */
+static size_t
+get_type_header_size(UndoRecordSetType type)
+{
+	switch (type)
+	{
+	case URST_TRANSACTION:
+		return 8;
+	case URST_FOO:
+		return 4;
+	default:
+		return 0;
+	}
 }
 
 /*
@@ -291,15 +309,15 @@ UndoMarkPageClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk, int chbidx,
 	Buffer	buffer = urs->buffers[index].buffer;
 	int		bytes_on_this_page;
 
-	/* TODO: replace this with UndoPageOverwrite */
-
 	/* Compute the number of bytes on this page. */
 	bytes_on_this_page = Min(BLCKSZ - page_offset, sizeof(size) - data_offset);
 
 	/* Update the page. */
-	memcpy((char *) BufferGetPage(buffer) + page_offset,
-		   (char *) &size + data_offset,
-		   bytes_on_this_page);
+	UndoPageOverwrite(BufferGetPage(buffer),
+					  page_offset,
+					  data_offset,
+					  bytes_on_this_page,
+					  (char *) &size);
 
 	MarkBufferDirty(buffer);
 
@@ -307,7 +325,8 @@ UndoMarkPageClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk, int chbidx,
 }
 
 static void
-UndoMarkChunkClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk)
+UndoMarkChunkClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk,
+					bool close_urs)
 {
 	UndoLogOffset header;
 	UndoLogOffset insert;
@@ -336,11 +355,31 @@ UndoMarkChunkClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk)
 
 		ubuf = &urs->buffers[chunk->chunk_header_buffer_index[0]];
 		ubuf->bufdata.flags |= URS_XLOG_CLOSE_CHUNK;
-		ubuf->bufdata.chunk_size_location = page_offset;
+		ubuf->bufdata.chunk_size_page_offset = page_offset;
 		ubuf->bufdata.chunk_size = size;
+
+		/*
+		 * If we're closing the final chunk and thus the whole URS, we need to
+		 * log some extra details.
+		 */
+		if (close_urs)
+		{
+			ubuf->bufdata.flags |= URS_XLOG_CLOSE;
+			ubuf->bufdata.urs_type = urs->type;
+			ubuf->bufdata.type_header = urs->type_header;
+			ubuf->bufdata.type_header_size = urs->type_header_size;
+
+			/* If not a single chunk, point to the first chunk. */
+			if (urs->nchunks > 1)
+			{
+				ubuf->bufdata.flags |= URS_XLOG_CLOSE_MULTI_CHUNK;
+				ubuf->bufdata.first_chunk_header_location =
+					MakeUndoRecPtr(urs->chunks[0].slot->logno,
+								   urs->chunks[0].chunk_header_offset);
+			}
+		}
 	}
 
-	/* TODO: use UndoPageOverwrite()! */
 	while (data_offset < sizeof(size))
 	{
 		data_offset += UndoMarkPageClosed(urs, chunk, chbidx++,
@@ -368,7 +407,7 @@ UndoMarkClosed(UndoRecordSet *urs)
 	{
 		/* Locate the active chunk. */
 		chunk = &urs->chunks[urs->nchunks - 1];
-		UndoMarkChunkClosed(urs, chunk);
+		UndoMarkChunkClosed(urs, chunk, true);
 
 		urs->state = URS_STATE_CLOSED;
 	}
@@ -548,7 +587,6 @@ UndoPrepareToInsert(UndoRecordSet *urs, size_t record_size)
 	{
 		int bytes_on_this_page;
 		ReadBufferMode rbm;
-		Buffer buffer;
 
 		memset(&urs->buffers[urs->nbuffers], 0, sizeof(urs->buffers[0]));
 
@@ -575,7 +613,7 @@ UndoPrepareToInsert(UndoRecordSet *urs, size_t record_size)
 		 * anyway.)
 		 */
 		/* Get a buffer. */
-		buffer = urs->buffers[urs->nbuffers].buffer =
+		urs->buffers[urs->nbuffers].buffer =
 			ReadBufferWithoutRelcache(rnode,
 									  UndoLogForkNum,
 									  block,
@@ -638,17 +676,17 @@ init_if_needed(UndoBuffer *ubuf)
 }
 
 static void
-register_insertion_point_if_needed(UndoBuffer *ubuf, uint16 insertion_point)
+register_insert_page_offset_if_needed(UndoBuffer *ubuf, uint16 insert_page_offset)
 {
 	/*
 	 * For now, we record the insertion point for the first insertion by this
 	 * WAL record into each buffer.  Later we could find ways to avoid having
 	 * to do this, to cut down on registered buffer data in the WAL.
 	 */
-	if ((ubuf->bufdata.flags & URS_XLOG_INSERTION) == 0)
+	if ((ubuf->bufdata.flags & URS_XLOG_INSERT) == 0)
 	{
-		ubuf->bufdata.insertion_point = insertion_point;
-		ubuf->bufdata.flags |= URS_XLOG_INSERTION;
+		ubuf->bufdata.insert_page_offset = insert_page_offset;
+		ubuf->bufdata.flags |= URS_XLOG_INSERT;
 	}
 }
 
@@ -659,7 +697,7 @@ register_new_page(UndoBuffer *ubuf,
 {
 	ubuf->bufdata.flags |= URS_XLOG_ADD_PAGE;
 	ubuf->bufdata.chunk_header_location = chunk_header_location;
-	ubuf->bufdata.chunk_type = chunk_type;
+	ubuf->bufdata.urs_type = chunk_type;
 }
 
 /*
@@ -701,6 +739,20 @@ UndoInsert(UndoRecordSet *urs,
 	{
 		UndoRecordSetChunkHeader chunk_header;
 
+		/* Initialize the chunk header. */
+		chunk_header.size = 0;
+		chunk_header.previous_chunk = InvalidUndoRecPtr;
+		chunk_header.type = urs->type;
+		if (urs->nchunks > 1)
+		{
+			UndoRecordSetChunk *prev_chunk;
+
+			prev_chunk = &urs->chunks[urs->nchunks - 2];
+			chunk_header.previous_chunk =
+				MakeUndoRecPtr(prev_chunk->slot->logno,
+							   prev_chunk->chunk_header_offset);
+		}
+
 		input_offset = 0;
 		for (;;)
 		{
@@ -711,7 +763,7 @@ UndoInsert(UndoRecordSet *urs,
 			init_if_needed(ubuf);
 			if (URSNeedsWAL(urs))
 			{
-				register_insertion_point_if_needed(ubuf, page_offset);
+				register_insert_page_offset_if_needed(ubuf, page_offset);
 
 				if (input_offset == 0 && urs->need_type_header)
 				{
@@ -720,25 +772,20 @@ UndoInsert(UndoRecordSet *urs,
 					 * capture an image of the type header.
 					 */
 					ubuf->bufdata.flags |= URS_XLOG_CREATE;
-					ubuf->bufdata.chunk_type = urs->type;
+					ubuf->bufdata.urs_type = urs->type;
 					ubuf->bufdata.type_header = urs->type_header;
 					ubuf->bufdata.type_header_size = urs->type_header_size;
 				}
 				else
 				{
-					UndoRecordSetChunk *prev_chunk;
-
-					/* Get our handles on the previous chunk. */
-					prev_chunk = &urs->chunks[urs->nchunks - 2];
-
 					/*
 					 * We'll need to add a new chunk to an existing URS in
 					 * recovery.
 					 */
 					ubuf->bufdata.flags |= URS_XLOG_ADD_CHUNK;
-					ubuf->bufdata.previous_chunk =
-						MakeUndoRecPtr(prev_chunk->slot->logno,
-									   prev_chunk->chunk_header_offset);
+					ubuf->bufdata.urs_type = urs->type;
+					ubuf->bufdata.previous_chunk_header_location =
+						chunk_header.previous_chunk;
 				}
 			}
 			if (page_offset == SizeOfUndoPageHeaderData)
@@ -774,7 +821,7 @@ UndoInsert(UndoRecordSet *urs,
 			elog(ERROR, "ran out of buffers while inserting undo record");
 		init_if_needed(ubuf);
 		if (URSNeedsWAL(urs))
-			register_insertion_point_if_needed(ubuf, page_offset);
+			register_insert_page_offset_if_needed(ubuf, page_offset);
 		if (page_offset == SizeOfUndoPageHeaderData)
 			register_new_page(ubuf, urs->type, urs->chunk_start);
 		bytes_written =
@@ -807,12 +854,12 @@ UndoInsert(UndoRecordSet *urs,
 
 	/*
 	 * If we created a new chunk, we may also need to mark the previous chunk
-	 * closed.  In that case, UndoPrepareToInsert() will have locked the
-	 * relevant buffers for us.
+	 * closed.  In that case, UndoPrepareToInsert() will have pinned and
+	 * locked the relevant buffers for us.
 	 */
 	if (urs->nchunks > 1 &&
 		urs->chunks[urs->nchunks - 2].chunk_header_buffer_index[0] != -1)
-		UndoMarkChunkClosed(urs, &urs->chunks[urs->nchunks - 2]);
+		UndoMarkChunkClosed(urs, &urs->chunks[urs->nchunks - 2], false);
 
 	/* We don't need another chunk header unless we switch undo logs. */
 	urs->need_chunk_header = false;
@@ -821,80 +868,26 @@ UndoInsert(UndoRecordSet *urs,
 	urs->need_type_header = false;
 }
 
-#if 0
 /*
- * XXX. This deadlocks for the reasons which the comment for report_closed()
- * speculates about.
+ * In normal operation, URSs are closed explicity.  In recovery and after a
+ * crash, the situation is reversed: UndoReplay() reports to the per-type
+ * handler function that a URS was closed, and CloseDanglingUndoRecordSets()
+ * also does that.
  */
 static void
-read_raw(char *data, size_t size, UndoRecPtr urp)
+report_closed_urs(UndoRecordSetType type, UndoRecPtr begin, UndoRecPtr end,
+				  void *type_header)
 {
-	Buffer buffer;
-	RelFileNode rnode;
-	BlockNumber blockno;
-	uint16 page_offset;
-	uint16 bytes_on_this_page;
-	size_t bytes_copied;
-
-	UndoRecPtrAssignRelFileNode(rnode, urp);
-	blockno = urp / BLCKSZ;
-	page_offset = urp % BLCKSZ;
-	bytes_copied = 0;
-
-	do
+	switch (type)
 	{
-		buffer = ReadBufferWithoutRelcache(rnode,
-										   MAIN_FORKNUM,
-										   blockno,
-										   RBM_NORMAL,
-										   NULL,
-										   RELPERSISTENCE_PERMANENT);
-		LockBuffer(buffer, BUFFER_LOCK_SHARE);
-		bytes_on_this_page = Min(size - bytes_copied, BLCKSZ - page_offset);
-		memcpy(data + bytes_copied,
-			   BufferGetPage(buffer) + page_offset,
-			   bytes_on_this_page);
-		UnlockReleaseBuffer(buffer);
-		bytes_copied += bytes_on_this_page;
-		blockno++;
-		page_offset = SizeOfUndoPageHeaderData;
+	case URST_TRANSACTION:
+		UndoXactHandleClosedURS(begin, end, type_header);
+		break;
+	default:
+		elog(LOG, "XXX a URS has been closed, type %d, total range %zx -> %zx",
+			 type, begin, end);
+		break;
 	}
-	while (bytes_copied < size);
-}
-#endif
-
-/*
- * If UndoReplay() or CloseDanglingUndoRecordSets() close a URS chunk, then we
- * need to walk back to the first chunk to compute the full range of the URS,
- * and report to the URS's type-specific handler that it is closed.
- *
- * TODO: if this is called by UndoReplay() which could be in the process of
- * updating buffers, could the buffers we want to read already be locked?
- * Then read_raw() would deadlock XXX
- */
-static void
-report_closed(UndoRecPtr begin, UndoRecPtr end)
-{
-#if 0
-	for (;;)
-	{
-		UndoRecordSetChunkHeader chunk_header;
-
-		read_raw((char *) &chunk_header, sizeof(chunk_header), begin);
-		if (chunk_header.previous_chunk == InvalidUndoRecPtr)
-		{
-			/* We found the first chunk.  Now we know the total range. */
-			/* TODO here, dispatch on urs_type to the appropriate handler*/
-			elog(LOG, "XXX a URS has been closed, type = %d, total range %zx -> %zx",
-				 chunk_header.type, begin, end);
-			return;
-		}
-		begin = chunk_header.previous_chunk;
-	}
-#else
-	elog(LOG, "XXX a URS has been closed, total range %zx -> %zx",
-		 begin, end);
-#endif
 }
 
 /*
@@ -921,6 +914,9 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 	int header_offset = 0;
 	char *type_header = NULL;
 	int type_header_size = 0;
+	bool chunk_size_more = false;
+	size_t chunk_size;
+	int chunk_size_offset = 0;
 
 	Assert(InRecovery);
 
@@ -942,12 +938,10 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 			UndoRecordSetXLogBufData *bufdata = &buffers[block_id].bufdata;
 			Page		page;
 			UndoPageHeader uph;
+			UndoRecPtr chunk_start = InvalidUndoRecPtr;
 
 			/* Figure out which undo log is referenced. */
-			if (nbuffers == 0)
-				slot = UndoLogGetSlot(block->rnode.relNode, false);
-			else
-				Assert(slot->logno == block->rnode.relNode);
+			slot = UndoLogGetSlot(block->rnode.relNode, false);
 
 			/*
 			 * Check if we need to extend the physical range to cover this
@@ -999,8 +993,30 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 			page = BufferGetPage(buffers[nbuffers].buffer);
 			uph = (UndoPageHeader) page;
 
+			/*
+			 * The UndoPageXXX function need the chunk start location, if they
+			 * are writing to a new page.
+			 */
+			if (bufdata->flags & URS_XLOG_ADD_PAGE)
+				chunk_start = bufdata->chunk_header_location;
+
+			/*
+			 * Are we still writing a chunk size that spilled into the next
+			 * page?
+			 */
+			if (chunk_size_more)
+			{
+				UndoPageOverwrite(page,
+								  SizeOfUndoPageHeaderData,
+								  chunk_size_offset,
+								  sizeof(chunk_size),
+								  (char *) &chunk_size);
+				MarkBufferDirty(buffers[nbuffers].buffer);
+				chunk_size_more = false;
+			}
+
 			/* Are we still writing a header that spilled into the next page? */
-			if (header_more)
+			else if (header_more)
 			{
 				if (skip)
 					header_offset += UndoPageSkipHeader(SizeOfUndoPageHeaderData,
@@ -1028,8 +1044,9 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				header_more = false;
 			}
 
+
 			/* Are we still writing a record that spilled into the next page? */
-			if (record_more)
+			else if (record_more)
 			{
 				if (skip)
 					record_offset += UndoPageSkipRecord(SizeOfUndoPageHeaderData,
@@ -1042,7 +1059,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 														  record_size,
 														  record_data,
 														  bufdata->chunk_header_location,
-														  bufdata->chunk_type);
+														  bufdata->urs_type);
 				/* The shared memory insertion point must be after this fragment. */
 				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
 				/* Do we need to go around again, on the next page? */
@@ -1051,26 +1068,27 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 
 				/* We have finished writing the record.*/
 				record_more = false;
+				record_data = NULL;
 			}
 
 			/*
 			 * If there is an insertion point recorded, it must be restored before
 			 * we redo (or skip) the insertion.
 			 */
-			if (bufdata->flags & URS_XLOG_INSERTION)
+			if (bufdata->flags & URS_XLOG_INSERT)
 			{
 				if (!record_data)
-					elog(ERROR, "undo buf data contained an insertion point, but no record was passed to UndoReplay()");
+					elog(ERROR, "undo buf data contained an insert page offset, but no record was passed to UndoReplay()");
 				/* Update the insertion point on the page. */
 				if (!skip)
-					uph->ud_insertion_point = bufdata->insertion_point;
+					uph->ud_insertion_point = bufdata->insert_page_offset;
 				/*
 				 * Also update it in shared memory, though this isn't really
 				 * necessary as it'll be overwritten after we write data into
 				 * the page.
 				 */
 				slot->meta.insert =
-					BLCKSZ * block->blkno + bufdata->insertion_point;
+					BLCKSZ * block->blkno + bufdata->insert_page_offset;
 			}
 
 			/* Check if we need to write a chunk header. */
@@ -1078,11 +1096,8 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 			{
 				chunk_header.size = 0;
 				chunk_header.previous_chunk = InvalidUndoRecPtr;
-				chunk_header.type = bufdata->chunk_type;
+				chunk_header.type = bufdata->urs_type;
 
-				/*
-				 * It it's an initial chunk (new URS) then there may also be a
-				 */
 				type_header = bufdata->type_header;
 				type_header_size = bufdata->type_header_size;
 				header_offset = UndoPageInsertHeader(page,
@@ -1091,9 +1106,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 													 &chunk_header,
 													 type_header_size,
 													 type_header,
-													 0);
-				/* The shared memory insertion point must be after this fragment. */
-				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
+													 chunk_start);
 				/* Do we need to go around again, on the next page? */
 				if (header_offset < SizeOfUndoRecordSetChunkHeader + type_header_size)
 				{
@@ -1108,7 +1121,23 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				/* Can only be creating one chunk per WAL record. */
 				Assert(!(bufdata->flags & URS_XLOG_CREATE));
 
-				/* TODO: Insert a new chunk header. */
+				chunk_header.size = 0;
+				chunk_header.previous_chunk = bufdata->previous_chunk_header_location;
+				chunk_header.type = bufdata->urs_type;
+				type_header = NULL;
+				type_header_size = 0;
+				header_offset = UndoPageInsertHeader(page,
+													 uph->ud_insertion_point,
+													 0,
+													 &chunk_header,
+													 0,
+													 NULL,
+													 chunk_start);
+				if (header_offset < SizeOfUndoRecordSetChunkHeader)
+				{
+					header_more = true;
+					continue;
+				}
 			}
 
 			/* Check if we need to insert the caller's record data. */
@@ -1120,7 +1149,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 													 record_size,
 													 record_data,
 													 bufdata->chunk_header_location,
-													 bufdata->chunk_type);
+													 bufdata->urs_type);
 				/* The shared memory insertion point must be after this fragment. */
 				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
 				/* Do we need to go around again, on the next page? */
@@ -1129,20 +1158,54 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 					record_more = true;
 					continue;
 				}
+				record_data = NULL;
 			}
 
 			if (bufdata->flags & URS_XLOG_CLOSE_CHUNK)
 			{
-				/* TODO: Update the chunk header size to mark it closed! */
+				/* Update the chunk header size to mark it closed. */
+				chunk_size = bufdata->chunk_size;
+
+				chunk_size_offset =
+					UndoPageOverwrite(page,
+									  bufdata->chunk_size_page_offset,
+									  0,
+									  sizeof(bufdata->chunk_size),
+									  (char *) &chunk_size);
 
 				/*
-				 * If we closed a chunk, but didn't add a chunk at the same
-				 * time, then we closed the whole URS.  Tell the URS's creator
+				 * If we closed the whole URS, then tell the URS's creator
 				 * about that.
 				 */
-				if ((bufdata->flags & URS_XLOG_ADD_CHUNK) == 0)
-					report_closed(bufdata->chunk_size_location,
-								  bufdata->chunk_size_location + bufdata->chunk_size);
+				if (bufdata->flags & URS_XLOG_CLOSE)
+				{
+					UndoRecPtr begin;
+
+					if (bufdata->flags & URS_XLOG_CLOSE_MULTI_CHUNK)
+						begin = bufdata->first_chunk_header_location;
+					else
+						begin = MakeUndoRecPtr(slot->logno,
+											   block->blkno * BLCKSZ +
+											   bufdata->chunk_size_page_offset);
+
+					report_closed_urs(bufdata->urs_type,
+									  begin,
+									  MakeUndoRecPtr(slot->logno,
+													 block->blkno * BLCKSZ +
+													 bufdata->chunk_size_page_offset +
+													 bufdata->chunk_size),
+									  bufdata->type_header);
+				}
+
+				/*
+				 * XXX IS it OK that we delivered the callback before writing
+				 * the part the spills onto the next page?
+				 */
+				if (chunk_size_offset < sizeof(chunk_size))
+				{
+					chunk_size_more = true;
+					continue;
+				}
 			}
 
 			++nbuffers;
@@ -1467,7 +1530,7 @@ UndoCloseAndDestroyForXactLevel(int nestingLevel)
  * insertion point).
  */
 static UndoRecPtr
-find_final_chunk(Page page, UndoRecPtr page_begin_urp)
+find_start_of_chunk_on_final_page(Page page, UndoRecPtr page_begin_urp)
 {
 	UndoPageHeader page_header = (UndoPageHeader) page;
 	UndoLogOffset size;
@@ -1534,6 +1597,111 @@ find_final_chunk(Page page, UndoRecPtr page_begin_urp)
 }
 
 /*
+ * Given the current insert pointer for an undo log, find the header for the
+ * last chunk.  That is, the chunk that contains the byte that immediately
+ * precedes the insert pointer.  The discard pointer must be before the insert
+ * pointer (ie there must actually be an undiscared byte immediately preceding
+ * the insert pointer).
+ */
+static UndoRecPtr
+find_start_of_final_chunk_in_undo_log(UndoLogNumber logno, UndoLogOffset insert)
+{
+	RelFileNode rnode;
+	UndoLogOffset last_data_offset;
+	UndoRecPtr final_page_urp;
+	UndoRecPtr result;
+	BlockNumber chunk_last_blockno;
+	Buffer buffer;
+
+	/*
+	 * Locate the page holding the byte preceding the insert point, skipping
+	 * over the page header if necessary, because that's the last page that
+	 * had anything written to it and thus that has the page header
+	 * information we need to find our way.
+	 */
+	last_data_offset = insert - 1;
+	if (last_data_offset % BLCKSZ < SizeOfUndoPageHeaderData)
+		last_data_offset -= SizeOfUndoPageHeaderData;
+
+	/* Read the last chunk location from the last page's header. */
+	UndoRecPtrAssignRelFileNode(rnode, MakeUndoRecPtr(logno, last_data_offset));
+	chunk_last_blockno = last_data_offset / BLCKSZ;
+	buffer = ReadBufferWithoutRelcache(rnode,
+									   MAIN_FORKNUM,
+									   chunk_last_blockno,
+									   RBM_NORMAL,
+									   NULL,
+									   RELPERSISTENCE_PERMANENT);
+	LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
+	/* Find the start of the final chunk by examining this page. */
+	final_page_urp = MakeUndoRecPtr(logno, BLCKSZ * chunk_last_blockno);
+	result = find_start_of_chunk_on_final_page(BufferGetPage(buffer),
+											   final_page_urp);
+	UnlockReleaseBuffer(buffer);
+
+	return result;
+}
+
+/*
+ * Read data at a given location, reading and locking buffers as required.
+ * This is a helper function for CloseDanglingUndoRecordSets().
+ */
+static void
+read_undo_header(char *out, size_t size, UndoRecPtr urp,
+				 Buffer *buffers, int nbuffers)
+{
+	Buffer buffer;
+	RelFileNode rnode;
+	BlockNumber blockno;
+	uint16 page_offset;
+	uint16 bytes_on_this_page;
+	size_t bytes_copied;
+	int buffer_index = 0;
+
+	UndoRecPtrAssignRelFileNode(rnode, urp);
+	blockno = UndoRecPtrGetOffset(urp) / BLCKSZ;
+	page_offset = urp % BLCKSZ;
+	bytes_copied = 0;
+
+	do
+	{
+		if (buffer_index >= nbuffers)
+			elog(ERROR, "cannot read undo data: not enough buffers");
+		buffer = ReadBufferWithoutRelcache(rnode,
+										   MAIN_FORKNUM,
+										   blockno,
+										   RBM_NORMAL,
+										   NULL,
+										   RELPERSISTENCE_PERMANENT);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		buffers[buffer_index] = buffer;
+		bytes_on_this_page = Min(size - bytes_copied, BLCKSZ - page_offset);
+		memcpy((char *) out + bytes_copied,
+			   BufferGetPage(buffer) + page_offset,
+			   bytes_on_this_page);
+		bytes_copied += bytes_on_this_page;
+		blockno++;
+		buffer_index++;
+		page_offset = SizeOfUndoPageHeaderData;
+	}
+	while (bytes_copied < size);
+}
+
+static void
+release_buffers(Buffer *buffers, int nbuffers)
+{
+	for (int i = 0; i < nbuffers; ++i)
+	{
+		if (buffers[i] != InvalidBuffer)
+		{
+			UnlockReleaseBuffer(buffers[i]);
+			buffers[i] = InvalidBuffer;
+		}
+	}
+}
+
+/*
  * Scan the set of existing undo logs looking for URS chunks that are not
  * closed (ie that have a zero length header).  This is done to discover URSs
  * that were open at the time of a crash, at startup.  We'll set the chunk
@@ -1551,159 +1719,144 @@ CloseDanglingUndoRecordSets(void)
 		UndoLogNumber logno = slot->logno;
 		UndoLogOffset discard = slot->meta.discard;
 		UndoLogOffset insert = slot->meta.insert;
-		UndoLogOffset last_data_offset;
-		UndoLogOffset size;
-		UndoRecPtr	chunk_start_urp;
-		Buffer		buffer;
-		Buffer		buffer2 = InvalidBuffer;
-		UndoPageHeader page_header;
-		BlockNumber chunk_first_blockno;
-		BlockNumber chunk_last_blockno;
-		uint16		page_offset;
-		RelFileNode rnode;
-		int bytes_on_first_page;
-		UndoRecordSetXLogBufData bufdata;
+		UndoRecPtr chunk_header_location;
+		UndoRecPtr begin, end;
+		UndoRecordSetChunkHeader chunk_header;
+		UndoRecordSetType type;
+		Buffer buffers[2];
+		void *type_header;
+		size_t type_header_size;
+		size_t chunk_size;
+		uint16 page_offset;
+		uint16 bytes_on_first_page;
+		UndoRecordSetXLogBufData bufdata = {0};
 		char dummy[24] = {0};
 		XLogRecPtr lsn;
 
-		/* If there's no data to read, skip. */
+		/* If the undo is empty, skip. */
 		if (insert == discard)
 			continue;
 
-		/*
-		 * Locate the page holding the byte preceding the insert point,
-		 * skipping over the page header if necessary, because that's the last
-		 * page that had anything written to it and thus that has the page
-		 * header information we need to find our way.
-		 */
-		last_data_offset = insert - 1;
-		if (last_data_offset % BLCKSZ < SizeOfUndoPageHeaderData)
-			last_data_offset -= SizeOfUndoPageHeaderData;
-		Assert(last_data_offset >= discard);
+		/* Locate the header of the final chunk. */
+		Assert(discard < insert);
+		chunk_header_location =
+			find_start_of_final_chunk_in_undo_log(logno, insert);
 
-		/* Read the last chunk location from the last page's header. */
-		UndoRecPtrAssignRelFileNode(rnode, MakeUndoRecPtr(logno,
-														  last_data_offset));
-		chunk_last_blockno = last_data_offset / BLCKSZ;
-		buffer = ReadBufferWithoutRelcache(rnode,
-										   MAIN_FORKNUM,
-										   chunk_last_blockno,
-										   RBM_NORMAL,
-										   NULL,
-										   RELPERSISTENCE_PERMANENT);
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-		page_header = (UndoPageHeader) BufferGetPage(buffer);
+		for (int i = 0; i < lengthof(buffers); ++i)
+			buffers[i] = InvalidBuffer;
 
-		/* Find the start of the final chunk. */
-		chunk_start_urp =
-			find_final_chunk(BufferGetPage(buffer),
-							 MakeUndoRecPtr(logno, BLCKSZ * chunk_last_blockno));
-		chunk_first_blockno = chunk_start_urp / BLCKSZ;
-
-		/* Where on its page is it, and how many bytes fit on that page? */
-		page_offset = chunk_start_urp % BLCKSZ;
-		bytes_on_first_page = Min(BLCKSZ - page_offset, sizeof(size));
+		/* Read the chunk header. */
+		read_undo_header((void *) &chunk_header, SizeOfUndoRecordSetChunkHeader,
+						 chunk_header_location,
+						 buffers, lengthof(buffers));
+		release_buffers(buffers, lengthof(buffers));
 
 		/*
-		 * Get our hands on the buffer(s) that hold the header, if we don't
-		 * already have the correct one (because it's a one block chunk).
+		 * We already released the buffer(s) because it makes the later code
+		 * a bit simpler, and it's also the expected outcome that we won't
+		 * need them.  A non-zero size indicates that there is nothing to be
+		 * done here, the chunk was already closed and we can move onto the
+		 * next undo log.
 		 */
-		if (chunk_last_blockno != chunk_first_blockno)
-		{
-			/*
-			 * Do we already have the two blocks we need (because it's a two
-			 * block chunk)?
-			 */
-			if (bytes_on_first_page < sizeof(size) &&
-				chunk_first_blockno + 1 == chunk_last_blockno)
-				buffer2 = buffer;
-			else
-				ReleaseBuffer(buffer);
-
-			/* Read the first block. */
-			buffer = ReadBufferWithoutRelcache(rnode,
-											   MAIN_FORKNUM,
-											   chunk_first_blockno,
-											   RBM_NORMAL,
-											   NULL,
-											   RELPERSISTENCE_PERMANENT);
-			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-
-			/* Read the next block if we need it and don't already have it. */
-			if (bytes_on_first_page < sizeof(size) && buffer == InvalidBuffer)
-			{
-				buffer2 = ReadBufferWithoutRelcache(rnode,
-													MAIN_FORKNUM,
-													chunk_first_blockno + 1,
-													RBM_NORMAL,
-													NULL,
-													RELPERSISTENCE_PERMANENT);
-				LockBuffer(buffer2, BUFFER_LOCK_EXCLUSIVE);
-			}
-		}
-
-		/* Read the existing chunk size. */
-		memcpy(&size,
-			   BufferGetPage(buffer) + page_offset,
-			   bytes_on_first_page);
-		if (bytes_on_first_page < sizeof(size))
-			memcpy((char *) &size + bytes_on_first_page,
-				   BufferGetPage(buffer2) + SizeOfUndoPageHeaderData,
-				   sizeof(size) - bytes_on_first_page);
-
-		/*
-		 * If it's not zero, then there is nothing to do; this chunk was
-		 * already marked as closed.
-		 */
-		if (size != 0)
-		{
-			elog(LOG, "size already set %zu", size);
-			UnlockReleaseBuffer(buffer);
-			if (BufferIsValid(buffer2))
-				UnlockReleaseBuffer(buffer2);
+		if (chunk_header.size > 0)
 			continue;
-		}
 
 		/* Compute the missing chunk size. */
-		size = insert - UndoRecPtrGetOffset(chunk_start_urp);
+		Assert(insert > UndoRecPtrGetOffset(chunk_header_location));
+		chunk_size = insert - UndoRecPtrGetOffset(chunk_header_location);
 
-		/* Mark this chunk as closed. */
+		/*
+		 * In order to log it, we need to get our hands on the location of the
+		 * first chunk in this URS, and the type-specific header that follows
+		 * its header.  Walk back to the start of the chain, if we aren't
+		 * already there.
+		 *
+		 * XXX Be smarter about not releasing and reacquiring the buffers?
+		 */
+		begin = chunk_header_location;
+		end = chunk_header_location + chunk_size;
+		while (chunk_header.previous_chunk != InvalidUndoRecPtr)
+		{
+			begin = chunk_header.previous_chunk;
+			/* XXX think harder about this case --- just skip it? */
+			if (UndoRecPtrIsDiscarded(begin))
+				elog(PANIC, "found partially discarded unclosed undo record set");
+			read_undo_header((void *) &chunk_header, SizeOfUndoRecordSetChunkHeader,
+							 begin,
+							 buffers, lengthof(buffers));
+			release_buffers(buffers, lengthof(buffers));
+		}
+		type = chunk_header.type;
+		type_header_size = get_type_header_size(type);
+		type_header = palloc(type_header_size);
+		read_undo_header(type_header, type_header_size,
+						 UndoRecPtrPlusUsableBytes(begin, SizeOfUndoRecordSetChunkHeader),
+						 buffers, lengthof(buffers));
+		release_buffers(buffers, lengthof(buffers));
+
+		/* Prepare to write the final chunk's missing size. */
+		read_undo_header((void *) &chunk_header, SizeOfUndoRecordSetChunkHeader,
+						 chunk_header_location,
+						 buffers, lengthof(buffers));
+		page_offset = chunk_header_location % BLCKSZ;
+		bytes_on_first_page = Min(BLCKSZ - page_offset, sizeof(chunk_size));
+
+		/* Write the final chunk's missing size and log it. */
 		START_CRIT_SECTION();
 		XLogBeginInsert();
-		UndoPageOverwrite(BufferGetPage(buffer),
+		UndoPageOverwrite(BufferGetPage(buffers[0]),
 						  page_offset,
 						  0,
-						  sizeof(size),
-						  (char *) &size);
-		MarkBufferDirty(buffer);
-		XLogRegisterBuffer(0, buffer, REGBUF_KEEP_DATA);
-		bufdata.flags = URS_XLOG_CLOSE_CHUNK;
-		bufdata.chunk_size_location = chunk_start_urp;
-		bufdata.chunk_size = size;
-		EncodeUndoRecordSetXLogBufData(&bufdata, 0);
-		if (buffer2 != InvalidBuffer)
+						  sizeof(chunk_size),
+						  (char *) &chunk_size);
+		MarkBufferDirty(buffers[0]);
+		XLogRegisterBuffer(0, buffers[0], REGBUF_KEEP_DATA);
+		/* We're closing a chunk and a URS. */
+		bufdata.flags = URS_XLOG_CLOSE_CHUNK | URS_XLOG_CLOSE;
+		bufdata.chunk_size_page_offset = page_offset;
+		bufdata.chunk_size = chunk_size;
+		if (begin != chunk_header_location)
 		{
-			UndoPageOverwrite(BufferGetPage(buffer2),
+			/*
+			 * We only waste space on first_chunk_header_location if it's not
+			 * derivable from chunk_size_page_offset.  This is needed so that
+			 * we can call report_closed_urs() in recovery.
+			 */
+			bufdata.flags |= URS_XLOG_CLOSE_MULTI_CHUNK;
+			bufdata.first_chunk_header_location = begin;
+		}
+		/*
+		 * We log a copy of the type-specific header to pass to
+		 * report_closed_urs() in recovery, because it can't safely read it
+		 * from the URS's first chunk header.
+		 */
+		bufdata.urs_type = type;
+		bufdata.type_header = type_header;
+		bufdata.type_header_size = type_header_size;
+		EncodeUndoRecordSetXLogBufData(&bufdata, 0);
+		if (bytes_on_first_page < sizeof(chunk_size))
+		{
+			UndoPageOverwrite(BufferGetPage(buffers[1]),
 							  SizeOfUndoPageHeaderData,
 							  bytes_on_first_page,
-							  sizeof(size),
-							  (char *) &size);
-			MarkBufferDirty(buffer2);
-			XLogRegisterBuffer(1, buffer2, REGBUF_KEEP_DATA);
+							  sizeof(chunk_size),
+							  (char *) &chunk_size);
+			MarkBufferDirty(buffers[1]);
+			XLogRegisterBuffer(1, buffers[1], REGBUF_KEEP_DATA);
 		}
 		XLogRegisterData(dummy, 24); /* TODO remove me */
-		lsn = XLogInsert(RM_XLOG_ID, XLOG_NOOP);
-		PageSetLSN(BufferGetPage(buffer), lsn);
-		if (buffer2 != InvalidBuffer)
-			PageSetLSN(BufferGetPage(buffer2), lsn);
+		lsn = XLogInsert(RM_XLOG_ID, XLOG_NOOP); /* new record id? */
+		PageSetLSN(BufferGetPage(buffers[0]), lsn);
+		if (buffers[1] != InvalidBuffer)
+			PageSetLSN(BufferGetPage(buffers[1]), lsn);
 		END_CRIT_SECTION();
 
-		UnlockReleaseBuffer(buffer);
-		if (buffer2 != InvalidBuffer)
-			UnlockReleaseBuffer(buffer2);
+		release_buffers(buffers, lengthof(buffers));
 
 		/* Tell the URS type handler that we have closed its URS. */
-		report_closed(chunk_start_urp, MakeUndoRecPtr(logno, insert));
+		report_closed_urs(chunk_header.type, begin, end, type_header);
+
+		pfree(type_header);
 	}
 }
 

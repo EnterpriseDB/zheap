@@ -55,23 +55,24 @@ DecodeUndoRecordSetXLogBufData(UndoRecordSetXLogBufData *out,
 	} while (0)
 
 	DESERIALIZE_FIXED(&out->flags);
-	if ((out->flags & URS_XLOG_CREATE) ||
-		(out->flags & URS_XLOG_ADD_PAGE))
-		DESERIALIZE_FIXED(&out->chunk_type);
-	if (out->flags & URS_XLOG_CREATE)
+	if (out->flags & URS_XLOG_HAS_TYPE_MASK)
+		DESERIALIZE_FIXED(&out->urs_type);
+	if (out->flags & URS_XLOG_HAS_TYPE_HEADER_MASK)
 	{
 		DESERIALIZE_FIXED(&out->type_header_size);
 		DESERIALIZE_PTR(&out->type_header, out->type_header_size);
 	}
 	if (out->flags & URS_XLOG_ADD_CHUNK)
-		DESERIALIZE_FIXED(&out->previous_chunk);
+		DESERIALIZE_FIXED(&out->previous_chunk_header_location);
 	if (out->flags & URS_XLOG_CLOSE_CHUNK)
 	{
-		DESERIALIZE_FIXED(&out->chunk_size_location);
+		DESERIALIZE_FIXED(&out->chunk_size_page_offset);
 		DESERIALIZE_FIXED(&out->chunk_size);
 	}
-	if (out->flags & URS_XLOG_INSERTION)
-		DESERIALIZE_FIXED(&out->insertion_point);
+	if (out->flags & URS_XLOG_CLOSE_MULTI_CHUNK)
+		DESERIALIZE_FIXED(&out->first_chunk_header_location);
+	if (out->flags & URS_XLOG_INSERT)
+		DESERIALIZE_FIXED(&out->insert_page_offset);
 	if (out->flags & URS_XLOG_ADD_PAGE)
 		DESERIALIZE_FIXED(&out->chunk_header_location);
 
@@ -97,23 +98,24 @@ EncodeUndoRecordSetXLogBufData(const UndoRecordSetXLogBufData *in,
 	SERIALIZE((src), sizeof(*(src)))
 
 	SERIALIZE_FIXED(&in->flags);
-	if ((in->flags & URS_XLOG_CREATE) ||
-		(in->flags & URS_XLOG_ADD_PAGE))
-		SERIALIZE_FIXED(&in->chunk_type);
-	if (in->flags & URS_XLOG_CREATE)
+	if (in->flags & URS_XLOG_HAS_TYPE_MASK)
+		SERIALIZE_FIXED(&in->urs_type);
+	if (in->flags & URS_XLOG_HAS_TYPE_HEADER_MASK)
 	{
 		SERIALIZE_FIXED(&in->type_header_size);
 		SERIALIZE(in->type_header, in->type_header_size);
 	}
 	if (in->flags & URS_XLOG_ADD_CHUNK)
-		SERIALIZE_FIXED(&in->previous_chunk);
+		SERIALIZE_FIXED(&in->previous_chunk_header_location);
 	if (in->flags & URS_XLOG_CLOSE_CHUNK)
 	{
-		SERIALIZE_FIXED(&in->chunk_size_location);
+		SERIALIZE_FIXED(&in->chunk_size_page_offset);
 		SERIALIZE_FIXED(&in->chunk_size);
 	}
-	if (in->flags & URS_XLOG_INSERTION)
-		SERIALIZE_FIXED(&in->insertion_point);
+	if (in->flags & URS_XLOG_CLOSE_MULTI_CHUNK)
+		SERIALIZE_FIXED(&in->first_chunk_header_location);
+	if (in->flags & URS_XLOG_INSERT)
+		SERIALIZE_FIXED(&in->insert_page_offset);
 	if (in->flags & URS_XLOG_ADD_PAGE)
 		SERIALIZE_FIXED(&in->chunk_header_location);
 }

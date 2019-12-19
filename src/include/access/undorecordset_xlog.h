@@ -26,11 +26,20 @@
  * URS chunks.
  */
 
-#define URS_XLOG_CREATE			0x01
-#define URS_XLOG_ADD_CHUNK		0x02
-#define URS_XLOG_CLOSE_CHUNK	0x04
-#define URS_XLOG_INSERTION		0x08
-#define URS_XLOG_ADD_PAGE	  	0x10
+#define URS_XLOG_CREATE				0x01
+#define URS_XLOG_ADD_CHUNK			0x02
+#define URS_XLOG_CLOSE_CHUNK		0x04
+#define URS_XLOG_CLOSE				0x08
+#define URS_XLOG_CLOSE_MULTI_CHUNK	0x10
+#define URS_XLOG_INSERT				0x20
+#define URS_XLOG_ADD_PAGE			0x40
+
+#define URS_XLOG_HAS_TYPE_MASK									\
+	(URS_XLOG_CREATE | URS_XLOG_ADD_PAGE | URS_XLOG_ADD_CHUNK | \
+	 URS_XLOG_CLOSE)
+
+#define URS_XLOG_HAS_TYPE_HEADER_MASK									\
+	(URS_XLOG_CREATE | URS_XLOG_CLOSE)
 
 /*
  * A lightly decoded representation of the data associated with an undo
@@ -41,44 +50,61 @@ typedef struct UndoRecordSetXLogBufData
 	uint8		flags;			/* Flags indicating which members are set. */
 
 	/*
-	 * If URS_XLOG_CREATE is set, then the following members point to an
-	 * unaligned type-specific header that should be inserted into the
-	 * initial chunk.  Note: URS_ADD_PAGE also sets chunk_type.
+	 * If any of the the flags in URS_XLOG_HAS_TYPE_MASK is set, then the URS
+	 * type is recorded.
 	 */
-	UndoRecordSetType chunk_type;
+	UndoRecordSetType urs_type;
+
+	/*
+	 * If any of the flags in URS_XLOG_HAS_TYPE_HEADER_MASK is set, then the
+	 * following members point to the type-specific header.  When a new URS is
+	 * created, this is used to log the type-specific header.  When a URS is
+	 * closed, we log another copy of it, just so that it can be provided to
+	 * the owning module's callback.  In practice, this is for the benefit of
+	 * xactundo.c, which wants to know the transaction Id (we could also
+	 * extract that from the containing WAL record, but when replaying records
+	 * created by CloseDanglingUndoRecordSets() it wouldn't be available).
+	 */
 	char	   *type_header;
 	size_t		type_header_size;
 
 	/*
 	 * If URS_XLOG_ADD_CHUNK is set, then a new chunk is being created for an
-	 * existing undo record set.  The new chunk will point back to the
-	 * previous chunk.  The chunk header begins on this page, but may spill
-	 * over onto a following page.
+	 * existing undo record set.  The new chunk will have a header that points
+	 * back to the previous chunk.  The chunk header begins on this page, but
+	 * may spill over onto a following page.
 	 */
-	UndoRecPtr	previous_chunk;
+	UndoRecPtr	previous_chunk_header_location;
 
 	/*
-	 * If URS_XLOG_CLOSE_CHUNK is set, then the following members contain the
-	 * offset of the chunk size within the page, and the chunk size that
-	 * should be written there.  The location begins on this page, but may
-	 * spill over to the following page.
+	 * If URS_XLOG_CLOSE_CHUNK is set, then a chunk is being closed.  The
+	 * following members contain the offset of the chunk size within the page,
+	 * and the chunk size that should be written there.  The location begins
+	 * on this page, but may spill over to the following page.
 	 */
-	uint16		chunk_size_location;
+	uint16		chunk_size_page_offset;
 	size_t		chunk_size;
 
 	/*
-	 * If URS_XLOG_INSERTION is set, then the following member contains the
-	 * offset within the page of an undo record insertion.  The actual data is
-	 * not captured in the WAL.  We also need to know the start of the chunk,
-	 * for the page header.
+	 * If URS_XLOG_CLOSE_MULTI_CHUNK is set, then we are closing a multi-chunk
+	 * URS, and must include the location of the first chunk header.
+	 * Otherwise, it's implied by chunk_size_page_offset.
 	 */
-	uint16		insertion_point;
+	UndoRecPtr	first_chunk_header_location;
+
+	/*
+	 * If URS_XLOG_INSERT is set, then the following member contains the
+	 * offset within the page of an undo record insertion.  The actual data is
+	 * not captured in the WAL (it's the job of the AM that owns the WAL
+	 * record to supply the same data at redo time).  We also need to know the
+	 * start of the chunk, for the page header.
+	 */
+	uint16		insert_page_offset;
 
 	/*
 	 * If URS_XLOG_ADD_PAGE is set, then we're inserting the first data on a
 	 * page and we need to supply the location of the chunk header and the URS
-	 * type, to go in the page header.  Note: chunk_type is used for this and
-	 * also URS_XLOG_CREATE.
+	 * type, to go in the page header.
 	 */
 	UndoRecPtr	chunk_header_location;
 } UndoRecordSetXLogBufData;
