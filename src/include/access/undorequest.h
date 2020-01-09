@@ -79,7 +79,10 @@ extern UndoRequest *FindUndoRequestByFXID(UndoRequestManager *urm,
 										  FullTransactionId fxid);
 
 /* Introspection. */
-unsigned SnapshotActiveUndoRequests(UndoRequestManager *, UndoRequestData **);
+extern unsigned SnapshotActiveUndoRequests(UndoRequestManager *,
+										   UndoRequestData **);
+extern bool UndoRequestExists(UndoRequestManager *urm, FullTransactionId fxid,
+				  bool *is_failed_request);
 extern TupleDesc MakeUndoRequestDataTupleDesc(void);
 extern HeapTuple MakeUndoRequestDataTuple(TupleDesc, UndoRequestData *,
 										  unsigned index);

@@ -1072,6 +1072,36 @@ pg_xact_undo_status(PG_FUNCTION_ARGS)
 }
 
 /*
+ * Wait for an undo request for the given transaction no longer exists, or
+ * until it is observed to have failed. If the former occurs, return true;
+ * otherwise return false.
+ *
+ * This is mostly intended as an aid to writing regression tests.
+ */
+Datum
+pg_xact_undo_wait(PG_FUNCTION_ARGS)
+{
+	int64	txid = PG_GETARG_INT64(0);
+	FullTransactionId	fxid;
+	bool	exists;
+	bool	is_failed_request;
+
+	fxid.value = (uint64) txid;
+
+	while (1)
+	{
+		CHECK_FOR_INTERRUPTS();
+
+		exists = UndoRequestExists(XactUndo.manager, fxid, &is_failed_request);
+		if (is_failed_request)
+			PG_RETURN_BOOL(false);
+		if (!exists)
+			PG_RETURN_BOOL(true);
+		pg_usleep(10000L);
+	}
+}
+
+/*
  * Get undo persistence level as a C string.
  */
 static const char *

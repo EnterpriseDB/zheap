@@ -1144,6 +1144,46 @@ SnapshotActiveUndoRequests(UndoRequestManager *urm, UndoRequestData **darrayp)
 }
 
 /*
+ * Check whether an UndoRequest exists for a particular FXID.
+ *
+ * If so, return true; if not, return false.
+ *
+ * *is_failed_request will be set to false, unless the FXID both exists
+ * and undo apply has failed at least once.
+ *
+ * Note that there's nothing to keep the answer from changing before the
+ * caller does anything with it.
+ */
+bool
+UndoRequestExists(UndoRequestManager *urm, FullTransactionId fxid,
+				  bool *is_failed_request)
+{
+	dlist_iter	iter;
+	bool		result = false;
+
+	*is_failed_request = false;
+
+	LWLockAcquire(urm->lock, LW_EXCLUSIVE);
+	dlist_foreach(iter, &urm->used_requests)
+	{
+		UndoRequest *req = dlist_container(UndoRequest, link, iter.cur);
+
+		if (FullTransactionIdEquals(req->d.fxid, fxid))
+		{
+			result = true;
+			if ((req->d.status == UNDO_REQUEST_WAITING ||
+				req->d.status == UNDO_REQUEST_IN_PROGRESS) &&
+				req->retry_time != DT_NOBEGIN)
+				*is_failed_request = true;
+			break;
+		}
+	}
+	LWLockRelease(urm->lock);
+
+	return result;
+}
+
+/*
  * Get oldest registered FXID, whether LISTED or UNLISTED (as defined above).
  *
  * We cache the result of this computation so as to avoid repeating it too
