@@ -446,6 +446,7 @@ create_new_chunk(UndoRecordSet *urs)
 	urs->recent_end = 0;
 	urs->slot = UndoLogGetForPersistence(urs->persistence);
 	urs->chunks[urs->nchunks].slot = urs->slot;
+	urs->chunks[urs->nchunks].chunk_header_written = false;
 	urs->chunks[urs->nchunks].chunk_header_offset = urs->slot->meta.insert;
 	urs->chunks[urs->nchunks].chunk_header_buffer_index[0] = -1;
 	urs->chunks[urs->nchunks].chunk_header_buffer_index[1] = -1;
