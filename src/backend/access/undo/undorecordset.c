@@ -860,7 +860,10 @@ UndoInsert(UndoRecordSet *urs,
 	 */
 	if (urs->nchunks > 1 &&
 		urs->chunks[urs->nchunks - 2].chunk_header_buffer_index[0] != -1)
+	{
 		UndoMarkChunkClosed(urs, &urs->chunks[urs->nchunks - 2], false);
+		urs->chunks[urs->nchunks - 2].chunk_header_buffer_index[0] = -1;
+	}
 
 	/* We don't need another chunk header unless we switch undo logs. */
 	urs->need_chunk_header = false;
