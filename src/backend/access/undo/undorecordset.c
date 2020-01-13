@@ -561,11 +561,14 @@ UndoPrepareToInsert(UndoRecordSet *urs, size_t record_size)
 			/*
 			 * The active chunk is full.  We will prepare to mark it closed,
 			 * if we had already written a chunk header.  It's possible that
-			 * we haven't written anything in there at all, in which case
-			 * there is nothing to update.
+			 * we haven't written anything in there at all, in which case we
+			 * just mark the chunk as unused again (otherwise we'd later try
+			 * and reference it on disk).
 			 */
 			if (urs->chunks[urs->nchunks - 1].chunk_header_written)
 				chunk_number_to_close = urs->nchunks - 1;
+			else
+				urs->nchunks--;
 		}
 
 		/* We need to create a new chunk in a new undo log. */
