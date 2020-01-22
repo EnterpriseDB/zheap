@@ -309,16 +309,13 @@ UndoMarkPageClosed(UndoRecordSet *urs, UndoRecordSetChunk *chunk, int chbidx,
 	Buffer	buffer = urs->buffers[index].buffer;
 	int		bytes_on_this_page;
 
-	/* Compute the number of bytes on this page. */
-	bytes_on_this_page = Min(BLCKSZ - page_offset, sizeof(size) - data_offset);
-
 	/* Update the page. */
-	UndoPageOverwrite(BufferGetPage(buffer),
-					  page_offset,
-					  data_offset,
-					  bytes_on_this_page,
-					  (char *) &size);
-
+	bytes_on_this_page =
+		UndoPageOverwrite(BufferGetPage(buffer),
+						  page_offset,
+						  data_offset,
+						  sizeof(size),
+						  (char *) &size);
 	MarkBufferDirty(buffer);
 
 	return bytes_on_this_page;

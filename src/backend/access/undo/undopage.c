@@ -252,7 +252,8 @@ UndoPageSkipRecord(int page_offset, int data_offset, size_t data_size)
  *
  * page_offset is the byte-offset within the page to which data should be
  * written; header_offset is the byte-offset within the data that should
- * begin at that location.
+ * begin at that location; data_size is the total size of the data, including
+ * data on the previous page.
  *
  * The return value is the number of bytes written into the page.
  */
@@ -261,14 +262,17 @@ UndoPageOverwrite(Page page, int page_offset, int data_offset, Size data_size,
 				  char *data)
 {
 	UndoPageHeader uph = (UndoPageHeader) page;
-	Size		data_bytes;
+	int		this_page_bytes;
+
+	/* Copy as much data as we have, or as much as will fit. */
+	this_page_bytes = Min(BLCKSZ - page_offset, data_size - data_offset);
 
 	/* Must not overwrite the page header. */
 	Assert(page_offset >= SizeOfUndoPageHeaderData);
 
 	/* Must not overrun the end of the page. */
 	Assert(page_offset < BLCKSZ);
-	Assert(page_offset + data_size - data_offset <= BLCKSZ);
+	Assert(page_offset + this_page_bytes <= BLCKSZ);
 
 	/* Must not overrun the end of the replacement data, either. */
 	Assert(data_offset < data_size);
@@ -277,11 +281,9 @@ UndoPageOverwrite(Page page, int page_offset, int data_offset, Size data_size,
 	Assert(data_offset == 0 || page_offset == SizeOfUndoPageHeaderData);
 
 	/* Shouldn't be updating data more data than we've inserted. */
-	Assert(page_offset + data_size - data_offset <= uph->ud_insertion_point);
+	Assert(page_offset + this_page_bytes <= uph->ud_insertion_point);
 
-	/* Copy as much data as we have, or as much as will fit. */
-	data_bytes = Min(BLCKSZ - page_offset, data_size - data_offset);
-	memcpy(page + page_offset, data + data_offset, data_bytes);
+	memcpy(page + page_offset, data + data_offset, this_page_bytes);
 
-	return data_bytes;
+	return this_page_bytes;
 }
