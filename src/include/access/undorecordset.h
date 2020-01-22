@@ -40,7 +40,7 @@ typedef struct UndoRecordSetChunkHeader
 } UndoRecordSetChunkHeader;
 
 #define SizeOfUndoRecordSetChunkHeader \
-	offsetof(UndoRecordSetChunkHeader, type) + sizeof(uint8)
+	(offsetof(UndoRecordSetChunkHeader, type) + sizeof(uint8))
 
 extern UndoRecordSet *UndoCreate(UndoRecordSetType type, char presistence,
 								 int nestingLevel, Size type_header_size,
