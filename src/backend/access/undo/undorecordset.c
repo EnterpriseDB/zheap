@@ -1042,7 +1042,10 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
 				/* Do we need to go around again, on the next page? */
 				if (header_offset < SizeOfUndoRecordSetChunkHeader + type_header_size)
+				{
+					nbuffers++;
 					continue;
+				}
 
 				/* We have finished writing the header. */
 				header_more = false;
@@ -1068,7 +1071,10 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
 				/* Do we need to go around again, on the next page? */
 				if (record_offset < record_size)
+				{
+					nbuffers++;
 					continue;
+				}
 
 				/* We have finished writing the record.*/
 				record_more = false;
@@ -1115,6 +1121,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				if (header_offset < SizeOfUndoRecordSetChunkHeader + type_header_size)
 				{
 					header_more = true;
+					nbuffers++;
 					continue;
 				}
 			}
@@ -1140,6 +1147,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				if (header_offset < SizeOfUndoRecordSetChunkHeader)
 				{
 					header_more = true;
+					nbuffers++;
 					continue;
 				}
 			}
@@ -1160,6 +1168,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				if (record_offset < record_size)
 				{
 					record_more = true;
+					nbuffers++;
 					continue;
 				}
 				record_data = NULL;
