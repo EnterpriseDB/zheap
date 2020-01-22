@@ -199,8 +199,8 @@ UndoPageInsertRecord(Page page, int page_offset, int data_offset,
 	/* Must not overwrite the page header. */
 	Assert(page_offset >= SizeOfUndoPageHeaderData);
 
-	/* Must not overrun the end of the page. */
-	Assert(page_offset < BLCKSZ);
+	/* Must not overrun the end of the page (but can be at end). */
+	Assert(page_offset <= BLCKSZ);
 
 	/* Must not overrun the end of the new data, either. */
 	Assert(data_offset < data_size);
