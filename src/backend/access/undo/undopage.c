@@ -59,7 +59,7 @@ UndoPageInsertHeader(Page page, int page_offset, int header_offset,
 	UndoPageHeader uph = (UndoPageHeader) page;
 	Size	total_bytes = SizeOfUndoRecordSetChunkHeader + type_header_size;
 	int		data_bytes = 0;
-	int		type_header_offset;
+	int		local_header_offset = header_offset;
 
 	/* Must not overwrite the page header. */
 	Assert(page_offset >= SizeOfUndoPageHeaderData);
@@ -82,28 +82,39 @@ UndoPageInsertHeader(Page page, int page_offset, int header_offset,
 	 * already written the whole chunk header, just account for its length
 	 * in deciding from where to start writing the type header.
 	 */
-	if (header_offset < SizeOfUndoRecordSetChunkHeader)
+	if (local_header_offset < SizeOfUndoRecordSetChunkHeader)
 	{
 		Size	chunk_header_bytes;
 
-		chunk_header_bytes = SizeOfUndoRecordSetChunkHeader - header_offset;
-		memcpy(page + page_offset, header, chunk_header_bytes);
+		chunk_header_bytes =
+			Min(BLCKSZ - page_offset,
+				SizeOfUndoRecordSetChunkHeader - local_header_offset);
+
+		Assert(page_offset + chunk_header_bytes <= 8192);
+		memcpy(page + page_offset,
+			   header + local_header_offset,
+			   chunk_header_bytes);
 		data_bytes += chunk_header_bytes;
-		type_header_offset = 0;
+
+		local_header_offset += chunk_header_bytes;
 	}
-	else
-		type_header_offset = header_offset - SizeOfUndoRecordSetChunkHeader;
 
 	/*
 	 * If we've still got room, and if there's a type header to write, write
 	 * as much of it as will fit.
 	 */
-	if (page_offset + data_bytes < BLCKSZ && type_header_size > 0)
+	if (type_header_size > 0 &&
+		local_header_offset >= SizeOfUndoRecordSetChunkHeader)
 	{
 		Size	type_header_bytes;
+		int		type_header_offset;
+
+		type_header_offset =
+			local_header_offset - SizeOfUndoRecordSetChunkHeader;
+		Assert(type_header_offset >= 0);
 
 		type_header_bytes =
-			Min(BLCKSZ - page_offset + data_bytes,
+			Min(BLCKSZ - (page_offset + data_bytes),
 				type_header_size - type_header_offset);
 		memcpy(page + page_offset + data_bytes,
 			   type_header + type_header_offset,
@@ -129,6 +140,7 @@ UndoPageInsertHeader(Page page, int page_offset, int header_offset,
 	if (header_offset > 0)
 	{
 		Assert(chunk_start != InvalidUndoRecPtr);
+		Assert(uph->ud_continue_chunk == InvalidUndoRecPtr);
 		uph->ud_continue_chunk = chunk_start;
 		uph->ud_continue_chunk_type = header->type;
 	}
