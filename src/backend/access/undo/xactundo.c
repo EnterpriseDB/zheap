@@ -600,8 +600,8 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 		 * actions. First, try to reschedule any undo request for later
 		 * background processing, so that we don't lose track of it.
 		 */
-		if (XactUndo.my_request != NULL)
-			RescheduleUndoRequest(XactUndo.manager, XactUndo.my_request);
+		Assert(XactUndo.my_request != NULL);
+		RescheduleUndoRequest(XactUndo.manager, XactUndo.my_request);
 
 		/*
 		 * XXX. If we have any temporary undo, we're in big trouble, because
@@ -613,6 +613,7 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 		if (has_temporary_undo)
 			 /* experience_intense_sadness */ ;
 
+		ResetXactUndo();
 		return;
 	}
 
