@@ -112,24 +112,24 @@ undoxacttest_redo_mod(XLogReaderState *record)
 
 		*pagevalue = xlrec->newval;
 
-		/* reconstruct undo record */
-		{
-			UndoNode undo_node;
-			xu_undoxactest_mod undo_rec;
-
-			undo_rec.mod = xlrec->debug_mod;
-			undo_node.data = (char *) &undo_rec;
-			undo_node.length = sizeof(undo_rec);
-
-			UndoXactReplay(record, &undo_node);
-		}
-
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buf);
 	}
 
 	if (BufferIsValid(buf))
 		UnlockReleaseBuffer(buf);
+
+	/* reconstruct undo record */
+	{
+		UndoNode undo_node;
+		xu_undoxactest_mod undo_rec;
+
+		undo_rec.mod = xlrec->debug_mod;
+		undo_node.data = (char *) &undo_rec;
+		undo_node.length = sizeof(undo_rec);
+
+		UndoXactReplay(record, &undo_node);
+	}
 }
 
 void
