@@ -146,9 +146,6 @@ struct UndoRecordSet
 
 #define URSNeedsWAL(urs) ((urs)->persistence == RELPERSISTENCE_PERMANENT)
 
-/* TODO: should perhaps make type a char and not include the padding */
-#define UndoRecordSetChunkHeaderSize sizeof(UndoRecordSetChunkHeader)
-
 static inline void reserve_buffer_array(UndoRecordSet *urs, size_t capacity);
 
 /* Every UndoRecordSet created and not yet destroyed in this backend. */
@@ -543,9 +540,9 @@ UndoPrepareToInsert(UndoRecordSet *urs, size_t record_size)
 		if (!urs->need_chunk_header)
 			header_size = 0;
 		else if (!urs->need_type_header)
-			header_size = UndoRecordSetChunkHeaderSize;
+			header_size = SizeOfUndoRecordSetChunkHeader;
 		else
-			header_size = UndoRecordSetChunkHeaderSize + urs->type_header_size;
+			header_size = SizeOfUndoRecordSetChunkHeader + urs->type_header_size;
 		total_size = record_size + header_size;
 
 		/* Try to use the active undo log, if there is one. */

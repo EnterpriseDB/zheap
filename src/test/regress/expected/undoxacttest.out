@@ -93,7 +93,7 @@ ERROR:  you wanted me to fail
 CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
 -- implicit xact: two undo generating statements, first succeeds, second fails
 SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 11)\;SELECT CASE WHEN undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 12) IS NOT NULL THEN raise_error() END;
-WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 15
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 22
 ERROR:  you wanted me to fail
 CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
 -- explicit xact: two undo generating statements, both succeed, followed by COMMIT
@@ -126,7 +126,7 @@ SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 14);
 (1 row)
 
 ROLLBACK;
-WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 15
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 22
 -- explicit xact: two undo generating statements, both succeed, followed by errror, followed by COMMIT
 BEGIN;
 SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 15);
@@ -142,7 +142,7 @@ SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 16);
 (1 row)
 
 SELECT raise_error();
-WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 15
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 22
 ERROR:  you wanted me to fail
 CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
 COMMIT;
@@ -161,7 +161,7 @@ SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 18);
 (1 row)
 
 SELECT raise_error();
-WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 15
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 22
 ERROR:  you wanted me to fail
 CONTEXT:  PL/pgSQL function raise_error() line 3 at RAISE
 ROLLBACK;
@@ -214,7 +214,7 @@ SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 24);
 
 ROLLBACK;
 WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 11
-WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 26
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 33
 -- explicit xact: undo, savepoint, undo, error, rollback to savepoint, undo; commit;
 BEGIN;
 SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 25);
@@ -270,7 +270,7 @@ SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 27);
 
 ROLLBACK;
 WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 11
-WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 26
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 33
 -- explicit xact: undo, savepoint, undo, commit;
 BEGIN;
 SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 29);
@@ -294,7 +294,7 @@ SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 30);
 
 ROLLBACK;
 WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 22
-WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 26
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 33
 -- explicit xact: undo, savepoint, undo, rollback;
 BEGIN;
 SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 31);
@@ -318,7 +318,7 @@ SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 33);
 
 ROLLBACK;
 WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 22
-WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 26
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 33
 -- explicit xact: undo, savepoint, undo, rollback;
 BEGIN;
 SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 31);
@@ -342,7 +342,7 @@ SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 33);
 
 ROLLBACK;
 WARNING:  executing undo: persistence: permanent, nestingLevel: 2, bytes: 22
-WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 26
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 33
 -- implicit xact: create a fair bit of undo
 SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, g.i) FROM generate_series(1, 1000) g(i);
  undoxacttest_fetch_and_inc 
@@ -2357,7 +2357,7 @@ SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, g.i) FROM gener
 (1000 rows)
 
 ROLLBACK;
-WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 11025
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 11032
 -- explicit xact: undo record set spanning logs, ROLLBACK
 -- FIXME: test with commit, once hack below not needed
 -- FIXME: this currently crashes
