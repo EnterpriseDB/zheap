@@ -20,9 +20,11 @@
 #include <unistd.h>
 
 #include "access/timeline.h"
+#include "access/undopage.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "access/xlogutils.h"
+#include "catalog/database_internal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/smgr.h"
@@ -573,7 +575,9 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 		 * there should be no other backends that could modify the buffer at
 		 * the same time.
 		 */
-		if (PageIsNew(page))
+		// AFIXME: this needs to be abstracted,.
+		if ((smgr->smgr_rnode.node.dbNode != UndoDbOid && PageIsNew(page)) ||
+			(smgr->smgr_rnode.node.dbNode ==  UndoDbOid && (((UndoPageHeader)page)->ud_insertion_point == 0)))
 		{
 			ReleaseBuffer(buffer);
 			log_invalid_page(rnode, forknum, blkno, true);
