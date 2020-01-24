@@ -1057,6 +1057,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 														record_offset,
 														record_size);
 				else
+				{
 					record_offset += UndoPageInsertRecord(page,
 														  SizeOfUndoPageHeaderData,
 														  record_offset,
@@ -1064,6 +1065,9 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 														  record_data,
 														  bufdata->chunk_header_location,
 														  bufdata->urs_type);
+					MarkBufferDirty(buffers[nbuffers].buffer);
+				}
+
 				/* The shared memory insertion point must be after this fragment. */
 				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
 				/* Do we need to go around again, on the next page? */
