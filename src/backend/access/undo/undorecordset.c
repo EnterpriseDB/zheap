@@ -1218,6 +1218,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				if (chunk_size_offset < sizeof(chunk_size))
 				{
 					chunk_size_more = true;
+					nbuffers++;
 					continue;
 				}
 			}
