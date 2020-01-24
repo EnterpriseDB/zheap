@@ -936,7 +936,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 			ReadBufferMode rbm;
 			UndoLogOffset	past_this_block;
 			bool		skip = false;
-			UndoRecordSetXLogBufData *bufdata = &buffers[block_id].bufdata;
+			UndoRecordSetXLogBufData *bufdata = &buffers[nbuffers].bufdata;
 			Page		page;
 			UndoPageHeader uph;
 			UndoRecPtr chunk_start = InvalidUndoRecPtr;
