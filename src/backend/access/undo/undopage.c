@@ -92,7 +92,7 @@ UndoPageInsertHeader(Page page, int page_offset, int header_offset,
 
 		Assert(page_offset + chunk_header_bytes <= 8192);
 		memcpy(page + page_offset,
-			   header + local_header_offset,
+			   ((char *) header) + local_header_offset,
 			   chunk_header_bytes);
 		data_bytes += chunk_header_bytes;
 
@@ -117,7 +117,7 @@ UndoPageInsertHeader(Page page, int page_offset, int header_offset,
 			Min(BLCKSZ - (page_offset + data_bytes),
 				type_header_size - type_header_offset);
 		memcpy(page + page_offset + data_bytes,
-			   type_header + type_header_offset,
+			   ((char *) type_header) + type_header_offset,
 			   type_header_bytes);
 		data_bytes += type_header_bytes;
 	}
