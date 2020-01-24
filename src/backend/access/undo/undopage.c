@@ -299,3 +299,27 @@ UndoPageOverwrite(Page page, int page_offset, int data_offset, Size data_size,
 
 	return this_page_bytes;
 }
+
+int
+UndoPageSkipOverwrite(int page_offset, int data_offset, Size data_size)
+{
+	int		this_page_bytes;
+
+	/* Copy as much data as we have, or as much as will fit. */
+	this_page_bytes = Min(BLCKSZ - page_offset, data_size - data_offset);
+
+	/* Must not overwrite the page header. */
+	Assert(page_offset >= SizeOfUndoPageHeaderData);
+
+	/* Must not overrun the end of the page. */
+	Assert(page_offset < BLCKSZ);
+	Assert(page_offset + this_page_bytes <= BLCKSZ);
+
+	/* Must not overrun the end of the replacement data, either. */
+	Assert(data_offset < data_size);
+
+	/* Continuation data must start at beginning of page. */
+	Assert(data_offset == 0 || page_offset == SizeOfUndoPageHeaderData);
+
+	return this_page_bytes;
+}

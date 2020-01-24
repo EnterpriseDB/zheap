@@ -1007,12 +1007,22 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 			 */
 			if (chunk_size_more)
 			{
-				UndoPageOverwrite(page,
-								  SizeOfUndoPageHeaderData,
-								  chunk_size_offset,
-								  sizeof(chunk_size),
-								  (char *) &chunk_size);
-				MarkBufferDirty(buffers[nbuffers].buffer);
+				if (skip)
+				{
+					chunk_size_offset += UndoPageSkipOverwrite(SizeOfUndoPageHeaderData,
+															  chunk_size_offset,
+															  sizeof(chunk_size));
+				}
+				else
+				{
+					chunk_size_offset += UndoPageOverwrite(page,
+														   SizeOfUndoPageHeaderData,
+														   chunk_size_offset,
+														   sizeof(chunk_size),
+														   (char *) &chunk_size);
+					MarkBufferDirty(buffers[nbuffers].buffer);
+				}
+				Assert(chunk_size_offset == sizeof(chunk_size));
 				chunk_size_more = false;
 			}
 
@@ -1070,6 +1080,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 
 				/* The shared memory insertion point must be after this fragment. */
 				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
+
 				/* Do we need to go around again, on the next page? */
 				if (record_offset < record_size)
 				{
@@ -1105,19 +1116,29 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 			/* Check if we need to write a chunk header. */
 			if (bufdata->flags & URS_XLOG_CREATE)
 			{
-				chunk_header.size = 0;
-				chunk_header.previous_chunk = InvalidUndoRecPtr;
-				chunk_header.type = bufdata->urs_type;
+				if (skip)
+				{
+					header_offset += UndoPageSkipHeader(SizeOfUndoPageHeaderData,
+														header_offset,
+														type_header_size);
+				}
+				else
+				{
+					chunk_header.size = 0;
+					chunk_header.previous_chunk = InvalidUndoRecPtr;
+					chunk_header.type = bufdata->urs_type;
 
-				type_header = bufdata->type_header;
-				type_header_size = bufdata->type_header_size;
-				header_offset = UndoPageInsertHeader(page,
-													 uph->ud_insertion_point,
-													 0,
-													 &chunk_header,
-													 type_header_size,
-													 type_header,
-													 chunk_start);
+					type_header = bufdata->type_header;
+					type_header_size = bufdata->type_header_size;
+					header_offset = UndoPageInsertHeader(page,
+														 uph->ud_insertion_point,
+														 0,
+														 &chunk_header,
+														 type_header_size,
+														 type_header,
+														 chunk_start);
+				}
+
 				/* Do we need to go around again, on the next page? */
 				if (header_offset < SizeOfUndoRecordSetChunkHeader + type_header_size)
 				{
@@ -1133,18 +1154,28 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				/* Can only be creating one chunk per WAL record. */
 				Assert(!(bufdata->flags & URS_XLOG_CREATE));
 
-				chunk_header.size = 0;
-				chunk_header.previous_chunk = bufdata->previous_chunk_header_location;
-				chunk_header.type = bufdata->urs_type;
-				type_header = NULL;
-				type_header_size = 0;
-				header_offset = UndoPageInsertHeader(page,
-													 uph->ud_insertion_point,
-													 0,
-													 &chunk_header,
-													 0,
-													 NULL,
-													 chunk_start);
+				if (skip)
+				{
+					header_offset += UndoPageSkipHeader(SizeOfUndoPageHeaderData,
+														header_offset,
+														type_header_size);
+				}
+				else
+				{
+					chunk_header.size = 0;
+					chunk_header.previous_chunk = bufdata->previous_chunk_header_location;
+					chunk_header.type = bufdata->urs_type;
+					type_header = NULL;
+					type_header_size = 0;
+					header_offset = UndoPageInsertHeader(page,
+														 uph->ud_insertion_point,
+														 0,
+														 &chunk_header,
+														 0,
+														 NULL,
+														 chunk_start);
+				}
+
 				if (header_offset < SizeOfUndoRecordSetChunkHeader)
 				{
 					header_more = true;
@@ -1156,15 +1187,26 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 			/* Check if we need to insert the caller's record data. */
 			if (record_data)
 			{
-				record_offset = UndoPageInsertRecord(page,
-													 uph->ud_insertion_point,
-													 0,
-													 record_size,
-													 record_data,
-													 bufdata->chunk_header_location,
-													 bufdata->urs_type);
+				if (skip)
+				{
+					record_offset += UndoPageSkipRecord(SizeOfUndoPageHeaderData,
+														record_offset,
+														record_size);
+				}
+				else
+				{
+					record_offset = UndoPageInsertRecord(page,
+														 uph->ud_insertion_point,
+														 0,
+														 record_size,
+														 record_data,
+														 bufdata->chunk_header_location,
+														 bufdata->urs_type);
+				}
+
 				/* The shared memory insertion point must be after this fragment. */
 				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
+
 				/* Do we need to go around again, on the next page? */
 				if (record_offset < record_size)
 				{
@@ -1180,12 +1222,21 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				/* Update the chunk header size to mark it closed. */
 				chunk_size = bufdata->chunk_size;
 
-				chunk_size_offset =
-					UndoPageOverwrite(page,
-									  bufdata->chunk_size_page_offset,
-									  0,
-									  sizeof(bufdata->chunk_size),
-									  (char *) &chunk_size);
+				if (skip)
+				{
+					chunk_size_offset = UndoPageSkipOverwrite(SizeOfUndoPageHeaderData,
+															  chunk_size_offset,
+															  sizeof(chunk_size));
+				}
+				else
+				{
+					chunk_size_offset =
+						UndoPageOverwrite(page,
+										  bufdata->chunk_size_page_offset,
+										  0,
+										  sizeof(bufdata->chunk_size),
+										  (char *) &chunk_size);
+				}
 
 				/*
 				 * If we closed the whole URS, then tell the URS's creator
