@@ -1002,6 +1002,26 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				chunk_start = bufdata->chunk_header_location;
 
 			/*
+			 * If there is an insertion point recorded, it must be restored before
+			 * we redo (or skip) the insertion.
+			 */
+			if (bufdata->flags & URS_XLOG_INSERT)
+			{
+				if (!record_data)
+					elog(ERROR, "undo buf data contained an insert page offset, but no record was passed to UndoReplay()");
+				/* Update the insertion point on the page. */
+				if (!skip)
+					uph->ud_insertion_point = bufdata->insert_page_offset;
+				/*
+				 * Also update it in shared memory, though this isn't really
+				 * necessary as it'll be overwritten after we write data into
+				 * the page.
+				 */
+				slot->meta.insert =
+					BLCKSZ * block->blkno + bufdata->insert_page_offset;
+			}
+
+			/*
 			 * Are we still writing a chunk size that spilled into the next
 			 * page?
 			 */
@@ -1091,26 +1111,6 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				/* We have finished writing the record.*/
 				record_more = false;
 				record_data = NULL;
-			}
-
-			/*
-			 * If there is an insertion point recorded, it must be restored before
-			 * we redo (or skip) the insertion.
-			 */
-			if (bufdata->flags & URS_XLOG_INSERT)
-			{
-				if (!record_data)
-					elog(ERROR, "undo buf data contained an insert page offset, but no record was passed to UndoReplay()");
-				/* Update the insertion point on the page. */
-				if (!skip)
-					uph->ud_insertion_point = bufdata->insert_page_offset;
-				/*
-				 * Also update it in shared memory, though this isn't really
-				 * necessary as it'll be overwritten after we write data into
-				 * the page.
-				 */
-				slot->meta.insert =
-					BLCKSZ * block->blkno + bufdata->insert_page_offset;
 			}
 
 			/* Check if we need to write a chunk header. */
