@@ -882,7 +882,7 @@ report_closed_urs(UndoRecordSetType type, UndoRecPtr begin, UndoRecPtr end,
 	switch (type)
 	{
 	case URST_TRANSACTION:
-		UndoXactHandleClosedURS(begin, end, type_header);
+		XactUndoCloseRecordSet(begin, end, type_header);
 		break;
 	default:
 		elog(LOG, "XXX a URS has been closed, type %d, total range %zx -> %zx",

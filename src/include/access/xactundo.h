@@ -51,9 +51,9 @@ extern void SetXactUndoPageLSNs(XactUndoContext *ctx, XLogRecPtr lsn);
 extern void CleanupXactUndoInsertion(XactUndoContext *ctx);
 
 /* undo re-insertion during recovery */
-extern UndoRecPtr UndoXactReplay(XLogReaderState *xlog_record,
+extern UndoRecPtr XactUndoReplay(XLogReaderState *xlog_record,
 								 UndoNode *undo_node);
-extern void UndoXactHandleClosedURS(UndoRecPtr begin, UndoRecPtr end,
+extern void XactUndoCloseRecordSet(UndoRecPtr begin, UndoRecPtr end,
 									void *type_header);
 
 /* undo worker infrastructure */

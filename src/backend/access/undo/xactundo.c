@@ -351,7 +351,7 @@ CleanupXactUndoInsertion(XactUndoContext *ctx)
  * XXX: Should this live here? Or somewhere around the serialization code?
  */
 UndoRecPtr
-UndoXactReplay(XLogReaderState *xlog_record, UndoNode *undo_node)
+XactUndoReplay(XLogReaderState *xlog_record, UndoNode *undo_node)
 {
 	StringInfoData data;
 
@@ -368,12 +368,12 @@ UndoXactReplay(XLogReaderState *xlog_record, UndoNode *undo_node)
  * XXX: Write me
  */
 void
-UndoXactHandleClosedURS(UndoRecPtr begin, UndoRecPtr end, void *type_header)
+XactUndoCloseRecordSet(UndoRecPtr begin, UndoRecPtr end, void *type_header)
 {
 	FullTransactionId fxid;
 
 	memcpy(&fxid, type_header, sizeof(fxid));
-	elog(LOG, "XXX UndoXactHandleClosedURS(%zx -> %zx, fxid = " UINT64_FORMAT ")",
+	elog(LOG, "XXX XactUndoCloseRecordSet(%zx -> %zx, fxid = " UINT64_FORMAT ")",
 		 begin, end, U64FromFullTransactionId(fxid));
 }
 

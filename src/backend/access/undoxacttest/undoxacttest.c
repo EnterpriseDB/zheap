@@ -128,7 +128,7 @@ undoxacttest_redo_mod(XLogReaderState *record)
 		undo_node.data = (char *) &undo_rec;
 		undo_node.length = sizeof(undo_rec);
 
-		UndoXactReplay(record, &undo_node);
+		XactUndoReplay(record, &undo_node);
 	}
 }
 
