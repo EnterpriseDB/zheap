@@ -53,8 +53,9 @@ extern void CleanupXactUndoInsertion(XactUndoContext *ctx);
 /* undo re-insertion during recovery */
 extern UndoRecPtr XactUndoReplay(XLogReaderState *xlog_record,
 								 UndoNode *undo_node);
-extern void XactUndoCloseRecordSet(UndoRecPtr begin, UndoRecPtr end,
-									void *type_header);
+extern void XactUndoCloseRecordSet(void *type_header, UndoRecPtr begin,
+								   UndoRecPtr end,
+								   bool isCommit, bool isPrepare);
 
 /* undo worker infrastructure */
 extern long XactUndoWaitTime(TimestampTz now);

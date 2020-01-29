@@ -870,28 +870,6 @@ UndoInsert(UndoRecordSet *urs,
 }
 
 /*
- * In normal operation, URSs are closed explicity.  In recovery and after a
- * crash, the situation is reversed: UndoReplay() reports to the per-type
- * handler function that a URS was closed, and CloseDanglingUndoRecordSets()
- * also does that.
- */
-static void
-report_closed_urs(UndoRecordSetType type, UndoRecPtr begin, UndoRecPtr end,
-				  void *type_header)
-{
-	switch (type)
-	{
-	case URST_TRANSACTION:
-		XactUndoCloseRecordSet(begin, end, type_header);
-		break;
-	default:
-		elog(LOG, "XXX a URS has been closed, type %d, total range %zx -> %zx",
-			 type, begin, end);
-		break;
-	}
-}
-
-/*
  * Insert an undo record and/or replay other undo data modifications that were
  * performed at DO time.  If an undo record was inserted at DO time, the exact
  * same record data and size must be passed in at REDO time.  If no undo
@@ -1239,27 +1217,58 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 				}
 
 				/*
-				 * If we closed the whole URS, then tell the URS's creator
-				 * about that.
+				 * If we closed an UndoRecordSet of type URST_TRANSACTION,
+				 * we need to let xactundo.c know about the state change.
 				 */
-				if (bufdata->flags & URS_XLOG_CLOSE)
+				if (bufdata->urs_type == URST_TRANSACTION &&
+					(bufdata->flags & URS_XLOG_CLOSE) != 0)
 				{
 					UndoRecPtr begin;
+					UndoRecPtr end;
+					bool	isCommit = false;
+					bool	isPrepare = false;
+					uint8	info;
 
+					/* Determine which type of record closed the record set. */
+					if (XLogRecGetRmid(xlog_record) != RM_XACT_ID)
+						elog(ERROR,
+							 "transaction undo closed by unexpected rmgr %d",
+							 XLogRecGetRmid(xlog_record));
+					info = XLogRecGetInfo(xlog_record) & ~XLR_INFO_MASK;
+
+					switch (info & XLOG_XACT_OPMASK)
+					{
+						case XLOG_XACT_COMMIT:
+						case XLOG_XACT_COMMIT_PREPARED:
+							isCommit = true;
+							break;
+						case XLOG_XACT_ABORT:
+						case XLOG_XACT_ABORT_PREPARED:
+							break;
+						case XLOG_XACT_PREPARE:
+							isPrepare = true;
+							break;
+						default:
+							elog(ERROR,
+								 "transaction undo closed by unexpected record %d",
+								info);
+					}
+
+					/* Find the chunk start and end. */
 					if (bufdata->flags & URS_XLOG_CLOSE_MULTI_CHUNK)
 						begin = bufdata->first_chunk_header_location;
 					else
 						begin = MakeUndoRecPtr(slot->logno,
 											   block->blkno * BLCKSZ +
 											   bufdata->chunk_size_page_offset);
+					end = MakeUndoRecPtr(slot->logno,
+										 block->blkno * BLCKSZ +
+										 bufdata->chunk_size_page_offset +
+										 bufdata->chunk_size);
 
-					report_closed_urs(bufdata->urs_type,
-									  begin,
-									  MakeUndoRecPtr(slot->logno,
-													 block->blkno * BLCKSZ +
-													 bufdata->chunk_size_page_offset +
-													 bufdata->chunk_size),
-									  bufdata->type_header);
+					/* Now we can report what happened. */
+					XactUndoCloseRecordSet(bufdata->type_header, begin, end,
+										   isCommit, isPrepare);
 				}
 
 				/*
@@ -1919,8 +1928,12 @@ CloseDanglingUndoRecordSets(void)
 
 		release_buffers(buffers, lengthof(buffers));
 
-		/* Tell the URS type handler that we have closed its URS. */
-		report_closed_urs(chunk_header.type, begin, end, type_header);
+		/*
+		 * If this is a transaction, also inform xactundo.c so that the
+		 * UndoRequest state gets updated.
+		 */
+		if (chunk_header.type == URST_TRANSACTION)
+			XactUndoCloseRecordSet(type_header, begin, end, false, false);
 
 		pfree(type_header);
 	}

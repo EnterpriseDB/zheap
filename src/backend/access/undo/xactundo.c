@@ -365,16 +365,94 @@ XactUndoReplay(XLogReaderState *xlog_record, UndoNode *undo_node)
 /*
  * Handle a report that an UndoRecordSet was closed.
  *
- * XXX: Write me
+ * Normally, record sets are closed when a transaction ends, or at least when
+ * a backend exits, but in the case of a crash, this might not happen, or
+ * might need to be redone after restarting. In that case, this function will
+ * be called for each URST_TRANSACTION record set which is observed to need
+ * to be closed. This allows us to fix up the UndoRequest state.
  */
 void
-XactUndoCloseRecordSet(UndoRecPtr begin, UndoRecPtr end, void *type_header)
+XactUndoCloseRecordSet(void *type_header, UndoRecPtr begin, UndoRecPtr end,
+					   bool isCommit, bool isPrepare)
 {
 	FullTransactionId fxid;
+	UndoRequest *req;
 
+	/* Can't have both isCommit and isPrepare. */
+	Assert(!isCommit || !isPrepare);
+
+	/*
+	 * Currently, the type header is just a FullTransactionId, but it need
+	 * not be aligned.
+	 */
 	memcpy(&fxid, type_header, sizeof(fxid));
+	req = FindUndoRequestByFXID(XactUndo.manager, fxid);
+
+	/*
+	 * If the transaction committed, drop any UndoRequest. Transactions which
+	 * began after the checkpoint from which recovery began will not have an
+	 * UndoRequest, so that case is expected and harmless and we don't need
+	 * to do anything at all.
+	 */
+	if (isCommit)
+	{
+		if (req != NULL)
+			UnregisterUndoRequest(XactUndo.manager, req);
+		return;
+	}
+
+	/*
+	 * XXX. The rest of this function isn't correct yet, so just print a
+	 * debugging message and return until we can fix it. For details, see the
+	 * two XXX comments, below.
+	 */
 	elog(LOG, "XXX XactUndoCloseRecordSet(%zx -> %zx, fxid = " UINT64_FORMAT ")",
 		 begin, end, U64FromFullTransactionId(fxid));
+	return;
+
+	/*
+	 * If the transaction aborted or was prepared after the checkpoint from
+	 * which recovery began, no UndoRequest will exist yet; create one.
+	 */
+	if (req == NULL)
+	{
+		/*
+		 * XXX. It's not OK to pass InvalidOid here, but we don't know the
+		 * correct database OID. Can we get that from the caller?
+		 */
+		req = RegisterUndoRequest(XactUndo.manager, fxid, InvalidOid);
+		if (req == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
+					 errmsg("no more undo requests")));
+	}
+
+	/*
+	 * Update the UndoRequest with the details we obtained from the caller.
+	 * Here, 'begin' and 'end' refer only to logged undo. Any unlogged undo
+	 * that may have been generated before the system restart is not relevant,
+	 * because we'll only reach this code in cases where unlogged relations
+	 * get reset. (Temporary undo doesn't matter, either.)
+	 *
+	 * XXX. We're supposed to pass the request size to FinalizeUndoRequest
+	 * to aid in prioritizations, but we don't know what it is here. Can the
+	 * caller tell us? For now, let's go with 42. Note that end - begin would
+	 * be OK if there's only one chunk, but not otherwise.
+	 */
+	FinalizeUndoRequest(XactUndo.manager, req, 42,
+						begin, InvalidUndoRecPtr, end, InvalidUndoRecPtr,
+						isPrepare);
+
+	/*
+	 * If we are preparing this transaction, then we don't need to do anything
+	 * else right now; a final decision about how to proceed will be made when
+	 * the transaction commits or aborts.
+	 *
+	 * If this is an abort, we need to trigger undo execution. We can't do
+	 * that here, though, so force it into the background.
+	 */
+	if (!isPrepare)
+		PerformUndoInBackground(XactUndo.manager, req, true);
 }
 
 /*
