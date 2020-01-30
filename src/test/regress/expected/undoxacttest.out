@@ -2381,5 +2381,5 @@ SELECT undoxacttest_fetch_and_inc('undoxacttest_perm'::regclass, 36);
 (1 row)
 
 ROLLBACK;
-WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 1099511604714
+WARNING:  executing undo: persistence: permanent, nestingLevel: 1, bytes: 1099511604530
 DROP TABLE undoxacttest_perm;

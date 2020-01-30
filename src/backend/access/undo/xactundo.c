@@ -124,6 +124,13 @@ typedef struct XactUndoData
 	UndoRecordSet *record_set[NUndoPersistenceLevels];
 } XactUndoData;
 
+/* On-disk header for an UndoRecordSet of type URST_TRANSACTION. */
+typedef struct XactUndoRecordSetHeader
+{
+	FullTransactionId	fxid;
+	Oid					dboid;
+} XactUndoRecordSetHeader;
+
 static XactUndoData XactUndo;
 static XactUndoSubTransaction XactUndoTopState;
 
@@ -268,8 +275,13 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 	urs = XactUndo.record_set[plevel];
 	if (urs == NULL)
 	{
+		XactUndoRecordSetHeader	hdr;
+
+		hdr.fxid = fxid;
+		hdr.dboid = MyDatabaseId;
+
 		urs = UndoCreate(URST_TRANSACTION, persistence, 1,
-						 sizeof(FullTransactionId), (char *) &fxid);
+						 sizeof(hdr), (char *) &hdr);
 		XactUndo.record_set[plevel] = urs;
 	}
 
@@ -375,18 +387,15 @@ void
 XactUndoCloseRecordSet(void *type_header, UndoRecPtr begin, UndoRecPtr end,
 					   bool isCommit, bool isPrepare)
 {
-	FullTransactionId fxid;
+	XactUndoRecordSetHeader	hdr;
 	UndoRequest *req;
 
 	/* Can't have both isCommit and isPrepare. */
 	Assert(!isCommit || !isPrepare);
 
-	/*
-	 * Currently, the type header is just a FullTransactionId, but it need
-	 * not be aligned.
-	 */
-	memcpy(&fxid, type_header, sizeof(fxid));
-	req = FindUndoRequestByFXID(XactUndo.manager, fxid);
+	/* The type_header pointer need not be properly aligned. */
+	memcpy(&hdr, type_header, sizeof(hdr));
+	req = FindUndoRequestByFXID(XactUndo.manager, hdr.fxid);
 
 	/*
 	 * If the transaction committed, drop any UndoRequest. Transactions which
@@ -402,25 +411,12 @@ XactUndoCloseRecordSet(void *type_header, UndoRecPtr begin, UndoRecPtr end,
 	}
 
 	/*
-	 * XXX. The rest of this function isn't correct yet, so just print a
-	 * debugging message and return until we can fix it. For details, see the
-	 * two XXX comments, below.
-	 */
-	elog(LOG, "XXX XactUndoCloseRecordSet(%zx -> %zx, fxid = " UINT64_FORMAT ")",
-		 begin, end, U64FromFullTransactionId(fxid));
-	return;
-
-	/*
 	 * If the transaction aborted or was prepared after the checkpoint from
 	 * which recovery began, no UndoRequest will exist yet; create one.
 	 */
 	if (req == NULL)
 	{
-		/*
-		 * XXX. It's not OK to pass InvalidOid here, but we don't know the
-		 * correct database OID. Can we get that from the caller?
-		 */
-		req = RegisterUndoRequest(XactUndo.manager, fxid, InvalidOid);
+		req = RegisterUndoRequest(XactUndo.manager, hdr.fxid, hdr.dboid);
 		if (req == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
