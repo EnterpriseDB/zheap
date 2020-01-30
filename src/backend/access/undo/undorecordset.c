@@ -763,27 +763,30 @@ UndoInsert(UndoRecordSet *urs,
 			{
 				register_insert_page_offset_if_needed(ubuf, page_offset);
 
-				if (input_offset == 0 && urs->need_type_header)
+				if (input_offset == 0)
 				{
-					/*
-					 * We'll need to create a new URS in recovery, so we
-					 * capture an image of the type header.
-					 */
-					ubuf->bufdata.flags |= URS_XLOG_CREATE;
-					ubuf->bufdata.urs_type = urs->type;
-					ubuf->bufdata.type_header = urs->type_header;
-					ubuf->bufdata.type_header_size = urs->type_header_size;
-				}
-				else
-				{
-					/*
-					 * We'll need to add a new chunk to an existing URS in
-					 * recovery.
-					 */
-					ubuf->bufdata.flags |= URS_XLOG_ADD_CHUNK;
-					ubuf->bufdata.urs_type = urs->type;
-					ubuf->bufdata.previous_chunk_header_location =
-						chunk_header.previous_chunk;
+					if (urs->need_type_header)
+					{
+						/*
+						 * We'll need to create a new URS in recovery, so we
+						 * capture an image of the type header.
+						 */
+						ubuf->bufdata.flags |= URS_XLOG_CREATE;
+						ubuf->bufdata.urs_type = urs->type;
+						ubuf->bufdata.type_header = urs->type_header;
+						ubuf->bufdata.type_header_size = urs->type_header_size;
+					}
+					else
+					{
+						/*
+						 * We'll need to add a new chunk to an existing URS in
+						 * recovery.
+						 */
+						ubuf->bufdata.flags |= URS_XLOG_ADD_CHUNK;
+						ubuf->bufdata.urs_type = urs->type;
+						ubuf->bufdata.previous_chunk_header_location =
+							chunk_header.previous_chunk;
+					}
 				}
 			}
 			if (page_offset == SizeOfUndoPageHeaderData)
