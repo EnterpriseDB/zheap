@@ -1887,7 +1887,7 @@ pg_force_truncate_undo_log(PG_FUNCTION_ARGS)
 	slot = UndoLogGetSlot(logno, false);
 
 	/*
-	 * We don't actually do anything immediately, because it's to complicated
+	 * We don't actually do anything immediately, because it's too complicated
 	 * to coordinate with a concurrent insertion.  So instead we'll ask
 	 * UndoLogAllocate() to do it at the next appropriate time.
 	 */
