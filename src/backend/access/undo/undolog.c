@@ -69,7 +69,7 @@ UndoLogNumber undologtable_low_logno;
 /* GUC variables */
 char	   *undo_tablespaces = NULL;
 
-static UndoLogSlot *find_undo_log_slot(UndoLogNumber logno, bool locked);
+static UndoLogSlot *find_undo_log_slot(UndoLogNumber logno);
 static UndoLogSlot *allocate_undo_log_slot(void);
 static void free_undo_log_slot(UndoLogSlot *log);
 static void discard_undo_buffers(int logno, UndoLogOffset old_discard,
@@ -207,7 +207,7 @@ UndoLogRecPtrIsDiscardedSlowPath(UndoRecPtr pointer)
 	UndoLogSlot *slot;
 	UndoRecPtr discard;
 
-	slot = find_undo_log_slot(logno, false);
+	slot = find_undo_log_slot(logno);
 
 	if (slot == NULL)
 	{
@@ -502,7 +502,7 @@ scan_physical_range(void)
 			}
 
 			/* Does it refer to an undo log that exists? */
-			slot = find_undo_log_slot(logno, false);
+			slot = find_undo_log_slot(logno);
 			if (!slot)
 			{
 				/*
@@ -562,7 +562,7 @@ UndoLogAdjustPhysicalRange(UndoLogNumber logno,
 	 */
 	new_end = new_insert + UndoLogSegmentSize - new_insert % UndoLogSegmentSize;
 
-	slot = find_undo_log_slot(logno, false);
+	slot = find_undo_log_slot(logno);
 
 	/*
 	 * UndoLogDiscard() and UndoLogAllocate() can both reach this code, so we
@@ -843,7 +843,7 @@ UndoDiscard(UndoRecPtr discard_point)
 	bool		entirely_discarded;
 	XLogRecPtr	recptr = InvalidXLogRecPtr;
 
-	slot = find_undo_log_slot(logno, false);
+	slot = find_undo_log_slot(logno);
 	if (unlikely(slot == NULL))
 	{
 		/*
@@ -1171,11 +1171,8 @@ free_undo_log_slot(UndoLogSlot *slot)
 /*
  * Find the UndoLogSlot object for a given log number.
  *
- * The caller may or may not already hold UndoLogLock, and should indicate
- * this by passing 'locked'.  We'll acquire it in the slow path if necessary.
- * If it is not held by the caller, the caller must deal with the possibility
- * that the returned UndoLogSlot no longer contains the requested logno by the
- * time it is accessed.
+ * The caller must deal with the possibility that the returned UndoLogSlot no
+ * longer contains the requested logno by the time it is accessed.
  *
  * To do that, one of the following approaches must be taken by the calling
  * code:
@@ -1195,13 +1192,13 @@ free_undo_log_slot(UndoLogSlot *slot)
  * ask for undo logs that have never been created.
  */
 static UndoLogSlot *
-find_undo_log_slot(UndoLogNumber logno, bool locked)
+find_undo_log_slot(UndoLogNumber logno)
 {
 	UndoLogSlot *result = NULL;
 	UndoLogTableEntry *entry;
 	bool	   found;
 
-	Assert(locked == LWLockHeldByMe(UndoLogLock));
+	Assert(!LWLockHeldByMe(UndoLogLock));
 
 	/* First see if we already have it in our cache. */
 	entry = undologtable_lookup(undologtable_cache, logno);
@@ -1211,10 +1208,9 @@ find_undo_log_slot(UndoLogNumber logno, bool locked)
 	{
 		UndoLogNumber i;
 
-		/* Nope.  Linear search for the slot in shared memory. */
-		if (!locked)
-			LWLockAcquire(UndoLogLock, LW_SHARED);
+		LWLockAcquire(UndoLogLock, LW_SHARED);
 
+		/* Nope.  Linear search for the slot in shared memory. */
 		for (i = 0; i < UndoLogNumSlots(); ++i)
 		{
 			if (UndoLogShared->slots[i].logno == logno)
@@ -1278,8 +1274,8 @@ find_undo_log_slot(UndoLogNumber logno, bool locked)
 				entry->tablespace = 0;
 			}
 		}
-		if (!locked)
-			LWLockRelease(UndoLogLock);
+
+		LWLockRelease(UndoLogLock);
 	}
 
 	return result;
@@ -1299,7 +1295,7 @@ find_undo_log_slot(UndoLogNumber logno, bool locked)
 UndoLogSlot *
 UndoLogGetSlot(UndoLogNumber logno, bool missing_ok)
 {
-	UndoLogSlot *slot = find_undo_log_slot(logno, false);
+	UndoLogSlot *slot = find_undo_log_slot(logno);
 
 	if (slot == NULL && !missing_ok)
 		elog(ERROR, "unknown undo log number %d", logno);
@@ -1884,7 +1880,7 @@ pg_force_discard_undo_log(PG_FUNCTION_ARGS)
 	if (!superuser())
 		elog(ERROR, "must be superuser");
 
-	slot = find_undo_log_slot(logno, false);
+	slot = find_undo_log_slot(logno);
 	if (slot == NULL)
 		elog(ERROR, "undo log not found");
 
@@ -1920,7 +1916,7 @@ pg_force_truncate_undo_log(PG_FUNCTION_ARGS)
 	if (!superuser())
 		elog(ERROR, "must be superuser");
 
-	slot = find_undo_log_slot(logno, false);
+	slot = find_undo_log_slot(logno);
 	if (slot == NULL)
 		elog(ERROR, "undo log not found");
 
@@ -2034,7 +2030,7 @@ undolog_xlog_truncate(XLogReaderState *record)
 	xl_undolog_truncate *xlrec = (xl_undolog_truncate *) XLogRecGetData(record);
 	UndoLogSlot *slot;
 
-	slot = find_undo_log_slot(xlrec->logno, false);
+	slot = find_undo_log_slot(xlrec->logno);
 	if (!slot)
 		elog(ERROR, "could not find undo log %u", xlrec->logno);
 
