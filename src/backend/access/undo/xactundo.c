@@ -102,12 +102,12 @@ typedef struct
 } XactUndoStatusData;
 
 /* Per-subtransaction backend-private undo state. */
-typedef struct UndoSubTransaction
+typedef struct XactUndoSubTransaction
 {
 	SubTransactionId nestingLevel;
 	UndoRecPtr	start_location[NUndoPersistenceLevels];
-	struct UndoSubTransaction *next;
-} UndoSubTransaction;
+	struct XactUndoSubTransaction *next;
+} XactUndoSubTransaction;
 
 /* Backend-private undo state (but with pointers into shared memory). */
 typedef struct XactUndoData
@@ -117,7 +117,7 @@ typedef struct XactUndoData
 	bool		is_undo;
 	bool		is_background_undo;
 	bool		has_undo;
-	UndoSubTransaction *subxact;
+	XactUndoSubTransaction *subxact;
 	UndoRecPtr	last_location[NUndoPersistenceLevels];
 	uint64		last_size[NUndoPersistenceLevels];
 	uint64		total_size[NUndoPersistenceLevels];
@@ -125,7 +125,7 @@ typedef struct XactUndoData
 } XactUndoData;
 
 static XactUndoData XactUndo;
-static UndoSubTransaction XactUndoTopState;
+static XactUndoSubTransaction XactUndoTopState;
 
 static void CollapseXactUndoSubTransactions(void);
 static void ResetXactUndo(void);
@@ -223,17 +223,17 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 	XactUndo.has_undo = true;
 
 	/*
-	 * If we've entered a subtransaction, spin up a new UndoSubTransaction so
-	 * that we can track the start locations for the subtransaction separately
-	 * from any parent (sub)transactions.
+	 * If we've entered a subtransaction, spin up a new XactUndoSubTransaction
+	 * so that we can track the start locations for the subtransaction
+	 * separately from any parent (sub)transactions.
 	 */
 	if (nestingLevel > XactUndo.subxact->nestingLevel)
 	{
-		UndoSubTransaction *subxact;
+		XactUndoSubTransaction *subxact;
 		int			i;
 
 		subxact = MemoryContextAlloc(TopMemoryContext,
-									 sizeof(UndoSubTransaction));
+									 sizeof(XactUndoSubTransaction));
 		subxact->nestingLevel = nestingLevel;
 		subxact->next = XactUndo.subxact;
 		XactUndo.subxact = subxact;
@@ -559,7 +559,7 @@ FinishBackgroundXactUndo(void)
 void
 PerformUndoActions(int nestingLevel)
 {
-	UndoSubTransaction *mysubxact = XactUndo.subxact;
+	XactUndoSubTransaction *mysubxact = XactUndo.subxact;
 
 	/* Sanity checks. */
 	Assert(XactUndo.has_undo);
@@ -780,8 +780,8 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 void
 AtSubCommit_XactUndo(int level)
 {
-	UndoSubTransaction *cursubxact = XactUndo.subxact;
-	UndoSubTransaction *nextsubxact = cursubxact->next;
+	XactUndoSubTransaction *cursubxact = XactUndo.subxact;
+	XactUndoSubTransaction *nextsubxact = cursubxact->next;
 	int			i;
 
 	/* Exit quickly if the transaction or this subtransaction has no undo. */
@@ -796,7 +796,7 @@ AtSubCommit_XactUndo(int level)
 
 	/*
 	 * We might reach here after performing undo for a subtransaction that
-	 * previously aborted. If so, it's time to discard the UndoSubTransaction
+	 * previously aborted. If so, we should discard the XactUndoSubTransaction
 	 * which we were keeping around for that purpose.
 	 */
 	if (XactUndo.is_undo)
@@ -810,7 +810,7 @@ AtSubCommit_XactUndo(int level)
 
 	/*
 	 * If we have undo but our parent subtransaction doesn't, we can just
-	 * adjust the nesting level of the current UndoSubTransaction.
+	 * adjust the nesting level of the current XactUndoSubTransaction.
 	 */
 	if (nextsubxact->nestingLevel < cursubxact->nestingLevel - 1)
 	{
@@ -844,7 +844,7 @@ AtSubCommit_XactUndo(int level)
 void
 AtSubAbort_XactUndo(int level, bool *perform_foreground_undo)
 {
-	UndoSubTransaction *cursubxact = XactUndo.subxact;
+	XactUndoSubTransaction *cursubxact = XactUndo.subxact;
 
 	if (perform_foreground_undo)
 		*perform_foreground_undo = false;
@@ -1019,8 +1019,8 @@ CollapseXactUndoSubTransactions(void)
 {
 	while (XactUndo.subxact->next != NULL)
 	{
-		UndoSubTransaction *cursubxact = XactUndo.subxact;
-		UndoSubTransaction *nextsubxact = cursubxact->next;
+		XactUndoSubTransaction *cursubxact = XactUndo.subxact;
+		XactUndoSubTransaction *nextsubxact = cursubxact->next;
 		int			i;
 
 		for (i = 0; i < NUndoPersistenceLevels; ++i)
