@@ -77,10 +77,6 @@ static void discard_undo_buffers(int logno, UndoLogOffset old_discard,
 								 bool drop_tail);
 static void scan_physical_range(void);
 
-PG_FUNCTION_INFO_V1(pg_stat_get_undo_logs);
-PG_FUNCTION_INFO_V1(pg_force_discard_undo_log);
-PG_FUNCTION_INFO_V1(pg_force_truncate_undo_log);
-
 /*
  * How many undo logs can be active at a time?  This creates a theoretical
  * maximum amount of undo data that can exist, but if we set it to a multiple

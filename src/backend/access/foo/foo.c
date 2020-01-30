@@ -17,12 +17,6 @@
 #include "utils/builtins.h"
 #include "utils/varlena.h"
 
-PG_FUNCTION_INFO_V1(foo_create);
-PG_FUNCTION_INFO_V1(foo_write);
-PG_FUNCTION_INFO_V1(foo_close);
-
-PG_FUNCTION_INFO_V1(foo_createwriteclose);
-
 static void foo_xact_callback(XactEvent event, void *arg);
 static void foo_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
 								 SubTransactionId parentSubid, void *arg);
