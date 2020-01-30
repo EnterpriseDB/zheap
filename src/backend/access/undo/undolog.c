@@ -69,7 +69,6 @@ UndoLogNumber undologtable_low_logno;
 /* GUC variables */
 char	   *undo_tablespaces = NULL;
 
-static UndoLogSlot *find_undo_log_slot(UndoLogNumber logno);
 static UndoLogSlot *allocate_undo_log_slot(void);
 static void free_undo_log_slot(UndoLogSlot *log);
 static void discard_undo_buffers(int logno, UndoLogOffset old_discard,
@@ -203,7 +202,7 @@ UndoLogRecPtrIsDiscardedSlowPath(UndoRecPtr pointer)
 	UndoLogSlot *slot;
 	UndoRecPtr discard;
 
-	slot = find_undo_log_slot(logno);
+	slot = UndoLogGetSlot(logno, true);
 
 	if (slot == NULL)
 	{
@@ -498,7 +497,7 @@ scan_physical_range(void)
 			}
 
 			/* Does it refer to an undo log that exists? */
-			slot = find_undo_log_slot(logno);
+			slot = UndoLogGetSlot(logno, true);
 			if (!slot)
 			{
 				/*
@@ -558,7 +557,7 @@ UndoLogAdjustPhysicalRange(UndoLogNumber logno,
 	 */
 	new_end = new_insert + UndoLogSegmentSize - new_insert % UndoLogSegmentSize;
 
-	slot = find_undo_log_slot(logno);
+	slot = UndoLogGetSlot(logno, true);
 
 	/*
 	 * UndoLogDiscard() and UndoLogAllocate() can both reach this code, so we
@@ -839,7 +838,7 @@ UndoDiscard(UndoRecPtr discard_point)
 	bool		entirely_discarded;
 	XLogRecPtr	recptr = InvalidXLogRecPtr;
 
-	slot = find_undo_log_slot(logno);
+	slot = UndoLogGetSlot(logno, true);
 	if (unlikely(slot == NULL))
 	{
 		/*
@@ -1164,33 +1163,25 @@ free_undo_log_slot(UndoLogSlot *slot)
 	LWLockRelease(UndoLogLock);
 }
 
+
 /*
- * Find the UndoLogSlot object for a given log number.
+ * Get a pointer to an UndoLogSlot object corresponding to a given logno.
  *
- * The caller must deal with the possibility that the returned UndoLogSlot no
- * longer contains the requested logno by the time it is accessed.
+ * In general, the caller must acquire the UndoLogSlot's meta_lock to access
+ * the contents, and at that time must consider that the logno might have
+ * changed because the undo log it contained has been entirely discarded.
  *
- * To do that, one of the following approaches must be taken by the calling
- * code:
- *
- * 1.  If the calling code knows that it is attached to this slot or is the
- * recovery process, then there is no way for the slot to be recycled, so it's
- * not necessary to check that the log number hasn't changed.  The slot cannot
- * be recycled while a backend is attached.  It should probably assert that it
- * is attached, however.
- *
- * 2.  All other code should acquire slot->meta_lock before accessing any
- * members, and after doing so, check that the logno remains the same.  If it
- * is not, the entire undo log must be assumed to be discarded (as if this
- * function returned NULL) and the caller must behave accordingly.
+ * If the calling backend is currently attached to the undo log, that is not
+ * possible, because logs can only reach UNDO_LOG_STATUS_DISCARDED after first
+ * reaching UNDO_LOG_STATUS_FULL, and that only happens while detaching.
  *
  * Return NULL if the undo log has been entirely discarded.  It is an error to
  * ask for undo logs that have never been created.
  */
-static UndoLogSlot *
-find_undo_log_slot(UndoLogNumber logno)
+UndoLogSlot *
+UndoLogGetSlot(UndoLogNumber logno, bool missing_ok)
 {
-	UndoLogSlot *result = NULL;
+	UndoLogSlot *slot = NULL;
 	UndoLogTableEntry *entry;
 	bool	   found;
 
@@ -1199,7 +1190,7 @@ find_undo_log_slot(UndoLogNumber logno)
 	/* First see if we already have it in our cache. */
 	entry = undologtable_lookup(undologtable_cache, logno);
 	if (likely(entry))
-		result = entry->slot;
+		slot = entry->slot;
 	else
 	{
 		UndoLogNumber i;
@@ -1228,7 +1219,7 @@ find_undo_log_slot(UndoLogNumber logno)
 				entry->persistence = entry->slot->meta.persistence;
 				entry->recent_discard =
 					MakeUndoRecPtr(logno, entry->slot->meta.discard);
-				result = entry->slot;
+				slot = entry->slot;
 				break;
 			}
 		}
@@ -1251,7 +1242,7 @@ find_undo_log_slot(UndoLogNumber logno)
 		 * TODO: We could track the lowest known undo log number, to reduce
 		 * the negative cache entry bloat.
 		 */
-		if (result == NULL && logno >= undologtable_low_logno)
+		if (slot == NULL && logno >= undologtable_low_logno)
 		{
 			/*
 			 * Sanity check: except during recovery, the caller should not be
@@ -1273,25 +1264,6 @@ find_undo_log_slot(UndoLogNumber logno)
 
 		LWLockRelease(UndoLogLock);
 	}
-
-	return result;
-}
-
-/*
- * Get a pointer to an UndoLogSlot object corresponding to a given logno.
- *
- * In general, the caller must acquire the UndoLogSlot's meta_lock to access
- * the contents, and at that time must consider that the logno might have
- * changed because the undo log it contained has been entirely discarded.
- *
- * If the calling backend is currently attached to the undo log, that is not
- * possible, because logs can only reach UNDO_LOG_STATUS_DISCARDED after first
- * reaching UNDO_LOG_STATUS_FULL, and that only happens while detaching.
- */
-UndoLogSlot *
-UndoLogGetSlot(UndoLogNumber logno, bool missing_ok)
-{
-	UndoLogSlot *slot = find_undo_log_slot(logno);
 
 	if (slot == NULL && !missing_ok)
 		elog(ERROR, "unknown undo log number %d", logno);
@@ -1876,7 +1848,7 @@ pg_force_discard_undo_log(PG_FUNCTION_ARGS)
 	if (!superuser())
 		elog(ERROR, "must be superuser");
 
-	slot = find_undo_log_slot(logno);
+	slot = UndoLogGetSlot(logno, true);
 	if (slot == NULL)
 		elog(ERROR, "undo log not found");
 
@@ -1912,9 +1884,7 @@ pg_force_truncate_undo_log(PG_FUNCTION_ARGS)
 	if (!superuser())
 		elog(ERROR, "must be superuser");
 
-	slot = find_undo_log_slot(logno);
-	if (slot == NULL)
-		elog(ERROR, "undo log not found");
+	slot = UndoLogGetSlot(logno, false);
 
 	/*
 	 * We don't actually do anything immediately, because it's to complicated
@@ -2026,9 +1996,7 @@ undolog_xlog_truncate(XLogReaderState *record)
 	xl_undolog_truncate *xlrec = (xl_undolog_truncate *) XLogRecGetData(record);
 	UndoLogSlot *slot;
 
-	slot = find_undo_log_slot(xlrec->logno);
-	if (!slot)
-		elog(ERROR, "could not find undo log %u", xlrec->logno);
+	slot = UndoLogGetSlot(xlrec->logno, false);
 
 	slot->meta.size = xlrec->size;
 }
