@@ -1222,6 +1222,9 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 										  (char *) &chunk_size);
 				}
 
+				/* The shared memory insertion point must be after this fragment. */
+				slot->meta.insert = BLCKSZ * block->blkno + uph->ud_insertion_point;
+
 				/*
 				 * If we closed an UndoRecordSet of type URST_TRANSACTION,
 				 * we need to let xactundo.c know about the state change.
