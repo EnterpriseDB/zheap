@@ -40,12 +40,15 @@
 
 #include "access/undo.h"
 #include "access/undolog.h"
+#include "access/undoread.h"
 #include "access/undopage.h"
 #include "access/undorecordset.h"
 #include "access/undorequest.h"
 #include "access/undoworker.h"
 #include "access/xact.h"
 #include "access/xactundo.h"
+#include "access/xlog_internal.h"
+#include "catalog/pg_class.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/ipc.h"
@@ -584,18 +587,33 @@ PerformUndoActions(int nestingLevel)
 			continue;
 		end_location = XactUndoEndLocation(p);
 
-		/*
-		 * AFIXME: until we can show the actual effects of undo processing,
-		 * show a debug message showing when undo is being executed.
-		 *
-		 * To make it possible to write regression tests, only show values
-		 * that won't change from run to run.
-		 */
-		elog(WARNING, "executing undo: persistence: %s, nestingLevel: %d, bytes: %lu",
+		elog(DEBUG1, "executing undo: persistence: %s, nestingLevel: %d, bytes: %lu start: %lu end: %lu",
 			 UndoPersistenceLevelString(p),
 			 nestingLevel,
-			 end_location - start_location
+			 end_location - start_location,
+			 start_location, end_location
 			);
+
+		{
+			UndoRSReaderState r;
+
+			/* FIXME: provide correct persistence level - also UndoPersistenceLevelString */
+			UndoRSReaderInit(&r, start_location, end_location,
+							 RELPERSISTENCE_PERMANENT,
+							 nestingLevel == 1);
+
+			while (UndoRSReaderReadOneBackward(&r))
+			{
+				const RmgrUndoHandler *undo_handler;
+
+				/* FIXME: probably should move checking of type into undo reader */
+				undo_handler = RmgrTable[r.node.n.type].rm_undo();
+				/* XXX: Should we add error check for undo_handler being NULL? */
+				undo_handler->undo(&r.node);
+			}
+
+			UndoRSReaderClose(&r);
+		}
 	}
 }
 
