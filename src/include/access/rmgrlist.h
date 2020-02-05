@@ -49,4 +49,4 @@ PG_RMGR(RM_GENERIC_ID, "Generic", generic_redo, generic_desc, generic_identify, 
 PG_RMGR(RM_LOGICALMSG_ID, "LogicalMessage", logicalmsg_redo, logicalmsg_desc, logicalmsg_identify, NULL, NULL, NULL, NULL)
 PG_RMGR(RM_UNDOLOG_ID, "UndoLog", undolog_redo, undolog_desc, undolog_identify, NULL, NULL, NULL, NULL)
 PG_RMGR(RM_FOO_ID, "Foo", foo_redo, foo_desc, foo_identify, NULL, NULL, NULL, NULL)
-PG_RMGR(RM_UNDOXACTTEST_ID, "UndoXactTest", undoxacttest_redo, undoxacttest_desc, undoxacttest_identify, NULL, NULL, NULL, undoxacttest_undo)
+PG_RMGR(RM_UNDOXACTTEST_ID, "UndoXactTest", undoxacttest_redo, undoxacttest_desc, undoxacttest_identify, NULL, NULL, NULL, undoxacttest_undo_handler)

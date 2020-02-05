@@ -15,8 +15,8 @@
 #include "utils/fmgrprotos.h"
 #include "utils/snapmgr.h"
 
-static char* undoxacttest_fetch(Relation rel, Buffer *buf);
-static void sanity_check_undoxacttest_rel(Relation rel, bool init);
+static char* undoxacttest_fetch(Relation rel, Buffer *buf, bool is_undo);
+static void sanity_check_undoxacttest_rel(Relation rel, bool init, bool is_undo);
 
 
 Datum
@@ -31,7 +31,7 @@ undoxacttest_init_rel(PG_FUNCTION_ARGS)
 
 	rel = table_open(reloid, AccessExclusiveLock);
 
-	sanity_check_undoxacttest_rel(rel, true);
+	sanity_check_undoxacttest_rel(rel, true,  /* is_undo = */ false);
 
 	data = palloc0(VARHDRSZ + 100);
 	SET_VARSIZE(data, VARHDRSZ + 100);
@@ -59,12 +59,12 @@ undoxacttest_mod_impl(Oid reloid, int64 mod)
 
 	rel = table_open(reloid, RowExclusiveLock);
 
-	sanity_check_undoxacttest_rel(rel, false);
+	sanity_check_undoxacttest_rel(rel, false,  /* is_undo = */ false);
 
-	data = undoxacttest_fetch(rel, &buf);
+	data = undoxacttest_fetch(rel, &buf, /* is_undo = */ false);
 	counter = ((int64 *) &data[0]);
 
-	oldval = undoxacttest_log_execute_mod(rel, buf, counter, mod);
+	oldval = undoxacttest_log_execute_mod(rel, buf, counter, mod, /* is_undo = */ false);
 
 	UnlockReleaseBuffer(buf);
 
@@ -103,9 +103,9 @@ undoxacttest_read(PG_FUNCTION_ARGS)
 
 	rel = table_open(reloid, AccessShareLock);
 
-	sanity_check_undoxacttest_rel(rel, false);
+	sanity_check_undoxacttest_rel(rel, false,  /* is_undo = */ false);
 
-	data = undoxacttest_fetch(rel, &buf);
+	data = undoxacttest_fetch(rel, &buf, /* is_undo = */ false);
 
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 
@@ -119,11 +119,33 @@ undoxacttest_read(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(value);
 }
 
+void
+undoxacttest_undo_mod(const xu_undoxactest_mod *uxt_r)
+{
+	Relation	rel;
+	Buffer		buf;
+	char	   *data;
+	int64	   *counter;
+
+	rel = table_open(uxt_r->reloid, RowExclusiveLock);
+
+	sanity_check_undoxacttest_rel(rel, false, /* is_undo = */ true);
+
+	data = undoxacttest_fetch(rel, &buf, /* is_undo = */ true);
+	counter = ((int64 *) &data[0]);
+
+	undoxacttest_log_execute_mod(rel, buf, counter, -uxt_r->mod, /* is_undo = */ true);
+
+	UnlockReleaseBuffer(buf);
+
+	table_close(rel, NoLock);
+}
+
 /*
  * Check that we actually can use the relation for tests.
  */
 static void
-sanity_check_undoxacttest_rel(Relation rel, bool init)
+sanity_check_undoxacttest_rel(Relation rel, bool init, bool is_undo)
 {
 	uint64 relsize;
 	TupleDesc desc = RelationGetDescr(rel);
@@ -165,7 +187,7 @@ sanity_check_undoxacttest_rel(Relation rel, bool init)
 			elog(ERROR, "undoxacttest: can only test single page relation");
 
 		/* verify that the test tuple we expect is present */
-		undoxacttest_fetch(rel, &buf);
+		undoxacttest_fetch(rel, &buf, is_undo);
 
 		ReleaseBuffer(buf);
 	}
@@ -176,7 +198,7 @@ sanity_check_undoxacttest_rel(Relation rel, bool init)
  * sanity_check_undoxacttest_rel(init = false) are fulfilled.
  */
 static char*
-undoxacttest_fetch(Relation rel, Buffer *buf)
+undoxacttest_fetch(Relation rel, Buffer *buf, bool is_undo)
 {
 	Page		page;
 	HeapTupleData tuple = {0};
@@ -204,7 +226,9 @@ undoxacttest_fetch(Relation rel, Buffer *buf)
 	tuple.t_len = ItemIdGetLength(lp);
 	tuple.t_tableOid = RelationGetRelid(rel);
 
-	if (!HeapTupleSatisfiesVisibility(&tuple, GetActiveSnapshot(), *buf))
+	/* don't have a snapshot while executing undo currently */
+	if (!is_undo &&
+		!HeapTupleSatisfiesVisibility(&tuple, GetActiveSnapshot(), *buf))
 		elog(ERROR, "undoxacttest: expected visible tuple");
 
 	LockBuffer(*buf, BUFFER_LOCK_UNLOCK);

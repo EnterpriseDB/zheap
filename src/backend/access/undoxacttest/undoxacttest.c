@@ -9,7 +9,7 @@
 
 
 int64
-undoxacttest_log_execute_mod(Relation rel, Buffer buf, int64 *counter, int64 mod)
+undoxacttest_log_execute_mod(Relation rel, Buffer buf, int64 *counter, int64 mod, bool is_undo)
 {
 	XactUndoContext undo_context;
 	UndoNode undo_node;
@@ -19,15 +19,20 @@ undoxacttest_log_execute_mod(Relation rel, Buffer buf, int64 *counter, int64 mod
 	int64		newval;
 
 	/* build undo record */
-	// AFIXME: API needs to be changed so serialization happens at a later
-	// stage.
-	undo_rec.mod = mod;
-	undo_node.data = (char *) &undo_rec;
-	undo_node.length = sizeof(undo_rec);
+	if (!is_undo)
+	{
+		// AFIXME: API needs to be changed so serialization happens at a later
+		// stage.
+		undo_rec.reloid = RelationGetRelid(rel);
+		undo_rec.mod = mod;
+		undo_node.type = RM_UNDOXACTTEST_ID;
+		undo_node.length = sizeof(undo_rec);
+		undo_node.data = (char *) &undo_rec;
 
-	PrepareXactUndoData(&undo_context,
-						rel->rd_rel->relpersistence,
-						&undo_node);
+		PrepareXactUndoData(&undo_context,
+							rel->rd_rel->relpersistence,
+							&undo_node);
+	}
 
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 
@@ -46,7 +51,8 @@ undoxacttest_log_execute_mod(Relation rel, Buffer buf, int64 *counter, int64 mod
 		XLogRegisterBuffer(0, buf, REGBUF_STANDARD | REGBUF_KEEP_DATA);
 	}
 
-	InsertXactUndoData(&undo_context, 1);
+	if (!is_undo)
+		InsertXactUndoData(&undo_context, 1);
 
 	if (RelationNeedsWAL(rel))
 	{
@@ -61,12 +67,14 @@ undoxacttest_log_execute_mod(Relation rel, Buffer buf, int64 *counter, int64 mod
 
 		PageSetLSN(page, recptr);
 
-		SetXactUndoPageLSNs(&undo_context, recptr);
+		if (!is_undo)
+			SetXactUndoPageLSNs(&undo_context, recptr);
 	}
 
 	END_CRIT_SECTION();
 
-	CleanupXactUndoInsertion(&undo_context);
+	if (!is_undo)
+		CleanupXactUndoInsertion(&undo_context);
 
 	return oldval;
 }
@@ -147,10 +155,26 @@ undoxacttest_redo(XLogReaderState *record)
 	}
 }
 
-const RmgrUndoHandler*
-undoxacttest_undo(void)
+static void
+undoxacttest_undo(const WrittenUndoNode *record)
 {
-	elog(WARNING, "undo handler requested");
+	const xu_undoxactest_mod *uxt_r = ( const xu_undoxactest_mod *) record->n.data;
 
-	return NULL;
+	elog(DEBUG1, "called for record of type %d, length %u at %lu: %ld",
+		 record->n.type, record->n.length, record->location,
+		 uxt_r->mod);
+
+	undoxacttest_undo_mod(uxt_r);
+}
+
+static const RmgrUndoHandler undoxact_undo_handler =
+{
+	.undo = undoxacttest_undo,
+};
+
+
+const RmgrUndoHandler*
+undoxacttest_undo_handler(void)
+{
+	return &undoxact_undo_handler;
 }
