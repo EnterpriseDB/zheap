@@ -16,6 +16,7 @@ OBJS = \
 	undo.o \
 	undolog.o \
 	undopage.o \
+	undoread.o \
 	undorecordset.o \
 	undorecordset_xlog.o \
 	undorequest.o \
