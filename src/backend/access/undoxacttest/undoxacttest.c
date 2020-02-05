@@ -147,7 +147,7 @@ undoxacttest_redo(XLogReaderState *record)
 	}
 }
 
-RmgrUndoHandler*
+const RmgrUndoHandler*
 undoxacttest_undo(void)
 {
 	elog(WARNING, "undo handler requested");

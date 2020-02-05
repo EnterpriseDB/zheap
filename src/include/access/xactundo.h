@@ -36,6 +36,22 @@ typedef struct UndoNode
 	char	   *data;
 } UndoNode;
 
+/*
+ * An undo node that has been deserialized from a specific location.
+ * AFIXME: Probably better to rename, and add more information?
+ */
+typedef struct WrittenUndoNode
+{
+	UndoRecPtr location;
+	UndoNode n;
+} WrittenUndoNode;
+
+/* typedef is in xlog_internal.h */
+struct RmgrUndoHandler
+{
+	/* XXX: Probably should also pass in current chunk */
+	void (*undo)(const WrittenUndoNode *record);
+};
 /* initialization */
 extern Size XactUndoShmemSize(void);
 extern void XactUndoShmemInit(void);

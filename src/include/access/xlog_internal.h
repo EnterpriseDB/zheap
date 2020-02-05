@@ -296,7 +296,7 @@ typedef struct RmgrData
 	void		(*rm_startup) (void);
 	void		(*rm_cleanup) (void);
 	void		(*rm_mask) (char *pagedata, BlockNumber blkno);
-	RmgrUndoHandler	* (*rm_undo) (void);
+	const RmgrUndoHandler* (*rm_undo) (void);
 } RmgrData;
 
 extern const RmgrData RmgrTable[];
