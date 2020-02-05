@@ -685,7 +685,7 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 		 * session?
 		 */
 		if (has_temporary_undo)
-			 /* experience_intense_sadness */ ;
+			elog(WARNING, "experience_intense_sadness");
 
 		ResetXactUndo();
 		return;
