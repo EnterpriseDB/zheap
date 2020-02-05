@@ -1118,6 +1118,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 														 type_header_size,
 														 type_header,
 														 chunk_start);
+					MarkBufferDirty(buffers[nbuffers].buffer);
 				}
 
 				/* Do we need to go around again, on the next page? */
@@ -1155,6 +1156,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 														 0,
 														 NULL,
 														 chunk_start);
+					MarkBufferDirty(buffers[nbuffers].buffer);
 				}
 
 				if (header_offset < SizeOfUndoRecordSetChunkHeader)
@@ -1183,6 +1185,7 @@ UndoReplay(XLogReaderState *xlog_record, void *record_data, size_t record_size)
 														 record_data,
 														 bufdata->chunk_header_location,
 														 bufdata->urs_type);
+					MarkBufferDirty(buffers[nbuffers].buffer);
 				}
 
 				/* The shared memory insertion point must be after this fragment. */
