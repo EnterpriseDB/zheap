@@ -2986,7 +2986,7 @@ void
 CommitTransactionCommand(void)
 {
 	TransactionState s = CurrentTransactionState;
-	bool		perform_foreground_undo;
+	bool		perform_foreground_undo = false;
 
 	if (s->chain)
 		SaveTransactionCharacteristics();
@@ -3257,7 +3257,7 @@ void
 AbortCurrentTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
-	bool		perform_foreground_undo;
+	bool		perform_foreground_undo = false;
 
 	switch (s->blockState)
 	{
@@ -5130,7 +5130,20 @@ AbortSubTransaction(bool *perform_foreground_undo)
 		CallSubXactCallbacks(SUBXACT_EVENT_ABORT_SUB, s->subTransactionId,
 							 s->parent->subTransactionId);
 
+
+		/*
+		 * Don't need to execute undo separately if parent transaction is also
+		 * being aborted.
+		 */
+		if (s->parent->blockState == TBLOCK_ABORT_PENDING ||
+			s->parent->blockState == TBLOCK_SUBABORT_PENDING)
+		{
+			*perform_foreground_undo = false;
+			perform_foreground_undo = NULL;
+		}
+
 		AtSubAbort_XactUndo(s->nestingLevel, perform_foreground_undo);
+
 		/* XXX need to do something with perform_foreground_undo */
 
 		ResourceOwnerRelease(s->curTransactionOwner,
@@ -5160,8 +5173,6 @@ AbortSubTransaction(bool *perform_foreground_undo)
 		AtSubAbort_Snapshot(s->nestingLevel);
 		AtEOSubXact_ApplyLauncher(false, s->nestingLevel);
 	}
-	else
-		*perform_foreground_undo = false;
 
 	/*
 	 * Restore the upper transaction's read-only state, too.  This should be

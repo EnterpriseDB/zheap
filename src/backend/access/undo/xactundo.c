@@ -653,9 +653,6 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 {
 	bool		has_temporary_undo = false;
 
-	if (perform_foreground_undo)
-		*perform_foreground_undo = false;
-
 	/* Exit quickly if this transaction generated no undo. */
 	if (!XactUndo.has_undo)
 		return;
@@ -841,9 +838,6 @@ void
 AtSubAbort_XactUndo(int level, bool *perform_foreground_undo)
 {
 	XactUndoSubTransaction *cursubxact = XactUndo.subxact;
-
-	if (perform_foreground_undo)
-		*perform_foreground_undo = false;
 
 	/* Exit quickly if the transaction or this subtransaction has no undo. */
 	if (!XactUndo.has_undo || cursubxact->nestingLevel < level)
