@@ -2,6 +2,13 @@
 ** support for unlogged and temporary tables
 ** support for tablespaces
 
-* recreate undo requests after recovery
-
 * design a new discard worker
+
+* recreate undo requests after recovery
+** need to annotate "noop" records with commit/abort info - use xact rmgr?
+
+* xactundo.c needs to propagate start location outward
+** otherwise after a subxact aborts, only end location is set
+
+* code for modifying pages needs cleanup and centralization
+** Andres thinks "don't overrun page" should be centralized in one place
