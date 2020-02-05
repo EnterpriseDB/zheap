@@ -1199,9 +1199,9 @@ UndoPersistenceLevelString(UndoPersistenceLevel plevel)
 		case UNDOPERSISTENCE_PERMANENT:
 			return "permanent";
 		case UNDOPERSISTENCE_UNLOGGED:
-			return "permanent";
+			return "unlogged";
 		case UNDOPERSISTENCE_TEMP:
-			return "permanent";
+			return "temporary";
 	}
 
 	pg_unreachable();
