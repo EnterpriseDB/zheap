@@ -1654,9 +1654,19 @@ DropUndoLogsInTablespace(Oid tablespace)
 	return true;
 }
 
+/*
+ * Reset undo logs of a given persistence level.  This should be called at
+ * startup to blow away temporary undo logs, because only temporary relations
+ * should hold references to temporary undo logs, and temporary relations don't
+ * survive restart.  The same applies to unlogged relations and unlogged undo
+ * logs, if there is a crash restart.
+ */
 void
 ResetUndoLogs(char persistence)
 {
+	Assert(persistence == RELPERSISTENCE_TEMP ||
+		   persistence == RELPERSISTENCE_UNLOGGED);
+
 	for (int i = 0; i < UndoLogNumSlots(); ++i)
 	{
 		DIR	   *dir;
@@ -1704,7 +1714,8 @@ ResetUndoLogs(char persistence)
 		 * created.
 		 *
 		 * TODO: Should we rewind to zero instead, so we can reuse that (now)
-		 * unreferenced address space?
+		 * unreferenced address space?  Or should we put the log numbers on
+		 * a free list where they cna be used again for any persistence level?
 		 */
 		slot->meta.insert = slot->meta.discard = slot->end +
 			SizeOfUndoPageHeaderData;

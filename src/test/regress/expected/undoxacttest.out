@@ -2635,3 +2635,39 @@ SELECT undoxacttest_read('undoxacttest_perm'::regclass);
 (1 row)
 
 DROP TABLE undoxacttest_perm;
+-- a quick smoke test of a temporary undo log
+DROP TABLE IF EXISTS undoxacttest_temp;
+NOTICE:  table "undoxacttest_temp" does not exist, skipping
+CREATE TEMPORARY TABLE undoxacttest_temp(data bytea not null);
+ALTER TABLE undoxacttest_temp ALTER COLUMN data SET STORAGE plain;
+SELECT undoxacttest_init_rel('undoxacttest_temp'::regclass);
+ undoxacttest_init_rel 
+-----------------------
+ 
+(1 row)
+
+SELECT undoxacttest_fetch_and_inc('undoxacttest_temp'::regclass, 1);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                          0
+(1 row)
+
+DROP TABLE undoxacttest_temp;
+-- a quick smoke test of an unlogged undo log
+DROP TABLE IF EXISTS undoxacttest_unlogged;
+NOTICE:  table "undoxacttest_unlogged" does not exist, skipping
+CREATE UNLOGGED TABLE undoxacttest_unlogged(data bytea not null);
+ALTER TABLE undoxacttest_unlogged ALTER COLUMN data SET STORAGE plain;
+SELECT undoxacttest_init_rel('undoxacttest_unlogged'::regclass);
+ undoxacttest_init_rel 
+-----------------------
+ 
+(1 row)
+
+SELECT undoxacttest_fetch_and_inc('undoxacttest_unlogged'::regclass, 1);
+ undoxacttest_fetch_and_inc 
+----------------------------
+                          0
+(1 row)
+
+DROP TABLE undoxacttest_unlogged;
