@@ -1052,7 +1052,7 @@ MakeUndoRequestDataTuple(TupleDesc tupdesc, UndoRequestData *d,
 {
 	Datum	values[NUM_UNDO_REQUEST_DATA_COLUMNS];
 	bool	nulls[NUM_UNDO_REQUEST_DATA_COLUMNS];
-	char   *status;
+	char   *status = "unknown";
 
 	d += index;
 
