@@ -435,10 +435,10 @@ create_new_chunk(UndoRecordSet *urs)
 		urs->max_chunks *= 2;
 	}
 
-	/* Get our hands on a new undo log, and go around again. */
+	/* Get our hands on a new undo log. */
 	urs->need_chunk_header = true;
 	urs->recent_end = 0;
-	urs->slot = UndoLogGetForPersistence(urs->persistence);
+	urs->slot = UndoLogAcquire(urs->persistence);
 	urs->chunks[urs->nchunks].slot = urs->slot;
 	urs->chunks[urs->nchunks].chunk_header_written = false;
 	urs->chunks[urs->nchunks].chunk_header_offset = urs->slot->meta.insert;
@@ -464,9 +464,9 @@ reserve_physical_undo(UndoRecordSet *urs, size_t total_size)
 	Assert(urs->chunks);
 
 	/*
-	 * Although this is in shared memory, it can only be set (for testing) if
-	 * we are currently attached to it, so it's safe to read it without
-	 * locking.
+	 * Although this is in shared memory, it can only be set by this project
+	 * (for testing) if we are currently attached to it, so it's safe to read
+	 * it without locking.
 	 */
 	if (unlikely(urs->slot->force_truncate))
 	{
@@ -1392,7 +1392,7 @@ UndoDestroy(UndoRecordSet *urs)
 
 	/* Return undo logs to appropriate free lists. */
 	for (int i = 0; i < urs->nchunks; ++i)
-		UndoLogPut(urs->chunks[i].slot);
+		UndoLogRelease(urs->chunks[i].slot);
 
 	/* Remove from list of all known record sets. */
 	slist_delete(&UndoRecordSetList, &urs->link);

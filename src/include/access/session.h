@@ -19,6 +19,9 @@
 /* Avoid including typcache.h */
 struct SharedRecordTypmodRegistry;
 
+/* Avoid including undolog.h */
+struct UndoLogSlot;
+
 /*
  * A struct encapsulating some elements of a user's session.  For now this
  * manages state that applies to parallel query and undo, but it principle it
@@ -30,8 +33,7 @@ typedef struct Session
 	dsa_area   *area;			/* The session-scoped DSA area. */
 
 	/* State managed by undolog.c. */
-	slist_head	sticky_undo_log_slots[NUndoPersistenceLevels];
-	bool		need_to_choose_undo_tablespace;
+	struct UndoLogSlot *private_undolog_free_lists[NUndoPersistenceLevels];
 
 	/* State managed by typcache.c. */
 	struct SharedRecordTypmodRegistry *shared_typmod_registry;

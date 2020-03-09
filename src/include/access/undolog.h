@@ -118,6 +118,44 @@ typedef struct UndoLogMetaData
 #ifndef FRONTEND
 
 /*
+ * The state of an UndoLogSlot determines what types of concurrent access are
+ * permitted.
+ */
+typedef enum UndoLogSlotState
+{
+	/* This is a spare slot, not currently managing an undo log. */
+	UNDOLOGSLOT_FREE,
+
+	/*
+	 * This slot is managing an undo log, and is available for any backend to
+	 * acquire.  In this state, a slot can be moved to UNDOLOGSLOT_FREE state
+	 * by CheckPointUndoLogs() or DropUndoLogsInTablespace().
+	 */
+	UNDOLOGSLOT_ON_SHARED_FREE_LIST,
+
+	/*
+	 * This slot is managing an undo log, but currently on one backend's
+	 * private free list.  In this state, the undo log can be moved to
+	 * UNDOLOGSLOT_FREE state by CheckPointUndoLogs() or
+	 * DropUndoLogsInTablespace(), but no other backend can acquire it.  That
+	 * can be detected by a change in associated pid.  This state exists to
+	 * give backends a fast way to keep reusing the same undo log for
+	 * sequential transactions without having to take a more heavily contended
+	 * lock.
+	 */
+	UNDOLOGSLOT_ON_PRIVATE_FREE_LIST,
+
+	/*
+	 * This slot is managing an undo log that has been acquired for use in an
+	 * UndoRecordSet.  In this state, the undo log is "pinned", so it can't be
+	 * freed by another backend, and the backend that owns the UndoRecordSet
+	 * can read all struct members without having to acquire a lock, because
+	 * no one else can write to it.
+	 */
+	UNDOLOGSLOT_IN_UNDO_RECORD_SET
+} UndoLogSlotState;
+
+/*
  * The in-memory control object for an undo log.  We have a fixed-sized array
  * of these.
  *
@@ -141,11 +179,12 @@ typedef struct UndoLogSlot
 	 */
 	UndoLogNumber logno;			/* InvalidUndoLogNumber for unused slots */
 
-	slist_node	next;				/* link node for freelists */
+	slist_node	next;				/* link node for shared free lists */
 
 	LWLock		file_lock;			/* prevents concurrent file operations */
 
 	LWLock		meta_lock;			/* protects following members */
+	UndoLogSlotState state;		/* free, in use etc */
 	UndoLogMetaData meta;			/* current meta-data */
 	bool		force_truncate;		/* for testing only */
 	pid_t		pid;				/* InvalidPid for unattached */
@@ -284,8 +323,8 @@ UndoRecPtrIsDiscarded(UndoRecPtr pointer)
 }
 
 /* Interfaces used by undorecordset.c. */
-extern UndoLogSlot *UndoLogGetForPersistence(char persistence);
-extern void UndoLogPut(UndoLogSlot *slot);
+extern UndoLogSlot *UndoLogAcquire(char persistence);
+extern void UndoLogRelease(UndoLogSlot *slot);
 extern void UndoLogAdjustPhysicalRange(UndoLogNumber logno,
 									   UndoLogOffset new_discard,
 									   UndoLogOffset new_isnert);

@@ -1,6 +1,3 @@
-* things that worked before the URS refactor but need to be fully restored to working order
-** support for tablespaces
-
 * design a new discard worker
 
 * recreate undo requests after recovery
