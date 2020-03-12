@@ -4624,7 +4624,7 @@ RollbackAndReleaseCurrentSubTransaction(void)
 	 */
 	if (s->blockState == TBLOCK_SUBINPROGRESS)
 	{
-		bool		perform_foreground_undo;
+		bool		perform_foreground_undo = false;
 
 		AbortSubTransaction(&perform_foreground_undo);
 		if (perform_foreground_undo)
