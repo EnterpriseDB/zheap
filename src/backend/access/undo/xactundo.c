@@ -138,6 +138,7 @@ static XactUndoData XactUndo;
 static XactUndoSubTransaction XactUndoTopState;
 
 static void CollapseXactUndoSubTransactions(void);
+static void ReleaseUndoRequestIfUnused(void);
 static void ResetXactUndo(void);
 static UndoRecPtr XactUndoEndLocation(UndoPersistenceLevel plevel);
 static void XactUndoFinalizeRequest(bool mark_as_ready);
@@ -706,6 +707,9 @@ AtAbort_XactUndo(bool *perform_foreground_undo)
 		return;
 	}
 
+	/* Get rid of our UndoRequest if it's not needed. */
+	ReleaseUndoRequestIfUnused();
+
 	/*
 	 * If we have no UndoRequest, then the either we have no undo, or we have
 	 * only temporary undo. In the latter case, hopefully the caller can
@@ -944,10 +948,14 @@ AtPrepare_XactUndo(GlobalTransaction gxact)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot PREPARE a transaction that has temporary undo")));
 
+	/* Get rid of our UndoRequest if it's not needed. */
+	ReleaseUndoRequestIfUnused();
+
 	/*
 	 * Store a pointer to our UndoRequest in the GlobalTransaction.
 	 */
-	SetPreparedUndoRequest(gxact, XactUndo.my_request);
+	if (XactUndo.my_request != NULL)
+		SetPreparedUndoRequest(gxact, XactUndo.my_request);
 }
 
 /*
@@ -1036,6 +1044,25 @@ CollapseXactUndoSubTransactions(void)
 				nextsubxact->start_location[i] = cursubxact->start_location[i];
 		pfree(cursubxact);
 		XactUndo.subxact = nextsubxact;
+	}
+}
+
+/*
+ * Release our UndoRequest if there's no actual undo associated with it.
+ *
+ * We might have registered an UndoRequest but then hit an ERROR before we
+ * actually did anything with it. If that's the case, we can just unregister
+ * it.
+ */
+static void
+ReleaseUndoRequestIfUnused(void)
+{
+	if (XactUndo.my_request != NULL &&
+		XactUndo.total_size[UNDOPERSISTENCE_PERMANENT] == 0 &&
+		XactUndo.total_size[UNDOPERSISTENCE_UNLOGGED] == 0)
+	{
+		UnregisterUndoRequest(XactUndo.manager, XactUndo.my_request);
+		XactUndo.my_request = NULL;
 	}
 }
 
